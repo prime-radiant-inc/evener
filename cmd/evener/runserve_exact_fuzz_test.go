@@ -13,7 +13,6 @@ import (
 
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -41,11 +40,10 @@ func exactServeDeps(t *testing.T) serveDeps {
 	d := defaultServeDeps()
 	d.ensureConfigDirs = func() error { return nil }
 	d.seedMarketplaces = func() error { return nil }
-	d.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		c := llm.NewClient()
 		c.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{Default: "openai", Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai"}}}
-		return c, cfg, true, func() error { return nil }, nil
+		return c, func() error { return nil }, nil
 	}
 	d.listen = func(context.Context, string, string) (net.Listener, error) {
 		return &exactServeListener{closed: make(chan struct{})}, nil
@@ -73,9 +71,7 @@ func fuzzRunServeStartupBranches(t *testing.T) {
 		{"getwd error", func(*testing.T) []string { return []string{"--model", "openai/test"} }, func(_ *testing.T, d *serveDeps) { d.getwd = func() (string, error) { return "", boom } }},
 		{"config error", exactServeArgs, func(_ *testing.T, d *serveDeps) { d.ensureConfigDirs = func() error { return boom } }},
 		{"client error", exactServeArgs, func(_ *testing.T, d *serveDeps) {
-			d.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
-				return nil, providercfg.Config{}, false, nil, boom
-			}
+			d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) { return nil, nil, boom }
 		}},
 		{"listen error", exactServeArgs, func(_ *testing.T, d *serveDeps) {
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }

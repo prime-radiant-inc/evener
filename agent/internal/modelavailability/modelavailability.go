@@ -15,8 +15,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"primeradiant.com/evener/llm"
 )
 
 type StatusKind string
@@ -65,7 +63,7 @@ const (
 	captureMaxModelIDLen  = 256
 )
 
-func Capture(parent context.Context, providers []string, requiredProvider string, fetch func(context.Context, string) ([]llm.ModelInfo, error), visible func(string, llm.ModelInfo) bool, budget time.Duration) Snapshot {
+func Capture(parent context.Context, providers []string, requiredProvider string, fetch func(context.Context, string) ([]string, error), budget time.Duration) Snapshot {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 	providers, providerLimited := boundedProviders(providers, requiredProvider)
@@ -81,7 +79,7 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 			models, err := fetch(ctx, name)
 			r := result{name: name, err: err}
 			if err == nil {
-				r.ids, r.limited, r.err = boundedModelIDs(ctx, name, models, visible)
+				r.ids, r.limited, r.err = boundedModelIDs(ctx, name, models)
 			}
 			select {
 			case out <- r:
@@ -168,7 +166,7 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key}
 }
 
-func boundedModelIDs(ctx context.Context, provider string, models []llm.ModelInfo, visible func(string, llm.ModelInfo) bool) ([]string, bool, error) {
+func boundedModelIDs(ctx context.Context, provider string, models []string) ([]string, bool, error) {
 	seen := make(map[string]bool)
 	ids := make([]string, 0, min(len(models), captureMaxModels))
 	limited := false
@@ -181,17 +179,10 @@ func boundedModelIDs(ctx context.Context, provider string, models []llm.ModelInf
 			limited = true
 			break
 		}
-		id, ok := safeModelID(model.ID)
+		id, ok := safeModelID(model)
 		if !ok {
 			limited = true
 			continue
-		}
-		model.ID = id
-		if visible != nil && !visible(provider, model) {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
 		}
 		if seen[id] {
 			continue

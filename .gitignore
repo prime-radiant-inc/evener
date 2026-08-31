@@ -50,3 +50,5 @@ docs/experiments/dashboard-session24.html
 # roborev snapshots and per-machine reviewer config
 /.roborev/
 /.roborev.toml
+
+# subagent-driven-development scratch (ledgers, briefs, review packages)

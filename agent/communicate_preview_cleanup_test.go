@@ -135,7 +135,7 @@ func TestCallModelWithFallbackUnionsPrimaryAndFallbackPreviewIDs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, "", 0)
+			resp, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
 			if err != nil {
 				t.Fatalf("fallback call: %v", err)
 			}
@@ -185,7 +185,7 @@ func TestCallModelWithFallbackPanicResetsTransferredPrimaryExactlyOnce(t *testin
 	panicked := false
 	func() {
 		defer func() { panicked = recover() != nil }()
-		_, _, _, _ = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, "", 0)
+		_, _, _, _ = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
 	}()
 	sess.Close()
 	<-done

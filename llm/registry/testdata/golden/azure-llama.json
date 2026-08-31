@@ -1,0 +1,94 @@
+{
+  "instance": "azure",
+  "provider_id": "azure",
+  "protocol": "openai-responses",
+  "surface": "generic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "api-key",
+    "base_url": "https://contoso-prod.openai.azure.com/openai/v1",
+    "endpoint": "/responses",
+    "stream_endpoint": "/responses",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "AZURE_RESOURCE_NAME": "contoso-prod"
+    },
+    "vars_env": {
+      "AZURE_RESOURCE_NAME": "AZURE_RESOURCE_NAME"
+    }
+  },
+  "model_id": "llama-3.3-70b-instruct",
+  "wire_id": "llama-3.3-70b-instruct",
+  "model": {
+    "id": "llama-3.3-70b-instruct",
+    "wire_id": "llama-3.3-70b-instruct",
+    "family": "llama",
+    "surface": "generic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 128000,
+    "max_output_tokens": 32768,
+    "tools": true,
+    "reasoning": false,
+    "input_modalities": [
+      "text"
+    ],
+    "knowledge_cutoff": "2023-12",
+    "cost": {
+      "input": 0.71,
+      "output": 0.71
+    },
+    "fields": {
+      "background": false,
+      "conversation": false,
+      "include": true,
+      "max_output_tokens": true,
+      "max_tool_calls": false,
+      "metadata": true,
+      "parallel_tool_calls": false,
+      "previous_response_id": true,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "reasoning.context": false,
+      "safety_identifier": false,
+      "service_tier": false,
+      "store": true,
+      "temperature": true,
+      "text.verbosity": false,
+      "top_p": true,
+      "truncation": false
+    }
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "Fields.include": "overlay/provider",
+    "Fields.metadata": "overlay/provider",
+    "Fields.previous_response_id": "overlay/provider",
+    "Fields.store": "overlay/provider",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "Surface": "snapshot/row",
+    "Tools": "snapshot/row",
+    "model": "row:llama-3.3-70b-instruct"
+  },
+  "credential_source": "env:AZURE_API_KEY",
+  "pruned_fields": [
+    "background",
+    "conversation",
+    "max_tool_calls",
+    "parallel_tool_calls",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "reasoning.context",
+    "safety_identifier",
+    "service_tier",
+    "text.verbosity",
+    "truncation"
+  ]
+}

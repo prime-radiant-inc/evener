@@ -54,35 +54,39 @@ func (e embedSource) ReadFile(name string) ([]byte, bool) {
 	return data, true
 }
 
-// sectionResolver resolves prompt sections using provider/agent layering.
+// sectionResolver resolves prompt sections using surface/agent layering.
 // It checks sources in order (first match wins) and supports .md.tmpl templates.
 type sectionResolver struct {
-	provider string
-	agent    string
-	sources  []sectionSource
-	tracked  []promptSource
-	agentFS  fs.FS // for role section: reads {agent}.md
+	// surface is the resolved row's prompt surface (spec §7.5), which is what
+	// selects a section variant — not the instance the request goes to. The
+	// "<name>.provider-<tag>" FILENAME convention is unchanged and documented;
+	// only the field says what the tag actually is.
+	surface string
+	agent   string
+	sources []sectionSource
+	tracked []promptSource
+	agentFS fs.FS // for role section: reads {agent}.md
 }
 
-// Section resolves a named section with provider and agent layering.
+// Section resolves a named section with surface and agent layering.
 //
-// Provider layer: prepend, body (provider-specific or base fallback), append.
+// Surface layer: prepend, body (surface-specific or base fallback), append.
 // Agent layer: prepend, body, append.
-// If an agent body exists, it replaces the entire provider result.
-// Otherwise, agent prepend/append are additive on top of the provider result.
+// If an agent body exists, it replaces the entire surface result.
+// Otherwise, agent prepend/append are additive on top of the surface result.
 // Non-empty parts are joined with "\n\n".
 func (r *sectionResolver) Section(name string, data promptData) string {
 	if name == "role" {
 		return r.resolveRole(data)
 	}
 
-	// Provider layer.
-	providerPrepend := r.readAndRender(fmt.Sprintf("%s.provider-%s_prepend", name, r.provider), data)
-	providerBody := r.readAndRender(fmt.Sprintf("%s.provider-%s", name, r.provider), data)
-	if providerBody == "" {
-		providerBody = r.readAndRender(name, data) // fallback to base
+	// Surface layer. The filename tag is still "provider-<surface>".
+	surfacePrepend := r.readAndRender(fmt.Sprintf("%s.provider-%s_prepend", name, r.surface), data)
+	surfaceBody := r.readAndRender(fmt.Sprintf("%s.provider-%s", name, r.surface), data)
+	if surfaceBody == "" {
+		surfaceBody = r.readAndRender(name, data) // fallback to base
 	}
-	providerAppend := r.readAndRender(fmt.Sprintf("%s.provider-%s_append", name, r.provider), data)
+	surfaceAppend := r.readAndRender(fmt.Sprintf("%s.provider-%s_append", name, r.surface), data)
 
 	// Agent layer.
 	agentPrepend := r.readAndRender(fmt.Sprintf("%s.agent-%s_prepend", name, r.agent), data)
@@ -91,15 +95,15 @@ func (r *sectionResolver) Section(name string, data promptData) string {
 
 	var parts []string
 	if agentBody != "" {
-		// Agent body replaces the provider result entirely.
+		// Agent body replaces the surface result entirely.
 		for _, s := range []string{agentPrepend, agentBody, agentAppend} {
 			if s != "" {
 				parts = append(parts, s)
 			}
 		}
 	} else {
-		// Agent prepend/append layer on top of provider result.
-		for _, s := range []string{providerPrepend, providerBody, providerAppend, agentPrepend, agentAppend} {
+		// Agent prepend/append layer on top of the surface result.
+		for _, s := range []string{surfacePrepend, surfaceBody, surfaceAppend, agentPrepend, agentAppend} {
 			if s != "" {
 				parts = append(parts, s)
 			}

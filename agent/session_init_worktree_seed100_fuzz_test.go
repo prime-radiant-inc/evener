@@ -155,7 +155,7 @@ func fuzzInitW3RegressionPrograms(t *testing.T) {
 		{"communicate-nudge", TestS5Cov_SubagentNeedsCommunicateNudge},
 		{"strategy-all", TestS2Cov_SelectStrategy_AllNamedStrategies},
 		{"strategy-unknown", TestS2Cov_SelectStrategy_UnknownStrategyFails},
-		{"fallback-cross-provider", TestS2Cov_ValidateModelFallbacks_RejectsCrossProvider},
+		{"fallback-cross-surface", TestS2Cov_ValidateModelFallbacks_RejectsCrossSurface},
 	}
 	for _, program := range programs {
 		t.Run(program.name, program.run)

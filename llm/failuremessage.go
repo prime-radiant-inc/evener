@@ -22,8 +22,7 @@ const maxFailureMessageBody = 512
 // the implementation's shape.
 //
 // operation names the API call ("responses.create(stream)", "messages.create").
-// It stays in the message because the endpoint-fallback classifier and several
-// diagnostics match on it.
+// It stays in the message because several diagnostics match on it.
 func ProviderFailureMessage(operation string, body []byte) string {
 	detail := strings.TrimSpace(string(body))
 	if msg := providerErrorText(body); msg != "" {

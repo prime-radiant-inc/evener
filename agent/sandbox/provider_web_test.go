@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+// TestProviderWebRegistryKnowsRegistryProviderIDs pins the table's keys as
+// registry provider ids (spec §7.5): every vendor that runs server-side web
+// egress must be listed under the id the registry resolves for it, so the
+// net=off decision is made on vendor identity rather than on the instance
+// name or the prompt surface.
+func TestProviderWebRegistryKnowsRegistryProviderIDs(t *testing.T) {
+	for _, id := range []string{"openai", "openai-codex", "anthropic", "google"} {
+		egress, known := WebEgress(id)
+		if !known {
+			t.Errorf("provider id %q must be known to the table", id)
+		}
+		if !egress {
+			t.Errorf("provider id %q must be recorded as egress-capable", id)
+		}
+	}
+	// "gemini" was the old behavior tag; google is the registry provider id.
+	if _, known := WebEgress("gemini"); known {
+		t.Errorf("the retired gemini tag must not be a table key")
+	}
+}
+
 func TestProviderWebRegistryFailsClosed(t *testing.T) {
 	// A KNOWN egress-capable provider is refused under net=off.
 	if ProviderWebAllowedUnderNetOff("openai") {

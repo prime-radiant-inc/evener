@@ -362,7 +362,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
 				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequest while it is in progress; it
+				// per-round via prepareModelRequestWithError while it is in progress; it
 				// must not overwrite the session's configured effort.
 				if current, ok := store.CurrentInProgress(); ok {
 					s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask)
@@ -483,14 +483,21 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	if len(names) == 0 {
 		return
 	}
-	catalog := llm.EmbeddedModelCatalog()
-	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
-		if name == s.profile.ID() {
-			return selectedModels.models, selectedModels.err
+	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]string, error) {
+		// The session's own instance was listed during startup; reuse that
+		// result rather than asking the provider a second time.
+		listing, err := selectedModels.listing, selectedModels.err
+		if name != s.profile.ID() {
+			listing, err = s.client.Models(ctx, name)
 		}
-		return s.client.ListModels(ctx, name)
-	}, func(name string, model llm.ModelInfo) bool {
-		return modelSwitchVisible(s.client.BehaviorTagOf(name), model, catalog)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(listing.Models))
+		for _, m := range listing.Models {
+			ids = append(ids, m.ModelID)
+		}
+		return ids, nil
 	}, liveModelMetadataTimeout)
 	s.modelSnapshot = &snapshot
 	if text, ok := inlineModelSnapshot(snapshot); ok {
@@ -1375,36 +1382,40 @@ func (s *Session) validateModelFallbacks() error {
 // s.profile. It backs both validateModelFallbacks (all-or-nothing, run at
 // session init) and revalidateModelFallbacksLocked (per-entry, run after a
 // mid-session model switch commits).
+//
+// A slashed ref naming another instance is allowed when the two instances
+// share a surface (spec §7.5): the refusal exists because prompt and tool
+// surfaces differ, so a same-surface hop across instances is fine.
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
-	// Always check whether the ref is a cross-provider switch, regardless of
-	// whether a resolver is present. Cross-provider fallbacks are unsupported
-	// because the prompt/tool surfaces differ between providers.
-	if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
-		if s.profile.CrossProviderRef(fbModel) {
-			// Resolve to get the target provider name for the error message.
-			targetTag := strings.ToLower(parts[0]) // best-effort for the error message
-			fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
-			if err != nil {
-				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
-			}
-			if crossProvider {
-				targetTag = fbProfile.BehaviorTag()
-			}
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
-		}
+	parts := strings.SplitN(fbModel, "/", 2)
+	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
+		// A ref reaching this point is same-instance. resolveProfileForRef only
+		// invokes the injected resolver for cross-instance refs, so a
+		// same-instance ref is a direct WithModel projection.
+		return nil
 	}
-	// A ref reaching this point is same-provider. resolveProfileForRef only
-	// invokes the injected resolver for cross-provider refs, which returned
-	// above; same-provider refs are a direct WithModel projection.
+	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
+	if err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+	}
+	if !crossProvider {
+		// Without a resolver the target instance never materializes as a
+		// profile, so its surface is unknowable and the entry cannot be shown
+		// compatible.
+		return fmt.Errorf("model_fallbacks entry %q switches from surface %q to instance %q, whose surface cannot be resolved; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), strings.ToLower(parts[0]))
+	}
+	if fbProfile.Surface() != s.profile.Surface() {
+		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
 	return nil
 }
 
 // revalidateModelFallbacksLocked re-checks cfg.ModelFallbacks against the
 // session's current profile after a mid-session model switch commits,
-// dropping entries that no longer validate (cross-tag, or otherwise
+// dropping entries that no longer validate (cross-surface, or otherwise
 // unresolvable against the new profile) and returning their names in order.
-// A same-tag switch leaves every still-valid entry in place. Must be called
-// with s.mu held.
+// A same-surface switch leaves every still-valid entry in place. Must be
+// called with s.mu held.
 func (s *Session) revalidateModelFallbacksLocked() []string {
 	if len(s.cfg.ModelFallbacks) == 0 {
 		return nil
@@ -1430,7 +1441,7 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 		return false
 	}
 	switch llm.Classify(err) {
-	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
+	case llm.ErrorClassPermanent:
 		return true
 	case llm.ErrorClassRetryable:
 		return retryLoopDeclined(err, policy)

@@ -9,10 +9,19 @@
 //
 // # Constructing a client
 //
-// Use [NewClient] and register one or more providers, or [NewFromEnv] to build a
-// client from the environment and stored credentials:
+// Use [NewClient] with the provider registry the process loaded, which resolves
+// an instance/model reference against the user's configuration, the curated
+// overlay, and the embedded catalog:
 //
-//	client, err := llm.NewFromEnv()
+//	r, err := registry.Load()
+//	if err != nil {
+//		return err
+//	}
+//	client := llm.NewClient(llm.WithRegistry(r))
+//
+// A client built without [WithRegistry] still resolves — against
+// [EmbeddedRegistry], a hermetic snapshot with no user layer and no
+// environment — so library callers need no configuration to shape a request.
 //
 // # Generating
 //
@@ -39,8 +48,8 @@
 // types are unexported; branch on a failure with one of two orthogonal axes
 // rather than type-asserting:
 //
-//   - [Classify] returns the retry disposition ([ErrorClassRetryable],
-//     [ErrorClassPermanent], or [ErrorClassFallback]).
+//   - [Classify] returns the retry disposition ([ErrorClassRetryable] or
+//     [ErrorClassPermanent]).
 //   - [Kind] returns the category ([ErrorKind]: [KindRateLimit],
 //     [KindContextLength], [KindContentFilter], …). A 429 and a 503 share a
 //     Class (retryable) but differ in Kind.
@@ -49,14 +58,16 @@
 // Unwrap chain, so errors.Is(err, context.Canceled) and errors.Is(err,
 // context.DeadlineExceeded) hold for user-cancelled and timed-out requests.
 //
-// # Adapter SPI
+// # Protocol and adapter SPI
 //
-// Providers are pluggable. A provider package implements [ProviderAdapter] and
-// registers a factory with [RegisterInstanceAdapterFactory] (config-driven) or
-// [RegisterEnvAdapterFactory] (environment-driven). The streaming and transport
-// primitives a provider needs — [ChanStream], [ParseSSE], [Retry], and the
-// AdapterTimeout helpers — are exported for that purpose. Application code uses
-// the caller API above and can ignore this surface.
+// Wire protocols are pluggable. A protocol package implements [Protocol] and
+// registers itself with [RegisterProtocol]; the registry record behind an
+// instance names which one serves it. A caller may also register a
+// [ProviderAdapter] override with [Client.Register], which owns its instance
+// name outright. The streaming and transport primitives either needs —
+// [ChanStream], [ParseSSE], [Retry], and the AdapterTimeout helpers — are
+// exported for that purpose. Application code uses the caller API above and
+// can ignore this surface.
 //
 // # Concurrency
 //

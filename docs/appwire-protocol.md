@@ -651,10 +651,14 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `type` | `string` |  |  |
 | `name` | `string` |  |  |
-| `apiStyle` | `string` |  |  |
-| `baseUrl` | `string` |  |  |
+| `base` | `string` |  |  |
+| `baseUrl` | `string` | yes |  |
+| `protocol` | `string` | yes |  |
+| `surface` | `string` | yes |  |
+| `vars` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | yes |  |
+| `credentialHeader` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -662,8 +666,10 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
-| `apiStyle` | `string` |  |  |
-| `baseUrl` | `string` |  |  |
+| `baseUrl` | `string` | yes |  |
+| `protocol` | `string` | yes |  |
+| `surface` | `string` | yes |  |
+| `vars` | `map[string]string` | yes |  |
 
 
 ### `InstanceListResponse`
@@ -671,7 +677,10 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `instances` | `[]appwire.InstanceEntry` |  |  |
-| `availableTypes` | `[]string` |  |  |
+| `availableProviders` | `[]appwire.ProviderDescriptor` |  |  |
+| `diagnostics` | `[]string` | yes |  |
+| `userLayer` | `string` | yes |  |
+| `writesRefused` | `bool` | yes |  |
 
 
 ### `InstanceRemoveParams`

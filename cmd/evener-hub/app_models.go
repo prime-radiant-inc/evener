@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,8 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var liveModelLoadClient = cmdutil.LoadClient
@@ -29,7 +27,7 @@ func hubModelList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if err != nil {
 		return resp, err
 	}
-	resp = enrichModelListResponse(cfg, resp)
+	resp = enrichModelListResponse(resp)
 	return attachRecentModels(cfg, resp), nil
 }
 
@@ -128,7 +126,7 @@ func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref c
 		}
 	}
 	if !providerEnumerated {
-		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider, cfg.ProviderConfig) {
+		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchInstanceExists(cfg, ref.Provider) {
 			return nil
 		}
 		return appwire.HubLaunchError("model provider is not reported by the Evener launch harness: " + ref.Provider)
@@ -136,13 +134,17 @@ func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref c
 	return appwire.HubLaunchError("model is not configured for Evener launch: " + ref.Qualified())
 }
 
-// launchProviderAllowsUnreportedModels returns true when the provider's
-// behavior tag is "openrouter-anthropic". The tag is resolved from cfg when
-// available; when cfg is nil the provider name is used as-is (identity
-// fallback for the env path where instance name == type == tag).
-func launchProviderAllowsUnreportedModels(provider string, cfg *providercfg.Config) bool {
-	tag := behaviorTagFor(cfg, provider)
-	return strings.EqualFold(strings.TrimSpace(tag), "openrouter-anthropic")
+// launchInstanceExists reports whether the registry has the named instance.
+// A provider the launch contract never enumerated is still launchable when
+// the registry knows it: an instance whose endpoint lists no models (or lists
+// them only on the first request) is configured, and refusing it here would
+// make the registry's own instance set unusable (spec §11.3).
+func launchInstanceExists(cfg hubcore.WebConfig, provider string) bool {
+	if cfg.Registry == nil || cfg.Registry.Get() == nil {
+		return false
+	}
+	_, ok := cfg.Registry.Get().Instance(strings.ToLower(strings.TrimSpace(provider)))
+	return ok
 }
 
 func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, provider string) bool {
@@ -232,21 +234,19 @@ func normalizeModelDescriptor(model *appwire.ModelDescriptor) bool {
 	return model.Provider != "" && model.Model != ""
 }
 
-// datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare
-// model id (e.g. "-20251101"), plus an optional trailing LiteLLM version tag
-// ("-v1"). It mirrors llm/model_catalog_embedded.go's datedModelSuffix while
-// keeping this display-order rule local to the hub response.
-var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
-
+// isDatedSnapshotModelID reports whether a model id names a dated snapshot
+// rather than a family. The rule is the registry's own — one implementation
+// covering "-YYYYMMDD", Bedrock's "-vN:N" revision and Vertex's "@YYYYMMDD"
+// — so the picker cannot disagree with resolution about what is dated.
 func isDatedSnapshotModelID(ref string) bool {
 	if i := strings.LastIndex(ref, "/"); i >= 0 {
 		ref = ref[i+1:]
 	}
-	return datedSnapshotSuffix.MatchString(ref)
+	return registry.StripDatedSuffix(ref) != ref
 }
 
 func prettifyModelDisplayName(id string) string {
-	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	base := registry.StripDatedSuffix(id)
 	segments := strings.Split(base, "-")
 	for idx, segment := range segments {
 		if segment == "" {
@@ -270,22 +270,29 @@ func sortModelDescriptors(models []appwire.ModelDescriptor) {
 	})
 }
 
-func enrichModelListResponse(cfg hubcore.WebConfig, resp appwire.ModelListResponse) appwire.ModelListResponse {
-	resp.Data = enrichModelDescriptors(resp.Data, cfg.ProviderConfig)
+// enrichModelListResponse fills in the one display-only field the registry
+// does not carry — a human-readable name for a bare model id — and puts the
+// rows in the picker's order. Every capability on a descriptor comes from
+// the registry's Resolved record (spec §11.3), so there is nothing else to
+// merge in here.
+func enrichModelListResponse(resp appwire.ModelListResponse) appwire.ModelListResponse {
+	resp.Data = withDisplayNames(resp.Data)
 	if resp.Data == nil {
 		resp.Data = []appwire.ModelDescriptor{}
 	}
 	sortModelDescriptors(resp.Data)
-	resp.Recent = enrichModelDescriptors(resp.Recent, cfg.ProviderConfig)
+	resp.Recent = withDisplayNames(resp.Recent)
 	return resp
 }
 
-func enrichModelDescriptors(models []appwire.ModelDescriptor, providerCfg *providercfg.Config) []appwire.ModelDescriptor {
+// withDisplayNames drops descriptors with no provider or model and gives each
+// survivor a display name, prettified from the model id when the source left
+// it blank.
+func withDisplayNames(models []appwire.ModelDescriptor) []appwire.ModelDescriptor {
 	if len(models) == 0 {
 		return nil
 	}
 	out := make([]appwire.ModelDescriptor, 0, len(models))
-	cat := llm.EmbeddedModelCatalog()
 	for _, model := range models {
 		if !normalizeModelDescriptor(&model) {
 			continue
@@ -294,87 +301,9 @@ func enrichModelDescriptors(models []appwire.ModelDescriptor, providerCfg *provi
 		if model.DisplayName == "" {
 			model.DisplayName = prettifyModelDisplayName(model.Model)
 		}
-
-		if info := catalogModelInfo(cat, behaviorTagFor(providerCfg, model.Provider), model.Model); info != nil {
-			if model.ContextWindow == nil && info.ContextWindow > 0 {
-				value := info.ContextWindow
-				model.ContextWindow = &value
-			}
-			if model.SupportsTools == nil {
-				value := info.SupportsTools
-				model.SupportsTools = &value
-			}
-			if model.SupportsVision == nil {
-				value := info.SupportsVision
-				model.SupportsVision = &value
-			}
-			if model.MaxOutputTokens == nil && info.MaxOutputTokens != nil {
-				value := *info.MaxOutputTokens
-				model.MaxOutputTokens = &value
-			}
-			if model.SupportsWebSearch == nil && info.SupportsWebSearch != nil {
-				value := *info.SupportsWebSearch
-				model.SupportsWebSearch = &value
-			}
-			if model.InputCostPerMillion == nil && info.InputCostPerMillion != nil {
-				value := *info.InputCostPerMillion
-				model.InputCostPerMillion = &value
-			}
-			if model.OutputCostPerMillion == nil && info.OutputCostPerMillion != nil {
-				value := *info.OutputCostPerMillion
-				model.OutputCostPerMillion = &value
-			}
-			if model.ReasoningEffortLevels == nil &&
-				(model.SupportsReasoning == nil || *model.SupportsReasoning) &&
-				info.SupportsReasoning && len(info.ReasoningEffortLevels) > 0 {
-				model.ReasoningEffortLevels = append([]string(nil), info.ReasoningEffortLevels...)
-			}
-			if model.SupportsReasoning == nil {
-				value := info.SupportsReasoning
-				model.SupportsReasoning = &value
-			}
-		}
-		applyInstanceModelOverride(&model, providerCfg, model.Provider, model.Model)
 		out = append(out, model)
 	}
 	return out
-}
-
-func applyInstanceModelOverride(entry *appwire.ModelDescriptor, providerCfg *providercfg.Config, provider, model string) {
-	if providerCfg == nil {
-		return
-	}
-	var instance *providercfg.InstanceConfig
-	for i := range providerCfg.Instances {
-		if providerCfg.Instances[i].Name == provider {
-			instance = &providerCfg.Instances[i]
-			break
-		}
-	}
-	if instance == nil {
-		return
-	}
-	modelConfig, ok := instance.Models[model]
-	if !ok {
-		return
-	}
-	switch {
-	case modelConfig.Reasoning != nil && !*modelConfig.Reasoning:
-		value := false
-		entry.SupportsReasoning = &value
-		entry.ReasoningEffortLevels = []string{}
-	case len(modelConfig.ThinkingLevels) > 0:
-		value := true
-		entry.SupportsReasoning = &value
-		entry.ReasoningEffortLevels = llm.OrderedEffortLevels(modelConfig.ThinkingLevels)
-	case modelConfig.Reasoning != nil && *modelConfig.Reasoning:
-		value := true
-		entry.SupportsReasoning = &value
-	}
-	if modelConfig.ContextWindow > 0 {
-		value := modelConfig.ContextWindow
-		entry.ContextWindow = &value
-	}
 }
 
 func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescriptor {
@@ -382,32 +311,27 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	if time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
 		out := append([]appwire.ModelDescriptor(nil), s.liveModels.models...)
 		s.liveModels.mu.Unlock()
-		return enrichModelDescriptors(out, s.cfg.ProviderConfig)
+		return out
 	}
 	s.liveModels.mu.Unlock()
 
-	client, _, _, err := liveModelLoadClient()
+	client, err := liveModelLoadClient("")
 	if err != nil || client == nil {
 		return nil
 	}
-	cat := llm.EmbeddedModelCatalog()
 	var out []appwire.ModelDescriptor
-	for _, provider := range client.ProviderNames() {
-		tag := client.BehaviorTagOf(provider)
-		if tag == "openrouter-anthropic" {
+	for _, inst := range client.Registry().Instances() {
+		if inst.Hidden {
 			continue
 		}
 		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		models, listErr := client.ListModels(listCtx, provider)
+		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		if listErr != nil {
 			continue
 		}
-		for _, model := range models {
-			if !cat.VisibleLiveModel(tag, model) {
-				continue
-			}
-			out = append(out, cmdutil.ModelDescriptorFromInfo(provider, model))
+		for _, m := range listing.Models {
+			out = append(out, cmdutil.ModelDescriptorFromResolved(m))
 		}
 	}
 	sortModelDescriptors(out)
@@ -415,22 +339,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 	s.liveModels.models = append([]appwire.ModelDescriptor(nil), out...)
 	s.liveModels.expires = time.Now().Add(liveModelsTTL)
 	s.liveModels.mu.Unlock()
-	return enrichModelDescriptors(out, s.cfg.ProviderConfig)
-}
-
-func catalogModelInfo(cat *llm.ModelCatalog, behaviorTag, modelID string) *llm.ModelInfo {
-	return cat.ResolveLiveModelInfo(behaviorTag, modelID)
-}
-
-func behaviorTagFor(providerCfg *providercfg.Config, name string) string {
-	if providerCfg != nil {
-		for i := range providerCfg.Instances {
-			if providerCfg.Instances[i].Name == name {
-				return providercfg.BehaviorTag(string(providerCfg.Instances[i].Type), string(providerCfg.Instances[i].APIStyle))
-			}
-		}
-	}
-	return name
+	return out
 }
 
 func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwire.ModelListDiagnostic {

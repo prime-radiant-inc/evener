@@ -51,6 +51,9 @@
     position: fixed;
     inset: 0;
     width: 100%;
+    /* Rides the composer up with iOS's on-screen keyboard: useKeyboardInset
+     * (see its header) feeds --keyboard-inset; 0px elsewhere. */
+    padding-bottom: var(--keyboard-inset, 0px);
   }
 
   .content {

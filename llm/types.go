@@ -351,7 +351,6 @@ type Request struct {
 
 	HistoryMode                    HistoryMode           `json:"-"`
 	Continuation                   *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages    []Message             `json:"-"`
 	InputTokensEstimate            int                   `json:"-"`
 	FullHistoryInputTokensEstimate int                   `json:"-"`
 	ContinuationDiagnostic         string                `json:"-"`

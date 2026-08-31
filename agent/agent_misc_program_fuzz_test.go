@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func FuzzAgentMiscProgram(f *testing.F) {
@@ -144,9 +145,10 @@ func miscDiagnosticProgram(t *testing.T, token string) {
 
 func miscContinuationAndCounterProgram(t *testing.T) {
 	t.Helper()
-	models := []llm.ModelInfo{{ID: "Exact"}, {ID: "Mixed"}}
+	models := []registry.Model{{ID: "Exact"}, {ID: "Mixed"}}
+	rows := []registry.Resolved{{ModelID: "Exact"}, {ModelID: "Mixed"}}
 	for _, model := range []string{"", "Exact", " mixed ", "absent"} {
-		_, _ = liveModelInfoFor(models, model)
+		_, _ = liveModelFor(rows, model)
 	}
 	if got := resolveLiveModelProfile(context.Background(), nil, provider.NewOpenAIProfile("x")); got == nil {
 		t.Fatal("nil client discarded profile")
@@ -206,11 +208,11 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 
 type miscModelAdapter struct {
 	agenttest.ScriptedAdapter
-	models []llm.ModelInfo
+	models []registry.Model
 	err    error
 }
 
-func (a *miscModelAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a *miscModelAdapter) LiveModels(context.Context) ([]registry.Model, error) {
 	return a.models, a.err
 }
 

@@ -572,10 +572,10 @@ type EvenerThread struct {
 	WorkMillis          int64        `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64        `json:"activeTurnStartedAt,omitempty"`
 	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
-	// string EstimateCost derives from Usage at the thread's model price, the
+	// string EstimateCost derives from Usage at the registry row's cost, the
 	// session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
-	// estimate marker). Empty (omitted) when Usage is nil or the model is
-	// uncataloged: an honest "unknown" that renders no chip, never a
+	// estimate marker). Empty (omitted) when Usage is nil or the row carries
+	// no cost: an honest "unknown" that renders no chip, never a
 	// misleading "~$0.00" — the only "~$0.00" a consumer sees is a genuinely
 	// sub-cent priced session. Derived from the authoritative full-session
 	// cumulative Usage (the same total the token cluster trusts), never a
@@ -973,7 +973,7 @@ type Turn struct {
 	DurationMS  *int64 `json:"durationMs,omitempty"`
 	// Usage and Cost are the turn's own (not cumulative-session) token totals
 	// and estimated dollar cost — nil/empty when not computable (no usage
-	// data for this turn, or an uncataloged model). Populated live by
+	// data for this turn, or a registry row with no cost). Populated live by
 	// summing EventAssistantTextEnd's per-round usage across the turn
 	// (internal/appprojector), and for ended sessions by reading the
 	// persisted per-round schema.Turn.Usage (internal/apptranscript).
@@ -2516,15 +2516,27 @@ type AuthDevicePollResponse struct {
 	Status *AuthStatusResponse `json:"status,omitempty"`
 }
 
-// InstanceEntry is the wire representation of one configured provider instance
-// and its current credential status. The credential-status fields mirror
-// AuthStatusResponse so the existing web credential-source rendering can be
-// reused without additional translation.
+// InstanceEntry is one registry instance with its credential status
+// (spec §11.3). ActiveSource and AuthModes speak the registry's vocabulary:
+// a source is one of api_key, credential_headers, store, env:<VAR>, oauth,
+// adc, or none. A credential value never appears here.
 type InstanceEntry struct {
-	Name           string   `json:"name"`
-	Type           string   `json:"type"`
-	APIStyle       string   `json:"apiStyle"`
-	BaseURL        string   `json:"baseUrl"`
+	Name string `json:"name"`
+	// Base is the registry id an explicitly-named instance is built on;
+	// empty when the instance name is itself the registry id.
+	Base       string            `json:"base,omitempty"`
+	ProviderID string            `json:"providerId"`
+	Protocol   string            `json:"protocol"`
+	Surface    string            `json:"surface,omitempty"`
+	Auth       string            `json:"auth"`
+	BaseURL    string            `json:"baseUrl,omitempty"`
+	Vars       map[string]string `json:"vars,omitempty"`
+	// Implicit is true for an instance that exists from the environment
+	// alone: it has no entry in providers.toml, so it cannot be removed.
+	Implicit bool `json:"implicit"`
+	// Hidden marks a provider with no resolvable base URL in this
+	// environment (its *_BASE_URL variable is unset).
+	Hidden         bool     `json:"hidden,omitempty"`
 	IsDefault      bool     `json:"isDefault"`
 	AuthModes      []string `json:"authModes,omitempty"`
 	ActiveSource   string   `json:"activeSource"`
@@ -2533,32 +2545,76 @@ type InstanceEntry struct {
 	EnvVar         string   `json:"envVar,omitempty"`
 	StoredEmail    string   `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
-	// look for at all — an auth-none provider, or a gateway that inherits no
-	// type-level key — so an absent credential is not a missing one. It is
-	// never omitted: false is the meaningful value, and a client reading an
-	// absent field as false would call every instance optional.
+	// look for at all — auth = none or optional-bearer — so an absent
+	// credential is not a missing one. It is never omitted: false is the
+	// meaningful value, and a client reading an absent field as false would
+	// call every instance optional.
 	CredentialRequired bool `json:"credentialRequired"`
+	// Warnings are the registry's own notes about this instance, chiefly
+	// what is missing and how to supply it.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
-// InstanceListResponse is the result of evener/instance/list.
+// ProviderDescriptor is a registry provider the add form can build on: its
+// id and display name, the protocol and auth scheme it defaults to, and the
+// variable names its transport and credential read.
+type ProviderDescriptor struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name,omitempty"`
+	Protocol  string   `json:"protocol"`
+	Auth      string   `json:"auth"`
+	VarsEnv   []string `json:"varsEnv,omitempty"`
+	APIKeyEnv []string `json:"apiKeyEnv,omitempty"`
+	Implicit  bool     `json:"implicit"`
+}
+
+// InstanceListResponse is the result of evener/instance/list. Diagnostics
+// carries the providers.toml load error, the user-layer note, stray OAuth
+// records and load warnings; WritesRefused says the hub has no registry to
+// write against — the file could not be read, or none has loaded yet — so no
+// instance may be written until that is fixed (spec §10).
 type InstanceListResponse struct {
-	Instances      []InstanceEntry `json:"instances"`
-	AvailableTypes []string        `json:"availableTypes"`
+	Instances          []InstanceEntry      `json:"instances"`
+	AvailableProviders []ProviderDescriptor `json:"availableProviders"`
+	Diagnostics        []string             `json:"diagnostics,omitempty"`
+	UserLayer          string               `json:"userLayer,omitempty"`
+	WritesRefused      bool                 `json:"writesRefused,omitempty"`
 }
 
-// InstanceCreateParams is the params for evener/instance/create.
+// InstanceCreateParams is the params for evener/instance/create. APIKeyEnv
+// is a variable name and CredentialHeader must reference a $VAR: secrets
+// never cross this boundary (spec §11.2).
 type InstanceCreateParams struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	APIStyle string `json:"apiStyle"`
-	BaseURL  string `json:"baseUrl"`
+	Name             string            `json:"name"`
+	Base             string            `json:"base"`
+	BaseURL          string            `json:"baseUrl,omitempty"`
+	Protocol         string            `json:"protocol,omitempty"`
+	Surface          string            `json:"surface,omitempty"`
+	Vars             map[string]string `json:"vars,omitempty"`
+	APIKeyEnv        string            `json:"apiKeyEnv,omitempty"`
+	CredentialHeader string            `json:"credentialHeader,omitempty"`
 }
 
-// InstanceEditParams is the params for evener/instance/edit.
+// InstanceEditParams is the params for evener/instance/edit. Editing an
+// implicit instance writes a shadowing entry carrying only these fields
+// (spec §11.3).
+//
+// EMPTY MEANS UNCHANGED, not "clear". An empty BaseURL, Protocol or Surface
+// leaves the stored value alone, so this shape cannot express "drop the
+// authored base_url and go back to the registry default" — those three are
+// the only fields where the distinction is reachable, since Name identifies
+// the instance and an empty Vars map is a no-op edit either way. That is a
+// deliberate limit rather than an oversight: expressing a clear needs a wire
+// change (pointer scalars, or a Clear []string), and it is ledgered for a
+// later plan. Both authoring forms — the React edit dialog and the TUI
+// credentials panel — refuse to submit an emptied base URL rather than
+// reporting a success that changes nothing.
 type InstanceEditParams struct {
-	Name     string `json:"name"`
-	APIStyle string `json:"apiStyle"`
-	BaseURL  string `json:"baseUrl"`
+	Name     string            `json:"name"`
+	BaseURL  string            `json:"baseUrl,omitempty"`
+	Protocol string            `json:"protocol,omitempty"`
+	Surface  string            `json:"surface,omitempty"`
+	Vars     map[string]string `json:"vars,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.

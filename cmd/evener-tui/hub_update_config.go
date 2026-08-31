@@ -33,12 +33,12 @@ func (m hubModel) handleAuthLoginStart(msg hubAuthLoginStartMsg) (tea.Model, tea
 		m.addAuthErrorNotice("Auth error", msg.err)
 		return m, nil
 	}
+	// The hub echoes the instance it normalized the request to, so the
+	// paste-back step targets whichever instance the flow was started for.
 	m.authLoginProvider = strings.TrimSpace(msg.resp.Provider)
-	if m.authLoginProvider == "" {
-		m.authLoginProvider = "openai"
-	}
 	m.authLoginFlowID = msg.resp.FlowID
-	m.addSessionSystem("OpenAI sign-in URL:\n" + msg.resp.URL + "\nPaste the full OpenAI redirect URL and press enter.")
+	name := authStatusInstanceName(authStatus{Provider: msg.resp.Provider})
+	m.addSessionSystem("Sign-in URL for " + name + ":\n" + msg.resp.URL + "\nPaste the full redirect URL and press enter.")
 	return m, nil
 }
 
@@ -54,7 +54,7 @@ func (m hubModel) handleAuthLoginComplete(msg hubAuthLoginCompleteMsg) (tea.Mode
 	m.authStatus = authStatusFromAppWire(msg.resp.Status)
 	m.authStatusSeen = true
 	m.clearSessionError()
-	m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(m.authStatus))
+	m.addSessionSystem("Sign-in complete for " + authStatusInstanceName(m.authStatus) + ". " + formatAuthStatusSummary(m.authStatus))
 	return m, nil
 }
 
@@ -68,10 +68,16 @@ func (m hubModel) handleAuthLogout(msg hubAuthLogoutMsg) (tea.Model, tea.Cmd) {
 	m.authStatus = authStatusFromAppWire(msg.resp.Status)
 	m.authStatusSeen = true
 	m.clearSessionError()
+	// The hub removes whatever that instance actually holds — an OAuth
+	// record for the Codex transport, the stored key for everything else —
+	// and Removed says whether there was one. Naming the act "sign-out of
+	// OpenAI OAuth" is what let /logout delete an API key and report an
+	// OAuth sign-out.
+	name := authStatusInstanceName(m.authStatus)
 	if msg.resp.Removed {
-		m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(m.authStatus))
+		m.addSessionSystem("Removed the stored credential for " + name + ". " + formatAuthStatusSummary(m.authStatus))
 	} else {
-		m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
+		m.addSessionSystem("No stored credential to remove for " + name + ". " + formatAuthStatusSummary(m.authStatus))
 	}
 	return m, nil
 }

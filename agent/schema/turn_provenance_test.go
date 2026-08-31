@@ -11,6 +11,7 @@ func TestTurnRoundTripsCanonicalAttemptProvenance(t *testing.T) {
 		Kind:                   TurnAssistant,
 		AttemptGroupID:         "ag_test",
 		ResponseEndpointFamily: "responses",
+		ResponseProtocol:       "openai-responses",
 		ResponseEndpoint:       "https://provider.test/v1/responses",
 	}
 	data, err := json.Marshal(want)
@@ -21,8 +22,8 @@ func TestTurnRoundTripsCanonicalAttemptProvenance(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got.AttemptGroupID != want.AttemptGroupID || got.ResponseEndpointFamily != want.ResponseEndpointFamily || got.ResponseEndpoint != want.ResponseEndpoint {
-		t.Fatalf("provenance = group %q family %q endpoint %q; want group %q family %q endpoint %q", got.AttemptGroupID, got.ResponseEndpointFamily, got.ResponseEndpoint, want.AttemptGroupID, want.ResponseEndpointFamily, want.ResponseEndpoint)
+	if got.AttemptGroupID != want.AttemptGroupID || got.ResponseEndpointFamily != want.ResponseEndpointFamily || got.ResponseProtocol != want.ResponseProtocol || got.ResponseEndpoint != want.ResponseEndpoint {
+		t.Fatalf("provenance = group %q family %q protocol %q endpoint %q; want group %q family %q protocol %q endpoint %q", got.AttemptGroupID, got.ResponseEndpointFamily, got.ResponseProtocol, got.ResponseEndpoint, want.AttemptGroupID, want.ResponseEndpointFamily, want.ResponseProtocol, want.ResponseEndpoint)
 	}
 }
 

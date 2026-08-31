@@ -1323,7 +1323,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, _, req, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
+		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
 			return "", progressed, prepareErr
 		}
@@ -1331,7 +1331,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {
 			communicatePreviewCalls[callID] = struct{}{}
 		}
@@ -1761,7 +1761,7 @@ func (s *Session) acceptDelegateAttentionInput() {
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
 // user-role message that expandHistory passes through without rendering a user
-// bubble), so prepareModelRequest rebuilds the request from s.history and the
+// bubble), so prepareModelRequestWithError rebuilds the request from s.history and the
 // reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
 // namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
 // accounting (a notification is not a user turn).

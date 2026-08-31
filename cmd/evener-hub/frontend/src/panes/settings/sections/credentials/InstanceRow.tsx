@@ -1,6 +1,7 @@
 // InstanceRow.tsx: one provider instance's tappable list row for the
 // detail-sheet redesign - a single full-width button carrying identity and
-// status only (heading dot, name, ★ default chip, one meta line, chevron).
+// status only (heading dot, name, ★ default / from environment chips, one
+// meta line, chevron).
 // Every per-instance ACTION (test, set key, sign in, edit, clear, remove,
 // make default) and the layered credential display moved into
 // InstanceDetailSheet, so the list stays one-target-per-row on desktop and
@@ -8,7 +9,7 @@
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
+import { credentialLayers, keylessByDesign, styleInfoText, unconfiguredLabel } from "./credentialLabels";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -20,21 +21,13 @@ const CLASS = {
   chevron: requireClass(styles.chevron, "InstanceRow.module.css", "chevron"),
 };
 
-function styleInfoText(instance: InstanceEntry): string | null {
-  if (instance.apiStyle)
-    return instance.baseUrl ? `${instance.apiStyle} · base ${instance.baseUrl}` : instance.apiStyle;
-  if (instance.baseUrl) return `base ${instance.baseUrl}`;
-  return null;
-}
-
 // The one meta line: the unconfigured label is the more important signal and
-// wins; style info (a gateway's base URL is the interesting part of "No key
-// set · optional") appends after it when both exist.
-function metaText(instance: InstanceEntry): string | null {
+// leads; style info (a gateway's base URL is the interesting part of "No key
+// set · optional") follows it.
+function metaText(instance: InstanceEntry): string {
   const unconfigured = unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
-  if (unconfigured !== null && styleInfo !== null) return `${unconfigured} · ${styleInfo}`;
-  return unconfigured ?? styleInfo;
+  return unconfigured === null ? styleInfo : `${unconfigured} · ${styleInfo}`;
 }
 
 export interface InstanceRowProps {
@@ -52,8 +45,9 @@ export function InstanceRow({ instance, onSelect }: InstanceRowProps) {
             <StatusDot state={credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             <span className={CLASS.name}>{instance.name}</span>
             {instance.isDefault && <Chip>★ default</Chip>}
+            {instance.implicit && <Chip>from environment</Chip>}
           </div>
-          {meta !== null && <div className={CLASS.meta}>{meta}</div>}
+          <div className={CLASS.meta}>{meta}</div>
         </div>
         <span className={CLASS.chevron} aria-hidden="true">
           <Chevron direction="right" />

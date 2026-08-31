@@ -67,12 +67,16 @@ lint-evenerfuzz:
 lint-eval:
 	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags eval ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; fi)
 
-# lint-internal fails if any exported symbol in the agent/llm/providercfg
-# libraries names a evener-internal type — keeping them externally importable.
-## Fail if any exported symbol in the agent/llm/providercfg libraries names a
-## evener-internal type.
-## proves: The agent/llm/providercfg libraries stay externally importable —
-##   no exported symbol leaks an internal type name.
+# lint-internal fails if any exported symbol in the agent (and its
+# diagnostic/execenv/mcpconfig/plugin/provider/schema/skill/task/transcript
+# subpackages), llm, or llm/registry libraries names a evener-internal type —
+# keeping them externally importable.
+## Fail if any exported symbol in the `agent` (plus its
+## `diagnostic`/`execenv`/`mcpconfig`/`plugin`/`provider`/`schema`/`skill`/`task`/`transcript`
+## subpackages), `llm`, or `llm/registry` libraries names a evener-internal
+## type.
+## proves: Those libraries stay externally importable — no exported symbol
+##   leaks an internal type name.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: cmd/evener-internalcheck finds an exported symbol naming an

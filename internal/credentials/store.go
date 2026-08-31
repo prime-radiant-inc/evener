@@ -15,36 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
-	"primeradiant.com/evener/envvars"
 )
-
-// Source describes where a provider's effective value came from.
-type Source string
-
-const (
-	SourceFile   Source = "file"
-	SourceEnv    Source = "env"
-	SourceOAuth  Source = "oauth"
-	SourceAbsent Source = "absent"
-	SourceNone   Source = "none"
-)
-
-// Provider is one row in List().
-type Provider struct {
-	Name      string
-	AuthModes []string
-	Source    Source
-}
-
-// EnvVars returns the accepted environment variable names for provider.
-func EnvVars(provider string) []string {
-	vars := envvars.APIKeyVars(strings.ToLower(provider))
-	out := make([]string, 0, len(vars))
-	for _, v := range vars {
-		out = append(out, v.Name)
-	}
-	return out
-}
 
 type fileShape struct {
 	Schema    int                        `toml:"schema"`
@@ -99,135 +70,45 @@ func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
 	return s, nil
 }
 
-// Get returns the effective API key for provider and its Source.
-// Lookup order: file → env → empty.
-func (s *Store) Get(provider string) (string, Source) {
-	provider = strings.ToLower(provider)
-	if p, ok := s.data.Providers[provider]; ok && strings.TrimSpace(p.APIKey) != "" {
-		return p.APIKey, SourceFile
+// Get returns the file-layer key stored under name (an instance name, spec
+// §10). The environment is the registry's business, not the store's.
+func (s *Store) Get(name string) (string, bool) {
+	p, ok := s.data.Providers[strings.ToLower(name)]
+	if !ok || strings.TrimSpace(p.APIKey) == "" {
+		return "", false
 	}
-	for _, env := range envvars.APIKeyVars(provider) {
-		if v := env.Trimmed(); v != "" {
-			return v, SourceEnv
-		}
-	}
-	return "", SourceAbsent
+	return p.APIKey, true
 }
 
-// Layers returns the individual file and env sources for a provider,
-// independently of priority. Used to display all active sources to the user.
-func (s *Store) Layers(provider string) (hasFile bool, envVar string) {
-	provider = strings.ToLower(provider)
-	if p, ok := s.data.Providers[provider]; ok && strings.TrimSpace(p.APIKey) != "" {
-		hasFile = true
+// Names lists every entry, sorted, so a caller can report entries that
+// name no instance (spec §14.1).
+func (s *Store) Names() []string {
+	out := make([]string, 0, len(s.data.Providers))
+	for name := range s.data.Providers {
+		out = append(out, name)
 	}
-	for _, env := range envvars.APIKeyVars(provider) {
-		if v := env.Trimmed(); v != "" {
-			envVar = env.Name
-			break
-		}
-	}
-	return hasFile, envVar
-}
-
-// InstanceLayers returns the individual file and env sources for a provider
-// instance, mirroring the resolution order of ResolveKey: the instance name's
-// env vars are checked first, then the behavior tag's. This ensures the
-// reported EnvVar matches what ResolveKey actually resolved.
-func (s *Store) InstanceLayers(name, tag string) (hasFile bool, envVar string) {
-	name = strings.ToLower(name)
-	tag = strings.ToLower(tag)
-	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
-		hasFile = true
-	}
-	var candidates []envvars.Var
-	candidates = append(candidates, envvars.APIKeyVars(name)...)
-	if tag != name {
-		candidates = append(candidates, envvars.APIKeyVars(tag)...)
-	}
-	for _, env := range candidates {
-		if v := env.Trimmed(); v != "" {
-			envVar = env.Name
-			break
-		}
-	}
-	return hasFile, envVar
-}
-
-// Set writes a provider API key into the in-memory store and persists.
-func (s *Store) Set(provider, value string) error {
-	provider = strings.ToLower(provider)
-	if s.data.Providers == nil {
-		s.data.Providers = map[string]providerSection{}
-	}
-	s.data.Providers[provider] = providerSection{APIKey: strings.TrimSpace(value)}
-	return s.save()
-}
-
-// Clear removes the provider entry. No error if absent.
-func (s *Store) Clear(provider string) error {
-	provider = strings.ToLower(provider)
-	delete(s.data.Providers, provider)
-	return s.save()
-}
-
-// List returns one Provider entry per supported provider.
-func (s *Store) List() []Provider {
-	out := []Provider{}
-	for _, provider := range envvars.Providers() {
-		name := provider.Name
-		modes := append([]string(nil), provider.AuthModes...)
-		_, src := s.Get(name)
-		// Ollama needs no creds — report SourceNone.
-		if envvars.RequiresNoCredential(name) {
-			src = SourceNone
-		}
-		out = append(out, Provider{Name: name, AuthModes: modes, Source: src})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Strings(out)
 	return out
 }
 
-// ResolveKey returns the effective API key for a provider instance given its
-// unique name and its behavior tag — providercfg.BehaviorTag, the key every
-// provider-conditional decision resolves on, which is not always the declared
-// type. Lookup order:
-//  1. File entry keyed by instance name.
-//  2. Env var(s) for the instance name, then for the tag (first non-empty
-//     wins) — so openai-compatible resolves OPENAI_COMPATIBLE_API_KEY before the
-//     tag's OPENAI_API_KEY.
-//  3. Empty string with SourceAbsent.
-//
-// An empty tag contributes no candidates, which is how a caller says an
-// instance must not inherit a provider-level key it did not ask for.
-func (s *Store) ResolveKey(name, tag string) (string, Source) {
+// Path is the file the store reads and writes.
+func (s *Store) Path() string { return s.path }
+
+// Set writes an instance's API key into the in-memory store and persists.
+func (s *Store) Set(name, value string) error {
 	name = strings.ToLower(name)
-	tag = strings.ToLower(tag)
-	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
-		return p.APIKey, SourceFile
+	if s.data.Providers == nil {
+		s.data.Providers = map[string]providerSection{}
 	}
-	// Env fallback: the instance name's var(s) first (covers openai-compatible,
-	// whose key is OPENAI_COMPATIBLE_API_KEY though its type is openai), then the
-	// tag's var(s) (covers custom-named instances that fall back to their
-	// provider's key).
-	var candidates []envvars.Var
-	candidates = append(candidates, envvars.APIKeyVars(name)...)
-	if tag != name {
-		candidates = append(candidates, envvars.APIKeyVars(tag)...)
-	}
-	for _, env := range candidates {
-		if v := env.Trimmed(); v != "" {
-			return v, SourceEnv
-		}
-	}
-	return "", SourceAbsent
+	s.data.Providers[name] = providerSection{APIKey: strings.TrimSpace(value)}
+	return s.save()
 }
 
-// APIKeyFor implements launchconfig.CredentialResolver.
-// Returns the API key value and the source label (e.g. "file", "env", "absent").
-func (s *Store) APIKeyFor(provider string) (string, string) {
-	v, src := s.Get(provider)
-	return v, string(src)
+// Clear removes the entry. No error if absent.
+func (s *Store) Clear(name string) error {
+	name = strings.ToLower(name)
+	delete(s.data.Providers, name)
+	return s.save()
 }
 
 func (s *Store) save() error {

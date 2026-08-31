@@ -275,7 +275,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				p any
 			}{
 				{appwire.MethodEvenerInstanceList, appwire.EmptyParams{}},
-				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Type: "anthropic"}},
+				{appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}},
 				{appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "work"}},
 				{appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "work"}},

@@ -4,31 +4,18 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
 )
 
-// streamAdapterFor serves body as an SSE response and returns an adapter
-// pointed at it.
-func streamAdapterFor(t *testing.T, body string) *Adapter {
+// collectStream serves body as an SSE response and drains the stream the
+// protocol decodes from it, returning the text and the terminal error.
+func collectStream(t *testing.T, body string) (text string, streamErr error) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	return &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-}
-
-func collectStream(t *testing.T, a *Adapter) (text string, streamErr error) {
-	t.Helper()
-	stream, err := a.Stream(context.Background(), llm.Request{
-		Model:    "claude-test",
-		Messages: []llm.Message{llm.User("hi")},
-	})
+	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, body })
+	stream, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -49,8 +36,7 @@ func collectStream(t *testing.T, a *Adapter) (text string, streamErr error) {
 func TestInbandError_Overloaded_TypedError(t *testing.T) {
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	_, streamErr := collectStream(t, a)
+	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
@@ -80,8 +66,7 @@ func TestInbandError_Overloaded_TypedError(t *testing.T) {
 func TestInbandError_RateLimit_TypedRateLimit(t *testing.T) {
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of requests has exceeded your rate limit\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	_, streamErr := collectStream(t, a)
+	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
@@ -102,8 +87,7 @@ func TestInbandError_RateLimit_TypedRateLimit(t *testing.T) {
 func TestInbandError_Authentication_TypedAuth(t *testing.T) {
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	_, streamErr := collectStream(t, a)
+	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
@@ -132,8 +116,7 @@ func TestInbandError_AfterContent(t *testing.T) {
 		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n" +
 		"event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	text, streamErr := collectStream(t, a)
+	text, streamErr := collectStream(t, body)
 	if text != "partial answer" {
 		t.Fatalf("delivered text = %q, want %q", text, "partial answer")
 	}
@@ -155,8 +138,7 @@ func TestInbandError_AfterContent(t *testing.T) {
 func TestInbandError_UnknownType_TypedUnknown(t *testing.T) {
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"tenant_quarantined_error\",\"message\":\"tenant quarantined\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	_, streamErr := collectStream(t, a)
+	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
 		t.Fatal("expected a terminal stream error, got none")
 	}
@@ -182,8 +164,7 @@ func TestInbandError_LineNoiseStillSkipped(t *testing.T) {
 		"data: this is not json\n\n" +
 		"event: content_block_delta\n" +
 		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n"
-	a := streamAdapterFor(t, body)
-	text, streamErr := collectStream(t, a)
+	text, streamErr := collectStream(t, body)
 	if text != "x" {
 		t.Fatalf("delivered text = %q, want %q", text, "x")
 	}

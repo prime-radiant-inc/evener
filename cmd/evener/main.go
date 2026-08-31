@@ -21,7 +21,6 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
-	openaiprovider "primeradiant.com/evener/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.
@@ -107,9 +106,8 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 }
 
 func mainWithDeps(deps mainDeps) {
-	// Report the evener build version in the OpenAI provider's User-Agent and in
-	// agent session metadata.
-	openaiprovider.ClientVersion = buildinfo.Version()
+	// Report the evener build version in agent session metadata. The provider
+	// User-Agent is stamped by cmdutil.NewRegistryClient when the client loads.
 	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
@@ -326,6 +324,8 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
+	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
+	_, _ = fmt.Fprintf(tw, "  providers\tInspect and author provider instances (list, probe, add)\n")
 	_ = tw.Flush()
 }
 
@@ -363,6 +363,9 @@ func printRunEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 
@@ -409,6 +412,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			}
 			return nil
 		},
+		models:    runModels,
+		providers: runProviders,
 	})
 }
 
@@ -422,6 +427,8 @@ type cliCommandRunners struct {
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
 	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
 	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
+	models      func([]string, io.Reader, io.Writer, io.Writer) error
+	providers   func([]string, io.Reader, io.Writer, io.Writer) error
 }
 
 func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Writer, runners cliCommandRunners) (bool, string, error) {
@@ -448,6 +455,10 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener doctor", runners.doctor(args[1:], stdin, stdout, stderr)
 	case "migrate":
 		return true, "evener migrate", runners.migrate(args[1:], stdin, stdout, stderr)
+	case "models":
+		return true, "evener models", runners.models(args[1:], stdin, stdout, stderr)
+	case "providers":
+		return true, "evener providers", runners.providers(args[1:], stdin, stdout, stderr)
 	default:
 		return false, "", nil
 	}

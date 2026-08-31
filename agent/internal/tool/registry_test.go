@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithIntentParameter_DescriptionGuidesGerundForm(t *testing.T) {
+func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
@@ -31,17 +31,16 @@ func TestWithIntentParameter_DescriptionGuidesGerundForm(t *testing.T) {
 	if desc == "" {
 		t.Fatalf("intent property has no description: %#v", intent)
 	}
-	// The intent string renders as an inline activity label in the UI, so the
-	// description must steer the model toward a verb-first gerund phrase with
-	// a concrete example rather than imperative or verbose prose.
+	// The description should steer the model toward a verb-first gerund phrase
+	// that states the expected outcome, not merely the action being taken.
 	if !strings.Contains(desc, "gerund") {
 		t.Errorf("description lacks gerund-form guidance: %q", desc)
 	}
-	if !strings.Contains(desc, "Reading the config file") {
-		t.Errorf("description lacks a concrete gerund example: %q", desc)
+	if !strings.Contains(desc, "expected outcome") {
+		t.Errorf("description lacks expected-outcome guidance: %q", desc)
 	}
-	if utf8.RuneCountInString(desc) > 240 {
-		t.Errorf("description should stay concise, got %d runes: %q", utf8.RuneCountInString(desc), desc)
+	if !strings.Contains(desc, "Reading config to identify the active profile") {
+		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
 	}
 }
 

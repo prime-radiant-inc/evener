@@ -7,12 +7,11 @@ import (
 )
 
 type nonHTTPBaseError struct {
-	provider    string
-	behaviorTag string
-	message     string
-	retryable   bool
-	retryAfter  *time.Duration
-	cause       error
+	provider   string
+	message    string
+	retryable  bool
+	retryAfter *time.Duration
+	cause      error
 }
 
 // Error returns the error message. It is prefixed with "<provider> error: "
@@ -31,13 +30,16 @@ func (e *nonHTTPBaseError) Error() string {
 
 // Provider returns the provider this error is attributed to, or the empty
 // string when it has no provider attribution (e.g. user cancellation).
-func (e *nonHTTPBaseError) Provider() string        { return e.provider }
-func (e *nonHTTPBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+func (e *nonHTTPBaseError) Provider() string { return e.provider }
 
-// BehaviorTag returns the provider behavior tag (provider type) stamped onto
-// the error, or the empty string if none was set.
-func (e *nonHTTPBaseError) BehaviorTag() string       { return e.behaviorTag }
-func (e *nonHTTPBaseError) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
+// withProvider returns a copy of the base attributed to name, unwrapping to
+// original; see httpBaseError.withProvider for why the rewrite copies and
+// why the copy wraps.
+func (e nonHTTPBaseError) withProvider(name string, original error) nonHTTPBaseError {
+	e.provider = strings.TrimSpace(name)
+	e.cause = original
+	return e
+}
 
 // StatusCode returns 0; these errors are not HTTP failures.
 func (e *nonHTTPBaseError) StatusCode() int { return 0 }
@@ -78,6 +80,40 @@ type NoObjectGeneratedError struct {
 // tool_choice mode is not supported.
 type UnsupportedToolChoiceError struct{ nonHTTPBaseError }
 
+// UnsupportedEndpointError is a non-HTTP error reporting that an endpoint
+// accepted the request but served nothing the protocol recognizes: the model
+// does not speak it. It is [KindNotFound] — the model is not there on this
+// endpoint — and never retryable, so the retry chain short-circuits and the
+// caller routes to its next model instead of re-POSTing a request that cannot
+// succeed.
+type UnsupportedEndpointError struct{ nonHTTPBaseError }
+
+// copyWithProvider implementations; see the http ones in errors.go.
+
+func (e *AbortError) copyWithProvider(name string) error {
+	return &AbortError{e.withProvider(name, e)}
+}
+
+func (e *StreamError) copyWithProvider(name string) error {
+	return &StreamError{e.withProvider(name, e)}
+}
+
+func (e *InvalidToolCallError) copyWithProvider(name string) error {
+	return &InvalidToolCallError{e.withProvider(name, e)}
+}
+
+func (e *UnsupportedToolChoiceError) copyWithProvider(name string) error {
+	return &UnsupportedToolChoiceError{e.withProvider(name, e)}
+}
+
+func (e *UnsupportedEndpointError) copyWithProvider(name string) error {
+	return &UnsupportedEndpointError{e.withProvider(name, e)}
+}
+
+func (e *NoObjectGeneratedError) copyWithProvider(name string) error {
+	return &NoObjectGeneratedError{nonHTTPBaseError: e.withProvider(name, e), RawText: e.RawText}
+}
+
 // NewAbortError reports a user-initiated cancellation. cause is the underlying
 // error (typically context.Canceled); it is exposed via Unwrap so errors.Is(err,
 // context.Canceled) holds. Pass nil when there is no underlying cause.
@@ -93,6 +129,18 @@ func NewStreamError(provider, message string, cause error) error {
 		provider:  provider,
 		message:   message,
 		retryable: true,
+		cause:     cause,
+	}}
+}
+
+// NewUnsupportedEndpointError reports that provider's endpoint cannot serve
+// the request over this protocol. cause is the underlying stream or decode
+// error, exposed via Unwrap; pass nil for a content-level sentinel with none.
+func NewUnsupportedEndpointError(provider, message string, cause error) error {
+	return &UnsupportedEndpointError{nonHTTPBaseError{
+		provider:  provider,
+		message:   message,
+		retryable: false,
 		cause:     cause,
 	}}
 }

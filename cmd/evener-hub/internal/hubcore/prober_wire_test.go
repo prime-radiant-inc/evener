@@ -160,3 +160,78 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 		t.Fatalf("running job = %+v, want shell identity and status from Evener.Diagnostics.Jobs", job)
 	}
 }
+
+func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
+	// A retained child can still have an active descendant projection even after
+	// its stable delegate run has settled. The stable delegate lifecycle is the
+	// authoritative no-current-run signal for the parent-side projection.
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_quiesced",
+		descendants: map[string]string{
+			"child-quiesced": appwire.ThreadStatusActive,
+		},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Delegates: []server.DelegateStatusInfo{{
+			DelegateID: "dlg_quiesced", ChildSessionID: "child-quiesced",
+			Lifecycle: "idle", Phase: "idle", Status: "idle", Resumable: true,
+		}}}},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if want := []string{"child-quiesced"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
+		t.Fatalf("running subagent ids = %v, want %v so the retained child remains visible", got.RunningSubagentIDs, want)
+	}
+	if got.RunningSubagentStates["child-quiesced"] != appwire.ThreadStatusIdle {
+		t.Fatalf("quiesced child state = %q, want idle from stable delegate diagnostics", got.RunningSubagentStates["child-quiesced"])
+	}
+}
+
+func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	var calls []string
+	record := func(name string) {
+		calls = append(calls, name)
+	}
+	root := func(lifecycle string) appwire.Thread {
+		return appwire.Thread{
+			ID: "root", SessionID: "root", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Diagnostics: &appwire.EvenerDiagnostics{
+				Delegates: []appwire.EvenerDelegateInfo{{
+					ChildSessionID: "child-resumed", Lifecycle: lifecycle, Phase: lifecycle, Status: lifecycle,
+				}},
+			}},
+		}
+	}
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		record("list")
+		return appwire.ThreadListResponse{Data: []appwire.Thread{
+			root(""),
+			{ID: "child-resumed", SessionID: "child-resumed", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		record("read")
+		listWasFirst := len(calls) > 0 && calls[0] == "list"
+		lifecycle := "idle"
+		if listWasFirst {
+			lifecycle = "running"
+		}
+		return appwire.ThreadReadResponse{Thread: root(lifecycle)}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
+	})
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if got.RunningSubagentStates["child-resumed"] != appwire.ThreadStatusActive {
+		t.Fatalf("resumed child state = %q, want active from the newer lifecycle snapshot", got.RunningSubagentStates["child-resumed"])
+	}
+	if !reflect.DeepEqual(calls, []string{"list", "read"}) {
+		t.Fatalf("probe snapshot calls = %v, want list before read to avoid masking a resume", calls)
+	}
+}

@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/hubstart"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/llm"
 )
 
 type tuiProgram interface {
@@ -32,7 +31,6 @@ var (
 	standardOutput        io.Writer = os.Stdout
 	parseStartupOptions             = hubstart.ParseTUIStartupOptions
 	ensureUserConfigDirs            = cmdutil.EnsureUserConfigDirs
-	warmModelCatalog                = func() { llm.EmbeddedModelCatalog() }
 	startHubClient                  = hubstart.StartHubClient
 	probeTerminalDefaults           = tuitheme.ProbeTerminalDefaults
 	initThemeFromStateDir           = tuitheme.InitThemeFromStateDir
@@ -79,11 +77,6 @@ func run() int {
 		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
 		return 1
 	}
-
-	// Warm the embedded model catalog (a sync.Once-memoized ~1.58MB JSON parse)
-	// concurrently with the hub-connect round trip below, so the model picker's
-	// first fetch never pays that cost on the critical path to user input.
-	go warmModelCatalog()
 
 	ctx := context.Background()
 	hubConfig := hubstart.HubStartConfig{

@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor(t *testing.T) {
@@ -89,8 +89,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
 		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||
 		req.Continuation.ContextMarker != responseContextMarkerV1 ||
-		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore ||
-		req.Continuation.ChatFallbackHistoryLen != 0 {
+		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
 		t.Fatalf("Continuation metadata = %+v", req.Continuation)
 	}
 
@@ -103,68 +102,6 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		assistant.ResponseContextMarker != responseContextMarkerV1 ||
 		assistant.ResponseRequestModel != "gpt-5.4" {
 		t.Fatalf("assistant continuation fields = %+v", assistant)
-	}
-}
-
-func TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor(t *testing.T) {
-	dir := t.TempDir()
-	adapter := &agenttest.FakeAdapter{
-		Provider:          "openai",
-		CanFallbackToChat: true,
-		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
-			return phase4DIContinuationPlan(req), nil
-		},
-		Steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("fallback capable path stayed full history")
-			},
-		},
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:                    dir,
-		OpenAIResponsesContinuation: "auto",
-		testOnly: testConfig{
-			metaFS: afero.NewMemMapFs(),
-			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
-				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-	drainSessionEvents(sess)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process FakeAdapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "do not create a continuation anchor", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	requests := adapter.Requests()
-	if len(requests) != 1 {
-		t.Fatalf("request count = %d, want 1", len(requests))
-	}
-	req := requests[0]
-	if req.HistoryMode != llm.HistoryModeFullHistory {
-		t.Fatalf("HistoryMode = %q, want %q", req.HistoryMode, llm.HistoryModeFullHistory)
-	}
-	if req.Store == nil || !*req.Store {
-		t.Fatalf("Store = %v, want continuation-owned true", req.Store)
-	}
-	if req.Continuation == nil {
-		t.Fatal("Continuation metadata is nil")
-	}
-	if req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore ||
-		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" {
-		t.Fatalf("Continuation = %+v", req.Continuation)
-	}
-	if req.PreviousResponseID != "" {
-		t.Fatalf("PreviousResponseID = %q, want empty", req.PreviousResponseID)
 	}
 }
 
@@ -257,12 +194,12 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 	}
 }
 
-func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
+func TestSession_OpenAIResponsesContinuationRegistryClientUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
 	dir := t.TempDir()
 	var mu sync.Mutex
 	var requestBodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -291,15 +228,9 @@ func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHisto
 	}))
 	t.Cleanup(srv.Close)
 
-	client := llm.NewClient()
-	client.Register(&openai.Adapter{
-		APIKey:             "test-key",
-		BaseURL:            srv.URL,
-		Client:             srv.Client(),
-		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
-	})
+	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
 
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, resolveClientProfile(t, client, "openai/gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{

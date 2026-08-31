@@ -18,7 +18,9 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -442,13 +444,34 @@ func requirePastThreadTurnsList(t testing.TB, cfg hubcore.WebConfig, params appw
 	return resp, found
 }
 
-func requirePastEntryTurns(t testing.TB, entry hubcore.PastEntry) []appwire.Turn {
+func requirePastEntryTurns(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry) []appwire.Turn {
 	t.Helper()
-	turns, err := pastEntryTurns(entry)
+	turns, err := pastEntryTurns(cfg, entry)
 	if err != nil {
 		t.Fatalf("pastEntryTurns: %v", err)
 	}
 	return turns
+}
+
+// pricingRegistry is the hermetic registry a past thread's dollar figures
+// resolve through: the curated rows for one anthropic instance, offline,
+// uncached, with no user layer and nothing from the developer's own state.
+func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
+	tb.Helper()
+	stateRoot := tb.TempDir()
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{"anthropic": {APIKey: "test"}}),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := holder.Reload(); err != nil {
+		tb.Fatalf("registry: %v", err)
+	}
+	return holder
 }
 
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
@@ -723,9 +746,9 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 }
 
 // TestPastEntryTurns_StampsCostFromSessionModel verifies pastEntryTurns
-// estimates each turn's Cost from the session's own recorded Model — usage
-// alone (from the transcript) isn't enough to price a turn, since
-// appwire.EstimateCost needs a model to look up catalog rates.
+// estimates each turn's Cost from the row the session's own recorded
+// instance and model resolve to — usage alone (from the transcript) isn't
+// enough to price a turn, since the cost lives on the registry row.
 func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -756,10 +779,11 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 
 	entry := hubcore.PastEntry{
 		ID:       sessionID,
-		Meta:     schema.SessionMeta{ID: sessionID, Model: "claude-opus-4-5"},
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "anthropic", Model: "claude-opus-4-5"},
 		StateDir: stateDir,
 	}
-	turns := requirePastEntryTurns(t, entry)
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	turns := requirePastEntryTurns(t, cfg, entry)
 	var found bool
 	for _, turn := range turns {
 		if turn.Usage == nil {
@@ -772,6 +796,14 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no turn with usage found: %+v", turns)
+	}
+
+	// Flag day (spec §14.1): with no registry to resolve against there is no
+	// fallback pricing table, so the same turns carry no cost at all.
+	for _, turn := range requirePastEntryTurns(t, hubcore.WebConfig{}, entry) {
+		if turn.Cost != "" {
+			t.Fatalf("turn.Cost=%q with no registry, want empty", turn.Cost)
+		}
 	}
 }
 
@@ -805,37 +837,45 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 
 // TestPastEntryThread_CarriesCostTotal proves the past-entry hydrate stamps
 // the session-level dollar total on EvenerThread from the cumulative usage at
-// the session model's price — the honest full-session figure, never a page
-// of loaded turns — and honestly omits it when there is no usage or the model
-// is uncataloged (the absent-vs-zero distinction).
+// the cost the session's own ProfileID/Model resolve to on the hub's registry
+// (spec §7.5) — the honest full-session figure, never a page of loaded turns
+// — and honestly omits it when there is no usage, no registry, or no cost on
+// the row (the absent-vs-zero distinction).
 func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
+	cfg := hubcore.WebConfig{Registry: pricingRegistry(t)}
+	usage := schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+
 	priced := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "claude-opus-4-5",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+		Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	thread := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false)
-	if want := appwire.EstimateCost("claude-opus-4-5", thread.Evener.Usage); thread.Evener.Cost != want || want == "" {
-		t.Fatalf("thread.Evener.Cost = %q, want non-empty %q", thread.Evener.Cost, want)
+	thread := requirePastEntryThread(t, cfg, priced, false)
+	want := appwire.EstimateCost(costFor(cfg.Registry, "anthropic", "claude-opus-4-5"), thread.Evener.Usage)
+	if want == "" {
+		t.Fatal("fixture registry has no cost for anthropic/claude-opus-4-5")
+	}
+	if thread.Evener.Cost != want {
+		t.Fatalf("thread.Evener.Cost = %q, want %q", thread.Evener.Cost, want)
 	}
 	if !strings.HasPrefix(thread.Evener.Cost, "~$") {
 		t.Fatalf("thread.Evener.Cost = %q, want ~$ prefix", thread.Evener.Cost)
 	}
 
-	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Evener.Cost != "" {
+	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "anthropic", Model: "claude-opus-4-5"}}
+	if got := requirePastEntryThread(t, cfg, noUsage, false); got.Evener.Cost != "" {
 		t.Fatalf("no-usage thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 
-	uncataloged := hubcore.PastEntry{
-		Meta: schema.SessionMeta{
-			Model:           "totally-unknown-model-xyz",
-			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
-		},
+	unknownInstance := hubcore.PastEntry{
+		Meta: schema.SessionMeta{ProfileID: "no-such-instance", Model: "claude-opus-4-5", CumulativeUsage: usage},
 	}
-	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Evener.Cost != "" {
-		t.Fatalf("uncataloged-model thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	if got := requirePastEntryThread(t, cfg, unknownInstance, false); got.Evener.Cost != "" {
+		t.Fatalf("unresolvable-reference thread.Evener.Cost = %q, want \"\" (absent, not ~$0.00)", got.Evener.Cost)
+	}
+
+	// Flag day (spec §14.1): a hub with no registry has nothing to price
+	// against and says so, rather than reaching for a bundled catalog.
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false); got.Evener.Cost != "" {
+		t.Fatalf("no-registry thread.Evener.Cost = %q, want \"\" (absent)", got.Evener.Cost)
 	}
 }
 

@@ -157,6 +157,45 @@ func scenarioCheckTargetsReportsStalePackageRow(t *testing.T) {
 	assertErrorContains(t, err, "stale registration: native:agent:./stale:FuzzTurn")
 }
 
+// scenarioCheckSupportTargetsValidatesPackages pins the gap that let two rows
+// for deleted provider packages outlive their packages: discovery cannot
+// enumerate a support-only row (it names an ordinary Test, indistinguishable
+// from every other test in the tree), so the package each row names is
+// checked instead. Coverage rows stay CheckTargets' business.
+func scenarioCheckSupportTargetsValidatesPackages(t *testing.T) {
+	root := newWorkspace(t, map[string]string{
+		"go.work":      "go 1.25.0\n\nuse (\n\t.\n\t./agent\n)\n",
+		"go.mod":       "module example.test/root\n\ngo 1.25.0\n",
+		"agent/go.mod": "module example.test/agent\n\ngo 1.25.0\n",
+		"agent/core/state_test.go": `package core
+
+import "testing"
+
+func TestReachesDeeper(t *testing.T) {}
+`,
+	})
+
+	live := Target{Kind: "test", Module: "agent", Package: "./core", Name: "TestReachesDeeper"}
+	if err := CheckSupportTargets(root, []Target{live}); err != nil {
+		t.Fatalf("CheckSupportTargets(live row) = %v, want nil", err)
+	}
+
+	gone := Target{Kind: "test", Module: "agent", Package: "./deleted", Name: "TestReachesDeeper"}
+	assertErrorContains(t, CheckSupportTargets(root, []Target{live, gone}),
+		"stale registration: test:agent:./deleted:TestReachesDeeper")
+
+	unknown := Target{Kind: "test", Module: "nope", Package: ".", Name: "TestReachesDeeper"}
+	assertErrorContains(t, CheckSupportTargets(root, []Target{unknown}),
+		"unknown module: test:nope:.:TestReachesDeeper")
+
+	// A coverage row naming a package that does not exist is CheckTargets'
+	// finding, not this one: reporting it twice would double every drift.
+	coverage := Target{Kind: "native", Module: "agent", Package: "./deleted", Name: "FuzzTurn"}
+	if err := CheckSupportTargets(root, []Target{coverage}); err != nil {
+		t.Fatalf("CheckSupportTargets(coverage row) = %v, want nil", err)
+	}
+}
+
 func scenarioCheckTargetsReportsDuplicateIdentity(t *testing.T) {
 	target := Target{Kind: "native", Module: "agent", Package: ".", Name: "FuzzTurn"}
 	err := CheckTargets([]Target{target, target}, []Target{target})

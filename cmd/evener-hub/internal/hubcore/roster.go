@@ -29,12 +29,13 @@ type LiveEntry struct {
 	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
 	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
-	// RunningSubagentStates carries each running child's own projected status
-	// ("active", "idle", ...) when the daemon reports it. A listed child with
-	// no entry has an unknown state (old daemon) — callers must NOT treat
-	// liveness as activity, and fold a no-state child to idle rather than
-	// active. Keyed by child session ID; a defensive copy rides every
-	// List/Find like the IDs slice.
+	// RunningSubagentStates carries each listed child's projected status
+	// ("active", "idle", ...) when the daemon reports it. Retained stable
+	// delegates with no current run are projected as idle even if their child
+	// thread has a stale active status. A listed child with no entry has an
+	// unknown state (old daemon) — callers must NOT treat liveness as activity,
+	// and fold a no-state child to idle rather than active. Keyed by child
+	// session ID; a defensive copy rides every List/Find like the IDs slice.
 	RunningSubagentStates map[string]string
 	// RunningJobs contains non-terminal, non-agent work reported by the daemon,
 	// such as shell and watch jobs. Delegate jobs stay represented by the

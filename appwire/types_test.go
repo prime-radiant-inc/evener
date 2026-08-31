@@ -398,25 +398,44 @@ func TestEvenerJobInfo_ExhaustionFields(t *testing.T) {
 }
 
 // TestInstanceListResponseJSONRoundTrip verifies the wire shape of
-// InstanceListResponse and InstanceEntry: camelCase JSON tags and correct
-// field round-trip for a populated entry.
+// InstanceListResponse, InstanceEntry and ProviderDescriptor: camelCase JSON
+// tags, the registry vocabulary, and correct field round-trip.
 func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 	in := InstanceListResponse{
 		Instances: []InstanceEntry{
 			{
-				Name:           "my-openai",
-				Type:           "openai",
-				APIStyle:       "openai",
-				BaseURL:        "https://api.openai.com/v1",
-				IsDefault:      true,
-				AuthModes:      []string{"apiKey"},
-				ActiveSource:   "file",
-				HasStoredFile:  true,
-				HasStoredOAuth: false,
-				EnvVar:         "OPENAI_API_KEY",
-				StoredEmail:    "",
+				Name:               "work",
+				Base:               "openai",
+				ProviderID:         "openai",
+				Protocol:           "openai-responses",
+				Surface:            "generic",
+				Auth:               "bearer",
+				BaseURL:            "https://gw.example.test/v1",
+				Vars:               map[string]string{"AWS_REGION": "us-east-1"},
+				Implicit:           false,
+				Hidden:             false,
+				IsDefault:          true,
+				AuthModes:          []string{"apiKey"},
+				ActiveSource:       "env:WORK_KEY",
+				HasStoredFile:      true,
+				HasStoredOAuth:     false,
+				EnvVar:             "WORK_KEY",
+				CredentialRequired: true,
+				Warnings:           []string{"no credential"},
 			},
 		},
+		AvailableProviders: []ProviderDescriptor{{
+			ID:        "openai",
+			Name:      "OpenAI",
+			Protocol:  "openai-responses",
+			Auth:      "bearer",
+			VarsEnv:   []string{"OPENAI_BASE_URL"},
+			APIKeyEnv: []string{"OPENAI_API_KEY"},
+			Implicit:  true,
+		}},
+		Diagnostics:   []string{"user layer: none (disabled)"},
+		UserLayer:     "user layer: none (disabled)",
+		WritesRefused: true,
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -425,46 +444,84 @@ func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 	got := string(raw)
 	for _, want := range []string{
 		`"instances"`,
-		`"name":"my-openai"`,
-		`"type":"openai"`,
-		`"apiStyle":"openai"`,
-		`"baseUrl":"https://api.openai.com/v1"`,
+		`"name":"work"`,
+		`"base":"openai"`,
+		`"providerId":"openai"`,
+		`"protocol":"openai-responses"`,
+		`"surface":"generic"`,
+		`"auth":"bearer"`,
+		`"baseUrl":"https://gw.example.test/v1"`,
+		`"vars":{"AWS_REGION":"us-east-1"}`,
+		`"implicit":false`,
 		`"isDefault":true`,
 		`"authModes":["apiKey"]`,
-		`"activeSource":"file"`,
+		`"activeSource":"env:WORK_KEY"`,
 		`"hasStoredFile":true`,
 		`"hasStoredOAuth":false`,
-		`"envVar":"OPENAI_API_KEY"`,
+		`"envVar":"WORK_KEY"`,
+		`"credentialRequired":true`,
+		`"warnings":["no credential"]`,
+		`"availableProviders"`,
+		`"varsEnv":["OPENAI_BASE_URL"]`,
+		`"apiKeyEnv":["OPENAI_API_KEY"]`,
+		`"diagnostics":["user layer: none (disabled)"]`,
+		`"userLayer":"user layer: none (disabled)"`,
+		`"writesRefused":true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
+	// A credential value has no field to travel in: the entry carries the
+	// source's name, never the secret (spec §11.2).
+	if strings.Contains(got, "sk-") {
+		t.Fatalf("instance entry leaked a credential: %s", got)
+	}
 	var out InstanceListResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(out.Instances) != 1 {
-		t.Fatalf("roundtrip instances len=%d, want 1", len(out.Instances))
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
 	}
-	e := out.Instances[0]
-	if e.Name != "my-openai" || e.Type != "openai" || e.APIStyle != "openai" ||
-		e.BaseURL != "https://api.openai.com/v1" || !e.IsDefault ||
-		len(e.AuthModes) != 1 || e.AuthModes[0] != "apiKey" ||
-		e.ActiveSource != "file" || !e.HasStoredFile || e.HasStoredOAuth ||
-		e.EnvVar != "OPENAI_API_KEY" {
-		t.Fatalf("roundtrip entry=%+v", e)
+}
+
+// TestInstanceEntryOmitsUnsetRegistryFields keeps the wire quiet for an
+// implicit instance that sets none of the optional registry fields.
+func TestInstanceEntryOmitsUnsetRegistryFields(t *testing.T) {
+	raw, err := json.Marshal(InstanceEntry{Name: "groq", ProviderID: "groq", Protocol: "openai-chat", Auth: "bearer", Implicit: true, ActiveSource: "env:GROQ_API_KEY"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, absent := range []string{`"base"`, `"surface"`, `"baseUrl"`, `"vars"`, `"hidden"`, `"authModes"`, `"hasStoredFile"`, `"envVar"`, `"storedEmail"`, `"warnings"`} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("marshal=%s should omit %s", got, absent)
+		}
+	}
+	// implicit, isDefault, activeSource, hasStoredOAuth and credentialRequired
+	// are never omitted: false is the meaningful value for each.
+	for _, want := range []string{`"implicit":true`, `"isDefault":false`, `"activeSource":"env:GROQ_API_KEY"`, `"hasStoredOAuth":false`, `"credentialRequired":false`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
 	}
 }
 
 // TestInstanceCreateParamsJSONRoundTrip verifies the wire shape of
-// InstanceCreateParams: camelCase JSON tags and field preservation.
+// InstanceCreateParams: camelCase JSON tags and field preservation. APIKeyEnv
+// is a variable name and CredentialHeader references a $VAR — secrets never
+// cross this boundary (spec §11.2).
 func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	in := InstanceCreateParams{
-		Type:     "openai",
-		Name:     "my-openai",
-		APIStyle: "openai",
-		BaseURL:  "https://api.openai.com/v1",
+		Name:             "work",
+		Base:             "openai",
+		BaseURL:          "https://gw.example.test/v1",
+		Protocol:         "openai-chat",
+		Surface:          "generic",
+		Vars:             map[string]string{"AWS_REGION": "us-east-1"},
+		APIKeyEnv:        "WORK_KEY",
+		CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -472,10 +529,14 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	}
 	got := string(raw)
 	for _, want := range []string{
-		`"type":"openai"`,
-		`"name":"my-openai"`,
-		`"apiStyle":"openai"`,
-		`"baseUrl":"https://api.openai.com/v1"`,
+		`"name":"work"`,
+		`"base":"openai"`,
+		`"baseUrl":"https://gw.example.test/v1"`,
+		`"protocol":"openai-chat"`,
+		`"surface":"generic"`,
+		`"vars":{"AWS_REGION":"us-east-1"}`,
+		`"apiKeyEnv":"WORK_KEY"`,
+		`"credentialHeader":"Authorization=Bearer $PORTKEY_KEY"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
@@ -485,7 +546,50 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestInstanceEditParamsJSONRoundTrip verifies the wire shape of
+// InstanceEditParams: every field but Name is optional, and an omitted field
+// leaves the authored entry alone (spec §11.3).
+func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
+	in := InstanceEditParams{
+		Name:     "work",
+		BaseURL:  "https://gw.example.test/v2",
+		Protocol: "openai-responses",
+		Surface:  "openai",
+		Vars:     map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"name":"work"`,
+		`"baseUrl":"https://gw.example.test/v2"`,
+		`"protocol":"openai-responses"`,
+		`"surface":"openai"`,
+		`"vars":{"GOOGLE_VERTEX_LOCATION":"global"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
+	}
+	bare, err := json.Marshal(InstanceEditParams{Name: "work"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(bare) != `{"name":"work"}` {
+		t.Fatalf("a name-only edit marshals to %s, want {\"name\":\"work\"}", bare)
+	}
+	var out InstanceEditParams
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip=%+v, want %+v", out, in)
 	}
 }

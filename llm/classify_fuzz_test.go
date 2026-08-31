@@ -12,7 +12,6 @@ type classifyResidualError struct{ status int }
 
 func (e classifyResidualError) Error() string              { return "residual" }
 func (e classifyResidualError) Provider() string           { return "other" }
-func (e classifyResidualError) BehaviorTag() string        { return "other" }
 func (e classifyResidualError) StatusCode() int            { return e.status }
 func (e classifyResidualError) ErrorCode() string          { return "" }
 func (e classifyResidualError) Retryable() bool            { return false }
@@ -25,15 +24,15 @@ func (e classifyResidualError) Unwrap() error              { return nil }
 // llm.Error with an arbitrary HTTP status / provider / message, a bare error)
 // optionally wrapped. Classify is a pure function over an adversarial input that
 // only unit tests touched; this puts arbitrary inputs through every branch
-// (including isEndpointFallbackSignal and ErrorClass.String).
+// (including ErrorClass.String).
 //
 // Oracles (never bare no-panic):
-//   - Classify never panics and returns one of the three defined classes.
+//   - Classify never panics and returns one of the two defined classes.
 //   - ErrorClass.String never panics and is non-empty for a valid class.
 //   - Classification is deterministic for a given error.
 //   - The documented invariants hold: nil -> Retryable; context.Canceled and
-//     *AbortError -> Permanent (even when wrapped); a fallback verdict only ever
-//     arises from an llm.Error.
+//     *AbortError -> Permanent (even when wrapped); a permanent verdict for a
+//     non-cancellation error only ever arises from an llm.Error.
 func FuzzClassify(f *testing.F) {
 	f.Add(uint8(0), 400, "openai", "bad request", uint8(0))
 	f.Add(uint8(5), 404, "openai", "responses.create failed for /v1/responses", uint8(1))
@@ -48,7 +47,7 @@ func FuzzClassify(f *testing.F) {
 		err := wrapErr(base, wrap, msg)
 
 		class := Classify(err)
-		if class < ErrorClassRetryable || class > ErrorClassFallback {
+		if class < ErrorClassRetryable || class > ErrorClassPermanent {
 			t.Fatalf("Classify returned out-of-range class %d for %v", class, err)
 		}
 		if s := class.String(); s == "" || s == "unknown" {
@@ -69,20 +68,24 @@ func FuzzClassify(f *testing.F) {
 			}
 		}
 
-		// A Fallback verdict can only come from an llm.Error (the only branch that
-		// returns it). If we never produced one, fallback must not appear.
-		if class == ErrorClassFallback && !isLLMErr {
-			t.Fatalf("non-llm.Error classified as fallback: %v", err)
+		// Outside cancellation, only an llm.Error can classify permanent: every
+		// other branch falls through to the conservative retryable default.
+		if class == ErrorClassPermanent && !isLLMErr && !isCancel && !isAbort {
+			t.Fatalf("non-llm.Error classified as permanent: %v", err)
 		}
 		streamErr := NewStreamError("old", msg, nil)
-		RewriteErrorProvider(streamErr, " new ")
-		StampErrorBehaviorTag(streamErr, " tag ")
+		restamped := RewriteErrorProvider(streamErr, " new ")
 		var e Error
-		if !errors.As(streamErr, &e) {
-			t.Fatalf("stream error does not implement llm.Error: %v", streamErr)
+		if !errors.As(restamped, &e) {
+			t.Fatalf("stream error does not implement llm.Error: %v", restamped)
 		}
-		if e.Provider() != "new" || e.BehaviorTag() != "tag" {
-			t.Fatalf("non-HTTP stamps not applied: provider=%q tag=%q", e.Provider(), e.BehaviorTag())
+		if e.Provider() != "new" {
+			t.Fatalf("non-HTTP provider stamp not applied: provider=%q", e.Provider())
+		}
+		// The stamp is a copy; the error handed in keeps its own attribution.
+		var orig Error
+		if !errors.As(streamErr, &orig) || orig.Provider() != "old" {
+			t.Fatalf("the rewritten error mutated its input: provider=%q", orig.Provider())
 		}
 		if Classify(classifyResidualError{status: 408}) != ErrorClassRetryable {
 			t.Fatal("non-retryable 408 must classify retryable by status")

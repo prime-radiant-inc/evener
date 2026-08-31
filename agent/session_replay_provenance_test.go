@@ -1,10 +1,11 @@
 package agent
 
 // Tests for Task 6: cross-model transcript replay provenance (spec N4). They
-// drive expandHistory directly with a replayScope for each destination behavior
-// tag and assert which provider/model-scoped content (thinking, web_search) from
-// completed prior turns survives into the outgoing request, and that
-// tool_call/tool_result ids and the stored transcript are never touched.
+// drive expandHistory directly with a replayScope for each destination wire
+// protocol and assert which provider/model-scoped content (thinking,
+// web_search) from completed prior turns survives into the outgoing request,
+// and that tool_call/tool_result ids and the stored transcript are never
+// touched.
 
 import (
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // assistantThinkingTurn builds a completed assistant turn carrying a signed
@@ -56,14 +58,75 @@ func hasContentKind(msgs []llm.Message, kind llm.ContentKind) bool {
 	return false
 }
 
-// tagResolver maps an instance id to a behavior tag for the web_search family
-// check.
-func tagResolver(m map[string]string) func(string) string {
-	return func(id string) string {
-		if t, ok := m[id]; ok {
-			return t
+// protocolResolver maps an instance id to the protocol it speaks today, the
+// way the session resolves one through the registry. An id the map does not
+// name is no longer configured and resolves to "", which makes turns it
+// produced ineligible.
+func protocolResolver(m map[string]string) func(string) string {
+	return func(id string) string { return m[id] }
+}
+
+// replayProtocolOf resolves every instance id these tests produce turns from.
+var replayProtocolOf = protocolResolver(map[string]string{
+	"anthropic":   registry.ProtocolAnthropic,
+	"anthropic-2": registry.ProtocolAnthropic,
+	"kimi":        registry.ProtocolAnthropic,
+	"google":      registry.ProtocolGoogle,
+	"openai":      registry.ProtocolOpenAIResponses,
+	"work":        registry.ProtocolOpenAIChat,
+})
+
+// --- the session-side lookups the scope is wired to ---
+
+// TestSessionInstanceProtocol resolves through the registry rather than the
+// credentialed instance list (controller ruling R1): a curated implicit
+// provider has no credential on a bare client, so Instance() would not list it
+// and a legacy turn from it would silently lose its thinking replay.
+func TestSessionInstanceProtocol(t *testing.T) {
+	t.Parallel()
+	sess := &Session{client: llm.NewClient()}
+	cases := map[string]string{
+		"openai":    registry.ProtocolOpenAIResponses,
+		"anthropic": registry.ProtocolAnthropic,
+		"nope":      "",
+	}
+	for name, want := range cases {
+		if got := sess.instanceProtocol(name); got != want {
+			t.Errorf("instanceProtocol(%q) = %q, want %q", name, got, want)
 		}
-		return id
+	}
+	if got := (&Session{}).instanceProtocol("openai"); got != "" {
+		t.Errorf("instanceProtocol without a client = %q, want empty", got)
+	}
+}
+
+// TestSessionCanonicalModelID pins the G12 provenance fallback's
+// canonicalization: a "[1m]" ref is an alias row, so it folds onto its target;
+// a dated id the catalog does not carry as its own row folds onto the base row
+// the registry matched; and a dated snapshot that IS its own catalog row folds
+// onto the undated row the same instance serves — after the alias fold, so
+// every spelling of one deployment lands on the same id.
+func TestSessionCanonicalModelID(t *testing.T) {
+	t.Parallel()
+	sess := &Session{client: llm.NewClient()}
+	cases := []struct{ model, want string }{
+		{"claude-sonnet-4-5[1m]", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20990101", "claude-sonnet-4-5"},
+		{"  claude-sonnet-4-5[1m]  ", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20250929", "claude-sonnet-4-5"},
+		{"claude-sonnet-4-5-20250929[1m]", "claude-sonnet-4-5"},
+	}
+	for _, tc := range cases {
+		if got := sess.canonicalModelID("anthropic", tc.model); got != tc.want {
+			t.Errorf("canonicalModelID(anthropic, %q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+	if got := sess.canonicalModelID("nope", "some-model"); got != "some-model" {
+		t.Errorf("canonicalModelID on an unresolvable instance = %q, want the trimmed ref", got)
+	}
+	if got := (&Session{}).canonicalModelID("anthropic", " claude-sonnet-4-5[1m] "); got != "claude-sonnet-4-5[1m]" {
+		t.Errorf("canonicalModelID without a client = %q, want the trimmed ref", got)
 	}
 }
 
@@ -73,8 +136,8 @@ func TestExpandHistory_Anthropic_SameModel_ThinkingReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6-20260101")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("same-model thinking was stripped; want it replayed")
@@ -88,8 +151,8 @@ func TestExpandHistory_Anthropic_DifferentModel_ThinkingAbsent(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6-20260101")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-sonnet-4-5", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-sonnet-4-5", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("G12: different-model thinking replayed; want it stripped from the outgoing request")
@@ -103,8 +166,8 @@ func TestExpandHistory_Anthropic_DifferentProvider_ThinkingAbsent(t *testing.T) 
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("openai", "gpt-5.4", "gpt-5.4")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("cross-provider thinking replayed into anthropic; want it stripped")
@@ -124,16 +187,16 @@ func TestExpandHistory_Anthropic_EmptyRequestModel_CanonicalFallback(t *testing.
 	}
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "", "claude-opus-4-6-20260101")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canon,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf, canonicalModel: canon,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("canonical ResponseModel fallback should treat dated snapshot as same model")
 	}
 
 	mismatch := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-sonnet-4-5", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canon,
+		Instance: "anthropic", Model: "claude-sonnet-4-5", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf, canonicalModel: canon,
 	})
 	if hasContentKind(mismatch, llm.ContentThinking) {
 		t.Fatal("canonical fallback must still strip a genuinely different model")
@@ -146,8 +209,8 @@ func TestExpandHistory_EmptyProvenance_ThinkingReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("", "", "")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("empty-provenance (legacy) thinking must remain replay-eligible")
@@ -160,8 +223,8 @@ func TestExpandHistory_Google_SameProviderDifferentModel_ThinkingReplays(t *test
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("google", "gemini-2.5-pro", "gemini-2.5-pro")}
 	out := expandHistory(turns, replayScope{
-		Provider: "google", Model: "gemini-3-pro", BehaviorTag: "google",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "google", Model: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("google enforces same-provider only; same-provider thinking must replay across models")
@@ -172,8 +235,8 @@ func TestExpandHistory_Google_DifferentProvider_ThinkingAbsent(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "google", Model: "gemini-3-pro", BehaviorTag: "google",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "google", Model: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("cross-provider thinking replayed into google; want it stripped")
@@ -191,8 +254,8 @@ func TestExpandHistory_OpenAIResponses_SameProviderDifferentModel_ThinkingReplay
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("openai", "gpt-5.4", "gpt-5.4")}
 	out := expandHistory(turns, replayScope{
-		Provider: "openai", Model: "gpt-5.6", BehaviorTag: "openai",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "openai", Model: "gpt-5.6", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("openai same-provider thinking must replay across models")
@@ -203,8 +266,8 @@ func TestExpandHistory_OpenAIResponses_DifferentProvider_ThinkingAbsent(t *testi
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "openai", Model: "gpt-5.4", BehaviorTag: "openai",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("openai cross-provider thinking replayed; want it stripped (encrypted_content is deployment-scoped)")
@@ -229,8 +292,8 @@ func TestExpandHistory_OpenAIResponses_DifferentProvider_RedactedThinkingAbsent(
 		ResponseProvider: "anthropic",
 	}}
 	out := expandHistory(turns, replayScope{
-		Provider: "openai", Model: "gpt-5.4", BehaviorTag: "openai",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentRedThinking) {
 		t.Fatal("openai cross-provider redacted_thinking replayed; want it stripped")
@@ -244,11 +307,47 @@ func TestExpandHistory_OpenAICompat_ThinkingUnfiltered(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "work", Model: "kimi-k2", BehaviorTag: "openai-compatible",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "work", Model: "kimi-k2", Protocol: registry.ProtocolOpenAIChat,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("openai-compat keeps its reasoningReplayField guard; expansion must not strip thinking")
+	}
+}
+
+// TestExpandHistory_RecordedProtocolBeatsInstanceLookup pins that a turn
+// carrying its own ResponseProtocol is judged by that, not by what its
+// instance speaks today: an instance repointed at another protocol since the
+// turn was written must not make its stored thinking replay-eligible.
+func TestExpandHistory_RecordedProtocolBeatsInstanceLookup(t *testing.T) {
+	t.Parallel()
+	turn := assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")
+	turn.ResponseProtocol = registry.ProtocolOpenAIChat
+	turns := []schema.Turn{turn}
+	out := expandHistory(turns, replayScope{
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if hasContentKind(out, llm.ContentThinking) {
+		t.Fatal("a turn produced over another protocol replayed; the recorded protocol must decide")
+	}
+}
+
+// TestExpandHistory_UnconfiguredInstance_ThinkingAbsent covers the spec §7.5
+// rule for a pre-cut-over turn whose instance is gone: with nothing to resolve
+// it to, the turn is not replay-eligible.
+func TestExpandHistory_UnconfiguredInstance_ThinkingAbsent(t *testing.T) {
+	t.Parallel()
+	turns := []schema.Turn{assistantThinkingTurn("retired-instance", "claude-opus-4-6", "claude-opus-4-6")}
+	out := expandHistory(turns, replayScope{
+		Instance: "retired-instance", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if hasContentKind(out, llm.ContentThinking) {
+		t.Fatal("thinking from an instance that is no longer configured replayed; want it stripped")
+	}
+	if !hasContentKind(out, llm.ContentText) {
+		t.Fatal("answer text must survive thinking stripping")
 	}
 }
 
@@ -258,29 +357,29 @@ func TestExpandHistory_WebSearch_SameFamilyReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantWebSearchTurn("anthropic", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic-2", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom:  len(turns),
-		behaviorTagOf: tagResolver(map[string]string{"anthropic": "anthropic", "anthropic-2": "anthropic"}),
+		Instance: "anthropic-2", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns),
+		protocolOf:   protocolResolver(map[string]string{"anthropic": registry.ProtocolAnthropic, "anthropic-2": registry.ProtocolAnthropic}),
 	})
 	if !hasContentKind(out, llm.ContentWebSearch) {
 		t.Fatal("web_search within the anthropic family must replay verbatim")
 	}
 }
 
-// TestExpandHistory_WebSearch_AnthropicSiblingTagReplays pins that distinct
-// anthropic-wire behavior tags (anthropic and kimi-anthropic) share the
-// anthropic family, so an anthropic-produced raw web_search block replays
-// verbatim into a kimi-anthropic request — the raw block shape is identical.
-func TestExpandHistory_WebSearch_AnthropicSiblingTagReplays(t *testing.T) {
+// TestExpandHistory_WebSearch_AcrossAnthropicInstancesReplays pins that two
+// different instances both speaking the anthropic protocol replay each other's
+// raw web_search blocks verbatim: the block shape is the protocol's, so an
+// anthropic-produced one is byte-compatible in a request to the kimi instance.
+func TestExpandHistory_WebSearch_AcrossAnthropicInstancesReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantWebSearchTurn("anthropic", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "kimi", Model: "kimi-for-coding", BehaviorTag: "kimi-anthropic",
-		InFlightFrom:  len(turns),
-		behaviorTagOf: tagResolver(map[string]string{"anthropic": "anthropic", "kimi": "kimi-anthropic"}),
+		Instance: "kimi", Model: "kimi-for-coding", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns),
+		protocolOf:   protocolResolver(map[string]string{"anthropic": registry.ProtocolAnthropic, "kimi": registry.ProtocolAnthropic}),
 	})
 	if !hasContentKind(out, llm.ContentWebSearch) {
-		t.Fatal("anthropic→kimi-anthropic web_search must replay verbatim (same anthropic-wire family)")
+		t.Fatal("anthropic→kimi web_search must replay verbatim (both speak the anthropic protocol)")
 	}
 }
 
@@ -290,9 +389,9 @@ func TestExpandHistory_WebSearch_CrossFamilyDropped(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantWebSearchTurn("anthropic", "claude-opus-4-6")}
 	out := expandHistory(turns, replayScope{
-		Provider: "openai", Model: "gpt-5.4", BehaviorTag: "openai",
-		InFlightFrom:  len(turns),
-		behaviorTagOf: tagResolver(map[string]string{"anthropic": "anthropic", "openai": "openai"}),
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns),
+		protocolOf:   protocolResolver(map[string]string{"anthropic": registry.ProtocolAnthropic, "openai": registry.ProtocolOpenAIResponses}),
 	})
 	if hasContentKind(out, llm.ContentWebSearch) {
 		t.Fatal("G13: cross-family web_search replayed; want the raw block dropped")
@@ -306,9 +405,9 @@ func TestExpandHistory_WebSearch_OpenAISameFamilyReplays(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{assistantWebSearchTurn("openai", "gpt-5.4")}
 	out := expandHistory(turns, replayScope{
-		Provider: "openai", Model: "gpt-5.6", BehaviorTag: "openai",
-		InFlightFrom:  len(turns),
-		behaviorTagOf: tagResolver(map[string]string{"openai": "openai"}),
+		Instance: "openai", Model: "gpt-5.6", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns),
+		protocolOf:   protocolResolver(map[string]string{"openai": registry.ProtocolOpenAIResponses}),
 	})
 	if !hasContentKind(out, llm.ContentWebSearch) {
 		t.Fatal("openai↔openai web_search must replay verbatim across models")
@@ -337,8 +436,8 @@ func TestExpandHistory_ToolIdsReplayVerbatim_AcrossModelChange(t *testing.T) {
 		},
 	}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-sonnet-4-5", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-sonnet-4-5", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("thinking should be stripped on the model change")
@@ -371,8 +470,8 @@ func TestExpandHistory_InFlightTurn_NotFiltered(t *testing.T) {
 		assistantThinkingTurn("anthropic", "claude-haiku-4-5", "claude-haiku-4-5"),
 	}
 	out := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: 1, canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: 1, protocolOf: replayProtocolOf,
 	})
 	var thinkingCount int
 	for _, m := range out {
@@ -395,8 +494,8 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 	turns := []schema.Turn{assistantThinkingTurn("anthropic", "claude-opus-4-6", "claude-opus-4-6")}
 
 	stripped := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-sonnet-4-5", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-sonnet-4-5", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if hasContentKind(stripped, llm.ContentThinking) {
 		t.Fatal("thinking should be stripped for the switched-to model")
@@ -407,8 +506,8 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 	}
 	// Switching back restores full replay.
 	back := expandHistory(turns, replayScope{
-		Provider: "anthropic", Model: "claude-opus-4-6", BehaviorTag: "anthropic",
-		InFlightFrom: len(turns), canonicalModel: canonicalModelID,
+		Instance: "anthropic", Model: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
 	if !hasContentKind(back, llm.ContentThinking) {
 		t.Fatal("switching back to the producing model must restore thinking replay")

@@ -85,62 +85,66 @@ func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
 	}
 }
 
-// CountInputTokens resolves the target provider and uses its exact counter when
-// available. Providers without exact support fall back to the local estimate.
+// CountInputTokens resolves the request's target and uses its exact counter
+// when available. Targets without exact support fall back to the local
+// estimate. The count is taken over the shaped request, so it describes the
+// body Complete would actually send.
 func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenCount, error) {
 	if err := req.Validate(); err != nil {
 		return InputTokenCount{}, err
 	}
 	if req.AdapterTimeout == nil {
-		at := DefaultAdapterTimeout()
-		req.AdapterTimeout = &at
+		req.AdapterTimeout = new(DefaultAdapterTimeout())
 	}
-	prov := req.Provider
-	if prov == "" {
-		prov = c.defaultProvider
+	t, err := c.dispatchTarget(req)
+	if err != nil {
+		return InputTokenCount{}, err
 	}
-	if prov == "" {
-		return InputTokenCount{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	req.Provider = t.name
+	if t.resolved {
+		req = ShapeRequest(req, t.res)
 	}
-	prov = normalizeProviderName(prov)
-	adapter, ok := c.providers[prov]
-	if !ok {
-		return InputTokenCount{}, &ConfigurationError{Message: "unknown provider: " + prov}
-	}
-	req.Provider = prov
 
-	if counter, ok := adapter.(InputTokenCounter); ok {
-		ctx, operation := c.beginProviderOperation(ctx)
-		out, err := counter.CountInputTokens(ctx, req)
-		operation.settle(ctx, err)
-		if err != nil {
-			if errors.Is(err, ErrInputTokenCountUnsupported) {
-				out := EstimateInputTokens(req)
-				out.Provider = prov
-				return out, nil
-			}
-			tag := c.behaviorTagFor(prov)
-			err = RewriteErrorProvider(err, prov)
-			err = StampErrorBehaviorTag(err, tag)
-			return InputTokenCount{}, err
+	// countExactly is the exact-count call of whichever half of the target
+	// serves the request; nil when an override offers no exact counter.
+	var countExactly func(context.Context) (InputTokenCount, error)
+	if t.override == nil {
+		countExactly = func(ctx context.Context) (InputTokenCount, error) {
+			tokens, err := t.protocol.CountTokens(ctx, req, t.res)
+			return InputTokenCount{Tokens: tokens, Exact: true, Source: TokenCountSourceProvider, Provider: t.name, Model: req.Model}, err
 		}
-		if out.Source == "" {
-			out.Source = TokenCountSourceProvider
-		}
-		if out.Source == TokenCountSourceProvider {
-			out.Exact = true
-		}
-		if out.Provider == "" {
-			out.Provider = prov
-		}
-		if out.Model == "" {
-			out.Model = req.Model
-		}
+	} else if counter, ok := t.override.(InputTokenCounter); ok {
+		countExactly = func(ctx context.Context) (InputTokenCount, error) { return counter.CountInputTokens(ctx, req) }
+	}
+	if countExactly == nil {
+		out := EstimateInputTokens(req)
+		out.Provider = t.name
 		return out, nil
 	}
 
-	out := EstimateInputTokens(req)
-	out.Provider = prov
+	opCtx, operation := c.beginProviderOperation(ctx)
+	out, err := countExactly(opCtx)
+	operation.settle(opCtx, err)
+	if err != nil {
+		if errors.Is(err, ErrInputTokenCountUnsupported) {
+			estimate := EstimateInputTokens(req)
+			estimate.Provider = t.name
+			return estimate, nil
+		}
+		return InputTokenCount{}, RewriteErrorProvider(err, t.name)
+	}
+	if out.Source == "" {
+		out.Source = TokenCountSourceProvider
+	}
+	if out.Source == TokenCountSourceProvider {
+		out.Exact = true
+	}
+	if out.Provider == "" {
+		out.Provider = t.name
+	}
+	if out.Model == "" {
+		out.Model = req.Model
+	}
 	return out, nil
 }
 

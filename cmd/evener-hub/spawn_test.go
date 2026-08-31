@@ -16,11 +16,10 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
-	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -805,149 +804,6 @@ exit 2
 	}
 }
 
-func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
-	// Empty store — no key in file or env.
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	t.Setenv("OPENROUTER_API_KEY", "") // ensure env is empty
-	err := validateProviderCredentials("openrouter", store, nil, "")
-	assertHubLaunchError(t, err)
-	if strings.Contains(err.Error(), "secret") {
-		t.Fatalf("error leaked secret-like value: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "configured-secret")
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store, nil, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightAcceptsLaunchEnvKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY=launch-secret"}, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials with launch env key: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightAcceptsOpenAICompatibleBaseURLOnly(t *testing.T) {
-	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
-	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai-compatible", store, []string{"OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:11434/v1"}, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials with base-url-only openai-compatible env: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightRejectsLaunchEnvClearedStoreKey(t *testing.T) {
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	if err := store.Set("openrouter", "stored-secret"); err != nil {
-		t.Fatalf("store.Set: %v", err)
-	}
-	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY="}, "")
-	assertHubLaunchError(t, err)
-}
-
-func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	t.Setenv("OPENAI_API_KEY", "")
-	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
-		Version:      1,
-		Provider:     "openai",
-		Source:       authopenai.AuthSourceOAuth,
-		ObtainedAt:   time.Now().Add(-time.Minute),
-		TokenType:    "Bearer",
-		Scope:        "openid profile email offline_access",
-		AccessToken:  "oauth-access-token",
-		RefreshToken: "oauth-refresh-token",
-		Expiry:       time.Now().Add(-time.Minute),
-		Email:        "oauth@example.com",
-	}); err != nil {
-		t.Fatalf("SaveAuth: %v", err)
-	}
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials(openai) with refreshable stored OAuth: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	home := t.TempDir()
-	stateDir := filepath.Join(home, ".local", "state", "evener")
-	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
-		Version:      1,
-		Provider:     "openai",
-		Source:       authopenai.AuthSourceOAuth,
-		ObtainedAt:   time.Now().Add(-time.Minute),
-		TokenType:    "Bearer",
-		Scope:        "openid profile email offline_access",
-		AccessToken:  "oauth-access-token",
-		RefreshToken: "oauth-refresh-token",
-		Expiry:       time.Now().Add(time.Hour),
-		Email:        "oauth@example.com",
-	}); err != nil {
-		t.Fatalf("SaveAuth: %v", err)
-	}
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + home}, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials(openai) with HOME-scoped OAuth: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightDoesNotUseHubEnvWhenLaunchClearsXDG(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	hubStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", hubStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(hubStateHome), "openai", authopenai.AuthRecord{
-		Version:      1,
-		Provider:     "openai",
-		Source:       authopenai.AuthSourceOAuth,
-		ObtainedAt:   time.Now().Add(-time.Minute),
-		TokenType:    "Bearer",
-		Scope:        "openid profile email offline_access",
-		AccessToken:  "hub-oauth-access-token",
-		RefreshToken: "hub-oauth-refresh-token",
-		Expiry:       time.Now().Add(time.Hour),
-		Email:        "hub-oauth@example.com",
-	}); err != nil {
-		t.Fatalf("SaveAuth: %v", err)
-	}
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + t.TempDir()}, "")
-	assertHubLaunchError(t, err)
-}
-
-func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
-	t.Setenv("GOOGLE_API_KEY", "google-secret")
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("google", store, nil, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials: %v", err)
-	}
-}
-
-func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("ollama", store, nil, "")
-	if err != nil {
-		t.Fatalf("validateProviderCredentials for ollama: %v", err)
-	}
-}
-
 func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testing.T) {
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
@@ -1241,25 +1097,37 @@ func TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 	}
 }
 
-// writeProvidersConfig writes cfg to a temp providers.toml in dir and returns the path.
-func writeProvidersConfig(t *testing.T, dir string, cfg providercfg.Config) string {
+// newSpawnGateRegistry builds a hermetic registry holding exactly the named
+// instances, resolved against an env and a state root the test owns, and
+// wraps it in the holder the spawn gate reads.
+func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string, instances map[string]registry.Provider) *hubcore.ProviderRegistry {
 	t.Helper()
-	path := filepath.Join(dir, "providers.toml")
-	if err := providercfg.WriteFile(path, cfg); err != nil {
-		t.Fatalf("writeProvidersConfig: %v", err)
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		opts := []registry.Option{
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+			registry.WithNoUserLayer(),
+			registry.WithStateRoot(stateRoot),
+			registry.WithEnv(func(name string) (string, bool) {
+				v, ok := env[name]
+				return v, ok
+			}),
+			registry.WithInstances(instances),
+		}
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, nil, err
+	})
+	if err := holder.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
 	}
-	return path
+	return holder
 }
 
-// TestValidateProviderCredentials_ConfigInstanceOAuthPass verifies that
-// validateProviderCredentials accepts an openai-type instance named "work"
-// when a valid OAuth record exists at auth/work.json in the evener state dir.
-func TestValidateProviderCredentials_ConfigInstanceOAuthPass(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	// Write a usable OAuth record under auth/work.json.
-	if err := authopenai.SaveAuth(stateDir, "work", authopenai.AuthRecord{
+// writeCodexOAuthRecord writes a usable Codex OAuth record for instanceName
+// where the registry looks for one: <stateRoot>/auth/<instance>.json.
+func writeCodexOAuthRecord(t *testing.T, stateRoot, instanceName string) {
+	t.Helper()
+	if err := authopenai.SaveAuth(stateRoot, instanceName, authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -1273,345 +1141,190 @@ func TestValidateProviderCredentials_ConfigInstanceOAuthPass(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	})
-	err := validateProviderCredentials("work", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfgPath)
-	if err != nil {
-		t.Fatalf("validateProviderCredentials(work) with OAuth at auth/work.json: %v", err)
-	}
 }
 
-// TestValidateProviderCredentials_ConfigInstanceOAuthMissing verifies that
-// validateProviderCredentials rejects an openai-type instance named "work"
-// when no OAuth record exists at auth/work.json.
-func TestValidateProviderCredentials_ConfigInstanceOAuthMissing(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	})
-	t.Setenv("OPENAI_API_KEY", "")
-	err := validateProviderCredentials("work", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfgPath)
-	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "work") {
-		t.Fatalf("error should mention instance name 'work': %v", err)
-	}
-}
-
-// TestValidateProviderCredentials_ConfigInstanceOAuthNotForChatCompletions
-// verifies that a stored OAuth record does not open the preflight for an
-// instance whose adapter cannot send one. An openai-type instance routed
-// through chat-completions is served by the openaicompat adapter, which
-// authenticates with a bearer API key and imports nothing from auth/openai —
-// so a record at auth/<name>.json is a credential the launch can never use, and
-// letting it past the gate only moves the failure to a 401. Kata j529.
-func TestValidateProviderCredentials_ConfigInstanceOAuthNotForChatCompletions(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(stateDir, "local", authopenai.AuthRecord{
-		Version:      1,
-		Provider:     "openai",
-		Source:       authopenai.AuthSourceOAuth,
-		ObtainedAt:   time.Now().Add(-time.Minute),
-		TokenType:    "Bearer",
-		Scope:        "openid profile email offline_access",
-		AccessToken:  "oauth-access-token",
-		RefreshToken: "oauth-refresh-token",
-		Expiry:       time.Now().Add(time.Hour),
-		Email:        "local@example.com",
-	}); err != nil {
-		t.Fatalf("SaveAuth: %v", err)
-	}
-
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "local",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-		},
-	})
-	err := validateProviderCredentials("local", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfgPath)
-	assertHubLaunchError(t, err)
-}
-
-// TestValidateProviderCredentials_ConfigInstanceInlineAPIKey verifies that
-// validateProviderCredentials accepts an instance with an inline api_key.
-// WriteFile never persists api_key (security), so this test writes the TOML
-// manually so that LoadFile can read back the api_key value.
-func TestValidateProviderCredentials_ConfigInstanceInlineAPIKey(t *testing.T) {
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	const inline = `schema = 1
-default = "myopenai"
-
-[instances.myopenai]
-type = "openai"
-api_style = "responses"
-api_key = "sk-inline-key"
-`
-	if err := os.WriteFile(cfgPath, []byte(inline), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	err := validateProviderCredentials("myopenai", store, nil, cfgPath)
-	if err != nil {
-		t.Fatalf("validateProviderCredentials with inline api_key: %v", err)
-	}
-}
-
-func TestValidateProviderCredentials_ConfigInstanceStoredAPIKey(t *testing.T) {
-	store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	if err := store.Set("kimi-anthropic-api", "stored-instance-key"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "kimi-anthropic-api",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "kimi-anthropic-api", Type: "kimi-anthropic"},
-		},
-	})
-
-	if err := validateProviderCredentials("kimi-anthropic-api", store, nil, cfgPath); err != nil {
-		t.Fatalf("validateProviderCredentials with stored instance key: %v", err)
-	}
-}
-
-// TestValidateProviderCredentials_ConfigInstanceStoredKeyWhereTagDiffersFromType
-// puts the preflight's stored-file check on the one instance shape where the
-// behavior tag and the declared type disagree: an openai instance routed through
-// chat-completions resolves as "openai-compatible". The other stored-key case
-// above is kimi-anthropic, whose tag and type are equal, so nothing covered this
-// shape.
-//
-// The two rows are the whole contract of the file layer. credentials.toml is
-// keyed by instance name, so a key stored under "local" is this instance's
-// credential and a key stored under "openai" is not one -- the declared type is
-// not a credential source for an instance that resolves as something else, which
-// is what the launch path believes and what the preflight must believe with it.
-//
-// What this cannot do is distinguish the two arguments on its own: Store's
-// hasFile is derived from the name alone, so the second argument feeds nothing
-// but the env-var candidate list the caller discards. That is precisely why the
-// wrong key was invisible, and why the day the file layer starts reading it this
-// is the test that fails instead of a user's launch. Kata p22p.
-func TestValidateProviderCredentials_ConfigInstanceStoredKeyWhereTagDiffersFromType(t *testing.T) {
+// TestValidateProviderCredentials_CodexInstanceOAuth puts the spawn gate on
+// the Codex transport: the record at auth/<instance>.json is the credential,
+// and without it the refusal names the login command the registry's warning
+// carries (spec §9.5, §11.3).
+func TestValidateProviderCredentials_CodexInstanceOAuth(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		storedAs string
-		wantErr  bool
+		name      string
+		hasRecord bool
 	}{
-		{name: "key stored under the instance name", storedAs: "local"},
-		{name: "key stored under the declared type", storedAs: "openai", wantErr: true},
+		{name: "with an OAuth record", hasRecord: true},
+		{name: "without an OAuth record"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			oaitest.IsolateOpenAIAuth(t)
-			clearProviderKeysFromEnvironment(t)
-			store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-			if err != nil {
-				t.Fatalf("LoadStore: %v", err)
+			stateRoot := t.TempDir()
+			if tt.hasRecord {
+				writeCodexOAuthRecord(t, stateRoot, "work")
 			}
-			if err := store.Set(tt.storedAs, "sk-stored-key"); err != nil {
-				t.Fatalf("Set(%q): %v", tt.storedAs, err)
-			}
-			cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-				Default: "local",
-				Instances: []providercfg.InstanceConfig{
-					{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-				},
+			reg := newSpawnGateRegistry(t, stateRoot, nil, map[string]registry.Provider{
+				"work": {Base: "openai-codex"},
 			})
-			// The launch env carries an empty state home and nothing else, so no
-			// OAuth record, no base URL and no key reach the preflight from the
-			// environment: the stored key is the only thing the verdict can be
-			// about.
-			env := []string{"XDG_STATE_HOME=" + t.TempDir()}
-			err = validateProviderCredentials("local", store, env, cfgPath)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("the launch preflight accepted instance \"local\" for a key stored under %q: it resolves as %q, and credentials.toml is keyed by instance name, so nothing it launches with is filed under its declared type",
-						tt.storedAs, providercfg.BehaviorTag("openai", string(providercfg.StyleChatCompletions)))
+			err := validateProviderCredentials("work", reg)
+			if tt.hasRecord {
+				if err != nil {
+					t.Fatalf("validateProviderCredentials(work) with auth/work.json: %v", err)
 				}
-				assertHubLaunchError(t, err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("validateProviderCredentials(local) with a key stored under %q: %v", tt.storedAs, err)
+			assertHubLaunchError(t, err)
+			if !strings.Contains(err.Error(), "evener openai login --instance work") {
+				t.Fatalf("the refusal names the login command: %v", err)
 			}
 		})
 	}
 }
 
-func TestValidateProviderCredentials_ConfiguredCredentialHeaders(t *testing.T) {
-	tests := []struct {
-		name              string
-		headers           map[string]string
-		credentialHeaders map[string]string
-		wantErr           bool
-	}{
-		{
-			name:              "nonempty credential header",
-			credentialHeaders: map[string]string{"X-Gateway-Key": "configured-secret"},
-		},
-		{
-			name:              "empty credential header",
-			credentialHeaders: map[string]string{"X-Gateway-Key": ""},
-			wantErr:           true,
-		},
-		{
-			name:    "ordinary authorization header",
-			headers: map[string]string{"Authorization": "Bearer configured-secret"},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-			cfg := providercfg.Config{
-				Default: "gateway",
-				Instances: []providercfg.InstanceConfig{
-					{
-						Name:              "gateway",
-						Type:              "anthropic",
-						Headers:           tt.headers,
-						CredentialHeaders: tt.credentialHeaders,
-					},
+// TestValidateProviderCredentials_AuthSchemesNeedingNothing covers the two
+// schemes that have no credential to look for: auth = none and
+// optional-bearer both launch with nothing configured (spec §11.3).
+func TestValidateProviderCredentials_AuthSchemesNeedingNothing(t *testing.T) {
+	for _, auth := range []string{registry.AuthNone, registry.AuthOptionalBearer} {
+		t.Run(auth, func(t *testing.T) {
+			reg := newSpawnGateRegistry(t, t.TempDir(), nil, map[string]registry.Provider{
+				"local": {
+					Base:      "openai-compatible",
+					Transport: registry.Transport{BaseURL: "http://127.0.0.1:11434/v1", Auth: auth},
 				},
-			}
-			data, err := providercfg.Marshal(cfg)
-			if err != nil {
-				t.Fatalf("Marshal: %v", err)
-			}
-			cfgPath := filepath.Join(t.TempDir(), "providers.toml")
-			if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
-				t.Fatalf("WriteFile: %v", err)
-			}
-
-			err = validateProviderCredentials("gateway", store, []string{}, cfgPath)
-			if tt.wantErr {
-				assertHubLaunchError(t, err)
-			} else if err != nil {
-				t.Fatalf("validateProviderCredentials: %v", err)
+			})
+			if err := validateProviderCredentials("local", reg); err != nil {
+				t.Fatalf("validateProviderCredentials(local) with auth = %q: %v", auth, err)
 			}
 		})
 	}
 }
 
-// TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses
-// verifies that a chat-completions instance with base_url set in providers.toml
-// and no inline api_key passes credential validation. Such instances (e.g.
-// ollama-compatible) read the base URL from config and do not need
-// OPENAI_COMPATIBLE_BASE_URL in the environment.
-func TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses(t *testing.T) {
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "local",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions, BaseURL: "http://127.0.0.1:11434/v1"},
-		},
-	})
-	// No env key, no OPENAI_COMPATIBLE_BASE_URL in launch env — base_url is in config.
-	err := validateProviderCredentials("local", store, nil, cfgPath)
-	if err != nil {
-		t.Fatalf("validateProviderCredentials with base_url in config: %v", err)
-	}
-}
-
-// TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails
-// verifies that a chat-completions instance with neither base_url in config nor
-// env key nor env base URL fails credential validation.
-func TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-		Default: "local",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
-		},
-	})
-	t.Setenv("OPENAI_API_KEY", "")
-	err := validateProviderCredentials("local", store, []string{"OPENAI_COMPATIBLE_BASE_URL="}, cfgPath)
-	assertHubLaunchError(t, err)
-}
-
-// TestValidateProviderCredentials_ConfigInstanceAuthModeNone verifies that an
-// instance whose provider type declares auth mode "none" (ollama) passes the
-// credential preflight with no credential anywhere, while a type that does
-// authenticate is still refused even when the instance is named "ollama".
-// The auth mode belongs to the instance's TYPE, not to the name a user picked
-// for it, so a renamed ollama instance passes and a misnamed one does not.
-func TestValidateProviderCredentials_ConfigInstanceAuthModeNone(t *testing.T) {
-	tests := []struct {
+// TestValidateProviderCredentials_ResolvedKeyPasses walks the credential
+// sources a bearer instance can launch with, and the empty environment that
+// refuses it.
+func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
+	for _, tt := range []struct {
 		name     string
-		instance providercfg.InstanceConfig
-		provider string
+		provider registry.Provider
+		env      map[string]string
 		wantErr  bool
 	}{
 		{
-			name:     "ollama instance as the hub materializes it",
-			instance: providercfg.InstanceConfig{Name: "ollama", Type: "ollama"},
-			provider: "ollama",
+			name:     "inline api_key",
+			provider: registry.Provider{Base: "anthropic", APIKey: "sk-inline-key"},
 		},
 		{
-			name:     "renamed ollama instance",
-			instance: providercfg.InstanceConfig{Name: "local-llm", Type: "ollama"},
-			provider: "local-llm",
+			name:     "credential header",
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			env:      map[string]string{"GATEWAY_KEY": "gk"},
 		},
 		{
-			name:     "authenticating type named ollama",
-			instance: providercfg.InstanceConfig{Name: "ollama", Type: "anthropic"},
-			provider: "ollama",
+			name:     "named api_key_env",
+			provider: registry.Provider{Base: "anthropic", APIKeyEnv: []string{"WORK_KEY"}},
+			env:      map[string]string{"WORK_KEY": "wk"},
+		},
+		{
+			name:     "no credential anywhere",
+			provider: registry.Provider{Base: "anthropic", APIKeyEnv: []string{"WORK_KEY"}},
 			wantErr:  true,
 		},
-	}
-
-	for _, tt := range tests {
+		{
+			name:     "credential header whose variable is unset",
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			wantErr:  true,
+		},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			// InstanceLayers reads the ambient process env, so clear both keys
-			// rather than relying on the developer machine having neither.
-			t.Setenv("OLLAMA_API_KEY", "")
-			t.Setenv("ANTHROPIC_API_KEY", "")
-			store, err := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-			if err != nil {
-				t.Fatalf("LoadStore: %v", err)
-			}
-			cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
-				Instances: []providercfg.InstanceConfig{tt.instance},
-			})
-			// Empty (non-nil) launch env: no credential reachable from either
-			// the launch env or the config.
-			err = validateProviderCredentials(tt.provider, store, []string{}, cfgPath)
+			reg := newSpawnGateRegistry(t, t.TempDir(), tt.env, map[string]registry.Provider{"work": tt.provider})
+			err := validateProviderCredentials("work", reg)
 			if tt.wantErr {
 				assertHubLaunchError(t, err)
+				if !strings.Contains(err.Error(), "work") {
+					t.Fatalf("the refusal names the instance: %v", err)
+				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("validateProviderCredentials(%q): %v", tt.provider, err)
+				t.Fatalf("validateProviderCredentials(work): %v", err)
 			}
 		})
 	}
 }
 
-// TestHubSpawnerResumeAcceptsMaterializedOllamaConfig resumes against the
-// providers.toml a hub materializes for itself when none exists: with no
-// provider credentials in the environment, the only instance is ollama, which
-// carries no credential at all. Resume must reach the daemon.
-func TestHubSpawnerResumeAcceptsMaterializedOllamaConfig(t *testing.T) {
-	t.Setenv("OLLAMA_API_KEY", "")
+// TestValidateProviderCredentials_EndpointStop is spec §10's rule at the
+// spawn gate: an instance with its own base_url never inherits the vendor
+// key, so a launch that would 401 is refused before the daemon starts.
+func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "vendor-key"}
+	reg := newSpawnGateRegistry(t, t.TempDir(), env, map[string]registry.Provider{
+		"gateway": {Base: "anthropic", Transport: registry.Transport{BaseURL: "https://gw.example.test/v1"}},
+	})
+	err := validateProviderCredentials("gateway", reg)
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "gateway") {
+		t.Fatalf("the refusal names the gateway instance: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_CuratedImplicitWithoutCredential covers the
+// name that is a curated implicit provider but has no credential in this
+// environment, so it never became an instance: the refusal names the way in,
+// and which way in depends on how the provider authenticates. The Codex
+// transport reads no key at all (spec §5.1), so telling a fresh install to
+// "export one of" its empty api_key_env list is advice that cannot work.
+func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing.T) {
+	for _, tt := range []struct {
+		provider string
+		want     string
+		notWant  string
+	}{
+		{provider: "groq", want: "GROQ_API_KEY"},
+		{provider: "openai-codex", want: "evener openai login --instance openai-codex", notWant: "export one of"},
+	} {
+		t.Run(tt.provider, func(t *testing.T) {
+			reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+			err := validateProviderCredentials(tt.provider, reg)
+			assertHubLaunchError(t, err)
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("the refusal names the way in (%q): %v", tt.want, err)
+			}
+			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
+				t.Fatalf("the refusal gives advice that cannot work (%q): %v", tt.notWant, err)
+			}
+		})
+	}
+}
+
+// TestValidateProviderCredentials_UnknownInstance covers a name the registry
+// has never heard of: the refusal says how to declare it.
+func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
+	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+	err := validateProviderCredentials("nowhere", reg)
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "[providers.nowhere]") {
+		t.Fatalf("the refusal says how to declare the instance: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_NoRegistryOrProviderSkips keeps the gate
+// open where there is nothing to check: no launched instance, or a hub whose
+// registry never loaded.
+func TestValidateProviderCredentials_NoRegistryOrProviderSkips(t *testing.T) {
+	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+	if err := validateProviderCredentials("", reg); err != nil {
+		t.Fatalf("no provider, no gate: %v", err)
+	}
+	if err := validateProviderCredentials("anything", nil); err != nil {
+		t.Fatalf("no registry, no gate: %v", err)
+	}
+	if err := validateProviderCredentials("anything", hubcore.NewProviderRegistry(nil)); err != nil {
+		t.Fatalf("a registry that never loaded, no gate: %v", err)
+	}
+}
+
+// TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig resumes against a
+// registry whose only instance authenticates with nothing — the shape a
+// machine with no provider keys ends up with. Resume must still reach the
+// daemon.
+func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(dir, "run")
 	bin := filepath.Join(dir, "fake-evener")
@@ -1622,9 +1335,9 @@ if [ "$1" = "launch-check" ]; then
 fi
 if [ "$1" = "serve" ]; then
   mkdir -p "$EVENER_RUN_DIR"
-  cat > "$EVENER_RUN_DIR/$$.json" <<EOF
+  cat > "$EVENER_RUN_DIR/$$.json" <<RENDEZVOUS
 {"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
-EOF
+RENDEZVOUS
   sleep 1
   exit 0
 fi
@@ -1632,24 +1345,17 @@ exit 2
 `
 	writeFakeEvener(t, bin, script)
 
-	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	// The shape MaterializeProvidersConfig writes when no provider credential is
-	// present: the ollama adapter registers unconditionally, so it is the only
-	// seeded instance and it has no api_key.
-	cfgPath := writeProvidersConfig(t, dir, providercfg.Config{
-		Instances: []providercfg.InstanceConfig{{Name: "ollama", Type: "ollama"}},
+	reg := newSpawnGateRegistry(t, t.TempDir(), nil, map[string]registry.Provider{
+		"ollama": {Base: "ollama"},
 	})
-
 	spawner := HubSpawner{
 		Cfg:                 DefaultConfig(),
 		EvenerBinary:        bin,
 		RunDir:              runDir,
 		HubToken:            "generated-token",
-		Creds:               store,
-		ProvidersConfigPath: cfgPath,
+		Registry:            reg,
+		ProvidersConfigPath: filepath.Join(dir, "providers.toml"),
+		CredentialsPath:     filepath.Join(dir, "credentials.toml"),
 	}
 	if _, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
 		SessionID:  "01JRESUME",
@@ -1657,17 +1363,8 @@ exit 2
 		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/llama3"}},
 		WorkingDir: dir,
 	}); err != nil {
-		t.Fatalf("Resume with the hub's materialized ollama config: %v", err)
+		t.Fatalf("Resume with a credential-less ollama instance: %v", err)
 	}
-}
-
-// TestValidateProviderCredentials_NoConfigPathUnchanged verifies that the
-// no-config path (nil cfg) keeps existing behavior unchanged.
-func TestValidateProviderCredentials_NoConfigPathUnchanged(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
-	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store, nil, "")
-	assertHubLaunchError(t, err)
 }
 
 func envFromMap(values map[string]string) []string {
@@ -1730,5 +1427,87 @@ func TestHubSpawnerListLaunchModelContract_NonexistentWorkingDir(t *testing.T) {
 	}
 	if strings.Contains(capturedStateDir, nonexistent) {
 		t.Fatalf("EVENER_STATE_DIR = %q, must not be derived from the non-existent working dir", capturedStateDir)
+	}
+}
+
+// TestHubSpawnerNoUserLayerFollowsTheLiveRegistry: whether a child gets the
+// user layer is a live property, not a startup constant. The auth controller
+// reloads the registry on every credential action, so a hub that started
+// refusing writes can come to accept them and vice versa; a frozen answer
+// hands the child a providers.toml the hub is not reading, or withholds one it
+// is (spec §10).
+func TestHubSpawnerNoUserLayerFollowsTheLiveRegistry(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	const good = "default = \"groq\"\n"
+	const broken = "default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"
+	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	var captured []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, env []string) (appwire.ModelListResponse, error) {
+		captured = env
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+
+	h := &HubSpawner{Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredentialsPath: f.credsPath}
+	childProvidersConfig := func() (string, bool) {
+		captured = nil
+		if _, err := h.ListLaunchModelContract(context.Background()); err != nil {
+			t.Fatalf("ListLaunchModelContract: %v", err)
+		}
+		return envLookup(captured, "EVENER_PROVIDERS_CONFIG")
+	}
+
+	if got, ok := childProvidersConfig(); !ok || got != f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path the hub is reading", got, ok)
+	}
+
+	// fixed → broken: the hub degrades mid-life, so the child must too.
+	if err := os.WriteFile(f.tomlPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err == nil {
+		t.Fatal("the registry accepted an old-schema file")
+	}
+	if got, ok := childProvidersConfig(); !ok || got != "" {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty: the hub is not reading this file", got, ok)
+	}
+
+	// broken → fixed: the user repairs the file and a credential action
+	// reloads it, so the child gets the user layer back.
+	if err := os.WriteFile(f.tomlPath, []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got, ok := childProvidersConfig(); !ok || got != f.tomlPath {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want the path back", got, ok)
+	}
+}
+
+// TestHubSpawnerNoUserLayerHonoursTheTriState: an explicitly empty
+// EVENER_PROVIDERS_CONFIG means "no user layer" whatever the registry says.
+func TestHubSpawnerNoUserLayerHonoursTheTriState(t *testing.T) {
+	var captured []string
+	oldFn := listEvenerLaunchModelContractFn
+	listEvenerLaunchModelContractFn = func(_ context.Context, _ string, env []string) (appwire.ModelListResponse, error) {
+		captured = env
+		return appwire.ModelListResponse{}, nil
+	}
+	t.Cleanup(func() { listEvenerLaunchModelContractFn = oldFn })
+
+	h := &HubSpawner{NoUserLayer: true, Registry: newSpawnGateRegistry(t, t.TempDir(), nil, nil)}
+	if _, err := h.ListLaunchModelContract(context.Background()); err != nil {
+		t.Fatalf("ListLaunchModelContract: %v", err)
+	}
+	if got, ok := envLookup(captured, "EVENER_PROVIDERS_CONFIG"); !ok || got != "" {
+		t.Fatalf("EVENER_PROVIDERS_CONFIG = %q (present %v), want present and empty", got, ok)
 	}
 }

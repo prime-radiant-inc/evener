@@ -154,7 +154,6 @@ func (a *tfpAdapter) PlanResponsesContinuation(llm.Request) (llm.ResponsesContin
 		StorageScopeFingerprint:    "tfp-storage-scope",
 		StoragePolicyLabel:         llm.ResponsesStoragePolicyPublicOpenAIStore,
 		ContinuationStorageAllowed: true,
-		CanFallbackToChat:          true,
 	}, nil
 }
 

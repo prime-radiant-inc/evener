@@ -1,363 +1,116 @@
 # LLM Provider Configuration, Credentials & Launch Architecture
 
 How evener stores provider credentials, signs you in to OpenAI, and how the
-**hub** turns a launch request into a running model session. This documents the
-**current** implementation (as of 2026-05, after Phase 1c all-config-driven /
-hub materialization) so you can navigate it quickly.
+**hub** turns a launch request into a running model session.
 
 Companion docs:
 
-- [`llm-providers.md`](llm-providers.md) — provider *architecture*: how a
-  `provider/model` string is routed to an adapter, profiles, wire protocols.
-- [`ollama.md`](ollama.md) — the Ollama adapter and its env-var discovery.
-
-The model to carry over from `llm-providers.md`: a provider has **two
-identities** — the instance **name** (`req.Provider`/`profile.ID()`/the adapter
-registration name) routes and identifies, while the behavior **tag**
-(`profile.BehaviorTag()`) drives provider-conditional behavior. For the default
-env-seeded instances they coincide (one instance per type, name == type), so the
-credential lookup below is keyed by the type name; a `providers.toml` (Phase 1b+)
-adds named/custom instances, each with its own credentials and — for the `openai`
-tag — its own OAuth record. This doc is about *where the credentials live* and
-*which process reads them*.
-
----
+- [`llm-providers.md`](llm-providers.md) — the registry architecture: layers,
+  instances, resolution, wire protocols.
+- [`ollama.md`](ollama.md) — the `ollama` provider and its env-var discovery.
 
 ## Overview
 
-There are two credential stores plus environment variables, and — with custom
-instances — a `providers.toml`:
-
-| Store | File | Format | Owner | Used for |
-|-------|------|--------|-------|----------|
-| Credentials store | `<hubStateRoot>/credentials.toml` (chmod 600) | TOML | `internal/credentials` | API keys, keyed by provider type |
-| OpenAI OAuth record | `<stateDir>/auth/<instance>.json` (chmod 600) | JSON | `internal/auth/openai` | OpenAI ChatGPT/Codex OAuth tokens, per instance |
-| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | instance descriptors plus optional `headers`, `credential_headers`, `compat`, and `models`; runtime credential values are scrubbed during rewrites and authored credential expressions are preserved |
-| Process environment | n/a | env vars | the OS | fallback / base URLs / tuning |
+| Store | File | Format | Used for |
+|---|---|---|---|
+| Credentials store | `<config-root>/credentials.toml` (chmod 600) | TOML | API keys, keyed by **instance name** |
+| OpenAI OAuth record | `<state-root>/auth/<instance>.json` (chmod 600) | JSON | OpenAI ChatGPT/Codex OAuth tokens, per instance — the default instance is now `openai-codex`, not `openai` |
+| Providers config | `<config-root>/providers.toml` | TOML | instance descriptors: `base`, transport, protocol, surface, caps, and optional `headers`/`credential_headers`/model overrides (see [`llm-providers.md`](llm-providers.md#providerstoml)) |
+| Process environment | n/a | env vars | fallback / base URLs / tuning |
 
 The **hub process never runs a model**. To validate or list models it spawns
-`evener launch-check` as a short-lived subprocess; to run a session it spawns the
-`evener serve` daemon. API keys reach those subprocesses **through the environment**
-(one key per launch). The one config file that *does* cross the boundary is
-`providers.toml`: when the hub has loaded one it passes the path as
-`EVENER_PROVIDERS_CONFIG` (`launchconfig.ToEnv:65`) and the child re-reads it; OAuth
-records are likewise re-read from disk by the child (via `EVENER_STATE_DIR`).
+`evener launch-check` as a short-lived subprocess; to run a session it spawns
+the `evener serve` daemon.
 
-### Provider header classes
+## Credentials store
 
-Provider instances keep ordinary and credential-bearing custom headers in
-separate maps:
-
-```toml
-[instances.gateway]
-type = "anthropic"
-headers = { "X-Trace-Label" = "team-a" }
-credential_headers = { "X-Gateway-Key" = "$GATEWAY_KEY" }
-```
-
-`headers` is explicitly non-secret and remains eligible for exact API-log
-capture. `credential_headers` is the source of truth for arbitrary secret
-header names and values; those headers reach the provider request but are
-excluded from persisted API diagnostics. Both maps use `$ENV`, `${ENV}`, and
-`$$` expansion only when constructing the runtime adapter. Header names are
-case-insensitive for validation, and a duplicate within or across the maps is
-rejected rather than silently moved or reclassified.
-
-`WriteFile` never writes resolved credential-header values from a runtime
-config. It restores the existing file's authored `credential_headers` map, so
-environment expressions survive unrelated rewrites without leaking the
-resolved secret.
-
----
-
-## Credentials store (`internal/credentials/store.go`)
-
-`credentials.toml` holds one section per provider:
+`credentials.toml` holds one section per instance:
 
 ```toml
 schema = 1
-[providers.openai]
-api_key = "sk-..."
+
 [providers.anthropic]
 api_key = "sk-ant-..."
+
+[providers.openai]
+api_key = "sk-..."
+
+[providers.openrouter]
+api_key = "..."
 ```
 
-- `LoadStore` reads the file. A missing file yields an empty store (no error). A
-  present file **must** be mode `0600` — group/world bits set cause a hard error.
-  Writes go through a temp-file + rename with `0600`.
-- **The fixed provider set is defined in code, not config**, and the store keeps
-  no copy of it. The single source is the `envvars` registry: `envvars/providers.go`
-  holds one `ProviderEnv` row per provider, and the store asks it per lookup.
-  - `envvars.Providers()` enumerates the rows. `List()` iterates it, so
-    `envvars/providers.go` is the definition of "what providers exist" to the hub.
-  - `envvars.APIKeyVars(provider)` — the env var(s) checked as a fallback, in
-    order (first non-empty wins). `Get`, `Layers`, `InstanceLayers`, and
-    `ResolveKey` each read it.
-  - `envvars.AuthModes(provider)` — the supported auth flows (`apiKey` /
-    `oauth` / `none`). `envvars.RequiresNoCredential(provider)` names the
-    derived case of a provider that authenticates nothing, so no caller has to
-    restate it.
-- `Get(provider)` resolves a key with lookup order **file → env → absent**,
-  returning the value and a `Source` (`SourceFile` / `SourceEnv` /
-  `SourceAbsent`).
-- `Layers(provider)` reports the file and env layers *independently* of
-  priority, so the UI can show a stored key shadowed by (or shadowing) an env
-  var.
-- `ResolveKey(name, tag)` and `InstanceLayers(name, tag)` are the instance-keyed
-  pair: the file entry is looked up under the instance **name**, then the name's
-  env vars, then the behavior **tag**'s. They are what a `providers.toml` setup
-  resolves through.
-- `Set` / `Clear` / `List` / `APIKeyFor` round out the API. `APIKeyFor` is the
-  `launchconfig.CredentialResolver` implementation the spawner uses.
-- `ollama` needs no credential: its registry row's only auth mode is `none`,
-  though it still accepts an optional `OLLAMA_API_KEY`. `List()` reports
-  `SourceNone` for any provider `envvars.RequiresNoCredential` accepts, so the
-  rule holds for a second such provider with no edit here.
+A section name matches either a curated implicit provider's id (`anthropic`,
+`openai`, `openrouter`, …) or a custom instance name defined in
+`providers.toml` — the store no longer keys off a provider *type*.
 
-The hub loads exactly one store, at
-`filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml")`
-(`cmd/evener-hub/main.go`) — always a sibling of the providers.toml the hub
-loaded, wherever `EVENER_PROVIDERS_CONFIG` or `cmdutil.DefaultConfigRoot()`
-put that — and hands it to the spawner and the auth controller.
+The store's file entry under the instance name is step 3 of the [credential
+resolution order](llm-providers.md#credential-resolution-order); see that
+doc for the authoritative full order. `ollama`, `none`/`optional-bearer`
+instances, `gcp-adc` instances, and `oauth-openai-codex` instances need no
+credentials-store entry at all.
 
-> Note: the UI copy and several code comments say keys live in
-> `~/.config/evener/credentials.toml` (e.g. the package doc at the top of
-> `store.go`). That is the *documented default home*; the hub actually uses
-> whatever directory the loaded providers.toml lives in. The hub auth
-> controller's fallback constructors derive the path the same way —
-> `filepath.Join(filepath.Dir(stateDir), "credentials.toml")`, where
-> `stateDir` there is the OpenAI OAuth state directory, not
-> `HubStateRoot` — (`newHubAuthController` / `newHubAuthControllerWithStore`
-> in `cmd/evener-hub/app_auth.go`).
+The hub and `evener providers add`/`probe --write` write `providers.toml`
+through the registry's config writer, which writes exactly the entries it's
+given — a resolved credential is never persisted, only what the user
+authored (`api_key = "$VAR"` literals and `credential_headers` references).
 
-### Which key a lookup uses
-
-`credentials.toml` is keyed by instance name; the `envvars` registry is keyed by
-a **tag**, not by the `type` an instance declares. There are two tags, and they
-answer different questions.
-
-**How the instance behaves** — which adapter serves it, which dialect it speaks,
-whether OAuth exists for it, which auth modes the pane offers — is
-`providercfg.BehaviorTag`. It differs from the declared type for exactly one
-case: an `openai` instance with `api_style = "chat-completions"` has tag
-`openai-compatible` and supports no OAuth at all.
-
-**Which key authenticates it** is `providercfg.CredentialTag`, because that
-answer belongs to the endpoint the adapter will actually contact rather than to
-the protocol it speaks there. `openai-compatible` is the one tag that labels a
-protocol rather than a provider — the only registry row with no
-`DefaultBaseURL` and the only one marked `RequiresBaseURL` — so it is the one
-tag where `base_url` decides:
-
-- **No `base_url`.** `newOpenAIChatCompletionsInstance` falls back to a
-  compile-time `https://api.openai.com/v1`, so the instance is OpenAI's own
-  endpoint and resolves `OPENAI_API_KEY`. `OPENAI_COMPATIBLE_API_KEY`
-  authenticates the host `OPENAI_COMPATIBLE_BASE_URL` names, which this instance
-  never contacts, and is deliberately not a second chance for it.
-- **With a `base_url`.** The instance is an arbitrary gateway, and no
-  type-level key belongs to it. Only a `credentials.toml` entry or an env var
-  under its own **name** authenticates it — which is exactly what
-  `cmdutil.LoadProviderConfigAt` injects, so a gateway with neither is a client
-  that sends no `Authorization` header, and the pane says so.
-
-Every other tag names a provider with a `DefaultBaseURL` of its own, so the two
-tags are equal for it and `base_url` changes nothing.
-
-All four sites ask the same derivation, so launch and the credentials pane
-cannot disagree about one instance:
-
-- `cmdutil.LoadProviderConfigAt` (`cmdutil/load_client.go`) injects the key the
-  spawned process signs its requests with. It is the arbiter: the other three
-  exist to describe or gate what it built.
-- `validateProviderCredentials` (`cmd/evener-hub/spawn.go`) gates the launch. It
-  resolves the same layers `credentials.Store.ResolveKey` does — the instance
-  name's, then the credential tag's — against the child's environment, and
-  returns early for a behavior tag that `envvars.RequiresNoCredential` accepts.
-- `hubAuthController.instanceStatusFor` derives both tags and feeds
-  `instanceStatus`, which serves `evener/auth/status` and
-  `hubInstancesController.List`.
-- `instanceHasEffectiveCredential` (`cmd/evener-hub/app_credentials.go`) decides
-  whether `evener/auth/test` has anything to probe.
-
-`instanceIsOpenAI` (behind `requiresOpenAI`), `credentialRequired`,
-`envvars.AuthModes` and the OAuth branches keep the **behavior** tag: OAuth is
-something the adapter can or cannot send, not a host it sends to. So a
-chat-completions instance is still refused entry to the OpenAI login flow, and a
-stored OAuth record does not open the launch preflight for one.
-
-`TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends`
-(`cmd/evener-hub/app_credential_endpoint_agreement_test.go`) states that agreement
-as one invariant over the shapes rather than four per-site assertions.
-
----
+There's no separate "credential tag" anymore. The store holds only its file
+layer, keyed by instance name; every environment lookup — the provider's
+`api_key_env` variables and the `<NAME>_API_KEY` rule for custom names — is
+the registry's own job, in the order [`llm-providers.md`](llm-providers.md#credential-resolution-order)
+documents. The store never sees a separate lookup table for it.
 
 ## Environment-variable reference
 
-Every variable below is a row in the `envvars` package: the name and its
-metadata in `envvars/envvars.go`, the provider it belongs to in
-`envvars/providers.go`. Production code reads the row (`envvars.Var.Trimmed`,
-`envvars.APIKeyVars`, …) rather than calling `os.Getenv` on a literal name, and
-a default test asserts that, so "Read by" cites the consumers that act on a
-variable rather than a definition site.
+The complete list — API keys and base URLs together — lives in
+[`docs/developing-evener/environment.md`](developing-evener/environment.md#provider-configuration).
+Single source, not duplicated here, so it can't drift out of sync.
 
-### API keys
+## OpenAI OAuth and the Codex transport
 
-Each of these appears in the named provider's `APIKeyVars`, so
-`credentials.Store` resolves it for that provider — and for any instance whose
-behavior tag is that provider — with no per-variable code.
-
-| Env var | Provider(s) | Read by |
-|---------|-------------|---------|
-| `OPENAI_API_KEY` | openai | `llm/providers/openai/adapter.go`; `auth/openai/service.go` |
-| `ANTHROPIC_API_KEY` | anthropic | `llm/providers/anthropic/adapter.go` |
-| `GEMINI_API_KEY` | google, gemini (primary) | `llm/providers/google/adapter.go` |
-| `GOOGLE_API_KEY` | google, gemini (fallback after `GEMINI_API_KEY`) | `llm/providers/google/adapter.go` |
-| `MINIMAX_API_KEY` | minimax | `llm/providers/minimax/adapter.go` |
-| `OPENROUTER_API_KEY` | openrouter, openrouter-anthropic | `llm/providers/openrouter/adapter.go`; `llm/providers/openrouter_anthropic/adapter.go`; `cmdutil/cmdutil.go` |
-| `KIMI_API_KEY` | kimi | `llm/providers/kimi/adapter.go`; `cmdutil/cmdutil.go` |
-| `KIMI_CODING_API_KEY` | kimi-anthropic (Kimi coding plan) | `llm/providers/kimi_anthropic/adapter.go` |
-| `GLM_API_KEY` | glm | `llm/providers/glm/adapter.go`; `cmdutil/cmdutil.go` |
-| `OPENAI_COMPATIBLE_API_KEY` | openai-compatible | `llm/providers/openaicompat/adapter.go` |
-| `OLLAMA_API_KEY` | ollama (optional) | `llm/providers/ollama/adapter.go` |
-
-Note that `credentials.toml` only stores keys (no per-provider base URLs). The
-credentials store and the `launchconfig` injector read the same registry row but
-different fields: `APIKeyVars` is the ordered fallback list the store resolves
-through (which is how `GOOGLE_API_KEY` backs up `GEMINI_API_KEY`), while
-`InjectAPIKeyVar` is the single canonical var `ToEnv` injects into the spawned
-subprocess. A row with no `InjectAPIKeyVar` — ollama — injects nothing.
-
-### Base URLs
-
-| Env var | Effect | Read by |
-|---------|--------|---------|
-| `OPENAI_BASE_URL` | API-key OpenAI backend base (default `https://api.openai.com`) | `llm/providers/openai/adapter.go:125` |
-| `OPENAI_CHATGPT_BASE_URL` | OAuth ChatGPT/Codex backend base (default `https://chatgpt.com`) | `llm/providers/openai/adapter.go:95` |
-| `ANTHROPIC_BASE_URL` | Anthropic base override | `llm/providers/anthropic/adapter.go:44` |
-| `GEMINI_BASE_URL` | Google/Gemini base override | `llm/providers/google/adapter.go:51` |
-| `MINIMAX_BASE_URL` | MiniMax base override | `llm/providers/minimax/adapter.go:47` |
-| `OPENROUTER_BASE_URL` | OpenRouter base override (default `https://openrouter.ai/api/v1`) | `cmdutil/cmdutil.go:273` |
-| `KIMI_BASE_URL` | Kimi base override (default `https://api.moonshot.ai/v1`) | `cmdutil/cmdutil.go:271` |
-| `KIMI_CODING_BASE_URL` | Kimi coding-plan base override (default `https://api.kimi.com/coding`, Anthropic-compatible) | `cmdutil/seed.go`; `llm/providers/kimi_anthropic/adapter.go` |
-| `GLM_BASE_URL` | GLM base override (default `https://api.z.ai/api/paas/v4`) | `cmdutil/cmdutil.go:272` |
-| `OPENAI_COMPATIBLE_BASE_URL` | **required** — its presence gates openai-compatible registration | `llm/providers/openaicompat/adapter.go:90,103` |
-| `OLLAMA_BASE_URL` | Ollama base, used as-is (must include `/v1`) | `llm/providers/ollama/adapter.go:187` |
-| `OLLAMA_HOST` | Ollama canonical host var, normalized to a `/v1` URL | `llm/providers/ollama/adapter.go:188` |
-
-The Kimi/GLM/OpenRouter base URLs appear in two places: the adapters use them for
-chat, and `cmdutil.providerEnvConfig` (`cmdutil/cmdutil.go:266`) also reads them
-to query a provider's `/models` endpoint for context-window sizing
-(`queryModelContextWindow`, `cmdutil.go:280`).
-
-> **Kimi coding plan:** Kimi For Coding gates its endpoints behind a coding-agent
-> User-Agent allowlist (403 otherwise). The `kimi` and `kimi-anthropic` adapters
-> announce Claude Code's User-Agent so the request is accepted — there is no env
-> var for it; it's the hardcoded constant in `llm/providers/internal/kimicoding`
-> (see the Kimi note in `llm-providers.md`).
-
-### Other tuning
-
-| Env var | Effect | Read by |
-|---------|--------|---------|
-| `OPENAI_ORG_ID` | OpenAI org header (API-key path only) | `llm/providers/openai/adapter.go:133` |
-| `OPENAI_PROJECT_ID` | OpenAI project header (API-key path only) | `llm/providers/openai/adapter.go:134` |
-| `OPENAI_COMPATIBLE_PROVIDER_QUIRKS` | selects a quirks preset for the openai-compatible adapter | `llm/providers/openaicompat/adapter.go:110` |
-
-### Process-coordination vars (set by the hub, read by the subprocess)
-
-These are injected by the spawner (see below) — not provider credentials:
-`EVENER_HUB_SPAWNED`, `EVENER_RUN_DIR`, `EVENER_STATE_DIR`, `EVENER_HUB_TOKEN`
-(`launchconfig/env.go:54-63`). `evener serve` reads `EVENER_HUB_SPAWNED` /
-`EVENER_RUN_DIR` to label its rendezvous entry (`cmd/evener/serve.go:376-385`), and
-`llm.NewFromEnv` reads `EVENER_STATE_DIR` / `XDG_STATE_HOME` to locate the OpenAI
-OAuth record (`llm/env_registry.go:51-52`).
-
----
-
-## OpenAI OAuth (`internal/auth/openai/*`, `cmd/evener-hub/app_auth.go`)
-
-OpenAI is the only provider with two backends, selected by *how* you are
-authenticated:
-
-- **OAuth → ChatGPT/Codex backend** (`OPENAI_CHATGPT_BASE_URL`, default
-  `https://chatgpt.com`, Codex responses path) — `adapter.go:86-121`.
-- **API key → standard OpenAI API** (`OPENAI_BASE_URL`, default
-  `https://api.openai.com`, with org/project headers) — `adapter.go:123-138`.
+OpenAI has two separate **instances**, not one instance with two credential
+sources: `openai` (an API key, via `credentials.toml` or `OPENAI_API_KEY`)
+and `openai-codex` (OAuth only).
 
 ### The OAuth record
 
-- One JSON file **per instance**: `AuthFilePath(stateDir, instanceName)` →
-  `<stateDir>/auth/<instanceName>.json` (`storage.go:42`), written `0600`. The
-  default `openai` instance keeps `auth/openai.json`; a custom `openai`-tag
-  instance named `work` uses `auth/work.json`.
-- `AuthRecord.Validate` (`storage.go:140`) requires `version == 1` and non-empty
-  source/access-token/refresh-token/token-type/expiry/obtained-at. The old
-  `provider == "openai"` check was **dropped** in 1b so a record under a custom
-  instance name validates — the behavior *tag*, not the record, decides
-  openai-ness.
-- The default state dir (when not overridden) is XDG-based:
-  `$XDG_STATE_HOME/evener` or `~/.local/state/evener`. The hub overrides this from its
-  own environment.
+One JSON file per instance: `<state-root>/auth/<instance>.json`. The
+`evener openai` CLI and the hub's OAuth flow operate on `openai-codex` by
+default now, so a fresh sign-in writes `auth/openai-codex.json`. A record's
+validity no longer special-cases "openai-ness" by content — only by which
+transport the named instance is on (`Transport.Auth ==
+oauth-openai-codex`).
 
-### Precedence (standalone `Service`, `service.go`)
+### Precedence
 
-`Service.ResolveRuntimeCredentials` (`service.go:378`) and `Service.Status`
-(`service.go:350`) both implement: **stored OAuth record > `OPENAI_API_KEY`
-env**. Crucially, if a record *exists but cannot be refreshed*, the service
-surfaces a re-login error (`ErrLoginRequired`, `service.go:392,406,414`) rather
-than silently falling back to the env key — an explicit sign-in wins. Tokens are
-refreshed automatically with a 5-minute skew (`refreshSkew`, `service.go:16`;
-`needsRefresh`, `service.go:493`).
-
-`llm.NewFromEnv` for OpenAI mirrors this: it checks `Service.Status`, and if the
-active source is OAuth it routes through the ChatGPT/Codex adapter; otherwise it
-falls back to `OPENAI_API_KEY` (`llm/providers/openai/adapter.go:77-140`).
-
-### Precedence (hub controller, `app_auth.go`)
-
-The hub adds a third layer. `openAIStatus` (`app_auth.go:320`) resolves
-**stored OAuth record > credentials.toml file key > `OPENAI_API_KEY` env**
-(`app_auth.go:341-350`). The file layer exists because the hub can store an
-OpenAI API key in `credentials.toml` like any other provider — the standalone
-`Service` knows nothing about that file, only the hub controller does.
+This used to be "stored OAuth record beats `OPENAI_API_KEY` env beats (hub
+only) a `credentials.toml` file key" **within one instance**. That framing
+is gone: `openai` and `openai-codex` never share a credential, so there's
+nothing to arbitrate between within either one. What used to feel like
+"OAuth wins" is now `openai-codex` simply ranking before `openai` in
+`default_order` — a fresh sign-in becomes the default *instance* by ranking,
+not by precedence inside one instance's credential resolution.
 
 ### How a user signs in
 
-The hub auth controller (`hubAuthController` in `cmd/evener-hub/app_auth.go`)
-gates every OAuth RPC on the named instance's behavior tag being `openai`
-(`requiresOpenAI` → `instanceIsOpenAI`), and exposes:
-`Status` / `List` / `Logout` / `LoginStart` / `LoginComplete` / `DeviceStart` /
-`DevicePoll` / `ApiKeySet`. A chat-completions `openai` instance is refused with
-an invalid-params error rather than handed an authorize URL that could never
-authenticate it.
+The device-code flow is primary: the browser (or CLI) requests a device
+code, shows a user code and verification URL, and polls until a second
+device authorizes it. Where device-code isn't available, a paste-back
+redirect flow is the fallback — an authorize URL is opened in a browser and
+the user pastes the resulting redirect URL back in. The CLI equivalent is
+`evener openai login`, which auto-selects browser vs. device flow from
+`SSH_CONNECTION`/`SSH_TTY`/`DISPLAY`/`WAYLAND_DISPLAY` (overridable with
+`EVENER_LOGIN_HEADLESS`); `--instance` on `login`/`status`/`logout` now
+defaults to `openai-codex` instead of `openai`. The gate for every OAuth RPC
+is now "is this instance's transport `oauth-openai-codex`," not a
+name-equals-`openai` check, so a custom instance can carry Codex OAuth too
+(`[providers.work] base = "openai-codex"`).
 
-The web Credentials screen drives this (see Web/TUI surfaces below):
-
-1. **Device-code flow (primary).** `DeviceStart` (`app_auth.go:428`) requests a
-   device code and returns a user code + verification URL. The browser polls
-   `DevicePoll` (`app_auth.go:459`) until the user authorizes on a second device;
-   on success the controller saves the OAuth record and returns updated status.
-   Flows expire after 15 minutes (`app_auth.go:471`).
-2. **Paste-back redirect (fallback).** If device-code isn't enabled
-   (`ErrDeviceCodeNotEnabled`, `app_auth.go:435`), `DeviceStart` returns
-   `Fallback: true`; the UI then calls `LoginStart` (`app_auth.go:149`) to get an
-   authorize URL, the user authorizes in a browser, and pastes the full redirect
-   URL back into `LoginComplete` (`app_auth.go:189`), which does the PKCE code
-   exchange.
-
-The CLI equivalent is `evener openai login` (`cmd/evener/openai_login.go:51`),
-which auto-selects browser vs. device flow based on whether a graphical session
-is detected (`SSH_CONNECTION`/`SSH_TTY`/`DISPLAY`/`WAYLAND_DISPLAY`, overridable
-with `EVENER_LOGIN_HEADLESS`); subcommands `login` / `logout` / `status`. The CLI
-device flow also watches for a *concurrent* `evener openai login` writing fresh
-state and exits gracefully if it sees one (`service.go:308-348`).
-
-**Two homes, by design:** OpenAI API keys live in `credentials.toml`; OAuth
-tokens live in `openai.json`. `Logout` for OpenAI clears the effective layer —
-it deletes the OAuth record if present, otherwise clears the file key; the env
-layer cannot be cleared (`app_auth.go:257-282`).
-
----
+A stray record — `auth/<name>.json` where `<name>` isn't an instance on the
+Codex transport (including one left over from `evener openai login
+--instance work` under the old scheme) — produces a one-line startup notice
+naming the file, remedied with `evener openai logout --instance <name>` or
+deleting it by hand.
 
 ## Hub launch / spawn process model
 
@@ -366,203 +119,271 @@ This is the part most worth internalizing: **the hub orchestrates, separate
 
 ```
                         ┌──────────────────────────────────────────────┐
-                        │  evener hub process                            │
-                        │  (cmd/evener-hub)                              │
+                        │  evener hub process                          │
+                        │  (cmd/evener-hub)                            │
                         │                                              │
-   credentials.toml ───▶│  credentials.Store (main.go:103)            │
-   openai.json     ───▶│  hubAuthController (app_auth.go)             │
-   providers.toml  ─────▶  MaterializeProvidersConfig (main.go:120)   │
+   credentials.toml ───▶│  hub's own provider registry load           │
+   auth/*.json      ───▶│  hubAuthController (app_auth.go)             │
+   providers.toml   ───▶│  (only if the file exists — never written    │
+                        │   or materialized at startup)                │
                         │  HubSpawner (spawn.go)                       │
-                        └───────────────┬──────────────┬──────────────┘
+                        └───────────────┬──────────────┬───────────────┘
                                         │              │
-                  EVENER_PROVIDERS_CONFIG │              │  EVENER_PROVIDERS_CONFIG
-                  + one API key         │              │  + one API key
+                EVENER_PROVIDERS_CONFIG │              │  EVENER_PROVIDERS_CONFIG
+              EVENER_CREDENTIALS_CONFIG │              │  EVENER_CREDENTIALS_CONFIG
                                         ▼              ▼
               ┌─────────────────────────────┐   ┌─────────────────────────────┐
-              │ evener launch-check           │   │ evener serve  (the daemon)    │
+              │ evener launch-check         │   │ evener serve  (the daemon)  │
               │ (subprocess, short-lived)   │   │ (subprocess, long-lived)    │
-              │ cmd/evener/launch_check.go    │   │ cmd/evener/serve.go           │
+              │ cmd/evener/launch_check.go  │   │ cmd/evener/serve.go         │
               │                             │   │                             │
-              │ cmdutil.LoadClient()        │   │ cmdutil.LoadClient()        │
-              │ → ProviderNames / ListModels│   │ → runs the session          │
+              │ loads its own registry      │   │ loads its own registry      │
+              │ → instance list / models    │   │ → resolves + runs the model │
               │ validates one model         │   │ writes a rendezvous entry   │
               └─────────────────────────────┘   └──────────────┬──────────────┘
                                                                 │
                                                   rendezvous file (run dir)
-                                                  carries modelRef.Provider
+                                                  carries the instance name
                                                                 │
                         ┌───────────────────────────────────────┘
                         ▼
                 hub reads rendezvous for roster / resume
 ```
 
-### Building the subprocess environment (`internal/launchconfig/env.go`)
+**The hub no longer materializes `providers.toml` at startup.** It passes
+`EVENER_PROVIDERS_CONFIG` to children only when a file already exists.
+`EVENER_PROVIDERS_CONFIG` is a **tri-state**: unset means the default path;
+set to a path means that file; set and **empty**
+(`export EVENER_PROVIDERS_CONFIG=`) means "no user layer" — `os.LookupEnv`,
+not `Getenv`, distinguishes unset from empty. A hub whose own file failed to
+load sets it empty in every child's environment, overriding anything the
+hub itself inherited, so sessions keep launching against the implicit
+instance set while the broken file gets fixed by hand.
 
-`ToEnv` (`env.go:53`) produces the env slice for a spawned subprocess. Starting
-from the parent env (`os.Environ()`), it sets, in increasing priority:
+`EVENER_CREDENTIALS_CONFIG` names `credentials.toml` explicitly (new
+variable); when unset, the store is the sibling of the providers path, as
+before.
 
-1. Process-coordination vars: `EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`,
-   `EVENER_STATE_DIR`, `EVENER_HUB_TOKEN` (`env.go:55-63`).
-2. `EVENER_PROVIDERS_CONFIG`, when the hub loaded a `providers.toml`
-   (`env.go:65-66`) — the only config file that crosses the boundary; the child
-   re-reads it.
-3. **Exactly one** provider API key — the registry's
-   `envvars.InjectAPIKeyVar(in.Provider)`, resolved via `Creds.APIKeyFor`. Only
-   the launched provider's key is injected; nothing else from the credentials
-   store crosses the boundary. A provider with no `InjectAPIKeyVar` (ollama)
-   contributes nothing here.
-4. Per-launch env overrides from `Resolved.Effective.Env`, applied last
-   (sorted, last-write-wins) so they win over everything (`env.go:78-85`).
+**Implicit instances are computed identically and independently by every
+process** from the same inputs — the environment and the credentials store.
+The hub no longer injects the launched instance's key into the child the
+way it used to: the subprocess environment carries process-coordination
+vars (`EVENER_HUB_SPAWNED=1`, `EVENER_RUN_DIR`, `EVENER_STATE_DIR`,
+`EVENER_HUB_TOKEN`), the two config-path variables above, and any per-launch
+env overrides (sorted, last-write-wins) — no provider credential. The child
+resolves its own from the registry, the `credentials.toml` named by
+`EVENER_CREDENTIALS_CONFIG`, and its own environment, exactly as the hub
+would for the same instance.
 
-OpenAI OAuth tokens are **not** in this list — the comment at `env.go:44-49`
-notes the on-disk OAuth state is "handled by evener itself": the subprocess re-reads
-the per-instance `auth/<instance>.json` via its client builder using the injected
-`EVENER_STATE_DIR`.
+A `providers.toml` load error is a hub **diagnostic**, not a fatal crash:
+the hub starts with implicit instances only, shows the error in the
+instances pane, launches sessions against that implicit set, and refuses
+every instance write until the file is fixed by hand.
 
-### Spawning `evener launch-check` (model discovery / validation)
+The spawn credential gate keys on the instance's `Transport.Auth`: `none`
+and `optional-bearer` need nothing; `oauth-openai-codex` is satisfied by the
+instance's OAuth record; `gcp-adc` by the ADC variable or file; everything
+else needs a resolved key or credential header, or the launch fails before a
+process is spawned.
 
-`HubSpawner` builds env with `ToEnv`, then runs the checker as a subprocess:
+### Spawning `evener launch-check`
 
-- `listEvenerLaunchModelContract` (`spawn.go:601`) runs
-  `evener launch-check --protocol <v> --json --models` with `cmd.Env = env`
-  (`spawn.go:607-608`) and decodes the JSON contract.
-- `validateEvenerLaunchContract` (`spawn.go:558`) runs the same binary with
-  `--model <provider/model>` to validate a specific model (`spawn.go:562-570`).
-- Both have a timeout (`evenerLaunchCheckTimeout`) and redact secrets out of error
-  output via `redactEnvSecrets` (`spawn.go:655`).
+Still short-lived, still config-aware — it now resolves via the registry's
+`Resolve` rather than the old `ResolveProfileFromConfig`/`BehaviorTagOf`, so
+it needs no credentials to validate a profile (§5.2 of the design spec: a
+reference resolves with no key set) and enumerates instances straight from
+`Registry.Instances()`.
 
-Inside the checker, `evener launch-check` (`cmd/evener/launch_check.go`) is
-config-aware:
+### Spawning `evener serve`
 
-- **Profile validation is credential-free.** `validateLaunchCheckProfile`
-  (`launch_check.go:119`) loads just the config (`launchCheckLoadConfig:35`, same
-  `EVENER_PROVIDERS_CONFIG`-else-default path resolution as `LoadClient`): it always
-  resolves via `agent.ResolveProfileFromConfig` (`:125`) so **custom instance names
-  are valid**. It needs no API keys, so the launch contract resolves even with no
-  credentials present.
-- **Model listing** (`launchCheckModels:132`) builds a live client via
-  `launchCheckLoadClient` (`:28` → `cmdutil.LoadClient`, always config-driven),
-  enumerates `client.ProviderNames()`, and filters by **behavior tag**
-  (`client.BehaviorTagOf(provider)`, `:146`) — `openrouter-anthropic` is skipped,
-  non-chat model IDs are dropped.
-- `validateLaunchCheckModel` (`:198`) then confirms the requested model is
-  actually offered.
-
-### Spawning `evener serve` (the session daemon)
-
-`HubSpawner.Spawn` (`spawn.go:110`) and `.Resume` (`spawn.go:154`):
-
-1. resolve the state dir and build env via `ToEnv` (`spawn.go:129,172`),
-2. run a **credential pre-check** `validateProviderCredentials`
-   (`spawn.go:138,182` → defined `spawn.go:466`) — it short-circuits OK for a
-   usable OpenAI OAuth record (`openAIStoredOAuthUsable`, `spawn.go:515`), for
-   openai-compatible when `OPENAI_COMPATIBLE_BASE_URL` is set (`spawn.go:507`),
-   and for `ollama` (no creds); otherwise it requires either a stored key or the
-   matching env var or it fails the launch,
-3. run `validateEvenerLaunchContract` (the launch-check subprocess) against the
-   model,
-4. `SpawnDaemon` / `ResumeDaemon` exec `evener serve` with `cmd.Env = req.Env`
-   (`spawn.go:276-277`), binding an ephemeral port (`--addr 127.0.0.1:0`,
-   `spawn.go:247`), and wait for the daemon's rendezvous file to appear.
-
-`evener serve` (`cmd/evener/serve.go`) builds its client with `cmdutil.LoadClient`
-(via the `serveLoadClient` test hook, `serve.go:39`), resolves the model with
-`cmdutil.ResolveModelRef` (`serve.go:155`) + `buildInitialProfile`
-(`serve.go:171,440`) — which always uses `ResolveProfileFromConfig` (config is
-always present after `LoadClient`) and re-applies the output-schema/decisions
-overrides — and on startup writes a rendezvous entry carrying `modelRef.Provider`
-(`serve.go:404`). The standalone `evener run` (`cmd/evener/run.go:127,138`) and the
-hub's own `model/list` implementation likewise builds via `cmdutil.LoadClient`,
-so all three see custom instances.
-
-`cmdutil.LoadClient` (`cmdutil/load_client.go:31`) is **always** `NewFromProviders`
-— it loads `providers.toml` when present, or seeds the config in memory from the
-environment via `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) when
-absent, then injects credentials via `credentials.Store.ResolveKey(name, typ)`
-(`internal/credentials/store.go`) into the in-memory config and calls
-`llm.NewFromProviders`. No disk write ever occurs in `LoadClient`; persisting
-`providers.toml` is the hub's responsibility. The hub (`cmd/evener-hub/main.go:120–131`)
-materializes the file on startup when absent via
-`cmdutil.MaterializeProvidersConfig` (`cmdutil/materialize.go:54`) and passes the
-path to spawned children via `EVENER_PROVIDERS_CONFIG`. `llm.NewFromEnv` is retained
-as the seed's detection input and for `launch_check.go`'s read-only validator, but
-is no longer a runtime default. `ProviderNames()` (`llm/client.go:63`) returns
-only the registered instances.
-
----
+Still `cmdutil.LoadClient`-driven, still config-aware. It loads the same
+registry (embedded snapshot, curated overlay, `providers.toml` when
+`EVENER_PROVIDERS_CONFIG` names one, live listings as needed), resolves the
+requested `instance/model` via `Resolve`, and writes a rendezvous entry
+carrying the resolved instance name.
 
 ## Resume & persistence
 
-- Session metadata persists `ProfileID`, which equals `profile.ID()` — i.e. the
-  instance name (the type name by default, or a custom instance name when a
-  `providers.toml` is in play). Written by `agent/snapshot.go` and
-  `agent/transcript.go`.
-- On **hub resume**, `resumeRequestForConfig` (`cmd/evener-hub/app_rpc.go`) reads
-  the past index entry and **passes the stored `ProfileID` through as the
-  provider** (PRI-1880); it errors on an empty `ProfileID` rather than silently
-  dropping it. The old hardcoded whitelist (which omitted `openai-compatible` and
-  would silently drop unknown names) was **removed** — downstream `evener` always
-  resolves via `ResolveProfileFromConfig` (so a legacy `ProfileID == "gemini"`
-  still resolves to the `google` adapter). The resolved provider + model then drive
-  the spawn.
-- On **CLI resume**, the stored `meta.ProfileID` is fed into
-  `cmdutil.ResolveModelRef` → `buildInitialProfile` (`cmd/evener/serve.go`,
-  `cmd/evener/run.go`).
+Session metadata still persists the instance name in `ProfileID` — the
+field keeps its name; it now holds the registry instance name rather than a
+provider type. On hub resume, the stored `ProfileID` is passed through as
+the instance to resolve; a saved session, `launch.toml`, `EVENER_MODEL`, or
+plugin `model:` declaration that names an instance that no longer exists
+fails with the "unknown instance" error, which lists the instances that are
+actually available — this is exactly what happens on resume for a session
+saved before the upgrade that named `kimi`, `glm`, `kimi-anthropic`, or
+`openrouter-anthropic` (see
+["Upgrading from the old schema"](#upgrading-from-the-old-schema) below).
 
-> A resume whose `ProfileID` names a custom instance relies on that instance still
-> being defined in `providers.toml`; a vanished instance surfaces the resolver's
-> "unknown instance" error (which lists the configured names) rather than being
-> silently dropped.
-
----
+Cost display follows the same registry-driven rule everywhere it appears —
+the model picker, a live session, and past-session history: it's priced
+from the resolved row's `Cost` (models.dev), and a row with no cost shows no
+dollar figure rather than a placeholder. A session recorded before this
+cut-over, with no instance name in its `ProfileID`, shows no cost in the
+hub's past-sessions list.
 
 ## Web / TUI provider surfaces
 
-### Two web settings screens (both render the same data)
+The duplicate type-based Providers and Credentials screens are gone,
+replaced by one instance-aware CRUD screen
+(`cmd/evener-hub/frontend/src/panes/settings/sections/credentials/`,
+backed by `cmd/evener-hub/app_instances.go`) that calls the same functions
+the CLI does. It lists **every curated implicit provider**, whether or not
+it currently has a credential — since resolution never requires one, this
+is where a fresh install signs in to `openai-codex` or enters its first key,
+not a screen that only shows what's already configured — plus every
+explicit instance.
 
-- **Providers** (`cmd/evener-hub/templates/partials/settings/providers.html`) —
-  **read-only** status. It calls `launchconfig.authList()` and shows each
-  provider's `activeSource` badge and auth modes (`providers.html:27`). It links
-  out to the credentials page for edits.
-- **Credentials** (`cmd/evener-hub/templates/partials/credentials.html`) —
-  **read-write**. Same `authList()` source (`credentials.html:247`), plus buttons
-  to set/replace an API key (`authApiKeySet`), clear credentials
-  (`authLogout`), and the OpenAI OAuth device-code / paste-back flows
-  (`authDeviceStart` / `authDevicePoll` / `authLoginStart` /
-  `authLoginComplete`, `credentials.html:58-107,324-341`). It renders shadowed
-  vs. effective layers (oauth > file > env) so you can see, e.g., an OAuth
-  sign-in shadowing a stored key (`credentials.html:131-155`).
+Editing an implicit instance, or setting it as the default, writes a
+**shadowing** entry that carries only the fields the user changed — never a
+literal `base_url` the form merely displayed, which would otherwise trip
+the credential-inheritance stop described in
+[`llm-providers.md`](llm-providers.md#providerstoml). Removing a
+purely-implicit instance (one with no shadowing entry of its own) is
+refused, with a message naming the variable or record that makes it exist —
+unset the variable, or remove the OAuth record, instead.
 
-Both screens are duplicative by intent (both render the `authList` response);
-Providers is the at-a-glance view, Credentials is the editor. Both still enumerate
-the fixed provider **type** set (not config instances); **Phase 2** replaces them
-with one instance-aware CRUD screen — in the web hub **and** `evener tui`.
+The RPCs feeding this pane (`evener/auth/*`) now return one status per
+curated implicit provider plus every explicit instance, not the old fixed
+`envvars` roster.
 
 ### Model strings and display
 
-Model strings are always `provider/model`. Pickers group by provider. Display
-code strips a **hardcoded** provider-prefix allowlist before showing the model:
+The TUI strips a model chip's instance-name prefix generically now
+(`modeldisplay.AbbreviateModel`, `cmd/evener-tui/internal/modeldisplay/`) —
+it takes whatever the first slash-segment is, rather than matching a
+hardcoded provider allowlist, so it stays correct as instance names change.
+The web hub's frontend was rewritten to a React SPA as part of a separate
+effort — the old `spawn.js` and its hardcoded prefix list are gone along
+with it, and a search of the current frontend source turned up no
+equivalent allowlist function to describe here.
 
-- TUI: `abbreviateModel` (`cmd/evener-tui/model_display.go:7`) strips
-  `anthropic/`, `openai/`, `google/`, `openrouter/`, `openai-compatible/` and a
-  trailing `-YYYYMMDD` suffix.
-- Web: `abbreviateModel` (`cmd/evener-hub/assets/spawn.js:291`) strips the same
-  prefixes **except** `openai-compatible/` (`spawn.js:295`), plus the date
-  suffix.
+## Upgrading from the old schema
 
-> Minor discrepancy: the two allowlists differ — the web one omits
-> `openai-compatible/`, so an `openai-compatible/...` model keeps its prefix in
-> the web UI but not in the TUI.
->
-> The picker/launch **behavior** filters that used to key on a literal provider
-> name (`launch_check.go:146`, `web.go:2035`, `app_rpc.go
-> launchProviderAllowsUnreportedModels:1543`) were **re-keyed by behavior tag in
-> Phase 1b** (via `BehaviorTagOf` / `NameToTag`). The **display** allowlists above
-> (`abbreviateModel` in both the TUI and the web) still strip a hardcoded
-> provider-prefix set and remain a **Phase 2** item — to be made instance-aware in
-> both surfaces.
+There's no migration code. After upgrading, do the following once — the
+release notes and the load-error message both point here.
 
-The web picker classifies a stored model as valid / stale / unknown by comparing
-against the live enumerated list (`spawn.js:119-139`); providers that can't be
-enumerated (OAuth-only, `openrouter-anthropic`) fall into "unknown" rather than
-being shown as broken.
+**`providers.toml` fails to load.** An old-schema file (`[instances.*]`,
+`type`, `api_style`, `quirks`, `compat`) fails to load. The CLI exits with a
+pointer to
+[`docs/superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md);
+the hub starts with implicit instances only, shows the error as a
+diagnostic, launches sessions against the implicit set, and refuses
+instance writes until the file is fixed. Fix it by hand — edit, delete, or
+move the file aside; nothing does this automatically. Most users need no
+file at all afterward: every implicit provider (see the table in
+[`llm-providers.md`](llm-providers.md#the-implicit-provider-list)) exists
+from its key alone, and `*_BASE_URL` variables cover proxies. Re-create a
+gateway or custom-named instance with `evener providers add … --api-key-env
+NAME` or `--credential-header K=V`; remember an instance with its own
+`base_url` never inherits the vendor key the way today's
+`[instances.anthropic] base_url = …` shape did.
+
+**Default instance ranking changed.** With more than one instance and no
+`default` set, the default now follows `default_order` (the table in
+[`llm-providers.md`](llm-providers.md#the-implicit-provider-list)), then
+custom-named entries by sorted name — not today's alphabetical registration
+order. Concretely: `GEMINI_API_KEY` + `OPENAI_API_KEY` set together now
+defaults to `openai`, not `google`. Set `default` explicitly to keep the old
+pick.
+
+**Instance names that are gone**, with their replacements:
+
+| Old name | Replacement |
+|---|---|
+| `kimi` | `moonshotai` |
+| `glm` | `zai` |
+| `kimi-anthropic` | `kimi-for-coding` |
+| `openrouter-anthropic` | the `orclaude` recipe below — there's no single renamed instance, it's a `providers.toml` entry now |
+| `openai-compatible` as a vendor/type name | still exists, but only as the protocol-only pseudo-provider instance, not a `type = "openai" api_style = "chat-completions"` recipe |
+
+The `orclaude` recipe (the anthropic-protocol route to OpenRouter, for
+MiniMax's Anthropic-style tool calls):
+
+```toml
+[providers.orclaude]
+base     = "openrouter"
+protocol = "anthropic"
+[providers.orclaude.models."minimax/*"]
+surface  = "anthropic"
+```
+
+A saved session, `launch.toml`, `EVENER_MODEL`, or plugin `model:`
+declaration naming an old instance fails with the unknown-instance error,
+naming the instances that are actually available.
+
+**Environment variables that changed meaning or disappeared** (this table
+intentionally overlaps
+[`docs/developing-evener/environment.md`](developing-evener/environment.md#provider-configuration)
+— keep the two in sync on a future edit):
+
+- `KIMI_API_KEY` now means the Kimi coding plan (`kimi-for-coding`), not
+  Moonshot's platform key.
+- Moonshot's platform key is now `MOONSHOT_API_KEY`.
+- `GLM_API_KEY` is now `ZHIPU_API_KEY`.
+- No longer read at all: `KIMI_CODING_API_KEY`, `KIMI_BASE_URL`,
+  `KIMI_CODING_BASE_URL`, `GLM_BASE_URL`, `GEMINI_BASE_URL` (now
+  `GOOGLE_BASE_URL`), `OPENAI_CHATGPT_BASE_URL` (now
+  `OPENAI_CODEX_BASE_URL`), `OPENAI_COMPATIBLE_PROVIDER_QUIRKS`.
+- Every `*_BASE_URL` value now includes the version segment (e.g.
+  `https://api.anthropic.com/v1`, not `https://api.anthropic.com`) — except
+  DeepSeek's, a documented exception.
+
+**`auth/openai.json` vs `auth/openai-codex.json`.** OAuth records are per
+instance: `auth/openai.json` belongs to an instance literally named
+`openai`, which by default is the platform API and never reads it.
+`evener openai login` now writes `auth/openai-codex.json`, for the
+`openai-codex` instance. `openai/…` still means the platform API unless the
+user writes `[providers.openai] base = "openai-codex"` — in which case the
+*old* record is read as that instance's. A stray record — `auth/<name>.json`
+for any instance not on the Codex transport, including `auth/work.json`
+from a prior `evener openai login --instance work` — produces a startup
+notice until it's removed with `evener openai logout --instance <name>` or
+deleted by hand.
+
+**`credentials.toml` entries under old names** are ignored and reported by
+`evener providers list`; re-enter them under the new names through the
+hub's credentials pane.
+
+**`[1m]` references.** Only the Sonnet 4.5 and Opus 4.5 rows keep the
+`[1m]` suffix (`claude-sonnet-4-5[1m]`, `claude-sonnet-4-5-20250929[1m]`,
+`claude-opus-4-5[1m]`, `claude-opus-4-5-20251101[1m]`); `claude-opus-4-6[1m]`
+and later are unknown ids — the 4.6+ rows are 1M natively, no suffix needed
+or accepted.
+
+**Sessions with no `--reasoning-effort`** carry the model's own stated
+default effort, else `medium`, clamped to the model's ladder. Adaptive
+Claude (Opus 4.6/4.7/4.8, Sonnet 4.6, and the 5 family, Fable 5 included)
+states `high`, which is what Anthropic runs when the effort is omitted; the
+budget-shaped Claude 4.5 generation, Gemini 2.5, and the zai/qwen thinking
+toggles move from their provider's dynamic default to `medium`. Pass
+`--reasoning-effort none` to turn thinking off — on the wire for a model
+whose ladder lists an off level (gpt-5.1 and later), and as "no reasoning
+control at all" on every other model.
+
+**Ollama and local-model context windows.** The bundled per-model catalog
+(8192 for `llama3.1`, tag-stripping) is gone; every live-only model on
+`ollama` or a pseudo-provider now budgets against the provider-level
+`131072` default. Pin the real window with
+`[providers.ollama.models."llama3.1*"] context_window = 8192` or compaction
+fires late (see [`ollama.md`](ollama.md#context-length) for the full
+explanation — this is the same fact, not restated differently there).
+
+**`EVENER_PROVIDERS_CONFIG` tri-state.** `export EVENER_PROVIDERS_CONFIG=`
+(present, empty) now means "no user layer"; today it meant the default
+path. `evener providers list` and the hub diagnostics print `user layer:
+none (EVENER_PROVIDERS_CONFIG is empty)` so the state is visible.
+
+**`gemini` is no longer accepted** as an alias of `google` in model
+references.
+
+None of this is detected or translated at runtime, and none of the old
+files are renamed or deleted.
+
+## See also
+
+- [`llm-providers.md`](llm-providers.md) — the registry: layers, instances,
+  resolution, wire protocols, and the implicit provider table.
+- [`ollama.md`](ollama.md) — running evener against a local Ollama server.
+- [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
+  — the registry design: data model, layers, resolution, and the flag day.

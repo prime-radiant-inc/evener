@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"strings"
 	"time"
 
@@ -15,14 +14,19 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
 // details captured across one model call (including any fallback retries) for
 // the successful semantic assistant turn.
 type ModelAttemptMetadata struct {
-	HistoryMode             llm.HistoryMode
-	EndpointFamily          string
+	HistoryMode    llm.HistoryMode
+	EndpointFamily string
+	// Protocol is the wire protocol of the attempt that answered, read back
+	// from the round's attempt group. It is empty when an override served the
+	// call, because an override makes no transport attempt.
+	Protocol                string
 	EndpointURL             string
 	RequestModel            string
 	RequestFingerprint      string
@@ -134,21 +138,19 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 	return override
 }
 
-// prepareModelRequest runs the per-round input phases and assembles the llm.Request
-// for the round. It snapshots the model inputs (profile, system prompt, tool
-// definitions, reasoning effort) under s.mu — keeping the round on one consistent
-// model and removing the lock-free read races (PRI-1958 A2/A4) — then applies
-// context management and expands history. It records the SystemPrompt, ContextMgmt,
-// and HistoryExpand phase timings into t. It never returns an error: the input
-// phases only emit warnings.
-func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
-	profile, sys, history, req, reasoningEffort, _ = s.prepareModelRequestWithError(ctx, round, t)
-	return profile, sys, history, req, reasoningEffort
-}
-
-func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string, err error) {
+// prepareModelRequestWithError runs the per-round input phases and assembles the
+// llm.Request for the round. It snapshots the model inputs (profile, system
+// prompt, tool definitions, reasoning effort) under s.mu — keeping the round on
+// one consistent model and removing the lock-free read races (PRI-1958 A2/A4) —
+// then applies context management and expands history. It records the
+// SystemPrompt, ContextMgmt, and HistoryExpand phase timings into t.
+//
+// It also returns the full-history message list a planned continuation delta was
+// cut from. That list is the round's, not the request's: the retry after a
+// rejected anchor rebuilds from it, and nothing on the wire ever carries it.
+func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
-		return nil, "", nil, llm.Request{}, "", err
+		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
@@ -244,23 +246,23 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// Reuse historyTurns from context management — no redundant copy.
 	scope := replayScope{
-		Provider:       profile.ID(),
+		Instance:       profile.ID(),
 		Model:          profile.Model(),
-		BehaviorTag:    profile.BehaviorTag(),
+		Protocol:       profile.Protocol(),
 		InFlightFrom:   inFlightFrom,
-		behaviorTagOf:  s.client.BehaviorTagOf,
-		canonicalModel: canonicalModelID,
+		protocolOf:     s.instanceProtocol,
+		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
 	}
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
-			return nil, "", nil, llm.Request{}, "", claimErr
+			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		snapshot := s.delegateModelHistorySnapshot()
 		history, claimErr = s.delegateController.CompleteModelRequest(claim, snapshot, scope)
 		if claimErr != nil {
 			_ = s.delegateController.AbortModelRequest(claim)
-			return nil, "", nil, llm.Request{}, "", claimErr
+			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
 		history = expandHistory(historyTurns, scope)
@@ -270,21 +272,24 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
 	// Stage the mid-turn attention this round's request presents. The guard
 	// inside is the single gate, whichever path built the history; staging
 	// follows anchor planning because credit belongs to what the request
 	// actually carries.
 	s.stageRootDelegateAttentionCoverage(req, historyTurns)
-	return profile, sys, history, req, reasoningEffort, nil
+	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) llm.Request {
+// applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
+// when it planned a continuation delta, the full-history message list the delta
+// was cut from, for the retry a rejected anchor forces.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req
+		return req, nil
 	}
 
 	registry := s.responsesContinuationSupportRegistry()
@@ -292,7 +297,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req
+		return req, nil
 	}
 	req = s.applyResponsesContinuationShadowEstimate(req)
 	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
@@ -300,14 +305,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		req.FullHistoryFallbackMessages = nil
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -317,7 +321,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -331,10 +335,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(req, plan)
+		return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -344,20 +348,17 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
 	if anchorDecision.HistoryMode == llm.HistoryModeResponsesDelta &&
 		responsesContinuationCandidateMatchesPlan(candidate, plan) {
-		fullHistoryFallbackMessages := append([]llm.Message(nil), req.Messages...)
+		fullHistory := append([]llm.Message(nil), req.Messages...)
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
 		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
-		if plan.CanFallbackToChat {
-			req.FullHistoryFallbackMessages = fullHistoryFallbackMessages
-		}
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -368,12 +369,11 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			ContextMarker:           responseContextMarkerV1,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
-			ChatFallbackHistoryLen:  len(req.FullHistoryFallbackMessages),
 		}
-		return responsesContinuationWithInputEstimate(req)
+		return responsesContinuationWithInputEstimate(req), fullHistory
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(req, plan)
+	return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
 }
 
 func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
@@ -395,7 +395,6 @@ func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
-	shadowReq.FullHistoryFallbackMessages = nil
 	tokens, ok := s.estimateResponsesContinuationShadow(shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -714,6 +713,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			Usage:        resp.Usage,
 			FinishReason: resp.Finish.Reason,
 			Model:        resp.Model,
+			Provider:     resp.Provider,
 		}
 		if reasoning := resp.ReasoningText(); reasoning != "" {
 			textEndData.Reasoning = reasoning
@@ -742,7 +742,7 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 		return false
 	}
 	if w := s.sandboxWrapper(); w != nil && !w.Policy().Network {
-		return sandbox.ProviderWebAllowedUnderNetOff(profile.BehaviorTag())
+		return sandbox.ProviderWebAllowedUnderNetOff(profile.ProviderID())
 	}
 	return true
 }
@@ -799,7 +799,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		req.MaxTokens = &mt
 	}
 	req.ReasoningEffort = resolveRequestEffort(reasoningEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
-	s.applyModelRequestMetadata(profile, &req)
+	s.applyModelRequestMetadata(&req)
 	return req
 }
 
@@ -814,8 +814,14 @@ const defaultReasoningEffort = "medium"
 //     reasoning=false) never gets an effort, even if one is configured;
 //     ClampReasoningEffort would pass it through an empty level list and the
 //     provider would 400.
-//   - An explicit off ("none") is sent only when the model lists it as a
-//     level (gpt-5.1+, GLM behind lunaroute); otherwise the field is omitted.
+//   - An explicit off ("none") is carried on every reasoning model, never
+//     replaced by a default and never clamped into a tier. Which models can
+//     be told off, and how it is spelled, is the adapters' call (spec §8.4):
+//     they send it where the row's ladder lists an off level and the dialect
+//     has a value for one, and omit the control otherwise. Carrying it is
+//     also what keeps it distinguishable from "nothing configured", without
+//     which a mandatory-thinking row's builder default reads an off as unset
+//     and switches thinking back on.
 //   - A configured effort is clamped to the model's levels so loop-detector
 //     escalation, the --reasoning-effort flag, and the UI selector never send
 //     a tier the model rejects.
@@ -839,15 +845,14 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 		effort = defaultReasoningEffort
 	}
 	if effort == llm.ReasoningEffortNone {
-		// Off, whether the user or the model's data said so: sent (as the
-		// canonical lowercase "none") only where the model's ladder lists an
-		// off level in any case, otherwise the field stays out.
-		if slices.ContainsFunc(levels, func(l string) bool {
-			return strings.EqualFold(l, llm.ReasoningEffortNone)
-		}) {
-			return &effort
-		}
-		return nil
+		// Off, whether the user or the model's data said so, carried as the
+		// canonical lowercase "none" whatever the model's ladder holds. The
+		// adapters decide the wire: the dialects with a real off value send
+		// it for a model whose ladder lists the off level, everything else
+		// omits the control. Carrying it rather than returning nil is what
+		// keeps a mandatory-thinking row's backstop from reading the off as
+		// "nothing configured" and switching thinking back on.
+		return &effort
 	}
 	v := llm.ClampReasoningEffort(effort, levels)
 	return &v
@@ -857,7 +862,7 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, fullHistory []llm.Message, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
 	previewCalls := map[string]struct{}{}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -893,9 +898,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
 	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
-	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
+	// len(fullHistory) > 0 keeps the retry's precondition next to the retry:
+	// the rebuilt request sends fullHistory, so a delta paired with an empty
+	// one would dispatch a message-less round instead of declining.
+	if err != nil && len(fullHistory) > 0 && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
-		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
+		retryReq := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
 		// Group-transition reset: the primary group's error usually arrives
 		// open-phase (nothing streamed), but an in-band mid-stream
 		// "response.failed" can leave real salvage on primaryRecord — this
@@ -916,8 +924,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 	}
 	// Fallback chain: when the primary model returns a Permanent-class
-	// provider error (403/404/422/...) or an endpoint-fallback signal,
-	// try each configured fallback in literal order. Stops at the first
+	// provider error (403/404/422/..., including an endpoint that cannot
+	// serve the model at all), try each configured fallback in literal order. Stops at the first
 	// success; if all fallbacks also fail, the LAST attempt's error is
 	// returned to the caller. Retryable errors (429/5xx) burn the
 	// existing retry budget on the same model and DO NOT trigger the
@@ -930,30 +938,36 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err, policy) {
-		// requestedEffort is the snapshot taken under lock in prepareModelRequest,
+		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
+		origEffort := requestedEffort
 		for _, fbModel := range s.cfg.ModelFallbacks {
-			// validateModelFallbacks already rejected cross-provider fallbacks,
-			// so resolveProfileForRef is guaranteed to return the WithModel path
-			// here. We call it anyway so the fallback always uses the same
-			// resolution logic as SetModel.
-			fbProfile, _, _ := s.resolveProfileForRef(profile, fbModel)
-			fbReq := responsesContinuationModelFallbackRequest(req)
+			// validateModelFallbacks keeps a cross-instance entry whose surface
+			// matches the session's (spec §7.5), so this is where the session
+			// resolver first runs for such an entry — it is no longer the
+			// guaranteed WithModel projection it was when every slashed entry
+			// was refused. An entry the resolver cannot answer for right now is
+			// skipped so the rest of the chain still gets its turn.
+			fbProfile, _, resolveErr := s.resolveProfileForRef(profile, fbModel)
+			if resolveErr != nil {
+				s.emit(events.EventWarning, warningDataFromError(
+					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
+				continue
+			}
+			fbReq := responsesContinuationModelFallbackRequest(req, fullHistory)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			// The fallback profile carries the fallback model's own facts:
-			// WithModel re-derives reasoning support and levels from the
-			// catalog (canonicalizing "[1m]", provider namespaces, and dated
-			// snapshots), so the same rule as the primary path applies.
-			fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
+			// The same rule as the primary path, against the FALLBACK model's
+			// own facts: fbProfile is resolved from the fallback reference, so
+			// its ladder and stated default are the fallback model's, not the
+			// primary's.
+			fbReq.ReasoningEffort = resolveRequestEffort(origEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
-			fbReq.PromptCacheKey = ""
-			fbReq.PromptCacheRetention = ""
-			s.applyModelRequestMetadata(profile, &fbReq)
+			s.applyModelRequestMetadata(&fbReq)
 			// Group-transition reset (spec: "Group-transition reset"): OnReset
 			// only clears the screen between attempts WITHIN one callModel
 			// invocation, so a chain walk away from a group that already
@@ -992,6 +1006,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
 	return withPreviews(modelResp), req, attempt, nil
 }
@@ -1001,9 +1016,6 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 		return false
 	}
 	if strings.TrimSpace(req.PreviousResponseID) == "" {
-		return false
-	}
-	if len(req.FullHistoryFallbackMessages) == 0 {
 		return false
 	}
 	// An unhealthy verdict settles the round from any group (spec: component 2),
@@ -1027,28 +1039,32 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 		(strings.Contains(message, "previous response") && (strings.Contains(message, "not found") || strings.Contains(message, "expired")))
 }
 
-func responsesContinuationFullHistoryFallbackRequest(req llm.Request) llm.Request {
+// responsesContinuationFullHistoryFallbackRequest rebuilds the delta request as
+// the full history the round kept for it, for the one retry a rejected anchor
+// earns.
+func responsesContinuationFullHistoryFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistoryFallback
-	fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+	fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq.FullHistoryFallbackMessages = nil
 	return fallbackReq
 }
 
-func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
+// responsesContinuationModelFallbackRequest un-anchors a delta request for a
+// different model: the fallback model has no claim on this endpoint's stored
+// response, so it gets the round's full history instead.
+func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	if req.HistoryMode == llm.HistoryModeResponsesDelta {
 		fallbackReq.HistoryMode = llm.HistoryModeFullHistory
-		if len(req.FullHistoryFallbackMessages) > 0 {
-			fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+		if len(fullHistory) > 0 {
+			fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
 		}
 		fallbackReq.PreviousResponseID = ""
 		fallbackReq.ConversationID = ""
 		fallbackReq.Continuation = nil
-		fallbackReq.FullHistoryFallbackMessages = nil
 	}
 	return fallbackReq
 }
@@ -1056,82 +1072,69 @@ func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
 // replayScope carries the outgoing target identity that decides whether
 // provider/model-scoped content — thinking/redacted_thinking and web_search raw
 // blocks — from completed prior turns may replay after a mid-session model
-// switch (spec N4). A zero replayScope (empty BehaviorTag) disables all
+// switch (spec N4). A zero replayScope (empty Protocol) disables all
 // filtering, so history expansion for a target that keeps its own builder
-// guards (openai Responses, openai-compat) or for the Responses-continuation
+// guards (openai Responses, openai-chat) or for the Responses-continuation
 // delta path is byte-identical to before this rule existed.
 type replayScope struct {
-	Provider    string // outgoing instance id (req.Provider)
-	Model       string // outgoing requested model (req.Model)
-	BehaviorTag string // outgoing behavior tag; empty ⇒ no filtering
+	Instance string // outgoing instance (req.Provider)
+	Model    string // outgoing requested model (req.Model)
+	Protocol string // outgoing wire protocol; empty ⇒ no filtering
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Turns at or after it are exempt from filtering: a
-	// same-behavior-tag fallback round earlier in the current turn keeps its
+	// same-protocol fallback round earlier in the current turn keeps its
 	// thinking (N4 exempts in-flight rounds and the fallback path).
 	InFlightFrom int
 
-	// behaviorTagOf resolves a stored turn's ResponseProvider (instance id) to
-	// its behavior tag for the web_search family check. Nil ⇒ the producing
-	// family is treated as unknown and web_search is compared same-provider.
-	behaviorTagOf func(string) string
+	// protocolOf resolves a stored turn's instance to the protocol it speaks
+	// today, for turns written before ResponseProtocol existed; "" means the
+	// instance is no longer configured and the turn is not eligible (spec §7.5).
+	protocolOf func(instance string) string
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
-// empty behavior tag means "expand without filtering".
-func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) != "" }
+// empty protocol means "expand without filtering".
+func (rs replayScope) active() bool { return strings.TrimSpace(rs.Protocol) != "" }
 
-// builderFamily maps a behavior tag to the wire-format family whose request
-// builder serves it. web_search raw blocks are foreign JSON across families, and
-// the thinking rule is scoped per family (exact-model for anthropic, same-
-// provider for google and openai). An unrecognized tag maps to itself so an unknown
-// provider never silently shares a family with a known one.
-//
-// Sibling tags collapse to one family because they emit the *same* raw block
-// shape on the wire: kimi-anthropic/openrouter-anthropic/minimax all speak the
-// anthropic wire format, so an anthropic-produced web_search raw block is
-// byte-compatible when replayed into any of them (and vice versa). Grouping
-// them here is what lets those cross-tag hops replay web_search verbatim
-// instead of dropping it as foreign JSON.
-func builderFamily(tag string) string {
-	switch strings.TrimSpace(tag) {
-	case "anthropic", "kimi-anthropic", "openrouter-anthropic", "minimax":
-		return "anthropic"
-	case "google":
-		return "google"
-	case "openai":
-		return "openai"
-	case "openai-compatible", "kimi", "glm", "zai", "deepseek", "together", "ollama", "openrouter":
-		return "compat"
-	default:
-		return strings.TrimSpace(tag)
+// producerProtocol is the wire protocol that produced a stored turn: the one
+// recorded on the turn, or — for a turn written before ResponseProtocol
+// existed — the protocol its instance speaks today.
+func (rs replayScope) producerProtocol(t schema.Turn) string {
+	if p := strings.TrimSpace(t.ResponseProtocol); p != "" {
+		return p
 	}
+	if rs.protocolOf == nil {
+		return ""
+	}
+	return rs.protocolOf(t.ResponseProvider)
 }
 
 // thinkingReplayEligible reports whether a completed prior turn's
 // thinking/redacted_thinking blocks may replay into the outgoing request.
-// Empty provenance (legacy transcripts) is always eligible. anthropic-family
-// targets require an exact (instance id, requested model) match — the requested
-// model taken from ResponseRequestModel, or catalog-canonicalized ResponseModel
-// when the request-model field is empty (closes G12). google and openai targets
-// require the same instance id: google's builder must replay prior tool-call
-// thought signatures regardless of model, and openai Responses carries an
-// opaque encrypted_content blob that only its issuing deployment can decrypt
-// (a cross-deployment replay yields "Encrypted content is not supported").
-// Every other target keeps its own builder guard, so expansion never strips
-// thinking for it.
+// Empty provenance (legacy transcripts) is always eligible. An anthropic
+// target requires an exact (instance, requested model) match — the requested
+// model taken from ResponseRequestModel, or canonicalized ResponseModel when
+// the request-model field is empty (closes G12). google and openai-responses
+// targets require the same instance: google's builder must replay prior
+// tool-call thought signatures regardless of model, and openai Responses
+// carries an opaque encrypted_content blob that only its issuing deployment
+// can decrypt (a cross-deployment replay yields "Encrypted content is not
+// supported"). Every other target keeps its own builder guard, so expansion
+// never strips thinking for it.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	switch builderFamily(rs.BehaviorTag) {
-	case "anthropic":
-		return rs.Provider == t.ResponseProvider && rs.requestedModelMatches(t)
-	case "google", "openai":
-		return rs.Provider == t.ResponseProvider
+	producer := rs.producerProtocol(t)
+	switch rs.Protocol {
+	case registry.ProtocolAnthropic:
+		return producer == rs.Protocol && rs.Instance == t.ResponseProvider && rs.requestedModelMatches(t)
+	case registry.ProtocolGoogle, registry.ProtocolOpenAIResponses:
+		return producer == rs.Protocol && rs.Instance == t.ResponseProvider
 	default:
 		return true
 	}
@@ -1139,8 +1142,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 
 // requestedModelMatches compares the outgoing requested model against the
 // producing turn's, in requested-model space (ResponseRequestModel), falling
-// back to catalog-canonicalized ResponseModel when the request-model field is
-// empty.
+// back to canonicalized ResponseModel when the request-model field is empty.
 func (rs replayScope) requestedModelMatches(t schema.Turn) bool {
 	if rm := strings.TrimSpace(t.ResponseRequestModel); rm != "" {
 		return strings.TrimSpace(rs.Model) == rm
@@ -1157,22 +1159,13 @@ func (rs replayScope) canonicalize(model string) string {
 
 // webSearchReplayEligible reports whether a completed prior turn's web_search
 // raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
-// producing behavior-tag family must match the target family (anthropic ↔
-// anthropic, openai ↔ openai) — cross-family the raw payload is foreign JSON and
-// is dropped (G13).
+// producing protocol must match the target's — across protocols the raw
+// payload is foreign JSON and is dropped (G13).
 func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	var producerTag string
-	if rs.behaviorTagOf != nil {
-		producerTag = rs.behaviorTagOf(t.ResponseProvider)
-	} else if rs.Provider == t.ResponseProvider {
-		producerTag = rs.BehaviorTag
-	} else {
-		producerTag = t.ResponseProvider
-	}
-	return builderFamily(producerTag) == builderFamily(rs.BehaviorTag)
+	return rs.producerProtocol(t) == rs.Protocol
 }
 
 // projectTurnMessage returns t.Message with provider/model-scoped content
@@ -1314,16 +1307,54 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 	return history
 }
 
-// canonicalModelID canonicalizes a model ref through the embedded catalog so a
-// requested alias and a provider-reported dated snapshot of the same model
-// compare equal in the ResponseModel provenance fallback. Unknown refs compare
-// by trimmed string.
-func canonicalModelID(model string) string {
+// instanceProtocol resolves an instance name to the protocol it speaks
+// today; "" when it is no longer configured. It resolves the instance rather
+// than reading the credentialed instance list so a turn produced by a
+// curated implicit provider still reports its protocol (spec §5.2).
+func (s *Session) instanceProtocol(name string) string {
+	if s.client == nil {
+		return ""
+	}
+	res, err := s.client.Registry().ResolveInstance(name)
+	if err != nil {
+		return ""
+	}
+	return res.Protocol
+}
+
+// canonicalModelID canonicalizes a model ref through the registry so a
+// requested alias and a provider-reported dated snapshot compare equal in the
+// ResponseModel provenance fallback. instance names the instance the ref
+// belongs to; unknown refs compare by trimmed string.
+//
+// An alias row folds onto its target, which is what canonicalizes a "[1m]"
+// ref: the curated overlay carries claude-sonnet-4-5[1m] as an alias of
+// claude-sonnet-4-5, and both address the same deployment. Otherwise the
+// matched row's id is the canonical one, which folds a dated snapshot the
+// catalog does not carry as its own row onto the base row the registry
+// matched it against. A dated snapshot that IS its own row folds onto the
+// undated row when the instance serves one — applied after the alias fold, so
+// every spelling of one deployment lands on the same id.
+func (s *Session) canonicalModelID(instance, model string) string {
 	trimmed := strings.TrimSpace(model)
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(trimmed); mi != nil && mi.ID != "" {
-			return mi.ID
+	if s.client == nil {
+		return trimmed
+	}
+	res, err := s.client.Resolve(instance + "/" + trimmed)
+	if err != nil {
+		return trimmed
+	}
+	id := strings.TrimSpace(res.Model.AliasOf)
+	if id == "" {
+		id = res.Model.ID
+	}
+	if id == "" {
+		id = trimmed
+	}
+	if base := registry.StripDatedSuffix(id); base != id {
+		if row, err := s.client.Resolve(instance + "/" + base); err == nil && !row.Synthesized {
+			return base
 		}
 	}
-	return trimmed
+	return id
 }

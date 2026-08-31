@@ -169,7 +169,7 @@ Layers merge in order: global → in-repo → project → per-launch.
 - **Env map** (`[env]`): merge by key; most-specific wins per key. Credential-like
   keys are rejected in every launch-config layer; use the credentials file, a
   supported provider environment variable exported before starting the hub, or
-  OpenAI OAuth instead.
+  OpenAI OAuth (the `openai-codex` instance) instead.
 
 See the
 [launch config design spec](superpowers/specs/2026-05-16-hub-evener-launch-config-design.md)
@@ -228,13 +228,14 @@ not mutate an existing session.
 ## Provider credentials
 
 > Architecture reference:
-> [`llm-providers.md`](llm-providers.md) (provider routing,
-> profiles, adapters) and
+> [`llm-providers.md`](llm-providers.md) (the registry, layers, instances,
+> resolution) and
 > [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
 > (credentials, OAuth, and the hub launch/spawn model).
 
 The hub manages `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`
-(chmod 600). The file's format is a small TOML document:
+(chmod 600), keyed by **instance name**, not provider type. The file's
+format is a small TOML document:
 
 ```toml
 schema = 1
@@ -249,29 +250,40 @@ api_key = "sk-..."
 api_key = "..."
 ```
 
+A section name matches either an implicit instance's id (`anthropic`,
+`openai`, `openrouter`, …) or a custom instance you defined in
+`providers.toml`.
+
 The hub UI (`/credentials`) or TUI (`/credentials`) writes this file via
 the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
 `ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
-file entry exists for the provider — matching the `hub.env` style for users
+file entry exists for the instance — matching the `hub.env` style for users
 who prefer external secret management.
 
 If `EVENER_PROVIDERS_CONFIG` points to a non-default `providers.toml`,
-`credentials.toml` is relocated beside that file. Otherwise it is beside the
-default providers config under the XDG config root. Keep both files private.
+`credentials.toml` is relocated beside that file, unless
+`EVENER_CREDENTIALS_CONFIG` names a different path. Otherwise it is beside
+the default providers config under the XDG config root. Keep both files
+private.
 
 ### OpenAI credential resolution
 
-OpenAI supports both an API key (stored in `credentials.toml` like any other
-provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
-`evener/auth/login/start`; state stored in
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai.json`). An explicit
-OAuth sign-in wins over the file key, which in turn shadows the environment
-variable.
+The platform API and the ChatGPT/Codex subscription are two separate
+**instances**, not one instance with two credential sources: `openai` (an
+API key, stored in `credentials.toml` like any other instance, or via
+`OPENAI_API_KEY`) and `openai-codex` (OAuth only — sign in via
+`evener/auth/login/start`; state stored per instance at
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai-codex.json`).
+`openai-codex` precedes `openai` in the default-instance ranking, so a
+fresh sign-in becomes the default the same way a stored OAuth record used
+to win — but by ranking between two instances, not by a precedence check
+within one.
 
-The two routes hit **different backends**: OAuth routes to the
-ChatGPT/Codex backend (`OPENAI_CHATGPT_BASE_URL`), while an API key routes to
+The two instances hit **different backends**: `openai-codex` routes to the
+ChatGPT/Codex backend (`OPENAI_CODEX_BASE_URL`), while `openai` routes to
 the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
-interchangeable credentials for one endpoint. See
+interchangeable credentials for one endpoint, and signing in with
+`evener openai login` no longer touches the `openai` instance at all. See
 [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
 for the full resolution detail.
 

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -51,7 +52,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatalf("Initialize features=%+v, want auth advertised", init.Features)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -91,7 +92,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
@@ -100,7 +101,11 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	}
 }
 
-func TestHubRPCAuthStatusFallsBackToEnvWhenNoStoredOAuth(t *testing.T) {
+// TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance is spec §5.1: the
+// Codex transport authenticates with its OAuth record and nothing else, so an
+// OPENAI_API_KEY in the environment leaves it signed out rather than claiming
+// a sign-in the child could never use.
+func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
@@ -114,12 +119,12 @@ func TestHubRPCAuthStatusFallsBackToEnvWhenNoStoredOAuth(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthStatus: %v", err)
 	}
-	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceEnv || status.HasStoredOAuth {
-		t.Fatalf("status=%+v, want env-token to be active with no stored OAuth", status)
+	if status.SignedIn || status.ActiveSource != "none" || status.HasStoredOAuth || status.EnvVar != "" {
+		t.Fatalf("status=%+v, want signed out with source none: an API key is not a Codex credential", status)
 	}
 }
 
@@ -149,8 +154,9 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := newHubAuthController(map[string]string{"OPENAI_API_KEY": ""})
 			ctrl.stateDir = t.TempDir()
+			attachTestRegistry(t, ctrl)
 			ctrl.now = func() time.Time { return now }
-			if err := authopenai.SaveAuth(ctrl.stateDir, "openai", authopenai.AuthRecord{
+			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", authopenai.AuthRecord{
 				Version:      1,
 				Provider:     "openai",
 				Source:       authopenai.AuthSourceOAuth,
@@ -165,7 +171,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai"})
+			status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 			if err != nil {
 				t.Fatalf("Status: %v", err)
 			}
@@ -237,7 +243,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -259,12 +265,12 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	resp, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai"})
+	resp, err := client.AuthLogout(context.Background(), appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("AuthLogout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
-		t.Fatalf("logout=%+v, want removed and signed out", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("logout=%+v, want removed and source none", resp)
 	}
 	if _, err := authopenai.LoadAuth(userStateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() err=%v, want ErrAuthNotFound", err)
@@ -275,6 +281,7 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	ctrl := newHubAuthController()
 	ctrl.stateDir = t.TempDir()
+	attachTestRegistry(t, ctrl)
 	ctrl.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}
 	ctrl.client = &http.Client{}
 	var exchangeReq authopenai.TokenExchangeRequest
@@ -290,7 +297,7 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 		}, nil
 	}
 
-	start, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "openai"})
+	start, err := ctrl.LoginStart(appwire.AuthLoginStartParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("LoginStart: %v", err)
 	}
@@ -304,7 +311,7 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	}
 
 	resp, err := ctrl.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
-		Provider:    "openai",
+		Provider:    "openai-codex",
 		FlowID:      start.FlowID,
 		RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
 	})
@@ -317,7 +324,7 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	if !resp.Status.SignedIn || resp.Status.ActiveSource != authopenai.AuthSourceOAuth || resp.Status.Email != "oauth@example.com" {
 		t.Fatalf("status=%+v, want oauth status with email", resp.Status)
 	}
-	record, err := authopenai.LoadAuth(ctrl.stateDir, "openai")
+	record, err := authopenai.LoadAuth(ctrl.stateDir, "openai-codex")
 	if err != nil {
 		t.Fatalf("LoadAuth: %v", err)
 	}
@@ -345,6 +352,7 @@ func TestAuth_List_IncludesAllProviders(t *testing.T) {
 	credsPath := filepath.Join(stateDir, "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
 	c := newHubAuthControllerWithStore(stateDir, store)
+	attachTestRegistry(t, c)
 	got, err := c.List(appwire.EmptyParams{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -365,18 +373,19 @@ func TestAuth_ApiKeySet_WritesAndReports(t *testing.T) {
 	credsPath := filepath.Join(stateDir, "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
 	c := newHubAuthControllerWithStore(stateDir, store)
+	attachTestRegistry(t, c)
 	got, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-ant-XXX"})
 	if err != nil {
 		t.Fatalf("ApiKeySet: %v", err)
 	}
-	if got.ActiveSource != string(credentials.SourceFile) {
-		t.Errorf("ActiveSource = %q, want file", got.ActiveSource)
+	if got.ActiveSource != "store" {
+		t.Errorf("ActiveSource = %q, want store", got.ActiveSource)
 	}
 	// Reload from disk; value should persist.
 	store2, _ := credentials.LoadStore(credsPath)
-	v, src := store2.Get("anthropic")
-	if v != "sk-ant-XXX" || src != credentials.SourceFile {
-		t.Errorf("after ApiKeySet: v=%q src=%q", v, src)
+	v, ok := store2.Get("anthropic")
+	if v != "sk-ant-XXX" || !ok {
+		t.Errorf("after ApiKeySet: v=%q ok=%v", v, ok)
 	}
 }
 
@@ -386,11 +395,12 @@ func TestAuth_Status_AnthropicViaStore(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(stateDir, "credentials.toml"))
 	_ = store.Set("anthropic", "key")
 	c := newHubAuthControllerWithStore(stateDir, store)
+	attachTestRegistry(t, c)
 	got, err := c.Status(appwire.AuthStatusParams{Provider: "anthropic"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) {
+	if !got.SignedIn || got.ActiveSource != "store" {
 		t.Errorf("Status anthropic = %+v", got)
 	}
 	if len(got.AuthModes) == 0 {
@@ -398,24 +408,40 @@ func TestAuth_Status_AnthropicViaStore(t *testing.T) {
 	}
 }
 
-func TestAuth_OpenAI_Status_ReflectsStoredFileKey(t *testing.T) {
+// TestAuth_Codex_StoredKeyIsNotACredential is kata z1gm on the Codex
+// transport: the registry resolves an oauth-openai-codex instance from its
+// OAuth record and nothing else (spec §5.1, §10), so a credentials.toml entry
+// under that name is not a credential. The pane must say so, because the spawn
+// gate reading the same registry refuses the launch.
+func TestAuth_Codex_StoredKeyIsNotACredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
-	c.stateDir = t.TempDir() // empty: no OAuth record
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c) // empty: no OAuth record
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err := c.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want signed-in file with HasStoredFile", got)
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none: a stored key is not a Codex credential", got)
+	}
+	if !got.HasStoredFile {
+		t.Errorf("status=%+v, want HasStoredFile as a diagnostic", got)
 	}
 	if got.HasStoredOAuth {
 		t.Fatalf("status=%+v, want no stored OAuth", got)
+	}
+	// And the gate in front of the launch agrees.
+	if err := validateProviderCredentials("openai-codex", c.reg); err == nil {
+		t.Fatal("the spawn gate accepted a Codex instance whose only key is in the store")
 	}
 }
 
@@ -425,10 +451,11 @@ func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	attachTestRegistry(t, c)
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai-codex", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",
@@ -436,7 +463,7 @@ func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -445,50 +472,58 @@ func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
 	}
 }
 
-func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
+func TestAuth_Codex_Status_CorruptOAuthIsNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	attachTestRegistry(t, c)
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	authPath := authopenai.AuthFilePath(c.stateDir, "openai")
+	authPath := authopenai.AuthFilePath(c.stateDir, "openai-codex")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(authPath, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Status returned error on corrupt record: %v", err)
 	}
-	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want signed-in file (corrupt oauth treated as absent)", got)
+	if got.SignedIn || got.ActiveSource != "none" {
+		t.Fatalf("status=%+v, want signed out with source none (a corrupt record is absent, and the store is not a Codex credential)", got)
+	}
+	if !got.HasStoredFile {
+		t.Errorf("status=%+v, want HasStoredFile as a diagnostic", got)
 	}
 }
 
-func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
+// TestAuth_Codex_ApiKeySetIsRefused: storing a key nothing can use and then
+// reporting success is how the pane came to claim a sign-in the spawn gate
+// refuses. The Codex transport authenticates with its OAuth record alone
+// (spec §5.1), so the pane says so instead of writing the key.
+func TestAuth_Codex_ApiKeySetIsRefused(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	credsPath := filepath.Join(dir, "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
 	c := newHubAuthControllerWithStore(dir, store)
-	c.stateDir = t.TempDir() // no OAuth record
+	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c) // no OAuth record
 
-	got, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai", Value: "sk-openai-XXX"})
-	if err != nil {
-		t.Fatalf("ApiKeySet(openai): %v", err)
+	_, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai-codex", Value: "sk-openai-XXX"})
+	if err == nil {
+		t.Fatal("ApiKeySet(openai-codex) succeeded; a key the Codex transport never reads must be refused")
 	}
-	if got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
-		t.Fatalf("status=%+v, want file active with HasStoredFile", got)
+	if !strings.Contains(err.Error(), "evener openai login") {
+		t.Errorf("the refusal names the way in: %v", err)
 	}
 	store2, _ := credentials.LoadStore(credsPath)
-	v, src := store2.Get("openai")
-	if v != "sk-openai-XXX" || src != credentials.SourceFile {
-		t.Errorf("after ApiKeySet: v=%q src=%q, want sk-openai-XXX/file", v, src)
+	if v, _ := store2.Get("openai-codex"); v != "" {
+		t.Errorf("the refused key reached credentials.toml: %q", v)
 	}
 }
 
@@ -497,32 +532,34 @@ func TestAuth_OpenAI_Logout_ClearsStoredFileKey(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
-	c.stateDir = t.TempDir() // no OAuth record
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c) // no OAuth record
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
-		t.Fatalf("resp=%+v, want removed + signed-out", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want removed + source none", resp)
 	}
 	if v, _ := store.Get("openai"); v != "" {
 		t.Errorf("file key still present: %q", v)
 	}
 }
 
-func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
+func TestAuth_Codex_Logout_OAuthRemovalLeavesNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	attachTestRegistry(t, c)
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai-codex", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",
@@ -530,57 +567,59 @@ func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
-		t.Fatalf("resp=%+v, want removed OAuth revealing file", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want the OAuth record removed and no credential left (the store is not a Codex credential)", resp)
 	}
 	if resp.Status.HasStoredOAuth {
 		t.Errorf("OAuth record still present after logout")
 	}
 }
 
-func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
+func TestAuth_Codex_Logout_CorruptOAuthDeletedLeavesNoCredential(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	attachTestRegistry(t, c)
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	authPath := authopenai.AuthFilePath(c.stateDir, "openai")
+	authPath := authopenai.AuthFilePath(c.stateDir, "openai-codex")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(authPath, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
-		t.Fatalf("resp=%+v, want corrupt oauth removed revealing file", resp)
+	if !resp.Removed || resp.Status.ActiveSource != "none" {
+		t.Fatalf("resp=%+v, want the corrupt record removed and no credential left", resp)
 	}
 	if _, statErr := os.Stat(authPath); !os.IsNotExist(statErr) {
 		t.Errorf("corrupt openai.json still present after logout: %v", statErr)
 	}
 }
 
-func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
+func TestAuth_Codex_Status_ExpiredOAuthStaysTheSource(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
-	if err := store.Set("openai", "sk-test-123"); err != nil {
+	attachTestRegistry(t, c)
+	if err := store.Set("openai-codex", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
 	// Expired OAuth record (expiry in the past) alongside a stored file key.
-	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai-codex", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-2 * time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",
@@ -588,11 +627,12 @@ func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	// Expired OAuth stays the effective source (NeedsLogin); must NOT downgrade to file.
+	// Expired OAuth stays the source the registry resolves (the record exists),
+	// with NeedsLogin carrying the "sign in again" signal.
 	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
 		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
 	}
@@ -615,8 +655,8 @@ func TestAuth_NewControllerWithNilStore_PersistsWritesToDefaultPath(t *testing.T
 	if err != nil {
 		t.Fatalf("LoadStore(%s): %v", credsPath, err)
 	}
-	if v, src := reloaded.Get("anthropic"); v != "sk-ant-PERSIST" || src != credentials.SourceFile {
-		t.Errorf("nil-store fallback did not persist to %s: v=%q src=%q", credsPath, v, src)
+	if v, ok := reloaded.Get("anthropic"); v != "sk-ant-PERSIST" || !ok {
+		t.Errorf("nil-store fallback did not persist to %s: v=%q ok=%v", credsPath, v, ok)
 	}
 }
 
@@ -625,10 +665,11 @@ func TestAuth_DeviceStart_ReturnsCodeAndStoresFlow(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
+	attachTestRegistry(t, c)
 	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
 		return authopenai.DeviceCode{UserCode: "USER-1", VerificationURL: "https://auth.openai.com/codex/device", DeviceAuthID: "dev-1", Interval: 5 * time.Second}, nil
 	}
-	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("DeviceStart: %v", err)
 	}
@@ -642,10 +683,11 @@ func TestAuth_DeviceStart_FallbackWhenNotEnabled(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
+	attachTestRegistry(t, c)
 	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
 		return authopenai.DeviceCode{}, authopenai.ErrDeviceCodeNotEnabled
 	}
-	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("DeviceStart: %v", err)
 	}
@@ -660,6 +702,7 @@ func TestAuth_DevicePoll_PendingThenAuthorized(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
 	c.stateDir = t.TempDir()
+	attachTestRegistry(t, c)
 	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
 		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
 	}
@@ -674,15 +717,15 @@ func TestAuth_DevicePoll_PendingThenAuthorized(t *testing.T) {
 	c.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
 		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
 	}
-	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("DeviceStart: %v", err)
 	}
-	p1, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	p1, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai-codex", FlowID: start.FlowID})
 	if err != nil || p1.State != "pending" {
 		t.Fatalf("first poll = %+v err=%v, want pending", p1, err)
 	}
-	p2, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	p2, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai-codex", FlowID: start.FlowID})
 	if err != nil {
 		t.Fatalf("second poll: %v", err)
 	}
@@ -696,7 +739,8 @@ func TestAuth_DevicePoll_UnknownFlowExpired(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
-	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: "nope"})
+	attachTestRegistry(t, c)
+	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai-codex", FlowID: "nope"})
 	if err != nil || got.State != "expired" {
 		t.Fatalf("got=%+v err=%v, want expired", got, err)
 	}
@@ -707,6 +751,7 @@ func TestAuth_DevicePoll_ExistingFlowExpiresAfter15Min(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	c := newHubAuthControllerWithStore(dir, store)
+	attachTestRegistry(t, c)
 	now := time.Now()
 	c.now = func() time.Time { return now }
 	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
@@ -717,12 +762,12 @@ func TestAuth_DevicePoll_ExistingFlowExpiresAfter15Min(t *testing.T) {
 		pollCalls++
 		return authopenai.DeviceCodeSuccess{}, true, nil
 	}
-	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai-codex"})
 	if err != nil {
 		t.Fatalf("DeviceStart: %v", err)
 	}
 	now = now.Add(16 * time.Minute) // advance the clock past the 15-minute window
-	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai-codex", FlowID: start.FlowID})
 	if err != nil || got.State != "expired" {
 		t.Fatalf("got=%+v err=%v, want expired", got, err)
 	}
@@ -730,39 +775,46 @@ func TestAuth_DevicePoll_ExistingFlowExpiresAfter15Min(t *testing.T) {
 		t.Errorf("pollDeviceOnce called %d times, want 0 (expiry checked before polling)", pollCalls)
 	}
 	// the expired flow should be dropped — a second poll returns expired (unknown flow)
-	got2, _ := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	got2, _ := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai-codex", FlowID: start.FlowID})
 	if got2.State != "expired" {
 		t.Errorf("after expiry the flow should be dropped; got %+v", got2)
 	}
 }
 
-// TestAuth_InstanceStatus_EnvVarReportedFromType ensures that instanceStatus
-// reports the correct EnvVar when the active credential comes from the type's
-// env var (e.g. ANTHROPIC_API_KEY) rather than the instance-name's env var.
-// This is Fix 2: Layers(name) only checks the name's env vars; InstanceLayers
-// also checks the type's env vars, matching ResolveKey resolution order.
-func TestAuth_InstanceStatus_EnvVarReportedFromType(t *testing.T) {
-	// Set ANTHROPIC_API_KEY in the environment; leave instance name "work" unset.
-	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-	t.Setenv("WORK_API_KEY", "")
-
-	stateDir := t.TempDir()
-	store, err := credentials.LoadStore(filepath.Join(stateDir, "credentials.toml"))
+// TestAuth_InstanceStatus_EnvVarReportedFromRegistrySource ensures the pane
+// names the variable that actually resolved: the registry reports the
+// credential source as env:<VAR>, and instanceStatus reads the variable name
+// straight out of it rather than guessing from the instance name.
+func TestAuth_InstanceStatus_EnvVarReportedFromRegistrySource(t *testing.T) {
+	dir := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	// No stored file key for "work".
-	c := newHubAuthControllerWithStore(stateDir, store)
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	c.reg = newTestRegistry(t, c.stateDir, "", store, map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"})
 
-	status := c.instanceStatus("work", "anthropic", "anthropic")
-
-	if status.ActiveSource != string(credentials.SourceEnv) {
-		t.Errorf("ActiveSource=%q, want %q", status.ActiveSource, credentials.SourceEnv)
+	inst, ok := c.reg.Get().Instance("anthropic")
+	if !ok {
+		t.Fatal("ANTHROPIC_API_KEY makes anthropic an implicit instance")
+	}
+	status := c.instanceStatus(inst)
+	if status.ActiveSource != "env:ANTHROPIC_API_KEY" {
+		t.Errorf("ActiveSource=%q, want env:ANTHROPIC_API_KEY", status.ActiveSource)
 	}
 	if status.EnvVar != "ANTHROPIC_API_KEY" {
-		t.Errorf("EnvVar=%q, want %q", status.EnvVar, "ANTHROPIC_API_KEY")
+		t.Errorf("EnvVar=%q, want ANTHROPIC_API_KEY", status.EnvVar)
 	}
 	if !status.SignedIn {
 		t.Errorf("SignedIn=false, want true")
 	}
+}
+
+// attachTestRegistry gives a controller a hermetic registry rooted at its own
+// state dir and credentials store, so instance resolution sees exactly the
+// credential state the test set up and nothing from the machine.
+func attachTestRegistry(t *testing.T, c *hubAuthController) {
+	t.Helper()
+	c.reg = newTestRegistry(t, c.stateDir, "", c.creds, nil)
 }

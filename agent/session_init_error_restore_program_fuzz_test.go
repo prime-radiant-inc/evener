@@ -242,7 +242,7 @@ func sierFallbackValidation(t *testing.T, r *sierReader, client *llm.Client, pro
 	case 1:
 		cfg.ModelFallbacks = []string{"anthropic/claude-test"}
 		sess, err := NewSession(client, profile, env, cfg)
-		sierRequireError(t, sess, err, "cross-provider fallbacks are not supported")
+		sierRequireError(t, sess, err, "cross-surface fallbacks are not supported")
 	case 2:
 		cfg.ModelFallbacks = []string{"fault/model"}
 		sess, err := NewSession(client, profile, env, cfg)

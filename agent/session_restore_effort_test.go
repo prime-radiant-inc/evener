@@ -19,8 +19,11 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 	cases := []struct {
 		name       string
 		persisted  string
-		wantEffort string // "" means the default applies (medium on gpt-5.2's ladder)
+		wantEffort string // "" means no reasoning control reaches the request
 	}{
+		// A disable alias canonicalizes to the off level; a level survives
+		// its casing; garbage is dropped and the session takes the default
+		// every unconfigured session gets (medium, on gpt-5.2's ladder).
 		{name: "disable alias canonicalizes to the off level", persisted: "OFF", wantEffort: "none"},
 		{name: "mixed-case level canonicalizes", persisted: "High", wantEffort: "high"},
 		{name: "garbage falls back to the default", persisted: "ultra", wantEffort: "medium"},
@@ -61,7 +64,10 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 			if len(reqs) == 0 {
 				t.Fatal("no requests recorded")
 			}
-			if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != tc.wantEffort {
+			switch {
+			case tc.wantEffort == "" && reqs[0].ReasoningEffort != nil:
+				t.Fatalf("ReasoningEffort = %q, want no reasoning control on the request", *reqs[0].ReasoningEffort)
+			case tc.wantEffort != "" && (reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != tc.wantEffort):
 				t.Fatalf("ReasoningEffort = %v, want %q", reqs[0].ReasoningEffort, tc.wantEffort)
 			}
 		})

@@ -1,9 +1,12 @@
 // Package transport holds the streaming skeleton shared by the SSE-decoding
-// provider adapters (anthropic, openaicompat, google, openai chat-completions).
-// StreamRunner owns the ParseSSE call and the uniform "stream ended without
-// completion" epilogue so the adapters cannot drift on these mechanics. Each
-// adapter still owns its per-event decode logic (and any cancel()/finished
-// bookkeeping it performs) via OnEvent.
+// protocol packages: anthropic, chatcompletions, google and responses.
+// StreamRunner owns the ParseSSE call and the "stream ended without
+// completion" epilogue — the terminal-error selection, the attempt
+// bookkeeping and the final send — so the protocols cannot drift on these
+// mechanics. Each protocol still owns its per-event decode logic (and any
+// cancel()/finished bookkeeping it performs) via OnEvent, and a protocol with
+// more than one way to end without completing classifies that ending in
+// TerminalError.
 package transport
 
 import (
@@ -54,6 +57,25 @@ type StreamRunner struct {
 	// IncompleteMsg is the message for the terminal error when the stream ends
 	// without completion and the context carries no error.
 	IncompleteMsg string
+	// TerminalError, when set, replaces the IncompleteMsg wrap: the runner
+	// publishes what it returns as the stream's terminal error. It is called
+	// only for the endings the runner does not already classify — never for a
+	// caller cancellation or a FatalStreamError, both of which stay the
+	// runner's. An adapter needs it when "the stream ended without
+	// completing" is more than one condition: the Responses transport has to
+	// tell a stall from a broken read from a stream that produced nothing its
+	// API can produce, and only the last of those says anything about whether
+	// the endpoint implements the API at all.
+	TerminalError func(parseErr error) error
+}
+
+// incomplete builds the terminal error for a stream that ended without
+// completing and without a cancellation or an in-band failure.
+func (r *StreamRunner) incomplete(parseErr error) error {
+	if r.TerminalError != nil {
+		return r.TerminalError(parseErr)
+	}
+	return llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)
 }
 
 // Run drives the SSE decode loop. It never calls cancel(): any cancellation is
@@ -74,7 +96,7 @@ func (r *StreamRunner) Run(ctx context.Context) {
 		} else if fatal, ok := errors.AsType[*FatalStreamError](parseErr); ok {
 			terminalErr = fatal.Err
 		} else {
-			terminalErr = llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)
+			terminalErr = r.incomplete(parseErr)
 		}
 	}
 	var response *llm.Response

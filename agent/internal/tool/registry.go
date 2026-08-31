@@ -23,7 +23,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-const toolIntentDescription = "A short verb-first gerund phrase naming what this call is doing and why, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
+const toolIntentDescription = "Describe what you expect to learn or accomplish from this tool call, using a verb-first gerund. Make the expected outcome clear to the user and your future self; e.g. \"Reading config to identify the active profile\" or \"Searching handlers to locate request routing.\""
 
 // maxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB

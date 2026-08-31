@@ -43,9 +43,11 @@ func TestS2Cov_RenderSystemPrompt_AppendFiles(t *testing.T) {
 	}
 }
 
-// TestS2Cov_ValidateModelFallbacks_RejectsCrossProvider covers the cross-provider
-// fallback rejection path via NewSession, which validates fallbacks at init.
-func TestS2Cov_ValidateModelFallbacks_RejectsCrossProvider(t *testing.T) {
+// TestS2Cov_ValidateModelFallbacks_RejectsCrossSurface covers the
+// cross-surface fallback rejection path via NewSession, which validates
+// fallbacks at init. With no resolver configured the target instance's
+// surface cannot be established, so the entry is refused.
+func TestS2Cov_ValidateModelFallbacks_RejectsCrossSurface(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -53,7 +55,7 @@ func TestS2Cov_ValidateModelFallbacks_RejectsCrossProvider(t *testing.T) {
 		MaxSubagentDepth: 1,
 		ModelFallbacks:   []string{"anthropic/claude-haiku-4-5-20251001"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "cross-provider fallbacks are not supported") {
-		t.Fatalf("err = %v, want cross-provider fallback rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "cross-surface fallbacks are not supported") {
+		t.Fatalf("err = %v, want cross-surface fallback rejection", err)
 	}
 }

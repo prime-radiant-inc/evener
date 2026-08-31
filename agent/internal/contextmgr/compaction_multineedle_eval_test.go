@@ -39,7 +39,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // mnSummarizerModel is the summarizer under test. gpt-5.5 first (the realistic
@@ -213,32 +214,29 @@ func multiNeedleCases() []multiNeedleCase {
 // oauthClientAndCfg builds the OAuth-backed client + provider config once,
 // mirroring newOAuthManager but reusable for multiple profiles (summarizer +
 // judge at different models).
-func oauthClientAndCfg(t *testing.T) (*llm.Client, providercfg.Config) {
+func oauthEvalClient(t *testing.T) *llm.Client {
 	t.Helper()
 	oauthStateHome, oauthProvidersConfig := liveEvalOAuthPaths(t)
 	if _, err := os.Stat(filepath.Join(oauthStateHome, "evener", "auth", "openai.json")); err != nil {
 		t.Skipf("no OAuth record at %s/evener/auth/openai.json: %v", oauthStateHome, err)
 	}
 	t.Setenv(envvars.XDGStateHome.Name, oauthStateHome)
-	cfg, exists, err := providercfg.LoadFile(oauthProvidersConfig)
+	if _, err := os.Stat(oauthProvidersConfig); err != nil {
+		t.Skipf("providers.toml not found at %s: %v", oauthProvidersConfig, err)
+	}
+	t.Setenv(envvars.EVENERProvidersConfig.Name, oauthProvidersConfig)
+	r, err := registry.Load()
 	if err != nil {
-		t.Fatalf("load providers.toml: %v", err)
+		t.Fatalf("registry.Load: %v", err)
 	}
-	if !exists {
-		t.Skipf("providers.toml not found at %s", oauthProvidersConfig)
-	}
-	client, errs, err := llm.NewFromAvailableProviders(cfg)
-	if err != nil {
-		t.Fatalf("NewFromAvailableProviders: %v (errs: %v)", err, errs)
-	}
-	return client, cfg
+	return llm.NewClient(llm.WithRegistry(r))
 }
 
-func managerForModel(t *testing.T, client *llm.Client, cfg providercfg.Config, model string) *Manager {
+func managerForModel(t *testing.T, client *llm.Client, model string) *Manager {
 	t.Helper()
-	prof, err := provider.ResolveProfileFromConfig(cfg, "openai/"+model)
+	prof, err := provider.Resolve(client.Registry(), "openai/"+model)
 	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig openai/%s: %v", model, err)
+		t.Fatalf("Resolve openai/%s: %v", model, err)
 	}
 	return NewManager(prof, client, cheapmodel.New(client))
 }
@@ -264,9 +262,9 @@ type mnRow struct {
 }
 
 func TestCompactionMultiNeedle(t *testing.T) {
-	client, cfg := oauthClientAndCfg(t)
-	summ := managerForModel(t, client, cfg, mnSummarizerModel)
-	judge := managerForModel(t, client, cfg, mnJudgeModel)
+	client := oauthEvalClient(t)
+	summ := managerForModel(t, client, mnSummarizerModel)
+	judge := managerForModel(t, client, mnJudgeModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Minute)
 	defer cancel()

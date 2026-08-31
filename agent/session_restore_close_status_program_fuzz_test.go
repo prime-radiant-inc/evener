@@ -314,12 +314,14 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	}
 
 	req := &llm.Request{Model: model}
-	sess.applyModelRequestMetadata(sess.Profile(), req)
+	sess.applyModelRequestMetadata(req)
 	if req.SessionID != sess.ID() || req.ThreadID != sess.ID() || req.ClientMetadata == nil {
 		t.Fatalf("request metadata missing session identity: %+v", req)
 	}
-	if strings.HasPrefix(model, "gpt-") && (req.PromptCacheKey == "" || req.PromptCacheRetention != "24h") {
-		t.Fatalf("openai prompt-cache metadata = %+v", req)
+	// The prompt-cache fields ride on every request now; the resolved row
+	// decides which of them survive at dispatch (llm.ShapeRequest).
+	if req.PromptCacheKey == "" || req.PromptCacheRetention != "24h" {
+		t.Fatalf("prompt-cache metadata = %+v", req)
 	}
 
 	records := []*jobstore.JobRecord{{JobID: "active", Type: jobstore.JobShell, Status: jobstore.StatusRunning}}

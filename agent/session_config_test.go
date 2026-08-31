@@ -1886,7 +1886,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-sonnet-4-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1905,7 +1905,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}
 
 	// Switch to 1M context model. Context manager should see the new window.
-	sess.SetModel("claude-opus-4-6[1m]")
+	sess.SetModel("claude-sonnet-4-5[1m]")
 
 	// Pressure with 1M window: 100K/1M = 0.10
 	p2 := sess.ContextPressure()

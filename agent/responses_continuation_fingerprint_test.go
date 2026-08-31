@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	openaiadapter "primeradiant.com/evener/llm/providers/openai"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedEnvironment(t *testing.T) {
@@ -14,8 +14,8 @@ func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedE
 	first := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 	second := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 
-	if first == "" || !strings.HasPrefix(first, "cont-req-v1:") {
-		t.Fatalf("RequestFingerprint = %q, want cont-req-v1 prefix", first)
+	if first == "" || !strings.HasPrefix(first, "cont-req-v2:") {
+		t.Fatalf("RequestFingerprint = %q, want cont-req-v2 prefix", first)
 	}
 	if first != second {
 		t.Fatalf("fingerprint changed for fixed production prompt environment:\nfirst:  %s\nsecond: %s", first, second)
@@ -45,18 +45,12 @@ func openAIContinuationPromptDataForTest(today string) promptData {
 
 func openAIResponsesContinuationClientForTest(t *testing.T) *llm.Client {
 	t.Helper()
-	adapter, err := openaiadapter.NewForInstance(openaiadapter.OpenAIInstanceParams{
-		Name:               "openai",
-		APIKey:             "sk-test",
-		StateHome:          t.TempDir(),
-		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
+	r := mustTestRegistry(map[string]registry.Provider{
+		"openai": {Base: "openai", APIKey: "sk-test"},
 	})
-	if err != nil {
-		t.Fatalf("NewForInstance: %v", err)
-	}
-	client := llm.NewClient()
-	client.Register(adapter)
-	return client
+	// The state dir keys the continuation hasher; a fresh one per test keeps
+	// the fingerprints comparable within a test and unrelated across them.
+	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(t.TempDir()))
 }
 
 func openAIResponsesContinuationFingerprintForPromptTest(t *testing.T, client *llm.Client, data promptData) string {

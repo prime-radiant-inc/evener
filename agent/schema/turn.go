@@ -191,6 +191,7 @@ type Turn struct {
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	AttemptGroupID                  string `json:"attempt_group_id,omitempty"`
 	ResponseEndpointFamily          string `json:"response_endpoint_family,omitempty"`
+	ResponseProtocol                string `json:"response_protocol,omitempty"`
 	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`

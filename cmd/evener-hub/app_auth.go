@@ -14,14 +14,14 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type hubAuthController struct {
 	stateDir          string
-	authEnv           map[string]string
 	creds             *credentials.Store
 	cfg               authopenai.Config
 	client            *http.Client
@@ -37,11 +37,18 @@ type hubAuthController struct {
 	deleteAuth        func(string, string) (bool, error)
 	setCredential     func(string, string) error
 	clearCredential   func(string) error
-	// providersConfigPath is the path to providers.toml. When non-empty, auth
-	// methods resolve the instance from the file — its behavior tag for how it
-	// authenticates, its credential tag for which key does — and key credentials
-	// and OAuth state by instance name rather than provider type.
+	// reg is the live registry every auth answer is derived from: which
+	// instances exist, how each authenticates, and which credential source
+	// resolved for it. Credentials and OAuth state are keyed by instance
+	// name (spec §10).
+	reg *hubcore.ProviderRegistry
+	// providersConfigPath is the file the credential probe builds its client
+	// from, so evener/auth/test resolves the instance exactly as the spawn
+	// path will (spec §11.3). Every other answer comes from reg.
 	providersConfigPath string
+	// noUserLayer is EVENER_PROVIDERS_CONFIG's tri-state: present and empty
+	// means the probe must build a client with no user layer, as a child would.
+	noUserLayer bool
 
 	credentialTestLoader credentialProbeLoader
 	credentialTests      map[string]*credentialTestCall
@@ -89,7 +96,6 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	store, _ := credentials.LoadStore(credsPath)
 	c := &hubAuthController{
 		stateDir:             stateDir,
-		authEnv:              authEnv,
 		creds:                store,
 		cfg:                  cfg,
 		client:               client,
@@ -130,7 +136,6 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	}
 	c := &hubAuthController{
 		stateDir:             stateDir,
-		authEnv:              authEnv,
 		creds:                store,
 		cfg:                  cfg,
 		client:               client,
@@ -157,44 +162,50 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	return c
 }
 
+// Status reports one instance's credential state. A name that is not an
+// instance may still be a curated implicit provider with no credential in
+// this environment; the pane lists those too, so they resolve without one
+// (spec §5.2, §11.3). Anything else is unsupported.
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
-
-	// Instance-aware path: resolve the instance from config when available.
-	if c.providersConfigPath != "" {
-		if inst, err := c.resolveInstance(name); err == nil {
-			return c.instanceStatusFor(inst), nil
+	r := c.registry()
+	if r == nil {
+		return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
+	}
+	if inst, ok := r.Instance(name); ok {
+		return c.instanceStatus(inst), nil
+	}
+	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		res, err := r.ResolveInstance(name)
+		if err != nil {
+			//nolint:nilerr // a provider the registry cannot resolve is reported as unsupported, which is the answer, not an RPC failure
+			return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
 		}
-		// Unknown instance — fall through to legacy type-map path.
+		return c.instanceStatus(registry.Instance{
+			Name:             name,
+			ProviderID:       name,
+			Protocol:         res.Protocol,
+			Auth:             res.Transport.Auth,
+			Implicit:         true,
+			CredentialSource: res.Credential.Source,
+			Warnings:         res.Warnings,
+		}), nil
 	}
+	return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
+}
 
-	// Legacy path: name treated as a provider type.
-	if name == "openai" {
-		return c.openAIStatus()
+// registry is the registry the controller answers from, or nil when none was
+// wired (tests that construct a bare controller).
+func (c *hubAuthController) registry() *registry.Registry {
+	if c.reg == nil {
+		return nil
 	}
-	// The envvars registry owns what each provider authenticates with. A name it
-	// does not carry is a provider the hub knows nothing about, so it cannot say
-	// how to authenticate it.
-	modes := envvars.AuthModes(name)
-	if modes == nil {
-		return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: string(credentials.SourceAbsent)}, nil
-	}
-	v, src := c.creds.Get(name)
-	hasFile, envVar := c.creds.Layers(name)
-	return appwire.AuthStatusResponse{
-		Provider:      name,
-		Supported:     true,
-		SignedIn:      v != "",
-		ActiveSource:  string(src),
-		AuthModes:     modes,
-		HasStoredFile: hasFile,
-		EnvVar:        envVar,
-	}, nil
+	return c.reg.Get()
 }
 
 func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresOpenAI(provider); err != nil {
+	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthLoginStartResponse{}, err
 	}
 
@@ -234,7 +245,7 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 
 func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresOpenAI(provider); err != nil {
+	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
 	}
 	flowID := strings.TrimSpace(params.FlowID)
@@ -283,6 +294,9 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	c.mu.Lock()
 	delete(c.flows, flowID)
 	c.mu.Unlock()
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthLoginCompleteResponse{}, err
+	}
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -294,20 +308,20 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 
-	// Determine whether this instance supports OAuth (i.e. is openai-type).
-	isOpenAI := c.instanceIsOpenAI(name)
-
-	if !isOpenAI {
+	if !c.instanceIsCodex(name) {
 		if err := c.clearCredential(name); err != nil {
+			return appwire.AuthLogoutResponse{}, err
+		}
+		if err := c.reloadRegistry(); err != nil {
 			return appwire.AuthLogoutResponse{}, err
 		}
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: true, Status: status}, nil
 	}
 
-	// OpenAI-type: clear the effective layer only. An OAuth record (present or
-	// corrupt) shadows the stored file key, so remove it first; otherwise clear
-	// the file key. The env layer cannot be cleared.
+	// The Codex transport: clear the effective layer only. An OAuth record
+	// (present or corrupt) shadows the stored file key, so remove it first;
+	// otherwise clear the file key. The env layer cannot be cleared.
 	_, loadErr := c.loadAuth(c.stateDir, name)
 	hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
 	removed := false
@@ -318,13 +332,16 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		}
 		removed = r
 	} else {
-		hasFile, _ := c.creds.Layers(name)
+		_, hasFile := c.creds.Get(name)
 		if hasFile {
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return appwire.AuthLogoutResponse{}, clrErr
 			}
 			removed = true
 		}
+	}
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthLogoutResponse{}, err
 	}
 	status, statusErr := c.openAIInstanceStatus(name)
 	if statusErr != nil {
@@ -333,26 +350,45 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }
 
+// reloadRegistry re-derives the instance set after a credential changed: a
+// key that has just been stored can make an implicit instance exist, and
+// clearing one can take it away (spec §5.1).
+func (c *hubAuthController) reloadRegistry() error {
+	if c.reg == nil {
+		return nil
+	}
+	return c.reg.Reload()
+}
+
+// List is what the credentials pane renders: one row per curated implicit
+// provider — whether or not it currently has a credential, since that is
+// where a fresh install signs in or enters its first key — followed by every
+// explicit instance not already listed (spec §11.3).
 func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListResponse, error) {
 	out := appwire.AuthListResponse{}
-	openaiResp, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
-	if err == nil {
-		out.Providers = append(out.Providers, openaiResp)
+	r := c.registry()
+	if r == nil {
+		return out, nil
 	}
-	for _, p := range c.creds.List() {
-		if p.Name == "openai" {
+	listed := map[string]bool{}
+	for _, id := range r.ProviderIDs() {
+		p, ok := r.Provider(id)
+		if !ok || !registry.BoolValue(p.Implicit) {
 			continue
 		}
-		hasFile, envVar := c.creds.Layers(p.Name)
-		out.Providers = append(out.Providers, appwire.AuthStatusResponse{
-			Provider:      p.Name,
-			Supported:     true,
-			SignedIn:      p.Source == credentials.SourceFile || p.Source == credentials.SourceEnv,
-			ActiveSource:  string(p.Source),
-			AuthModes:     p.AuthModes,
-			HasStoredFile: hasFile,
-			EnvVar:        envVar,
-		})
+		status, err := c.Status(appwire.AuthStatusParams{Provider: id})
+		if err != nil {
+			return appwire.AuthListResponse{}, err
+		}
+		listed[id] = true
+		out.Providers = append(out.Providers, status)
+	}
+	for _, inst := range r.Instances() {
+		if listed[inst.Name] {
+			continue
+		}
+		listed[inst.Name] = true
+		out.Providers = append(out.Providers, c.instanceStatus(inst))
 	}
 	return out, nil
 }
@@ -362,15 +398,19 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
+	// A key stored under a Codex instance is one nothing reads: the transport
+	// authenticates with its OAuth record (spec §5.1), so storing it and
+	// reporting success would describe a credential the launch cannot use.
+	if c.instanceIsCodex(name) {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
+	}
 	if err := c.setCredential(name, params.Value); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})
-}
-
-func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
-	// Delegate to the instance-keyed helper using the canonical "openai" name.
-	return c.openAIInstanceStatus("openai")
 }
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
@@ -421,7 +461,7 @@ func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) aut
 
 func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresOpenAI(provider); err != nil {
+	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthDeviceStartResponse{}, err
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
@@ -452,7 +492,7 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 
 func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresOpenAI(provider); err != nil {
+	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
 	flowID := strings.TrimSpace(params.FlowID)
@@ -494,6 +534,9 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Lock()
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -509,142 +552,91 @@ func (c *hubAuthController) config() authopenai.Config {
 	return c.cfg
 }
 
+// normalizeAuthProvider defaults an empty provider to the Codex instance,
+// which is what the pane's OAuth button means (spec §9.5, §11.3).
 func normalizeAuthProvider(provider string) string {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
-		return "openai"
+		return "openai-codex"
 	}
 	return provider
 }
 
-// resolveInstance reads providers.toml (via providersConfigPath) and returns the
-// named instance. Returns an error when the config path is unset, the file
-// cannot be read/parsed, or the instance name is not found.
-func (c *hubAuthController) resolveInstance(name string) (providercfg.InstanceConfig, error) {
-	if c.providersConfigPath == "" {
-		return providercfg.InstanceConfig{}, errors.New("no providers config path configured")
+// authModesFor is the sign-in vocabulary one transport auth scheme offers the
+// credentials pane (spec §11.3).
+func authModesFor(auth string) []string {
+	switch auth {
+	case registry.AuthOAuthOpenAICodex:
+		return []string{"oauth"}
+	case registry.AuthNone:
+		return []string{"none"}
+	case registry.AuthOptionalBearer:
+		return []string{"none", "apiKey"}
+	case registry.AuthGCPADC:
+		return []string{"adc"}
+	default:
+		return []string{"apiKey"}
 	}
-	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
-	if err != nil {
-		return providercfg.InstanceConfig{}, fmt.Errorf("load providers config: %w", err)
-	}
-	if !exists {
-		return providercfg.InstanceConfig{}, fmt.Errorf("providers config not found at %s", c.providersConfigPath)
-	}
-	for _, inst := range cfg.Instances {
-		if inst.Name == name {
-			return inst, nil
-		}
-	}
-	return providercfg.InstanceConfig{}, fmt.Errorf("instance %q not found in providers config", name)
 }
 
-// resolveInstanceBehaviorTag returns the behavior tag for the named instance.
-// The tag, not the declared type, is what every provider-conditional behavior
-// keys on: an openai instance with api_style = "chat-completions" is
-// behaviorally an openai-compatible endpoint.
-func (c *hubAuthController) resolveInstanceBehaviorTag(name string) (string, error) {
-	inst, err := c.resolveInstance(name)
-	if err != nil {
-		return "", err
+// instanceIsCodex reports whether name authenticates through the Codex
+// OAuth flow (spec §9.5): its transport auth is oauth-openai-codex.
+func (c *hubAuthController) instanceIsCodex(name string) bool {
+	r := c.registry()
+	if r == nil {
+		return false
 	}
-	return providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)), nil
+	if inst, ok := r.Instance(name); ok {
+		return inst.Auth == registry.AuthOAuthOpenAICodex
+	}
+	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		return p.Transport.Auth == registry.AuthOAuthOpenAICodex
+	}
+	return false
 }
 
-// instanceIsOpenAI returns true if the named instance behaves as OpenAI proper
-// (i.e. supports OAuth). The hub's OAuth flow is OpenAI's own — it hands back a
-// chatgpt.com authorize URL — so only an instance whose behavior tag is "openai"
-// may enter it; an openai type routed through chat-completions is an
-// openai-compatible endpoint that flow can never authenticate. When no config is
-// available or the instance is not found, falls back to checking whether
-// name == "openai".
-func (c *hubAuthController) instanceIsOpenAI(name string) bool {
-	tag, err := c.resolveInstanceBehaviorTag(name)
-	if err != nil {
-		// No config or unknown instance: fall back to name-based check.
-		return name == "openai"
-	}
-	return tag == "openai"
-}
-
-// requiresOpenAI returns an InvalidParams error when the named instance does
-// not support OAuth (i.e. does not behave as OpenAI proper).
-func (c *hubAuthController) requiresOpenAI(name string) error {
-	if c.instanceIsOpenAI(name) {
+// requiresCodex returns an InvalidParams error when the named instance does
+// not authenticate through the Codex OAuth flow, which is the only OAuth the
+// hub can start.
+func (c *hubAuthController) requiresCodex(name string) error {
+	if c.instanceIsCodex(name) {
 		return nil
 	}
 	return appwire.InvalidParams(fmt.Sprintf("OAuth is not supported for instance %q", name))
 }
 
-// instanceStatusFor computes the per-instance credential status for a
-// configured instance, deriving both tags it is keyed on from the instance
-// itself. This is the shared entry point for Status and the instance-list
-// controller.
-func (c *hubAuthController) instanceStatusFor(inst providercfg.InstanceConfig) appwire.AuthStatusResponse {
-	return c.instanceStatus(
-		inst.Name,
-		providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)),
-		providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL),
-	)
-}
-
-// instanceStatus computes the per-instance credential status for the given
-// instance name, behavior tag and credential tag. For openai-behaving instances
-// it checks the per-instance OAuth file (auth/<name>.json) in addition to the
-// credentials store. For all others it checks only the store.
-//
-// Neither tag is the declared type, and the two answer different questions. How
-// the instance behaves — whether OAuth exists at all, whether it authenticates
-// with anything, which auth modes to report — is the behavior tag. Which key
-// authenticates it is the credential tag, because that answer belongs to the
-// endpoint its adapter contacts: an openai instance on chat-completions with no
-// base_url is api.openai.com and resolves OPENAI_API_KEY, while the same shape
-// with a base_url is a gateway that inherits no type-level key at all. The pane
-// names the variable the launch path signs with, or none.
-//
-// It is keyed purely by name+tags so callers that have already resolved them can
-// avoid re-reading the config.
-func (c *hubAuthController) instanceStatus(name, behaviorTag, credentialTag string) appwire.AuthStatusResponse {
-	if behaviorTag == "openai" {
-		resp, _ := c.openAIInstanceStatus(name)
+// instanceStatus is the credential status of one instance or curated
+// implicit provider: the registry's credential source, the store's file
+// layer, and for the Codex transport the OAuth record.
+func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthStatusResponse {
+	if inst.Auth == registry.AuthOAuthOpenAICodex {
+		resp, _ := c.openAIInstanceStatus(inst.Name)
 		return resp
 	}
-
-	// Everything else: key-based credential check, resolving by instance name.
-	_, src := c.creds.ResolveKey(name, credentialTag)
-	hasFile, envVar := c.creds.InstanceLayers(name, credentialTag)
-	// A provider that authenticates nothing has no key to resolve, so nothing
-	// resolving is not a credential gone missing. credentials.Store.List states
-	// that as SourceNone for its own rows; the instance-keyed path must state it
-	// too, or evener/auth/list and evener/instance/list describe one provider two
-	// ways and the credentials pane renders a working provider as unconfigured.
-	if envvars.RequiresNoCredential(behaviorTag) {
-		src = credentials.SourceNone
-	}
-	// Auth modes are a property of how the instance behaves, not of the name it
-	// was given, and the envvars registry owns them. A tag the registry does not
-	// carry gets the credential-bearing default rather than a claim that it
-	// needs nothing.
-	modes := envvars.AuthModes(behaviorTag)
-	if modes == nil {
-		modes = []string{"apiKey"}
+	_, hasFile := c.creds.Get(inst.Name)
+	// The registry names an environment credential "env:<VAR>", and that
+	// variable is the one the pane shows.
+	envVar := ""
+	if v, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		envVar = v
 	}
 	return appwire.AuthStatusResponse{
-		Provider:  name,
+		Provider:  inst.Name,
 		Supported: true,
-		// Signed in is a statement about the source, derived here exactly as
-		// List derives it from the store's rows: a file or env credential is a
-		// sign-in, and "none" is not one to make.
-		SignedIn:      src == credentials.SourceFile || src == credentials.SourceEnv,
-		ActiveSource:  string(src),
-		AuthModes:     modes,
+		// A credential resolved from anywhere is a sign-in; "none" is the one
+		// state that is not one, and for an auth-none instance it is also not
+		// anything missing.
+		SignedIn:      inst.CredentialSource != "none",
+		ActiveSource:  inst.CredentialSource,
+		AuthModes:     authModesFor(inst.Auth),
 		HasStoredFile: hasFile,
 		EnvVar:        envVar,
 	}
 }
 
-// openAIInstanceStatus is like openAIStatus but keyed by instance name rather
-// than the hard-coded "openai". It reads auth/<name>.json and credentials[name].
+// openAIInstanceStatus is the credential status of one instance on the Codex
+// transport, keyed by instance name: it reads auth/<name>.json and
+// credentials[name] (spec §9.5).
 func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatusResponse, error) {
 	record, err := c.loadAuth(c.stateDir, name)
 	hasRecord := false
@@ -659,39 +651,30 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		return appwire.AuthStatusResponse{}, err
 	}
 
-	// For the default "openai" instance we also check the OPENAI_API_KEY env
-	// var. Named instances don't get the env fallback (they have no well-known
-	// env var unless the type's env vars are used).
-	hasFile, _ := c.creds.Layers(name)
-	envKey := ""
-	envSet := false
-	if name == "openai" {
-		envKey = envvars.OpenAIAPIKey.Name
-		envSet = strings.TrimSpace(c.authEnv[envvars.OpenAIAPIKey.Name]) != ""
-	}
+	// The Codex transport authenticates with its OAuth record and nothing else:
+	// the registry ignores the store and the environment for this scheme
+	// (spec §5.1, §10), so the source is "oauth" when a record exists and
+	// "none" when one does not. A stored key under this name is reported as a
+	// diagnostic only — calling it a sign-in would claim a credential the
+	// spawn gate refuses (kata z1gm).
+	_, hasFile := c.creds.Get(name)
 
+	source := "none"
 	var active authopenai.AuthStatus
-	switch {
-	case hasRecord:
+	if hasRecord {
 		active = openAIStatusFromRecord(c.now(), record)
-	case hasFile:
-		active = authopenai.AuthStatus{SignedIn: true, Source: string(credentials.SourceFile)}
-	case envSet:
-		active = authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceEnv}
-	default:
-		active = authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
+		source = authopenai.AuthSourceOAuth
 	}
 
-	// Every caller has already resolved this instance to the openai type, so its
-	// modes are that type's registry row — including the "oauth" mode this
-	// helper's whole OAuth-record path exists to serve.
-	modes := envvars.AuthModes("openai")
+	// Every caller has already resolved this instance to the Codex transport,
+	// so its mode is the "oauth" one this helper's OAuth-record path serves.
+	modes := authModesFor(registry.AuthOAuthOpenAICodex)
 
 	status := appwire.AuthStatusResponse{
 		Provider:      name,
 		Supported:     true,
 		SignedIn:      active.SignedIn,
-		ActiveSource:  active.Source,
+		ActiveSource:  source,
 		AuthModes:     modes,
 		Email:         active.Email,
 		AccountID:     active.AccountID,
@@ -700,17 +683,12 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		NeedsLogin:    active.NeedsLogin,
 		HasStoredFile: hasFile,
 	}
-	if envSet {
-		status.EnvVar = envKey
-	}
 	if hasRecord {
 		status.HasStoredOAuth = true
 		status.StoredEmail = record.Email
-		if status.ActiveSource == authopenai.AuthSourceOAuth {
-			status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
-			status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
-			status.WorkspaceID = envvars.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
-		}
+		status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
+		status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
+		status.WorkspaceID = envvars.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
 	}
 	return status, nil
 }

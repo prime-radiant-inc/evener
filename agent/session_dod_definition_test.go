@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
@@ -831,7 +832,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
 	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -872,7 +873,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -907,7 +908,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2191,7 +2192,7 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
-		name: "anthropic",
+		name: "google",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return wrapCommunicateResponse(llm.Response{
@@ -2203,9 +2204,9 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	// A real Anthropic 1M-context profile carries provider options (max_tokens
-	// plus the 1M-context beta header); verify they reach the LLM request.
-	profile := newAnthropicProfile("claude-opus-4-6[1m]")
+	// The Gemini profile carries the safety settings the agent adds for the
+	// google protocol; verify they reach the LLM request.
+	profile := newGeminiProfile("gemini-2.5-pro")
 
 	dir := t.TempDir()
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -2230,13 +2231,12 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if reqs[0].ProviderOptions == nil {
 		t.Fatal("expected ProviderOptions to be set on request")
 	}
-	anth, ok := reqs[0].ProviderOptions["anthropic"].(map[string]any)
+	google, ok := reqs[0].ProviderOptions[registry.ProtocolGoogle].(map[string]any)
 	if !ok {
-		t.Fatalf("expected anthropic key in ProviderOptions, got %v", reqs[0].ProviderOptions)
+		t.Fatalf("expected %s key in ProviderOptions, got %v", registry.ProtocolGoogle, reqs[0].ProviderOptions)
 	}
-	betaHeader, _ := anth["beta_headers"].(string)
-	if !strings.HasPrefix(betaHeader, "context-1m") {
-		t.Fatalf("expected beta_headers to start with 'context-1m', got %v", anth["beta_headers"])
+	if google["safetySettings"] == nil {
+		t.Fatalf("expected safetySettings in the google provider options, got %v", google)
 	}
 }
 
@@ -3383,9 +3383,10 @@ func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 }
 
 // Disable aliases are accepted at session construction and behave as the
-// explicit off: gpt-5.2's ladder lists a none level (gpt-5.1+ family), so
-// the alias normalizes to "none" and rides the wire as that level rather
-// than being rejected or upgraded to the medium default.
+// explicit off: gpt-5.2's ladder lists a none level (gpt-5.1+ family), so the
+// alias normalizes to "none" and rides the request as that level rather than
+// being rejected or filled in with the medium default every unconfigured
+// session gets. The Responses builder puts it on the wire from there.
 func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -3421,7 +3422,7 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 		t.Fatal("no requests recorded")
 	}
 	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "none" {
-		t.Fatalf("ReasoningEffort = %v, want the explicit none level on the wire", reqs[0].ReasoningEffort)
+		t.Fatalf("ReasoningEffort = %v, want the explicit none level on the request", reqs[0].ReasoningEffort)
 	}
 }
 

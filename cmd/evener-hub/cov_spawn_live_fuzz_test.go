@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
-	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -78,15 +78,12 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 		_, _ = resolveEvenerLaunchStateDir(dir, map[string]string{})
 		_, _ = resolveEvenerLaunchStateDir(dir, nil)
 
-		store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
-		for _, provider := range []string{"", "unknown", "openai", "openai-compatible", "ollama"} {
-			_ = validateProviderCredentials(provider, store, []string{"OPENAI_API_KEY=abcdefgh", "OPENAI_COMPATIBLE_BASE_URL=http://x"}, "")
-			_ = providerCredentialInEnv(provider, []string{"OPENAI_API_KEY=abcdefgh"})
+		gateReg := newSpawnGateRegistry(t, dir, map[string]string{"OPENAI_API_KEY": "abcdefgh"}, map[string]registry.Provider{
+			"local": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://x", Auth: registry.AuthNone}},
+		})
+		for _, provider := range []string{"", "unknown", "openai", "local", "ollama"} {
+			_ = validateProviderCredentials(provider, gateReg)
 		}
-		_ = openAICompatibleBaseURLInEnv([]string{"OPENAI_COMPATIBLE_BASE_URL=http://x"})
-		_ = openAIStoredOAuthUsable([]string{"EVENER_STATE_DIR=" + dir})
-		_ = openAIStateDirFromLaunchEnv(nil)
-		_ = openAIInstanceOAuthUsable(dir, "missing")
 
 		responses := []string{
 			`printf '{"protocol":"` + appwire.ProtocolVersion + `"}'`,

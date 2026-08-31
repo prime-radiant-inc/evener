@@ -2037,6 +2037,19 @@ test("mobile: the shell content frame drops its padding so the workspace is full
   expect(contentRule![1]).not.toContain("gap:");
 });
 
+test("mobile: the shell spends --keyboard-inset as bottom padding so the composer clears the on-screen keyboard", () => {
+  // See useKeyboardInset.ts's header for the mechanism. Comments are stripped
+  // before matching (testing.md: a comment quoting the declaration must not
+  // satisfy the assertion).
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "AppShell.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
+  expect(mobile).not.toBeNull();
+  const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
+  expect(shellRule).not.toBeNull();
+  expect(shellRule![0]).toContain("padding-bottom: var(--keyboard-inset, 0px)");
+});
+
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
@@ -2055,7 +2068,34 @@ test("mobile: the shared shell follows the visible viewport while retaining a vh
   expect(supportsShellRule![0]).not.toContain("height: 100vh");
 });
 
-// --- kata bbsv: a mobile deep link outlives the wait for the tree --------
+// --- useKeyboardInset wiring (pins the AppShell -> hook call) --------------
+// The hook's own tests pin that it sets --keyboard-inset given a visualViewport,
+// and the CSS test above pins that the mobile .shell rule consumes it, but
+// nothing connects the two through the real component: jsdom has no
+// visualViewport, so every AppShell render in this file never exercises it.
+// This test stubs one and renders the real AppShell to close that gap.
+
+test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboard-inset on the root", async () => {
+  // A real EventTarget so the hook's add/removeEventListener round-trips; the
+  // hook reads height/offsetTop/scale off the same object.
+  class FakeVisualViewport extends EventTarget {
+    height = 768;
+    offsetTop = 0;
+    scale = 1;
+  }
+  const fake = new FakeVisualViewport();
+  vi.stubGlobal("visualViewport", fake);
+  Object.defineProperty(window, "innerHeight", { value: 768, configurable: true, writable: true });
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  // Mount sets the initial value (0px: the fake viewport covers the layout).
+  expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+  // Keyboard opens: visualViewport shrinks; the hook writes the occluded strip.
+  fake.height = 400;
+  fake.dispatchEvent(new Event("resize"));
+  expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("368px");
+  unmount();
+  vi.unstubAllGlobals();
+});
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts's own header
 // comment documents the probe), so a mobile-layout test installs one: the

@@ -31,6 +31,7 @@ func validAPIAttemptRecord(t *testing.T) APIAttemptRecord {
 			Body:        EncodeBody([]byte("{\"text\":\"line\\nquote\\\"\"}")),
 			Model:       "gpt-test",
 			HistoryMode: "messages",
+			Protocol:    "openai-responses",
 		},
 		Response: &APIAttemptResponse{
 			StatusCode:    new(200),
@@ -115,6 +116,9 @@ func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
 	}
 	if !bytes.Equal(responseBody, wantResponseBody) {
 		t.Fatalf("response body = %v, want %v", responseBody, wantResponseBody)
+	}
+	if got.Request.Protocol != want.Request.Protocol {
+		t.Fatalf("request protocol = %q, want %q", got.Request.Protocol, want.Request.Protocol)
 	}
 	if got.AttemptID != want.AttemptID || got.AttemptGroupID != want.AttemptGroupID || got.AttemptIndex != want.AttemptIndex {
 		t.Fatalf("attempt identity = (%q, %q, %d), want (%q, %q, %d)", got.AttemptID, got.AttemptGroupID, got.AttemptIndex, want.AttemptID, want.AttemptGroupID, want.AttemptIndex)

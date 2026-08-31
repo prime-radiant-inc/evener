@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // buildModelRequest must clamp the requested reasoning effort to the active
@@ -22,8 +22,7 @@ import (
 func TestBuildModelRequest_ClampsEffortToProfileLevels(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	profile := provider.NewOpenAIProfile("kimi-for-coding").
-		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"minimal", "low", "medium", "high"}})
+	profile := withEffortLevels(provider.NewOpenAIProfile("kimi-for-coding"), "minimal", "low", "medium", "high")
 
 	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "xhigh")
 
@@ -38,32 +37,31 @@ func TestBuildModelRequest_ClampsEffortToProfileLevels(t *testing.T) {
 func TestBuildModelRequest_KeepsSupportedEffort(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	profile := provider.NewOpenAIProfile("m").
-		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})
+	profile := withEffortLevels(provider.NewOpenAIProfile("m"), "low", "medium", "high")
 	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "medium")
 	if req.ReasoningEffort == nil || *req.ReasoningEffort != "medium" {
 		t.Fatalf("ReasoningEffort = %v, want medium (supported, unchanged)", req.ReasoningEffort)
 	}
 }
 
-// nonReasoningProfile builds an openai-compatible profile for a model
-// declared reasoning = false in providers.toml, the shape newOpenAICompatProfile
-// produces: SupportsReasoning() == false and an empty (non-nil) effort list.
+// lunarouteInstance is a chat-completions gateway named "lunaroute" carrying
+// the given per-model user rows — the providers.toml [providers.x.models.y]
+// table, as the registry sees it.
+func lunarouteInstance(models map[string]registry.Model) map[string]registry.Provider {
+	return map[string]registry.Provider{"lunaroute": {
+		Base: "openai-compatible", APIKey: "test",
+		Transport: registry.Transport{BaseURL: "https://lunaroute.example.com/v1"},
+		Models:    models,
+	}}
+}
+
+// nonReasoningProfile builds a profile for a model the user declared
+// reasoning = false: SupportsReasoning() == false and no effort ladder.
 func nonReasoningProfile(t *testing.T, model string) *provider.Profile {
 	t.Helper()
-	reasoningOff := false
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:     "lunaroute",
-		Type:     "openai",
-		APIStyle: providercfg.StyleChatCompletions,
-		Models: map[string]providercfg.ModelConfig{
-			model: {Reasoning: &reasoningOff},
-		},
-	}}}
-	p, err := provider.ResolveProfileFromConfig(cfg, "lunaroute/"+model)
-	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
-	}
+	p := resolveTestProfile("lunaroute", lunarouteInstance(map[string]registry.Model{
+		model: {Caps: registry.Caps{Reasoning: new(false)}},
+	}), model)
 	if p.SupportsReasoning() {
 		t.Fatalf("fixture profile SupportsReasoning = true, want false")
 	}
@@ -84,6 +82,70 @@ func TestBuildModelRequest_OmitsEffortWhenProfileDoesNotSupportReasoning(t *test
 
 	if req.ReasoningEffort != nil {
 		t.Fatalf("ReasoningEffort = %q, want nil (profile declared non-reasoning)", *req.ReasoningEffort)
+	}
+}
+
+// alwaysOnThinkingProfile is a mandatory-reasoning row: thinking_always_on
+// with a ladder of its own.
+func alwaysOnThinkingProfile() *provider.Profile {
+	p := provider.NewOpenAIProfile("stealth/ox-alpha")
+	res := p.Resolved()
+	res.Caps.Reasoning = new(true)
+	res.Caps.ThinkingAlwaysOn = new(true)
+	res.Caps.EffortValues = []string{"low", "high", "max"}
+	return p.WithResolved(res)
+}
+
+// A mandatory-reasoning row is not a special case: it is a reasoning model,
+// so with nothing configured it takes the request rule's default like any
+// other — medium, clamped to its own ladder, which tops out below medium
+// here at [low high max] and so resolves to high. The always-on flag is left
+// to the protocol builder, which is what keeps the model legal when no
+// effort reaches it at all.
+func TestBuildModelRequest_ThinkingAlwaysOn_TakesTheDefault(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	profile := alwaysOnThinkingProfile()
+
+	// No session reasoning effort configured (empty string).
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "")
+
+	if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %v, want high (medium clamped to [low high max])", req.ReasoningEffort)
+	}
+}
+
+// TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins verifies that an
+// explicit session effort still reaches a ThinkingAlwaysOn model's request.
+func TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	profile := alwaysOnThinkingProfile()
+
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "max")
+
+	if req.ReasoningEffort == nil || *req.ReasoningEffort != "max" {
+		t.Fatalf("ReasoningEffort = %v, want max (an explicit effort is honored)", req.ReasoningEffort)
+	}
+}
+
+// TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits verifies that a
+// model the user declared reasoning=false gets no effort even when its row
+// also carries thinking_always_on: the default reaches reasoning models only,
+// and the protocol builder is what keeps a mandatory-reasoning model legal.
+func TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	p := resolveTestProfile("lunaroute", lunarouteInstance(map[string]registry.Model{
+		"mandatory-model": {Caps: registry.Caps{Reasoning: new(false), ThinkingAlwaysOn: new(true)}},
+	}), "mandatory-model")
+	if p.SupportsReasoning() || len(p.ReasoningEffortLevels()) != 0 {
+		t.Fatalf("reasoning=false must clear the ladder: %v %v", p.SupportsReasoning(), p.ReasoningEffortLevels())
+	}
+
+	req := s.buildModelRequest(p, "sys", []llm.Message{llm.User("hi")}, nil, "")
+	if req.ReasoningEffort != nil {
+		t.Fatalf("ReasoningEffort = %q, want nil (the default reaches reasoning models only)", *req.ReasoningEffort)
 	}
 }
 
@@ -162,19 +224,9 @@ func TestFallbackChain_OmitsEffortWhenFallbackProfileDoesNotSupportReasoning(t *
 	}
 	c.Register(adapter)
 
-	reasoningOff := false
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:     "lunaroute",
-		Type:     "openai",
-		APIStyle: providercfg.StyleChatCompletions,
-		Models: map[string]providercfg.ModelConfig{
-			"tiny-chat": {Reasoning: &reasoningOff},
-		},
-	}}}
-	primary, err := provider.ResolveProfileFromConfig(cfg, "lunaroute/glm-5.2-nvfp4")
-	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
-	}
+	primary := resolveTestProfile("lunaroute", lunarouteInstance(map[string]registry.Model{
+		"tiny-chat": {Caps: registry.Caps{Reasoning: new(false)}},
+	}), "glm-5.2-nvfp4")
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -233,18 +285,9 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name:     "lunaroute",
-		Type:     "openai",
-		APIStyle: providercfg.StyleChatCompletions,
-		Models: map[string]providercfg.ModelConfig{
-			"glm-5.2": {ThinkingLevels: map[string]string{"low": "low", "medium": "medium"}},
-		},
-	}}}
-	primary, err := provider.ResolveProfileFromConfig(cfg, "lunaroute/glm-5.2-nvfp4")
-	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
-	}
+	primary := resolveTestProfile("lunaroute", lunarouteInstance(map[string]registry.Model{
+		"glm-5.2": {Caps: registry.Caps{EffortValues: []string{"low", "medium"}}},
+	}), "glm-5.2-nvfp4")
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -273,12 +316,10 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 	}
 }
 
-// An ollama fallback model whose local name collides with an upstream catalog
-// entry must clamp against the PROFILE's levels, not inherit the catalog's —
-// the same bare-lookup suppression profile construction and the adapter's
-// catalog-fill apply. glm-5.2 ships catalog levels [high, max]; the profile
-// default ladder is [low, medium, high], so effort "low" must survive as
-// "low" (the old catalog-first behavior raised it to "high").
+// An ollama fallback model whose local name collides with another provider's
+// catalog id must clamp against its OWN instance's ladder: the registry never
+// crosses providers, so "glm-5.2" on an ollama instance is an uncatalogued row
+// with no ladder and effort "low" passes through unchanged (spec §7.4).
 func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -300,14 +341,9 @@ func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	cfg := providercfg.Config{Instances: []providercfg.InstanceConfig{{
-		Name: "local",
-		Type: "ollama",
-	}}}
-	primary, err := provider.ResolveProfileFromConfig(cfg, "local/llama3:8b")
-	if err != nil {
-		t.Fatalf("ResolveProfileFromConfig: %v", err)
-	}
+	primary := resolveTestProfile("local", map[string]registry.Provider{
+		"local": {Base: "ollama"},
+	}, "llama3:8b")
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

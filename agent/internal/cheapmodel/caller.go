@@ -51,8 +51,8 @@ func New(client *llm.Client) *Caller {
 
 // Complete resolves and executes a cheap-model request, falling back once to
 // the session model when the provider refuses the resolved model. It resolves
-// through the profile's cheap-model ref, which uses the session model when no
-// cheap model is configured.
+// through the profile's cheap-model ref, which falls through to the provider's
+// default cheap model when the session configured none.
 func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req llm.Request) (llm.Response, error) {
 	cheapProvider, cheapModel := profile.CheapModelRef()
 	return c.CompleteRouted(ctx, profile, cheapProvider, cheapModel, req)
@@ -68,11 +68,19 @@ func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, 
 	return resp, err
 }
 
-// CompleteConfigured resolves the same route as Complete and reports whether it
-// ran the session model, so a caller that layers routes does not repeat it.
+// CompleteConfigured is Complete for work too costly to hand to a model nobody
+// chose: it uses only an explicitly configured cheap model and runs on the
+// session's own model when none is configured, where Complete would fall
+// through to the provider's default cheap model.
+//
+// It reports whether it ran the session model, so a caller that layers routes
+// of its own on top of this one does not re-run a route already tried here.
 func (c *Caller) CompleteConfigured(ctx context.Context, profile *provider.Profile, req llm.Request) (resp llm.Response, ranSessionModel bool, err error) {
-	providerName, modelID := profile.CheapModelRef()
-	return c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
+	cheap := route{provider: profile.CheapProvider(), model: profile.ConfiguredCheapModel()}
+	if cheap.model == "" {
+		cheap = sessionModel(profile)
+	}
+	return c.run(ctx, profile, cheap, req)
 }
 
 // run executes one resolution. Both the cheap and the fallback attempt share
@@ -251,7 +259,7 @@ func (c *Caller) serves(r route) bool {
 	c.mu.Lock()
 	_, refused := c.refused[r]
 	c.mu.Unlock()
-	return !refused && c.client.ValidateModelCompatibility(r.provider, r.model) == nil
+	return !refused && c.client.CanServe(r.provider, r.model)
 }
 
 // refusesModel reports whether err is the provider saying it will not serve the
@@ -263,8 +271,8 @@ func (c *Caller) serves(r route) bool {
 // price of that conservatism is maintenance — if a provider rewords its refusal
 // this reactive path silently stops firing and auxiliary calls fail instead of
 // falling back. That degradation is bounded because the proactive half of the
-// pair, serves(), already skips pairs the client's own model-compatibility
-// validator knows about, so a new wording costs the fallback, not the session.
+// pair, serves(), already skips routes the client says it cannot serve
+// (CanServe), so a new wording costs the fallback, not the session.
 func refusesModel(err error) bool {
 	if llm.Classify(err) != llm.ErrorClassPermanent {
 		return false

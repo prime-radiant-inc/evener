@@ -1083,9 +1083,6 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if llm.Classify(err) == llm.ErrorClassFallback {
-		return true
-	}
 	if llm.Classify(err) != llm.ErrorClassPermanent {
 		return false
 	}

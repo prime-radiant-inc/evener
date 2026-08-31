@@ -117,9 +117,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "auth",
-		Summary:       "Show OpenAI auth status",
+		Summary:       "Show a provider instance's credential status",
 		PaletteLabel:  "/auth",
-		PaletteDetail: "show OpenAI auth status",
+		PaletteDetail: "show a provider instance's credential status",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return fetchHubAuthStatus(m.client, authProviderArg(args))
@@ -127,19 +127,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 	{
 		Name:          "login",
-		Summary:       "Start OpenAI OAuth login",
+		Summary:       "Start OAuth sign-in for a provider instance",
 		PaletteLabel:  "/login",
-		PaletteDetail: "start OpenAI OAuth login",
+		PaletteDetail: "start OAuth sign-in for a provider instance",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
-			return startHubAuthLogin(m.client, authProviderArg(args))
+			provider := authProviderArg(args)
+			if reason := m.hubAuthLoginBlockedReason(provider); reason != "" {
+				m.addSessionSystem(reason)
+				return nil
+			}
+			return startHubAuthLogin(m.client, provider)
 		},
 	},
 	{
 		Name:          "logout",
-		Summary:       "Sign out of OpenAI OAuth",
+		Summary:       "Remove a provider instance's stored credential",
 		PaletteLabel:  "/logout",
-		PaletteDetail: "sign out of OpenAI OAuth",
+		PaletteDetail: "remove a provider instance's stored credential",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return logoutHubAuth(m.client, authProviderArg(args))
@@ -398,22 +403,19 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("This model does not support reasoning effort.")
 				return nil
 			}
-			choices := effortChoices(m.detail.ReasoningEffortLevels)
+			levels := sessionEffortLevels(m.detail.ReasoningEffortLevels)
+			choices := effortChoices(levels)
 			if level == "" {
-				if len(m.detail.ReasoningEffortLevels) == 0 {
-					m.addSessionSystem("No reasoning effort levels available for this model.")
-					return nil
-				}
 				items := make([]tuipick.ModelPickerItem, 0, len(choices))
 				for _, l := range choices {
-					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, m.detail.ReasoningEffortLevels)})
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, levels)})
 				}
 				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
 				picker.SetTitle("Select reasoning effort")
 				m.sessionEffortPicker = &picker
 				return nil
 			}
-			if !reasoningEffortLevelSettable(m.detail.ReasoningEffortLevels, level) {
+			if !reasoningEffortLevelSettable(levels, level) {
 				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(choices, ", ")))
 				return nil
 			}

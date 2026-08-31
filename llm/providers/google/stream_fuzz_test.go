@@ -36,7 +36,7 @@ func (r *byteAtATimeReader) Read(p []byte) (int, error) {
 // folds the emitted stream events back into a final llm.Response, exactly as the
 // live completion path does. When chunkOneByte is set, the bytes are delivered
 // one at a time to vary read boundaries without changing the logical stream.
-func accumulateGeminiSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Response, bool) {
+func accumulateGeminiSSE(sse []byte, chunkOneByte bool) (*llm.Response, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -46,7 +46,7 @@ func accumulateGeminiSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Respon
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, "http://fuzz.local/endpoint", nil)
+	go decodeGenerateContentStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "google-fuzz", "http://fuzz.local/endpoint", llm.APILogCredentialMaterial{}, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false
@@ -123,19 +123,17 @@ func FuzzGeminiStreamMetamorphic(f *testing.F) {
 		f.Add([]byte(s))
 	}
 
-	a := &Adapter{BaseURL: "http://fuzz.local"}
-
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		base, baseErr := accumulateGeminiSSE(a, raw, false) // Oracle (floor): never panics.
+		base, baseErr := accumulateGeminiSSE(raw, false) // Oracle (floor): never panics.
 
-		rechunked, reErr := accumulateGeminiSSE(a, raw, true)
+		rechunked, reErr := accumulateGeminiSSE(raw, true)
 		if !sameGeminiResponse(base, baseErr, rechunked, reErr) {
 			t.Fatalf("re-chunk boundary changed the accumulated response:\n base=%+v (err=%v)\n one-byte=%+v (err=%v)\n input=%q",
 				base, baseErr, rechunked, reErr, raw)
 		}
 
 		commented := bytes.ReplaceAll(raw, []byte("\n\n"), []byte("\n\n: fuzz-keepalive\n\n"))
-		withComments, cErr := accumulateGeminiSSE(a, commented, false)
+		withComments, cErr := accumulateGeminiSSE(commented, false)
 		if !sameGeminiResponse(base, baseErr, withComments, cErr) {
 			t.Fatalf("interstitial SSE comments changed the accumulated response:\n base=%+v (err=%v)\n commented=%+v (err=%v)\n input=%q",
 				base, baseErr, withComments, cErr, raw)

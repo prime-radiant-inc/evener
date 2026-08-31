@@ -1,0 +1,104 @@
+{
+  "instance": "groq",
+  "provider_id": "groq",
+  "protocol": "openai-chat",
+  "surface": "generic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://api.groq.com/openai/v1",
+    "endpoint": "/chat/completions",
+    "stream_endpoint": "/chat/completions",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://api.groq.com/openai/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "GROQ_BASE_URL"
+    }
+  },
+  "model_id": "openai/gpt-oss-120b",
+  "wire_id": "openai/gpt-oss-120b",
+  "model": {
+    "id": "openai/gpt-oss-120b",
+    "wire_id": "openai/gpt-oss-120b",
+    "family": "gpt-oss",
+    "surface": "generic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 131072,
+    "max_output_tokens": 65536,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "input_modalities": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.15,
+      "output": 0.6,
+      "cache_read": 0.075
+    },
+    "fields": {
+      "developer_role": false,
+      "frequency_penalty": false,
+      "logprobs": false,
+      "max_tokens": true,
+      "metadata": false,
+      "n": false,
+      "parallel_tool_calls": false,
+      "presence_penalty": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "seed": false,
+      "service_tier": false,
+      "stop": true,
+      "store": false,
+      "stream_options": true,
+      "temperature": true,
+      "top_p": true,
+      "user": false
+    }
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "snapshot/row",
+    "Tools": "snapshot/row",
+    "model": "row:openai/gpt-oss-120b"
+  },
+  "default_model": "openai/gpt-oss-120b",
+  "cheap_model": "llama-3.1-8b-instant",
+  "credential_source": "env:GROQ_API_KEY",
+  "pruned_fields": [
+    "developer_role",
+    "frequency_penalty",
+    "logprobs",
+    "metadata",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "seed",
+    "service_tier",
+    "store",
+    "user"
+  ]
+}

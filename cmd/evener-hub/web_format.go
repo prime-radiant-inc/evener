@@ -57,8 +57,10 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		WorkMillis:          thread.Evener.WorkMillis,
 		Usage:               thread.Evener.Usage,
 		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
+		// Cost is the daemon's own figure, priced from the session's registry
+		// row; the web renders what it was told rather than re-deriving it.
+		Cost: thread.Evener.Cost,
 	}
-	data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 	if goal := thread.Evener.Goal; goal != nil {
 		data.GoalStatus = goal.Status
 		data.GoalIterations = goal.Iterations

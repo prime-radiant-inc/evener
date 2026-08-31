@@ -15,12 +15,13 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
@@ -29,14 +30,19 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 const WORK = instance({
   name: "work",
-  type: "anthropic",
+  providerId: "anthropic",
   authModes: ["apiKey"],
   isDefault: true,
   hasStoredFile: true,
-  activeSource: "file",
+  activeSource: "store",
 });
-const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
-const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
+const PERSONAL = instance({
+  name: "personal",
+  providerId: "openai-codex",
+  auth: "oauth-openai-codex",
+  authModes: ["oauth"],
+});
+const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableProviders: [] };
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -73,19 +79,43 @@ afterEach(() => {
 });
 
 describe("initial load", () => {
-  test("fetches evener/instance/list on mount and groups rows by type", async () => {
+  test("fetches evener/instance/list on mount and groups rows by providerId", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("work");
     expect(screen.getByText("anthropic")).toBeTruthy();
-    expect(screen.getByText("openai")).toBeTruthy();
+    expect(screen.getByText("openai-codex")).toBeTruthy();
     expect(screen.getByText("personal")).toBeTruthy();
+  });
+
+  // The Add dialog labels a provider `name || id`; the list has to call it
+  // the same thing, or ProviderDescriptor.name only ever appears in the form.
+  test("a group header prints the provider's display name when the registry supplies one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [WORK],
+      availableProviders: [
+        { id: "anthropic", name: "Anthropic", protocol: "anthropic", auth: "bearer", implicit: true },
+      ],
+    }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.getByText("Anthropic")).toBeTruthy();
+    expect(screen.queryByText("anthropic")).toBeNull();
+  });
+
+  test("a group header falls back to the raw providerId when no descriptor names it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.getByText("anthropic")).toBeTruthy();
   });
 
   test("empty state", async () => {
     const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("No provider instances configured.");
   });
@@ -161,7 +191,7 @@ describe("the detail sheet", () => {
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal" });
-      return { instances: [WORK], availableTypes: ["anthropic"] };
+      return { instances: [WORK], availableProviders: [] };
     });
     render(
       <>
@@ -184,9 +214,9 @@ describe("credential verification", () => {
   test("sends the exact custom instance name and shows local pending state until the deferred response arrives", async () => {
     const fake = connectFakeClient();
     const customName = "OpenAI / team-east:prod";
-    const custom = instance({ name: customName, type: "openai", authModes: ["apiKey"] });
+    const custom = instance({ name: customName, providerId: "openai", authModes: ["apiKey"] });
     const response = deferred<AuthTestResponse>();
-    fake.on("evener/instance/list", () => ({ instances: [custom], availableTypes: ["openai"] }));
+    fake.on("evener/instance/list", () => ({ instances: [custom], availableProviders: [] }));
     fake.on("evener/auth/test", (params) => {
       expect(params).toEqual({ provider: customName });
       return response.promise;
@@ -266,7 +296,7 @@ describe("credential verification", () => {
   ] as const)("renders the safe %s status and message", async (status, message) => {
     const fake = connectFakeClient();
     const response = deferred<AuthTestResponse>();
-    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText(WORK.name);
@@ -281,7 +311,7 @@ describe("credential verification", () => {
   test("does not render a supplied secret from a response message", async () => {
     const fake = connectFakeClient();
     const secret = "sk-live-do-not-render";
-    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", async () => ({ provider: WORK.name, status: "auth_rejected", message: secret }));
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText(WORK.name);
@@ -296,7 +326,7 @@ describe("credential verification", () => {
   test("does not render a raw RPC error string", async () => {
     const fake = connectFakeClient();
     const secret = "raw provider response containing sk-live-do-not-render";
-    fake.on("evener/instance/list", () => ({ instances: [WORK], availableTypes: [WORK.type] }));
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
     fake.on("evener/auth/test", async () => {
       throw new Error(secret);
     });
@@ -314,20 +344,20 @@ describe("credential verification", () => {
 
   test("resets pending state and ignores a late result after same-name instance refresh", async () => {
     const fake = connectFakeClient();
-    const oldInstance = instance({ name: "work", type: "anthropic", baseUrl: "https://old.example/v1" });
-    const refreshedInstance = instance({ name: "work", type: "anthropic", baseUrl: "https://new.example/v1" });
+    const oldInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://old.example/v1" });
+    const refreshedInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://new.example/v1" });
     const response = deferred<AuthTestResponse>();
     let listCalls = 0;
     fake.on("evener/instance/list", () => {
       listCalls += 1;
       return listCalls === 1
-        ? { instances: [oldInstance], availableTypes: [oldInstance.type] }
-        : { instances: [refreshedInstance], availableTypes: [refreshedInstance.type] };
+        ? { instances: [oldInstance], availableProviders: [] }
+        : { instances: [refreshedInstance], availableProviders: [] };
     });
     fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     const inspector = await openSheet(userEvent.setup(), "work");
-    await within(inspector).findByText("base https://old.example/v1");
+    await within(inspector).findByText("openai-chat · base https://old.example/v1");
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
     expect(within(inspector).getByRole("button", { name: "Testing credentials…" })).toBeTruthy();
 
@@ -336,7 +366,7 @@ describe("credential verification", () => {
     });
     // The sheet reads the instance from the store, so the refreshed base URL
     // lands live; the stale pending state from the old configuration is gone.
-    await within(inspector).findByText("base https://new.example/v1");
+    await within(inspector).findByText("openai-chat · base https://new.example/v1");
     const refreshedButton = within(inspector).getByRole("button", { name: /Test(?:ing credentials…)?/ });
     expect((refreshedButton as HTMLButtonElement).disabled).toBe(false);
     response.resolve({ provider: "work", status: "success", message: "Credentials verified." });
@@ -510,7 +540,7 @@ describe("set default", () => {
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/setDefault", (params) => {
       expect(params).toEqual({ name: "personal" });
-      return { instances: [WORK, { ...PERSONAL, isDefault: true }], availableTypes: ["anthropic", "openai"] };
+      return { instances: [WORK, { ...PERSONAL, isDefault: true }], availableProviders: [] };
     });
     render(
       <>
@@ -557,7 +587,7 @@ describe("Clear / Remove confirm dialogs", () => {
       expect(params).toEqual({ provider: "work" });
       return {
         removed: true,
-        status: { provider: "work", supported: true, signedIn: false, activeSource: "absent", hasStoredOAuth: false },
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
       };
     });
     render(
@@ -568,7 +598,7 @@ describe("Clear / Remove confirm dialogs", () => {
     );
     await screen.findByText("work");
     const user = userEvent.setup();
-    // WORK carries hasStoredFile+activeSource:"file" in the shared fixture,
+    // WORK carries hasStoredFile+activeSource:"store" in the shared fixture,
     // so its sheet already offers Clear.
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Clear" }));
@@ -585,7 +615,7 @@ describe("Clear / Remove confirm dialogs", () => {
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/instance/remove", (params) => {
       expect(params).toEqual({ name: "personal" });
-      return { instances: [WORK], availableTypes: ["anthropic"] };
+      return { instances: [WORK], availableProviders: [] };
     });
     render(
       <>
@@ -611,7 +641,7 @@ describe("Clear / Remove confirm dialogs", () => {
     const removeCalls: unknown[] = [];
     fake.on("evener/instance/remove", (params) => {
       removeCalls.push(params);
-      return { instances: [], availableTypes: [] };
+      return { instances: [], availableProviders: [] };
     });
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
@@ -622,5 +652,66 @@ describe("Clear / Remove confirm dialogs", () => {
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
     expect(removeCalls).toEqual([]);
     expect(screen.getByRole("dialog", { name: "personal" })).toBeTruthy();
+  });
+});
+
+// The registry reports what it could not load (diagnostics) and whether the
+// user layer can be written at all (writesRefused) on every instance list -
+// spec §11.3.
+describe("diagnostics and writesRefused", () => {
+  test("renders every diagnostics entry from the list response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [],
+      availableProviders: [],
+      diagnostics: [
+        'providers.toml: unknown key "type" (instance writes are refused until the file is fixed)',
+        "user layer: none (EVENER_PROVIDERS_CONFIG is empty)",
+      ],
+    }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(/providers\.toml: unknown key "type"/);
+    expect(screen.getByText("user layer: none (EVENER_PROVIDERS_CONFIG is empty)")).toBeTruthy();
+  });
+
+  test("no diagnostics banner when the list carries none", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.queryByText("Warnings")).toBeNull();
+  });
+
+  test("writesRefused disables Add and each sheet's Edit/Remove/make default, but not Test credentials/Set key/Clear", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [WORK, PERSONAL],
+      availableProviders: [],
+      writesRefused: true,
+    }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+
+    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
+
+    const workInspector = await openSheet(user, "work");
+    expect((within(workInspector).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+    // WORK has a stored key, so its sheet offers Clear - unaffected by writesRefused.
+    expect((within(workInspector).getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(workInspector).getByRole("button", { name: "Replace key" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(
+      (within(workInspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    await user.click(within(workInspector).getByRole("button", { name: "Close" }));
+
+    // Only PERSONAL is non-default, so it is the only sheet offering "make default".
+    const personalInspector = await openSheet(user, "personal");
+    expect(
+      (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });

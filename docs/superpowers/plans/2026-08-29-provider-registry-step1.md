@@ -1,0 +1,8697 @@
+# Provider Registry, Step 1: `llm/registry` and `evener models` Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build the data-driven provider registry (`llm/registry`) that turns models.dev + a curated overlay + `providers.toml` into one fully-materialized `Resolved` record per `instance/model` reference, plus the `evener models list|inspect|refresh` commands that read it. Nothing else consumes the registry in this step (spec §14 step 1).
+
+**Architecture:** A leaf Go package `primeradiant.com/evener/llm/registry` (imports nothing from `llm`) loads four data layers in the effective order snapshot → cache → overlay → live → user config, merges them field-wise with provenance, seeds alias rows from their targets, applies glob rows, derives the anthropic thinking shape and other caps on the final row, and exposes `Resolve`, `FindModel`, `Instances`, `Prune`, and `Refresh`. The `llm` package adds `ShapeRequest` and the `Protocol`/`Authenticator`/`RequestPreparer` interfaces on top. The old catalog, `providercfg`, and adapters keep running untouched until step 3.
+
+**Tech Stack:** Go 1.27 (module `primeradiant.com/evener/llm`, part of the `go.work` workspace), `github.com/BurntSushi/toml` v1.6.0 (already a dependency), `encoding/json`, `compress/gzip`, `embed`, `testing` + native Go fuzzing, `reflect` for the merge.
+
+**Spec:** `docs/superpowers/specs/2026-08-28-provider-registry-design.md` (revision 12). Section numbers below refer to it. The spec is the authority; this plan argues from it.
+
+## Global Constraints
+
+- Default tests must be deterministic and offline: no network, no provider credentials, no wall-clock dependence (AGENTS.md; `docs/developing-evener/testing.md`). `registry.Load` defaults to offline under `testing.Testing()` (§6.4).
+- `make lint` enforces: golangci-lint (`.golangci.yml`: `revive` exported-doc rule on library packages, `tagliatelle` json/toml tags snake_case, `perfsprint`, `modernize`, `errorlint`), `gofmt`, TOML snake_case for **unquoted** keys in every `.toml` file (`cmd/evener-tomlcheck`; quoted keys pass verbatim, so glob keys and uppercase variable names must be written quoted: `"gpt-5*"`, `"AWS_REGION"`, `"OpenAI-Organization"`), the fuzz-target registry (`scripts/fuzz/fuzz-targets.txt`, one row `native:llm:./registry:FuzzName` per native fuzz target), and the secret scan.
+- Every new exported identifier in `llm/registry` and `llm` needs a doc comment (revive `exported`).
+- TDD: write the failing test first, run it, implement, run, commit. Commit after every task with the message shown.
+- Package layout is fixed: the registry lives in `llm/registry`; its data files live in `llm/registry/data/` (embedding cannot reach `llm/data` from a subpackage, so this plan places the new snapshot, meta, and overlay there; the spec's `llm/data/` paths for the *new* files are read as `llm/registry/data/`). The old `llm/data/*.json` files are untouched in this step.
+- Spec §4 field names are the API: `Provider`, `Model`, `Transport`, `Caps`, `Cost`, `CostTier`, `Credential`, `Resolved`. Do not rename.
+- Protocol ids: `openai-chat`, `openai-responses`, `anthropic`, `google`. Auth schemes: `bearer`, `optional-bearer`, `header`, `none`, `gcp-adc`, `oauth-openai-codex`. Surfaces: `openai`, `anthropic`, `google`, `generic`. Endpoint sentinel for "unsupported": `-`.
+- Id comparison is case-sensitive everywhere (§4.1, §7.1).
+- `errcheck` is on: never discard an error implicitly (`defer func() { _ = f.Close() }()`, `_ = os.Remove(...)`); `fmt.Print*` are exempt.
+- Optional scalars are set with Go 1.26+ `new(expr)` (`new(1000)`, `new(true)`, `new("x")`); do not add pointer-helper functions — golangci-lint `modernize` flags them.
+- Code blocks in this plan are not column-aligned; run `gofmt -w` on each new file before the `gofmt -l` check.
+- Run tests from the workspace root: `go test ./llm/registry/...` (the `go.work` file resolves the module). Run the gate before the final commit of each task: `make lint` is slow; `gofmt -l llm/registry` + `go vet ./llm/registry/...` per task, full `make lint` at the end of the plan.
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `llm/registry/types.go` | The public data model: `Provider`, `Model`, `Transport`, `Caps`, `Cost`, `CostTier`, `Credential`, `Resolved`, `Ref`, and the constant vocabularies. |
+| `llm/registry/merge.go` | Field-wise `Caps`/`Transport`/map merging with provenance; glob matching and ordering. |
+| `llm/registry/modelsdev.go` | The only code that knows models.dev's JSON: `FromModelsDev`. |
+| `llm/registry/internal/modelsdevsample/main.go` | `go run` tool that cuts the checked-in 40-provider test fixture from a full `api.json`. |
+| `llm/registry/testdata/models.dev.sample.json` | The fixture (generated by the tool, committed). |
+| `llm/registry/snapshot.go` | Embeds `data/models.dev.json.gz` + `data/models.dev.meta.json`; gunzips and converts. |
+| `llm/registry/data/models.dev.json.gz`, `data/models.dev.meta.json` | The embedded upstream snapshot and its fetch metadata. |
+| `scripts/ops/refresh-model-catalog.sh` | Rewritten: fetches models.dev, gzips, writes meta, runs converter tests, prints the diff and overlay reports. |
+| `llm/registry/schema.go` | TOML decoding shared by the overlay and `providers.toml`: `fileSchema`, key validation, `$ENV` syntax check. |
+| `llm/registry/overlay.go` | `ParseOverlay` (curated layer, may use curated-only keys, transports, `default_order`). |
+| `llm/registry/config.go` | `ParseConfig` (user layer; curated-only keys rejected; §10 rules). |
+| `llm/registry/data/providers_overlay.toml` | The curated overlay of §6.2. |
+| `llm/registry/hostrules.go` | The two host rules of §9.1: `ollama-host` (ported from `envvars/ollama_host.go`) and `vertex-location`. |
+| `llm/registry/load.go` | `Load(opts...)`: assembles layers, resolves `base` chains, expands presets, validates `fields`/aliases, computes `Hidden`, applies `WithInstances`, prefers a newer cache, starts the background refresh. |
+| `llm/registry/resolve.go` | `Resolve`, `FindModel`, lookup order, alias seeding, glob pass, live-layer application. |
+| `llm/registry/derive.go` | §7.4 derived caps. |
+| `llm/registry/instances.go` | Implicit/explicit instances, default ranking, `CredentialSource`. |
+| `llm/registry/prune.go` | Per-protocol prunable path tables, baselines, `Prune`. |
+| `llm/registry/refresh.go` | Cache under `<state-root>/catalog/`, `Refresh`, validation floors, ETag, `HTTPFetcher`. |
+| `llm/registry/internal/snapshotreport/main.go` | `go run` tool the refresh script calls: overlay rows upstream now covers, dangling aliases, junk caps, changed pins. |
+| `llm/registry/golden_test.go` + `testdata/golden/*.json` | The spec §13 golden `Resolved` records with inline assertions. |
+| `llm/registry_shape.go` (package `llm`) | `ShapeRequest`, `Protocol`, `Authenticator`, `RequestPreparer`. |
+| `cmd/evener/models.go` | `evener models list|inspect|refresh`. |
+
+Test files sit next to each source file (`*_test.go`), goldens under `llm/registry/testdata/golden/`. Task order: types/merge → converter → snapshot → schema/parsers → overlay → prune → load → instances → derive → resolve → refresh → `llm.ShapeRequest` → goldens → `evener models` → gate; each task consumes only earlier ones.
+
+---
+
+### Task 1: Types, glob matching, and the caps merge
+
+**Files:**
+- Create: `llm/registry/types.go`
+- Create: `llm/registry/merge.go`
+- Test: `llm/registry/merge_test.go`
+
+**Interfaces:**
+- Produces: every type in spec §4 (`Provider`, `Model`, `Transport`, `Caps`, `Cost`, `CostTier`, `Credential`, `Resolved`, `Ref`), the constants, `mergeCaps(dst *Caps, src Caps, tag string, prov map[string]string)`, `mergeTransport(dst *Transport, src Transport)`, `mergeStringMap(dst, src map[string]string) map[string]string`, `matchGlob(pattern, id string) bool`, `sortGlobs(patterns []string) []string`, `isGlob(key string) bool`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/merge_test.go`:
+
+```go
+package registry
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestMergeCaps_LaterSetFieldWins_NilInherits(t *testing.T) {
+	prov := map[string]string{}
+	dst := Caps{ContextWindow: new(1000), Tools: new(true), EffortValues: []string{"low"}}
+	src := Caps{ContextWindow: new(2000), EffortValues: []string{"high", "max"}}
+	mergeCaps(&dst, src, "overlay/provider", prov)
+	if *dst.ContextWindow != 2000 {
+		t.Fatalf("ContextWindow = %d, want 2000", *dst.ContextWindow)
+	}
+	if dst.Tools == nil || !*dst.Tools {
+		t.Fatalf("Tools should be inherited (nil in src)")
+	}
+	if !reflect.DeepEqual(dst.EffortValues, []string{"high", "max"}) {
+		t.Fatalf("EffortValues should replace wholesale, got %v", dst.EffortValues)
+	}
+	if prov["ContextWindow"] != "overlay/provider" || prov["EffortValues"] != "overlay/provider" {
+		t.Fatalf("provenance not recorded: %v", prov)
+	}
+	if _, ok := prov["Tools"]; ok {
+		t.Fatalf("provenance must not be recorded for an inherited field")
+	}
+}
+
+func TestMergeCaps_MapsMergeKeyWise(t *testing.T) {
+	prov := map[string]string{}
+	dst := Caps{Fields: map[string]bool{"store": false, "temperature": true}}
+	src := Caps{Fields: map[string]bool{"store": true}, ChatTemplateKwargs: map[string]any{"a": 1}}
+	mergeCaps(&dst, src, "config/row", prov)
+	if !dst.Fields["store"] || !dst.Fields["temperature"] {
+		t.Fatalf("Fields must merge key-wise: %v", dst.Fields)
+	}
+	if dst.ChatTemplateKwargs["a"] != 1 {
+		t.Fatalf("ChatTemplateKwargs not merged")
+	}
+	if prov["Fields.store"] != "config/row" {
+		t.Fatalf("map provenance is per key: %v", prov)
+	}
+}
+
+func TestMergeCaps_CostAndFinishReasonMapReplaceWholesale(t *testing.T) {
+	prov := map[string]string{}
+	dst := Caps{Cost: &Cost{Input: 1, Output: 2}, FinishReasonMap: map[string]string{"a": "b", "c": "d"}}
+	src := Caps{Cost: &Cost{Input: 5}, FinishReasonMap: map[string]string{"x": "y"}}
+	mergeCaps(&dst, src, "live", prov)
+	if dst.Cost.Input != 5 || dst.Cost.Output != 0 {
+		t.Fatalf("Cost must replace wholesale: %+v", *dst.Cost)
+	}
+	if len(dst.FinishReasonMap) != 1 || dst.FinishReasonMap["x"] != "y" {
+		t.Fatalf("FinishReasonMap must replace wholesale: %v", dst.FinishReasonMap)
+	}
+}
+
+func TestMergeTransport_FieldWise(t *testing.T) {
+	dst := Transport{Auth: "bearer", BaseURL: "https://a/v1", Vars: map[string]string{"X": "1"}, Body: map[string]any{"k": "v"}}
+	src := Transport{AuthHeader: "x-api-key", Vars: map[string]string{"Y": "2"}, Body: map[string]any{"k2": true}}
+	mergeTransport(&dst, src)
+	if dst.Auth != "bearer" || dst.AuthHeader != "x-api-key" || dst.BaseURL != "https://a/v1" {
+		t.Fatalf("scalar merge wrong: %+v", dst)
+	}
+	if dst.Vars["X"] != "1" || dst.Vars["Y"] != "2" || dst.Body["k"] != "v" || dst.Body["k2"] != true {
+		t.Fatalf("map merge wrong: %+v", dst)
+	}
+}
+
+func TestMatchGlob(t *testing.T) {
+	cases := []struct {
+		pattern, id string
+		want        bool
+	}{
+		{"gpt-5*", "gpt-5.6", true},
+		{"gpt-5*", "gpt-4.1", false},
+		{"*claude-opus-4-5*", "us.anthropic.claude-opus-4-5-20251101-v1:0", true},
+		{"*claude-opus-4-5*", "claude-opus-4-6", false},
+		{"minimax/*", "minimax/MiniMax-M2.7", true},
+		{"minimax/*", "MiniMax-M2.7", false},
+		{"*", "anything", true},
+		{"MiniMax-M3", "minimax-m3", false}, // case-sensitive
+		{"gpt-5.6", "gpt-5.6", true},        // exact key is not a glob but must still match itself
+	}
+	for _, c := range cases {
+		if got := matchGlob(c.pattern, c.id); got != c.want {
+			t.Errorf("matchGlob(%q, %q) = %v, want %v", c.pattern, c.id, got, c.want)
+		}
+	}
+}
+
+func TestSortGlobs_ShorterThenLexical(t *testing.T) {
+	got := sortGlobs([]string{"gpt-5.6*", "gpt-5*", "*", "gpt-4.1*"})
+	want := []string{"*", "gpt-5*", "gpt-4.1*", "gpt-5.6*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sortGlobs = %v, want %v", got, want)
+	}
+}
+
+func TestIsGlob(t *testing.T) {
+	if !isGlob("gpt-5*") || isGlob("gpt-5.6") {
+		t.Fatalf("isGlob wrong")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestMergeCaps|TestMergeTransport|TestMatchGlob|TestSortGlobs|TestIsGlob' -v`
+Expected: FAIL to compile ("undefined: Caps", "undefined: mergeCaps").
+
+- [ ] **Step 3: Write `types.go`**
+
+```go
+// Package registry is the data-driven provider registry: it turns models.dev,
+// a curated overlay, and providers.toml into one fully materialized Resolved
+// record per instance/model reference. It imports nothing from llm; llm
+// imports it. Design: docs/superpowers/specs/2026-08-28-provider-registry-design.md.
+package registry
+
+// Protocol identifiers (spec §3). Exactly one Go package implements each.
+const (
+	ProtocolOpenAIChat      = "openai-chat"
+	ProtocolOpenAIResponses = "openai-responses"
+	ProtocolAnthropic       = "anthropic"
+	ProtocolGoogle          = "google"
+)
+
+// Auth schemes (spec §4).
+const (
+	AuthBearer           = "bearer"
+	AuthOptionalBearer   = "optional-bearer"
+	AuthHeader           = "header"
+	AuthNone             = "none"
+	AuthGCPADC           = "gcp-adc"
+	AuthOAuthOpenAICodex = "oauth-openai-codex"
+)
+
+// Surfaces (spec §3): the agent-facing vendor family a model was trained for.
+const (
+	SurfaceOpenAI    = "openai"
+	SurfaceAnthropic = "anthropic"
+	SurfaceGoogle    = "google"
+	SurfaceGeneric   = "generic"
+)
+
+// EndpointUnsupported is the Transport endpoint value meaning "this endpoint
+// does not exist on this transport" (spec §4, §9.1).
+const EndpointUnsupported = "-"
+
+// Provider is a named endpoint definition (spec §4). The same struct is used
+// for registry records and for user instances.
+type Provider struct {
+	ID string `json:"id,omitempty"`
+	Base string `json:"base,omitempty"`
+	InheritModels *bool `json:"inherit_models,omitempty"`
+	Implicit *bool `json:"implicit,omitempty"`
+	Name string `json:"name,omitempty"`
+	Doc string `json:"doc,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Surface string `json:"surface,omitempty"`
+	Family string `json:"family,omitempty"`
+	Transport Transport `json:"transport"`
+	APIKeyEnv []string `json:"api_key_env,omitempty"`
+	APIKey string `json:"api_key,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	CredentialHeaders map[string]string `json:"credential_headers,omitempty"`
+	Caps Caps `json:"caps"`
+	Models map[string]Model `json:"models,omitempty"`
+	DefaultModel string `json:"default_model,omitempty"`
+	CheapModel string `json:"cheap_model,omitempty"`
+	Hidden bool `json:"hidden,omitempty"`
+}
+
+// Model is one row under a provider (spec §4).
+type Model struct {
+	ID string `json:"id,omitempty"`
+	WireID string `json:"wire_id,omitempty"`
+	AliasOf string `json:"alias_of,omitempty"`
+	Family string `json:"family,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Transport *Transport `json:"transport,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Surface string `json:"surface,omitempty"`
+	Caps Caps `json:"caps"`
+	Status string `json:"status,omitempty"`
+	Hidden bool `json:"hidden,omitempty"`
+}
+
+// Transport says how to reach an endpoint (spec §4).
+type Transport struct {
+	Preset string `json:"preset,omitempty"`
+	Auth string `json:"auth,omitempty"`
+	AuthHeader string `json:"auth_header,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	HostRule string `json:"host_rule,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	StreamEndpoint string `json:"stream_endpoint,omitempty"`
+	ModelsEndpoint string `json:"models_endpoint,omitempty"`
+	CountTokensEndpoint string `json:"count_tokens_endpoint,omitempty"`
+	Vars map[string]string `json:"vars,omitempty"`
+	VarsEnv map[string]string `json:"vars_env,omitempty"`
+	Body map[string]any `json:"body,omitempty"`
+}
+
+// Caps is the flat capability record shared by every protocol (spec §4.1).
+// Pointer fields distinguish "unset" from false/0 at every layer.
+type Caps struct {
+	// Model facts. This block plus Surface and Family is what an alias row
+	// inherits (spec §4.2).
+	ContextWindow *int `toml:"context_window" json:"context_window,omitempty"`
+	MaxOutputTokens *int `toml:"max_output_tokens" json:"max_output_tokens,omitempty"`
+	Tools *bool `toml:"tools" json:"tools,omitempty"`
+	StructuredOutput *bool `toml:"structured_output" json:"structured_output,omitempty"`
+	Sampling *bool `toml:"sampling" json:"sampling,omitempty"`
+	Reasoning *bool `toml:"reasoning" json:"reasoning,omitempty"`
+	ReasoningControls []string `toml:"reasoning_controls" json:"reasoning_controls,omitempty"`
+	EffortValues []string `toml:"effort_values" json:"effort_values,omitempty"`
+	InputModalities []string `toml:"input_modalities" json:"input_modalities,omitempty"`
+	KnowledgeCutoff *string `toml:"knowledge_cutoff" json:"knowledge_cutoff,omitempty"`
+	Cost *Cost `toml:"cost" json:"cost,omitempty"`
+
+	// Optional wire fields: JSON path → send (spec §8.2). Key-wise merge.
+	Fields map[string]bool `toml:"fields" json:"fields,omitempty"`
+
+	// Structural request shaping.
+	MaxTokensField *string `toml:"max_tokens_field" json:"max_tokens_field,omitempty"`
+	ThinkingFormat *string `toml:"thinking_format" json:"thinking_format,omitempty"`
+	ThinkingShape *string `toml:"thinking_shape" json:"thinking_shape,omitempty"`
+	ThinkingDisplay *string `toml:"thinking_display" json:"thinking_display,omitempty"`
+	ThinkingAlwaysOn *bool `toml:"thinking_always_on" json:"thinking_always_on,omitempty"`
+	ReasoningField *string `toml:"reasoning_field" json:"reasoning_field,omitempty"`
+	ReasoningSummary *string `toml:"reasoning_summary" json:"reasoning_summary,omitempty"`
+	ChatTemplateKwargs map[string]any `toml:"chat_template_kwargs" json:"chat_template_kwargs,omitempty"`
+	FinishReasonMap map[string]string `toml:"finish_reason_map" json:"finish_reason_map,omitempty"`
+	CacheControl *string `toml:"cache_control" json:"cache_control,omitempty"`
+	CacheTTL *string `toml:"cache_ttl" json:"cache_ttl,omitempty"`
+	StrictTools *bool `toml:"strict_tools" json:"strict_tools,omitempty"`
+	ToolChoiceForcing *bool `toml:"tool_choice_forcing" json:"tool_choice_forcing,omitempty"`
+	MaxStopSequences *int `toml:"max_stop_sequences" json:"max_stop_sequences,omitempty"`
+	ImageDetail *string `toml:"image_detail" json:"image_detail,omitempty"`
+	ResponsesLite *bool `toml:"responses_lite" json:"responses_lite,omitempty"`
+
+	// Message transforms (openai-chat).
+	AssistantAfterToolResult *bool `toml:"assistant_after_tool_result" json:"assistant_after_tool_result,omitempty"`
+	ThinkingAsText *bool `toml:"thinking_as_text" json:"thinking_as_text,omitempty"`
+	EmptyReasoningContent *bool `toml:"empty_reasoning_content" json:"empty_reasoning_content,omitempty"`
+	StripEmptyContent *bool `toml:"strip_empty_content" json:"strip_empty_content,omitempty"`
+	ToolResultName *bool `toml:"tool_result_name" json:"tool_result_name,omitempty"`
+	ToolStream *bool `toml:"tool_stream" json:"tool_stream,omitempty"`
+	SessionAffinityHeaders *bool `toml:"session_affinity_headers" json:"session_affinity_headers,omitempty"`
+
+	// Protocol features.
+	MultimodalToolResults *bool `toml:"multimodal_tool_results" json:"multimodal_tool_results,omitempty"`
+	WebSearch *bool `toml:"web_search" json:"web_search,omitempty"`
+}
+
+// Cost is $ per million tokens (spec §4.1).
+type Cost struct {
+	Input float64 `toml:"input" json:"input,omitempty"`
+	Output float64 `toml:"output" json:"output,omitempty"`
+	CacheRead float64 `toml:"cache_read" json:"cache_read,omitempty"`
+	CacheWrite float64 `toml:"cache_write" json:"cache_write,omitempty"`
+	Tiers []CostTier `toml:"tiers" json:"tiers,omitempty"`
+}
+
+// CostTier is a context-size pricing tier (spec §4.1).
+type CostTier struct {
+	InputTokensAbove int `toml:"input_tokens_above" json:"input_tokens_above,omitempty"`
+	Input float64 `toml:"input" json:"input,omitempty"`
+	Output float64 `toml:"output" json:"output,omitempty"`
+	CacheRead float64 `toml:"cache_read" json:"cache_read,omitempty"`
+	CacheWrite float64 `toml:"cache_write" json:"cache_write,omitempty"`
+}
+
+// Credential is what resolution found for an instance (spec §4, §10). Value
+// is never logged; the continuation scope HMACs it (§7.6).
+type Credential struct {
+	Value string `json:"value,omitempty"`
+	Source string `json:"source,omitempty"` // api_key | credential_headers | store | env:<VAR> | oauth | adc | none
+}
+
+// Resolved is the fully materialized record adapters consume (spec §4.4).
+type Resolved struct {
+	Instance string `json:"instance,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Surface string `json:"surface,omitempty"`
+	Transport Transport `json:"transport"`
+	ModelID string `json:"model_id,omitempty"`
+	WireID string `json:"wire_id,omitempty"`
+	Model Model `json:"model"`
+	Caps Caps `json:"caps"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Credential Credential `json:"-"`
+	Provenance map[string]string `json:"provenance,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// Ref names an instance/model pair (spec §7).
+type Ref struct {
+	Instance string `json:"instance,omitempty"`
+	Model string `json:"model,omitempty"`
+}
+
+// String renders the reference in instance/model form.
+func (r Ref) String() string { return r.Instance + "/" + r.Model }
+```
+
+- [ ] **Step 4: Write `merge.go`**
+
+```go
+package registry
+
+import (
+	"maps"
+	"reflect"
+	"sort"
+	"strings"
+)
+
+// wholesaleFields are Caps fields that replace as a unit on overlay rather
+// than merging key-wise (spec §4.1).
+var wholesaleFields = map[string]bool{
+	"EffortValues": true, "InputModalities": true, "ReasoningControls": true,
+	"Cost": true, "FinishReasonMap": true,
+}
+
+// keyWiseFields are Caps map fields that merge key by key (spec §4.1).
+var keyWiseFields = map[string]bool{"Fields": true, "ChatTemplateKwargs": true}
+
+// mergeCaps overlays src onto dst: a non-nil pointer or non-nil slice in src
+// replaces; key-wise maps merge per key; nil inherits. Every field or map key
+// that src set is recorded in prov under tag (spec §4.1).
+func mergeCaps(dst *Caps, src Caps, tag string, prov map[string]string) {
+	dv := reflect.ValueOf(dst).Elem()
+	sv := reflect.ValueOf(src)
+	for i := 0; i < sv.NumField(); i++ {
+		f := sv.Type().Field(i)
+		sf := sv.Field(i)
+		df := dv.Field(i)
+		if sf.IsNil() {
+			continue
+		}
+		switch {
+		case keyWiseFields[f.Name]:
+			if df.IsNil() {
+				df.Set(reflect.MakeMap(df.Type()))
+			}
+			iter := sf.MapRange()
+			for iter.Next() {
+				df.SetMapIndex(iter.Key(), iter.Value())
+				if prov != nil {
+					prov[f.Name+"."+iter.Key().String()] = tag
+				}
+			}
+		case wholesaleFields[f.Name] || sf.Kind() == reflect.Ptr || sf.Kind() == reflect.Slice || sf.Kind() == reflect.Map:
+			df.Set(sf)
+			if prov != nil {
+				prov[f.Name] = tag
+			}
+		}
+	}
+}
+
+// mergeTransport overlays the non-empty scalar fields and merges the maps of
+// src onto dst (spec §4.1).
+func mergeTransport(dst *Transport, src Transport) {
+	setIf := func(d *string, s string) {
+		if s != "" {
+			*d = s
+		}
+	}
+	setIf(&dst.Preset, src.Preset)
+	setIf(&dst.Auth, src.Auth)
+	setIf(&dst.AuthHeader, src.AuthHeader)
+	setIf(&dst.BaseURL, src.BaseURL)
+	setIf(&dst.HostRule, src.HostRule)
+	setIf(&dst.Endpoint, src.Endpoint)
+	setIf(&dst.StreamEndpoint, src.StreamEndpoint)
+	setIf(&dst.ModelsEndpoint, src.ModelsEndpoint)
+	setIf(&dst.CountTokensEndpoint, src.CountTokensEndpoint)
+	dst.Vars = mergeStringMap(dst.Vars, src.Vars)
+	dst.VarsEnv = mergeStringMap(dst.VarsEnv, src.VarsEnv)
+	if len(src.Body) > 0 {
+		if dst.Body == nil {
+			dst.Body = map[string]any{}
+		}
+		maps.Copy(dst.Body, src.Body)
+	}
+}
+
+// mergeStringMap returns dst with src's keys overlaid; a nil dst is allocated
+// only when src has keys.
+func mergeStringMap(dst, src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = map[string]string{}
+	}
+	maps.Copy(dst, src)
+	return dst
+}
+
+// isGlob reports whether a models key is a glob row (contains `*`).
+func isGlob(key string) bool { return strings.Contains(key, "*") }
+
+// matchGlob matches id against pattern, where `*` matches any run of
+// characters (including `/` and `.`); everything else is literal and
+// case-sensitive (spec §4.1).
+func matchGlob(pattern, id string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == id
+	}
+	if !strings.HasPrefix(id, parts[0]) {
+		return false
+	}
+	id = id[len(parts[0]):]
+	for i := 1; i < len(parts)-1; i++ {
+		idx := strings.Index(id, parts[i])
+		if idx < 0 {
+			return false
+		}
+		id = id[idx+len(parts[i]):]
+	}
+	return strings.HasSuffix(id, parts[len(parts)-1])
+}
+
+// sortGlobs orders glob patterns shorter-first, then lexically, so the more
+// specific pattern applies last and wins (spec §4.1).
+func sortGlobs(patterns []string) []string {
+	out := append([]string(nil), patterns...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if len(out[i]) != len(out[j]) {
+			return len(out[i]) < len(out[j])
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestMergeCaps|TestMergeTransport|TestMatchGlob|TestSortGlobs|TestIsGlob' -v`
+Expected: PASS for all seven tests, `gofmt` prints nothing.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/types.go llm/registry/merge.go llm/registry/merge_test.go
+git commit -m "feat(registry): data model, caps merge with provenance, glob matching"
+```
+
+### Task 2: The models.dev converter and its test fixture
+
+**Files:**
+- Create: `llm/registry/modelsdev.go`
+- Create: `llm/registry/internal/modelsdevsample/main.go`
+- Create: `llm/registry/testdata/models.dev.sample.json` (generated by the tool, committed)
+- Test: `llm/registry/modelsdev_test.go`, `llm/registry/modelsdev_fuzz_test.go`
+- Modify: `scripts/fuzz/fuzz-targets.txt` (add one row)
+
+**Interfaces:**
+- Consumes: Task 1 types.
+- Produces: `FromModelsDev(data []byte) ([]Provider, error)` (providers sorted by id; each provider's `Models` keyed by the converted id; per-model `Transport.Preset` names `vertex-anthropic`, `vertex-gemini`, `bedrock-mantle-openai` which Task 4's overlay defines), `regionPrefixes []string`, `stripRegionPrefix(id string) string`, `surfaceForFamily(family string) string`, `npmProtocol(npm string) (protocol, auth string, hidden bool, known bool)`.
+
+- [ ] **Step 1: Generate the fixture**
+
+Write the tool `llm/registry/internal/modelsdevsample/main.go`:
+
+```go
+// Command modelsdevsample cuts the registry's checked-in test fixture out of
+// a full models.dev api.json. The fixture is the 40 providers below, chosen
+// to cover every npm value in the converter table, per-model provider
+// overrides (npm, api, shape), both interleaved shapes, every
+// reasoning_options combination, limit.input, @default ids, cost tiers,
+// hidden providers, providers with no api, non-Claude Bedrock rows, the
+// Vertex openai/*-maas rows, mixed-case ids, and rows with mapped, unmapped,
+// and absent family. Rerun it after refreshing the snapshot when a test
+// needs a row the fixture lacks:
+//
+//	curl -sL https://models.dev/api.json -o /tmp/api.json
+//	go run ./llm/registry/internal/modelsdevsample -in /tmp/api.json -out llm/registry/testdata/models.dev.sample.json
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+)
+
+var keep = []string{
+	"anthropic", "openai", "google", "groq", "xai", "cerebras", "mistral", "togetherai",
+	"deepseek", "zai", "zai-coding-plan", "zhipuai", "zhipuai-coding-plan", "openrouter",
+	"moonshotai", "moonshotai-cn", "kimi-for-coding", "minimax", "minimax-cn",
+	"azure", "azure-cognitive-services", "amazon-bedrock", "google-vertex", "google-vertex-anthropic",
+	"ollama-cloud", "cohere", "watsonx", "deepinfra", "perplexity", "vercel", "huggingface",
+	"fireworks-ai", "github-copilot", "opencode", "nvidia", "crof", "zenifra", "hpc-ai",
+	"cloudflare-workers-ai", "venice",
+}
+
+func main() {
+	in := flag.String("in", "", "path to a full models.dev api.json")
+	out := flag.String("out", "", "path to write the fixture")
+	flag.Parse()
+	if *in == "" || *out == "" {
+		fmt.Fprintln(os.Stderr, "usage: modelsdevsample -in api.json -out fixture.json")
+		os.Exit(2)
+	}
+	raw, err := os.ReadFile(*in)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		fmt.Fprintln(os.Stderr, "parse:", err)
+		os.Exit(1)
+	}
+	sort.Strings(keep)
+	subset := map[string]json.RawMessage{}
+	for _, id := range keep {
+		v, ok := all[id]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "warning: provider %q not in %s\n", id, *in)
+			continue
+		}
+		subset[id] = v
+	}
+	data, err := json.MarshalIndent(subset, "", " ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %d providers to %s\n", len(subset), *out)
+}
+```
+
+Then generate the fixture once (this is a development-time fetch; tests never touch the network):
+
+```bash
+curl -sL https://models.dev/api.json -o /tmp/api.json
+mkdir -p llm/registry/testdata
+go run ./llm/registry/internal/modelsdevsample -in /tmp/api.json -out llm/registry/testdata/models.dev.sample.json
+python3 -c "import json;d=json.load(open('llm/registry/testdata/models.dev.sample.json'));print(len(d),'providers');print(sorted(d))"
+```
+
+Expected: `40 providers` and the list above. If any provider is missing upstream (models.dev renamed it), replace it in `keep` with a provider that covers the same case and note it in the commit message.
+
+- [ ] **Step 2: Write the failing tests**
+
+`llm/registry/modelsdev_test.go` (the expected values below are the models.dev values as of the 2026-08-28 snapshot; if the refreshed fixture differs, update the expectation to the fixture's value, never the converter):
+
+```go
+package registry
+
+import (
+	"os"
+	"reflect"
+	"testing"
+)
+
+func loadFixture(t *testing.T) map[string]Provider {
+	t.Helper()
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provs, err := FromModelsDev(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Provider{}
+	for _, p := range provs {
+		byID[p.ID] = p
+	}
+	return byID
+}
+
+func TestFromModelsDev_ProviderLevel(t *testing.T) {
+	p := loadFixture(t)
+
+	groq := p["groq"]
+	if groq.Protocol != ProtocolOpenAIChat || groq.Transport.Auth != AuthBearer {
+		t.Fatalf("groq: protocol=%q auth=%q", groq.Protocol, groq.Transport.Auth)
+	}
+	if groq.Transport.BaseURL != "" {
+		t.Fatalf("groq has no api upstream; BaseURL must stay empty, got %q", groq.Transport.BaseURL)
+	}
+	if !reflect.DeepEqual(groq.APIKeyEnv, []string{"GROQ_API_KEY"}) {
+		t.Fatalf("groq APIKeyEnv = %v", groq.APIKeyEnv)
+	}
+
+	openai := p["openai"]
+	if openai.Protocol != ProtocolOpenAIResponses {
+		t.Fatalf("openai protocol = %q", openai.Protocol)
+	}
+	anth := p["anthropic"]
+	if anth.Protocol != ProtocolAnthropic || anth.Transport.Auth != AuthHeader || anth.Transport.AuthHeader != "x-api-key" {
+		t.Fatalf("anthropic: %+v", anth.Transport)
+	}
+	goog := p["google"]
+	if goog.Protocol != ProtocolGoogle || goog.Transport.AuthHeader != "x-goog-api-key" {
+		t.Fatalf("google: %+v", goog.Transport)
+	}
+	if p["cohere"].Hidden != true || p["watsonx"].Hidden != true {
+		t.Fatalf("cohere/watsonx must be hidden by npm")
+	}
+
+	zai := p["zai"]
+	if zai.Transport.BaseURL != "https://api.z.ai/api/paas/v4" {
+		t.Fatalf("zai BaseURL = %q", zai.Transport.BaseURL)
+	}
+	if !reflect.DeepEqual(zai.APIKeyEnv, []string{"ZHIPU_API_KEY"}) {
+		t.Fatalf("zai APIKeyEnv = %v", zai.APIKeyEnv)
+	}
+
+	cf := p["cloudflare-workers-ai"]
+	if cf.Transport.BaseURL != "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1" {
+		t.Fatalf("template placeholders must become {VAR}: %q", cf.Transport.BaseURL)
+	}
+	if cf.Transport.VarsEnv["CLOUDFLARE_ACCOUNT_ID"] != "CLOUDFLARE_ACCOUNT_ID" {
+		t.Fatalf("template var must reach VarsEnv: %v", cf.Transport.VarsEnv)
+	}
+
+	azure := p["azure"]
+	if azure.Protocol != ProtocolOpenAIResponses || azure.Transport.Auth != AuthHeader || azure.Transport.AuthHeader != "api-key" {
+		t.Fatalf("azure: %+v", azure.Transport)
+	}
+	if !reflect.DeepEqual(azure.APIKeyEnv, []string{"AZURE_API_KEY"}) || azure.Transport.VarsEnv["AZURE_RESOURCE_NAME"] != "AZURE_RESOURCE_NAME" {
+		t.Fatalf("azure env split wrong: key=%v vars=%v", azure.APIKeyEnv, azure.Transport.VarsEnv)
+	}
+
+	bedrock := p["amazon-bedrock"]
+	if bedrock.Protocol != ProtocolAnthropic || bedrock.Transport.AuthHeader != "x-api-key" {
+		t.Fatalf("bedrock: %+v", bedrock.Transport)
+	}
+	// The heuristic misfires on AWS_SECRET_ACCESS_KEY; the overlay pins this
+	// later. Here we only assert the raw heuristic result is deterministic.
+	if len(bedrock.APIKeyEnv) == 0 {
+		t.Fatalf("bedrock heuristic should pick at least one *_KEY/*_TOKEN var")
+	}
+
+	vertex := p["google-vertex"]
+	if vertex.Protocol != ProtocolGoogle || vertex.Transport.Auth != AuthGCPADC {
+		t.Fatalf("google-vertex: %+v", vertex.Transport)
+	}
+	if len(vertex.APIKeyEnv) != 0 {
+		t.Fatalf("vertex has no key var; got %v", vertex.APIKeyEnv)
+	}
+}
+
+func TestFromModelsDev_ModelLevel(t *testing.T) {
+	p := loadFixture(t)
+
+	gpt5 := p["openai"].Models["gpt-5"]
+	if gpt5.Caps.ContextWindow == nil || *gpt5.Caps.ContextWindow != 272000 {
+		t.Fatalf("gpt-5 ContextWindow must be limit.input (272000), got %v", gpt5.Caps.ContextWindow)
+	}
+	if gpt5.Family != "gpt" || gpt5.Surface != SurfaceOpenAI {
+		t.Fatalf("gpt-5 family/surface: %q/%q", gpt5.Family, gpt5.Surface)
+	}
+
+	opus45 := p["anthropic"].Models["claude-opus-4-5"]
+	if !reflect.DeepEqual(opus45.Caps.ReasoningControls, []string{"effort", "budget_tokens"}) {
+		t.Fatalf("opus-4-5 controls = %v", opus45.Caps.ReasoningControls)
+	}
+	if opus45.Caps.Sampling != nil {
+		t.Fatalf("opus-4-5 accepts temperature; Sampling must stay unset")
+	}
+	if opus45.Surface != SurfaceAnthropic || opus45.Family != "claude-opus" {
+		t.Fatalf("opus-4-5 surface/family: %q/%q", opus45.Surface, opus45.Family)
+	}
+
+	sonnet45 := p["anthropic"].Models["claude-sonnet-4-5"]
+	if !reflect.DeepEqual(sonnet45.Caps.ReasoningControls, []string{"budget_tokens"}) {
+		t.Fatalf("sonnet-4-5 controls = %v", sonnet45.Caps.ReasoningControls)
+	}
+
+	opus5 := p["anthropic"].Models["claude-opus-5"]
+	if opus5.Caps.Sampling == nil || *opus5.Caps.Sampling {
+		t.Fatalf("opus-5 has temperature:false upstream; Sampling must be false")
+	}
+	if !reflect.DeepEqual(opus5.Caps.EffortValues, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("opus-5 effort values = %v", opus5.Caps.EffortValues)
+	}
+
+	gpt55 := p["openai"].Models["gpt-5.5"]
+	if !reflect.DeepEqual(gpt55.Caps.EffortValues, []string{"low", "medium", "high", "xhigh"}) {
+		t.Fatalf("gpt-5.5 must drop 'none' from effort values, got %v", gpt55.Caps.EffortValues)
+	}
+	if gpt55.Caps.Cost == nil || gpt55.Caps.Cost.Input != 5 || len(gpt55.Caps.Cost.Tiers) != 1 || gpt55.Caps.Cost.Tiers[0].InputTokensAbove != 272000 {
+		t.Fatalf("gpt-5.5 cost/tiers = %+v", gpt55.Caps.Cost)
+	}
+
+	k25 := p["moonshotai"].Models["kimi-k2.5"]
+	if k25.Caps.MaxOutputTokens == nil || *k25.Caps.MaxOutputTokens != 262144 {
+		t.Fatalf("converter must not clear the junk cap (derivation does): %v", k25.Caps.MaxOutputTokens)
+	}
+	if k25.Caps.ReasoningField == nil || *k25.Caps.ReasoningField != "reasoning_content" {
+		t.Fatalf("interleaved.field must map to ReasoningField: %v", k25.Caps.ReasoningField)
+	}
+
+	azClaude := p["azure"].Models["claude-opus-4-5"]
+	if azClaude.Protocol != ProtocolAnthropic {
+		t.Fatalf("azure claude row must carry protocol anthropic from per-model npm, got %q", azClaude.Protocol)
+	}
+	if azClaude.Transport == nil || azClaude.Transport.BaseURL != "https://{AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1" {
+		t.Fatalf("azure claude per-model api: %+v", azClaude.Transport)
+	}
+	if azClaude.Transport.Auth != "" {
+		t.Fatalf("per-model overrides never change Auth, got %q", azClaude.Transport.Auth)
+	}
+
+	mantle := p["amazon-bedrock"].Models["openai.gpt-oss-120b"]
+	if mantle.Protocol != ProtocolOpenAIResponses || mantle.Transport == nil || mantle.Transport.Preset != "bedrock-mantle-openai" {
+		t.Fatalf("mantle row: protocol=%q transport=%+v", mantle.Protocol, mantle.Transport)
+	}
+	if mantle.Transport.BaseURL != "https://bedrock-mantle.{AWS_REGION}.api.aws/v1" {
+		t.Fatalf("mantle BaseURL = %q", mantle.Transport.BaseURL)
+	}
+	if !p["amazon-bedrock"].Models["global.openai.gpt-5.6-sol"].Hidden {
+		t.Fatalf("OpenAI bedrock row without a mantle override must be hidden")
+	}
+	if p["amazon-bedrock"].Models["anthropic.claude-opus-5"].Hidden {
+		t.Fatalf("Claude bedrock rows must not be hidden")
+	}
+	if p["amazon-bedrock"].Models["us.anthropic.claude-fable-5"].Hidden {
+		t.Fatalf("region-prefixed Claude rows must not be hidden")
+	}
+
+	vc := p["google-vertex"].Models["claude-opus-5"]
+	if vc.ID != "claude-opus-5" || vc.WireID != "claude-opus-5" {
+		t.Fatalf("@default rows must be re-keyed: %+v", vc)
+	}
+	if vc.Protocol != ProtocolAnthropic || vc.Transport == nil || vc.Transport.Preset != "vertex-anthropic" {
+		t.Fatalf("vertex claude row preset: %+v", vc.Transport)
+	}
+	if _, ok := p["google-vertex-anthropic"].Models["claude-sonnet-4-5@20250929"]; !ok {
+		t.Fatalf("dated @version ids are kept verbatim")
+	}
+	if !p["google-vertex"].Models["openai/gpt-oss-120b-maas"].Hidden {
+		t.Fatalf("vertex openai/*-maas rows without a template must be hidden")
+	}
+
+	zen := p["zenifra"].Models["alibaba/qwen3.6-35b-a3b"]
+	if zen.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("shape completions must map to openai-chat, got %q", zen.Protocol)
+	}
+
+	if _, ok := p["groq"].Models["whisper-large-v3"]; ok {
+		t.Fatalf("rows without text output must be dropped")
+	}
+	if p["groq"].Models["llama-3.3-70b-versatile"].Caps.Reasoning == nil {
+		t.Fatalf("reasoning fact must be set from the row")
+	}
+}
+
+func TestFromModelsDev_SurfaceRule(t *testing.T) {
+	cases := map[string]string{
+		"claude-opus": SurfaceAnthropic, "gpt": SurfaceOpenAI, "gpt-oss": SurfaceGeneric,
+		"o": SurfaceOpenAI, "o-mini": SurfaceOpenAI, "o-pro": SurfaceOpenAI,
+		"gemini": SurfaceGoogle, "gemma": SurfaceGoogle, "kimi-k3": SurfaceGeneric, "": "",
+	}
+	for fam, want := range cases {
+		if got := surfaceForFamily(fam); got != want {
+			t.Errorf("surfaceForFamily(%q) = %q, want %q", fam, got, want)
+		}
+	}
+}
+
+func TestStripRegionPrefix(t *testing.T) {
+	if stripRegionPrefix("global.anthropic.claude-opus-5") != "anthropic.claude-opus-5" ||
+		stripRegionPrefix("anthropic.claude-opus-5") != "anthropic.claude-opus-5" ||
+		stripRegionPrefix("au.anthropic.x") != "anthropic.x" {
+		t.Fatal("stripRegionPrefix wrong")
+	}
+}
+
+func TestFromModelsDev_Deterministic(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := FromModelsDev(data)
+	b, _ := FromModelsDev(data)
+	if !reflect.DeepEqual(a, b) {
+		t.Fatal("conversion must be deterministic")
+	}
+	for i := 1; i < len(a); i++ {
+		if a[i-1].ID >= a[i].ID {
+			t.Fatalf("providers must be sorted by id: %q >= %q", a[i-1].ID, a[i].ID)
+		}
+	}
+}
+```
+
+`llm/registry/modelsdev_fuzz_test.go`:
+
+```go
+package registry
+
+import (
+	"os"
+	"reflect"
+	"testing"
+)
+
+// FuzzFromModelsDev drives the converter over mutated models.dev JSON.
+// Oracles: never panics; a parse error is returned as an error, not a nil
+// slice with no error; conversion is deterministic; every provider id is
+// unique and sorted; every model row's ID equals its map key.
+func FuzzFromModelsDev(f *testing.F) {
+	seed, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed)
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`{"x":{"id":"x","models":{"m":{"id":"m","modalities":{"output":["text"]},"interleaved":true}}}}`))
+	f.Add([]byte(`{"x":{"id":"x","api":"https://${A}/v1","env":["A","X_API_KEY"],"models":{}}}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		a, errA := FromModelsDev(data)
+		b, errB := FromModelsDev(data)
+		if (errA == nil) != (errB == nil) || !reflect.DeepEqual(a, b) {
+			t.Fatal("nondeterministic")
+		}
+		if errA != nil {
+			return
+		}
+		seen := map[string]bool{}
+		for i, p := range a {
+			if seen[p.ID] {
+				t.Fatalf("duplicate provider %q", p.ID)
+			}
+			seen[p.ID] = true
+			if i > 0 && a[i-1].ID >= p.ID {
+				t.Fatalf("unsorted at %d", i)
+			}
+			for k, m := range p.Models {
+				if m.ID != k {
+					t.Fatalf("row key %q != id %q", k, m.ID)
+				}
+			}
+		}
+	})
+}
+```
+
+Add the registry row to `scripts/fuzz/fuzz-targets.txt` (keep the file's sorted grouping; place it with the other `llm` rows):
+
+```
+native:llm:./registry:FuzzFromModelsDev
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestFromModelsDev|TestStripRegionPrefix' -v`
+Expected: FAIL to compile ("undefined: FromModelsDev").
+
+- [ ] **Step 4: Write `modelsdev.go`**
+
+```go
+package registry
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// mdProvider and mdModel mirror the parts of models.dev's api.json the
+// converter reads (spec §6.1). Unknown fields are ignored.
+type mdProvider struct {
+	ID     string             `json:"id"`
+	Name   string             `json:"name"`
+	Doc    string             `json:"doc"`
+	Env    []string           `json:"env"`
+	NPM    string             `json:"npm"`
+	API    string             `json:"api"`
+	Models map[string]mdModel `json:"models"`
+}
+
+type mdModel struct {
+	ID               string             `json:"id"`
+	Name             string             `json:"name"`
+	Family           string             `json:"family"`
+	Reasoning        bool               `json:"reasoning"`
+	ReasoningOptions []mdReasoningOpt   `json:"reasoning_options"`
+	ToolCall         bool               `json:"tool_call"`
+	StructuredOutput *bool              `json:"structured_output"`
+	Temperature      *bool              `json:"temperature"`
+	Knowledge        string             `json:"knowledge"`
+	Status           string             `json:"status"`
+	Modalities       mdModalities       `json:"modalities"`
+	Limit            mdLimit            `json:"limit"`
+	Cost             *mdCost            `json:"cost"`
+	Interleaved      json.RawMessage    `json:"interleaved"`
+	Provider         *mdModelProvider   `json:"provider"`
+}
+
+type mdReasoningOpt struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+}
+
+type mdModalities struct {
+	Input  []string `json:"input"`
+	Output []string `json:"output"`
+}
+
+type mdLimit struct {
+	Context int `json:"context"`
+	Input   int `json:"input"`
+	Output  int `json:"output"`
+}
+
+type mdCost struct {
+	Input      float64      `json:"input"`
+	Output     float64      `json:"output"`
+	CacheRead  float64      `json:"cache_read"`
+	CacheWrite float64      `json:"cache_write"`
+	Tiers      []mdCostTier `json:"tiers"`
+}
+
+type mdCostTier struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+	Tier       struct {
+		Type string `json:"type"`
+		Size int    `json:"size"`
+	} `json:"tier"`
+}
+
+type mdModelProvider struct {
+	NPM   string `json:"npm"`
+	API   string `json:"api"`
+	Shape string `json:"shape"`
+}
+
+// Transport preset names the converter attaches to cross-protocol rows; the
+// curated overlay defines them (spec §4.3, §6.2).
+const (
+	PresetVertexAnthropic    = "vertex-anthropic"
+	PresetVertexGemini       = "vertex-gemini"
+	PresetBedrockMantleOpenAI = "bedrock-mantle-openai"
+)
+
+// regionPrefixes are Bedrock's cross-Region inference-profile prefixes (spec §7.2).
+var regionPrefixes = []string{"us.", "eu.", "apac.", "au.", "jp.", "global."}
+
+// stripRegionPrefix removes one Bedrock region prefix from id.
+func stripRegionPrefix(id string) string {
+	for _, p := range regionPrefixes {
+		if strings.HasPrefix(id, p) {
+			return id[len(p):]
+		}
+	}
+	return id
+}
+
+// hiddenNPM lists SDKs evener has no protocol for (spec §6.1).
+var hiddenNPM = map[string]bool{
+	"@ai-sdk/cohere": true, "watsonx-ai-provider": true, "@jerome-benoit/sap-ai-provider-v2": true,
+	"@qvac/ai-sdk-provider": true, "@saladtechnologies-oss/ai-sdk-provider": true,
+	"merge-gateway-ai-sdk-provider": true, "ai-gateway-provider": true, "@aihubmix/ai-sdk-provider": true,
+	"gitlab-ai-provider": true, "venice-ai-sdk-provider": true,
+}
+
+// npmProtocol is the spec §6.1 npm → protocol/auth table. known is false for
+// the "anything else" branch, which callers record as a warning.
+func npmProtocol(npm string) (protocol, auth string, hidden, known bool) {
+	if hiddenNPM[npm] {
+		return "", "", true, true
+	}
+	switch npm {
+	case "@ai-sdk/openai-compatible", "@ai-sdk/groq", "@ai-sdk/cerebras", "@ai-sdk/togetherai",
+		"@ai-sdk/deepinfra", "@ai-sdk/perplexity", "@ai-sdk/mistral", "@openrouter/ai-sdk-provider",
+		"@ai-sdk/gateway", "@ai-sdk/vercel":
+		return ProtocolOpenAIChat, AuthBearer, false, true
+	case "@ai-sdk/openai", "@ai-sdk/xai":
+		return ProtocolOpenAIResponses, AuthBearer, false, true
+	case "@ai-sdk/azure":
+		return ProtocolOpenAIResponses, AuthHeader, false, true
+	case "@ai-sdk/anthropic", "@ai-sdk/amazon-bedrock":
+		return ProtocolAnthropic, AuthHeader, false, true
+	case "@ai-sdk/google-vertex/anthropic":
+		return ProtocolAnthropic, AuthGCPADC, false, true
+	case "@ai-sdk/google":
+		return ProtocolGoogle, AuthHeader, false, true
+	case "@ai-sdk/google-vertex":
+		return ProtocolGoogle, AuthGCPADC, false, true
+	}
+	return ProtocolOpenAIChat, AuthBearer, false, false
+}
+
+// authHeaderFor names the header a `header` auth scheme uses per protocol
+// (spec §6.1): x-api-key for anthropic, x-goog-api-key for google, api-key
+// for Azure.
+func authHeaderFor(npm, protocol string) string {
+	if npm == "@ai-sdk/azure" {
+		return "api-key"
+	}
+	switch protocol {
+	case ProtocolAnthropic:
+		return "x-api-key"
+	case ProtocolGoogle:
+		return "x-goog-api-key"
+	}
+	return ""
+}
+
+// surfaceForFamily is the spec §6.1 family → surface rule. An empty family
+// returns "" so the provider fallback applies.
+func surfaceForFamily(family string) string {
+	switch {
+	case family == "":
+		return ""
+	case strings.HasPrefix(family, "claude"):
+		return SurfaceAnthropic
+	case strings.HasPrefix(family, "gpt-oss"):
+		return SurfaceGeneric
+	case strings.HasPrefix(family, "gpt"), family == "o", family == "o-mini", family == "o-pro":
+		return SurfaceOpenAI
+	case strings.HasPrefix(family, "gemini"), strings.HasPrefix(family, "gemma"):
+		return SurfaceGoogle
+	}
+	return SurfaceGeneric
+}
+
+var templateVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// templateURL rewrites ${VAR} to {VAR}, trims a trailing slash, and returns
+// the variable names it found.
+func templateURL(api string) (string, []string) {
+	var vars []string
+	out := templateVarRe.ReplaceAllStringFunc(strings.TrimRight(api, "/"), func(m string) string {
+		name := templateVarRe.FindStringSubmatch(m)[1]
+		vars = append(vars, name)
+		return "{" + name + "}"
+	})
+	return out, vars
+}
+
+// isKeyVar reports whether an env var name is credential-shaped. Substring
+// matches on purpose: AWS_BEARER_TOKEN_BEDROCK and AWS_ACCESS_KEY_ID must
+// never become template variables, whose resolved values Resolve exposes.
+func isKeyVar(name string) bool {
+	return strings.Contains(name, "_KEY") || strings.Contains(name, "_TOKEN") ||
+		strings.Contains(name, "_SECRET") || strings.HasSuffix(name, "_PAT")
+}
+
+// FromModelsDev converts a raw models.dev api.json into registry providers
+// (spec §6.1). It is the only code that knows models.dev's schema, and it
+// runs on both the embedded snapshot and the runtime cache.
+func FromModelsDev(data []byte) ([]Provider, error) {
+	var raw map[string]mdProvider
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("models.dev: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("models.dev: no providers")
+	}
+	ids := make([]string, 0, len(raw))
+	for id := range raw {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]Provider, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, convertProvider(id, raw[id]))
+	}
+	return out, nil
+}
+
+func convertProvider(id string, mp mdProvider) Provider {
+	p := Provider{ID: id, Name: mp.Name, Doc: mp.Doc, Models: map[string]Model{}}
+	if mp.Name == "" {
+		p.Name = id
+	}
+	protocol, auth, hidden, known := npmProtocol(mp.NPM)
+	p.Hidden = hidden
+	if !hidden {
+		p.Protocol = protocol
+		p.Transport.Auth = auth
+		if auth == AuthHeader {
+			p.Transport.AuthHeader = authHeaderFor(mp.NPM, protocol)
+		}
+		if !known {
+			p.notes = append(p.notes, "protocol unverified: unknown npm "+mp.NPM)
+		}
+	}
+	templated := map[string]bool{}
+	if mp.API != "" {
+		url, vars := templateURL(mp.API)
+		p.Transport.BaseURL = url
+		for _, v := range vars {
+			templated[v] = true
+			p.Transport.VarsEnv = mergeStringMap(p.Transport.VarsEnv, map[string]string{v: v})
+		}
+	}
+	for _, e := range mp.Env {
+		switch {
+		case templated[e]:
+			// already in VarsEnv
+		case isKeyVar(e):
+			p.APIKeyEnv = append(p.APIKeyEnv, e)
+		default:
+			p.Transport.VarsEnv = mergeStringMap(p.Transport.VarsEnv, map[string]string{e: e})
+		}
+	}
+	for mid, mm := range mp.Models {
+		m, keep := convertModel(id, mid, mm)
+		if !keep {
+			continue
+		}
+		p.Models[m.ID] = m
+	}
+	return p
+}
+
+func convertModel(providerID, key string, mm mdModel) (Model, bool) {
+	hasText := false
+	for _, o := range mm.Modalities.Output {
+		if o == "text" {
+			hasText = true
+		}
+	}
+	if !hasText {
+		return Model{}, false
+	}
+	id := key
+	if mm.ID != "" {
+		id = mm.ID
+	}
+	m := Model{ID: id, WireID: id, Family: mm.Family, Status: mm.Status, Surface: surfaceForFamily(mm.Family)}
+	if strings.HasSuffix(id, "@default") {
+		m.ID = strings.TrimSuffix(id, "@default")
+		m.WireID = m.ID
+	}
+	c := &m.Caps
+	if mm.Limit.Input > 0 {
+		c.ContextWindow = new(mm.Limit.Input)
+	} else if mm.Limit.Context > 0 {
+		c.ContextWindow = new(mm.Limit.Context)
+	}
+	if mm.Limit.Output > 0 {
+		c.MaxOutputTokens = new(mm.Limit.Output)
+	}
+	c.Tools = new(mm.ToolCall)
+	c.StructuredOutput = mm.StructuredOutput
+	c.Reasoning = new(mm.Reasoning)
+	if mm.Temperature != nil && !*mm.Temperature {
+		c.Sampling = new(false)
+	}
+	for _, ro := range mm.ReasoningOptions {
+		c.ReasoningControls = append(c.ReasoningControls, ro.Type)
+		if ro.Type == "effort" {
+			for _, v := range ro.Values {
+				if v != "none" {
+					c.EffortValues = append(c.EffortValues, v)
+				}
+			}
+		}
+	}
+	if len(mm.Modalities.Input) > 0 {
+		c.InputModalities = append([]string(nil), mm.Modalities.Input...)
+	}
+	if mm.Knowledge != "" {
+		c.KnowledgeCutoff = new(mm.Knowledge)
+	}
+	if mm.Cost != nil {
+		cost := &Cost{Input: mm.Cost.Input, Output: mm.Cost.Output, CacheRead: mm.Cost.CacheRead, CacheWrite: mm.Cost.CacheWrite}
+		for _, t := range mm.Cost.Tiers {
+			if t.Tier.Type == "context" {
+				cost.Tiers = append(cost.Tiers, CostTier{InputTokensAbove: t.Tier.Size, Input: t.Input, Output: t.Output, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite})
+			}
+		}
+		c.Cost = cost
+	}
+	if len(mm.Interleaved) > 0 && mm.Interleaved[0] == '{' {
+		var obj struct {
+			Field string `json:"field"`
+		}
+		if json.Unmarshal(mm.Interleaved, &obj) == nil && obj.Field != "" {
+			c.ReasoningField = new(obj.Field)
+		}
+	}
+	hasOverride := false
+	if mm.Provider != nil {
+		hasOverride = true
+		convertModelOverride(&m, mm.Provider)
+	}
+	// Row-level hiding rules (spec §6.1).
+	switch providerID {
+	case "amazon-bedrock":
+		if !hasOverride && !strings.HasPrefix(stripRegionPrefix(m.ID), "anthropic.") {
+			m.Hidden = true
+		}
+	case "google-vertex":
+		if strings.Contains(m.ID, "/") && (mm.Provider == nil || mm.Provider.API == "") {
+			m.Hidden = true
+		}
+	}
+	return m, true
+}
+
+func convertModelOverride(m *Model, o *mdModelProvider) {
+	t := &Transport{}
+	switch o.NPM {
+	case "@ai-sdk/google-vertex/anthropic":
+		m.Protocol = ProtocolAnthropic
+		t.Preset = PresetVertexAnthropic
+	case "@ai-sdk/google-vertex":
+		m.Protocol = ProtocolGoogle
+		t.Preset = PresetVertexGemini
+	case "@ai-sdk/amazon-bedrock/mantle":
+		t.Preset = PresetBedrockMantleOpenAI
+		m.Protocol = ProtocolOpenAIResponses
+	case "":
+	default:
+		if proto, _, hidden, _ := npmProtocol(o.NPM); !hidden {
+			m.Protocol = proto
+		}
+	}
+	switch o.Shape {
+	case "responses":
+		m.Protocol = ProtocolOpenAIResponses
+	case "completions":
+		m.Protocol = ProtocolOpenAIChat
+	}
+	if o.API != "" {
+		url, vars := templateURL(o.API)
+		t.BaseURL = url
+		for _, v := range vars {
+			t.VarsEnv = mergeStringMap(t.VarsEnv, map[string]string{v: v})
+		}
+	}
+	if t.Preset != "" || t.BaseURL != "" {
+		m.Transport = t
+	}
+}
+```
+
+Add the unexported `notes` field to `Provider` in `types.go` (after `Hidden`):
+
+```go
+	// notes are converter warnings that ride through to Resolved.Warnings
+	// ("protocol unverified"). Unexported: not part of the data schema.
+	notes []string
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestFromModelsDev|TestStripRegionPrefix' -v && go test ./llm/registry/ -run '^FuzzFromModelsDev$' -v`
+Expected: PASS. Fix any expectation that disagrees with the fixture by checking the fixture's value with `python3 -c 'import json;...'`, never by changing the converter to match a wrong expectation.
+
+Then verify the fuzz registry gate accepts the new row: `make fuzz-registry-check`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/modelsdev.go llm/registry/modelsdev_test.go llm/registry/modelsdev_fuzz_test.go llm/registry/types.go llm/registry/internal/modelsdevsample/main.go llm/registry/testdata/models.dev.sample.json scripts/fuzz/fuzz-targets.txt
+git commit -m "feat(registry): models.dev converter with fixture sampler and fuzz target"
+```
+
+### Task 3: The embedded snapshot, its metadata, and the refresh script
+
+**Files:**
+- Create: `llm/registry/snapshot.go`
+- Create: `llm/registry/data/models.dev.json.gz`, `llm/registry/data/models.dev.meta.json` (generated by the script, committed)
+- Rewrite: `scripts/ops/refresh-model-catalog.sh`
+- Test: `llm/registry/snapshot_test.go`
+
+**Interfaces:**
+- Consumes: `FromModelsDev` (Task 2).
+- Produces: `EmbeddedSnapshot() (raw []byte, meta Meta, err error)`, `type Meta struct { FetchedAt time.Time; Etag string; Source string }` (JSON keys `fetched_at`, `etag`, `source`), `ParseMeta([]byte) (Meta, error)`, `gunzip([]byte) ([]byte, error)`.
+
+- [ ] **Step 1: Write the failing test**
+
+`llm/registry/snapshot_test.go`:
+
+```go
+package registry
+
+import (
+	"testing"
+	"time"
+)
+
+func TestEmbeddedSnapshot_ConvertsAndCarriesMeta(t *testing.T) {
+	raw, meta, err := EmbeddedSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provs, err := FromModelsDev(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provs) < 150 {
+		t.Fatalf("embedded snapshot has %d providers; expected the full models.dev catalog", len(provs))
+	}
+	found := false
+	for _, p := range provs {
+		if p.ID == "groq" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("groq missing from the embedded snapshot")
+	}
+	if meta.FetchedAt.IsZero() || meta.FetchedAt.After(time.Now().Add(24*time.Hour)) {
+		t.Fatalf("meta.FetchedAt = %v", meta.FetchedAt)
+	}
+	if meta.Source != "https://models.dev/api.json" {
+		t.Fatalf("meta.Source = %q", meta.Source)
+	}
+}
+
+func TestParseMeta(t *testing.T) {
+	m, err := ParseMeta([]byte(`{"fetched_at":"2026-08-28T22:03:00Z","etag":"W/\"abc\"","source":"https://models.dev/api.json"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Etag != `W/"abc"` || m.FetchedAt.Year() != 2026 {
+		t.Fatalf("ParseMeta = %+v", m)
+	}
+	if _, err := ParseMeta([]byte(`{"fetched_at":"not a time"}`)); err == nil {
+		t.Fatal("bad fetched_at must error")
+	}
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./llm/registry/ -run 'TestEmbeddedSnapshot|TestParseMeta' -v`
+Expected: FAIL to compile ("undefined: EmbeddedSnapshot").
+
+- [ ] **Step 3: Rewrite the refresh script and generate the snapshot**
+
+Replace `scripts/ops/refresh-model-catalog.sh` with:
+
+```bash
+#!/usr/bin/env bash
+#
+# refresh-model-catalog.sh — refresh the embedded models.dev snapshot.
+#
+# llm/registry/data/models.dev.json.gz is the raw https://models.dev/api.json,
+# gzipped, and models.dev.meta.json records when and with which ETag it was
+# fetched. Neither is ever hand-edited; evener-specific corrections live in
+# llm/registry/data/providers_overlay.toml, which the registry overlays at
+# load time (design: docs/superpowers/specs/2026-08-28-provider-registry-design.md §6).
+#
+# Usage:
+#   scripts/ops/refresh-model-catalog.sh --check   # dry run: report the delta, write nothing
+#   scripts/ops/refresh-model-catalog.sh           # refresh the snapshot in place
+#
+# After a real refresh: review `git diff --stat llm/registry/data/`, run
+# `go test ./llm/registry/...`, and read the report at the end (overlay rows
+# upstream now covers, dangling overlay aliases, output caps at or above the
+# context window, and overlay pins whose upstream value changed).
+set -euo pipefail
+
+UPSTREAM_URL="https://models.dev/api.json"
+ROOT="$(git rev-parse --show-toplevel)"
+DATA="${ROOT}/llm/registry/data"
+TARGET="${DATA}/models.dev.json.gz"
+META="${DATA}/models.dev.meta.json"
+MIN_KEEP_RATIO="0.90"
+
+mode="refresh"
+case "${1:-}" in
+  -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  --check)   mode="check" ;;
+  "")        ;;
+  *)         echo "error: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+esac
+
+mkdir -p "${DATA}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/evener-models-dev.XXXXXX")"
+fresh="${tmpdir}/api.json"
+headers="${tmpdir}/headers.txt"
+old="${tmpdir}/old.json"
+trap 'rm -f "${fresh}" "${headers}" "${old}"; rmdir "${tmpdir}" 2>/dev/null || true' EXIT
+
+echo "fetching ${UPSTREAM_URL}"
+if ! curl -fsSL --max-time 120 -D "${headers}" "${UPSTREAM_URL}" -o "${fresh}"; then
+  echo "error: download failed (network? upstream moved?)" >&2
+  exit 1
+fi
+etag="$(grep -i '^etag:' "${headers}" | tail -1 | sed 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//; s/[[:space:]]*$//' || true)"
+
+if [[ -f "${TARGET}" ]]; then
+  gunzip -c "${TARGET}" > "${old}"
+else
+  echo '{}' > "${old}"
+fi
+
+python3 - "${old}" "${fresh}" "${MIN_KEEP_RATIO}" <<'PYEOF'
+import json, sys
+old_path, new_path, min_keep = sys.argv[1], sys.argv[2], float(sys.argv[3])
+old = json.load(open(old_path)); new = json.load(open(new_path))
+if not isinstance(new, dict) or not new:
+    sys.exit("error: upstream did not return a provider map")
+def rows(d):
+    return {(p, m) for p, pv in d.items() for m in (pv.get("models") or {})}
+op, np_ = set(old), set(new)
+orows, nrows = rows(old), rows(new)
+if old and len(new) < len(old) * min_keep:
+    sys.exit(f"error: refusing refresh: providers shrank {len(old)} -> {len(new)} (below {min_keep:.0%} floor)")
+if orows and len(nrows) < len(orows) * min_keep:
+    sys.exit(f"error: refusing refresh: models shrank {len(orows)} -> {len(nrows)} (below {min_keep:.0%} floor)")
+print(f"providers: {len(old)} -> {len(new)}  (+{len(np_-op)} / -{len(op-np_)})")
+print(f"models:    {len(orows)} -> {len(nrows)}  (+{len(nrows-orows)} / -{len(orows-nrows)})")
+for p in sorted(np_ - op): print("  + provider", p)
+for p in sorted(op - np_): print("  - provider", p)
+added = sorted(nrows - orows)
+for p, m in added[:200]: print("  + model", f"{p}/{m}")
+if len(added) > 200: print(f"  ... {len(added) - 200} more added models (diff the gunzipped files for the full list)")
+for p, m in sorted(orows - nrows): print("  - model", f"{p}/{m}")
+PYEOF
+
+if [[ "${mode}" == "check" ]]; then
+  echo "check mode: nothing written"
+  exit 0
+fi
+
+gzip -9 -n -c "${fresh}" > "${TARGET}.tmp"
+mv "${TARGET}.tmp" "${TARGET}"
+printf '{\n  "fetched_at": "%s",\n  "etag": %s,\n  "source": "%s"\n}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "${etag}")" \
+  "${UPSTREAM_URL}" > "${META}"
+echo "wrote ${TARGET} and ${META}"
+
+echo "running converter tests"
+(cd "${ROOT}" && go test ./llm/registry/ -run 'TestEmbeddedSnapshot|TestFromModelsDev|TestCuratedOverlay' -count=1)
+
+# The overlay report (rows upstream now covers, dangling aliases, junk caps,
+# changed pins) is produced by the registry's snapshotreport tool once it
+# exists (plan Task 11); older checkouts skip it.
+if [[ -d "${ROOT}/llm/registry/internal/snapshotreport" ]]; then
+  (cd "${ROOT}" && go run ./llm/registry/internal/snapshotreport)
+fi
+```
+
+Then generate the snapshot once (development-time network):
+
+```bash
+chmod +x scripts/ops/refresh-model-catalog.sh
+scripts/ops/refresh-model-catalog.sh
+ls -la llm/registry/data/
+```
+
+Expected: `models.dev.json.gz` (roughly 400–500 KB) and `models.dev.meta.json` with a `fetched_at` of today. The converter tests the script runs at the end fail on this first run because `snapshot.go` does not exist yet; that is expected (Step 5 verifies them after Step 4).
+
+- [ ] **Step 4: Write `snapshot.go`**
+
+```go
+package registry
+
+import (
+	"bytes"
+	"compress/gzip"
+	"embed"
+	"encoding/json"
+	"fmt"
+	"io"
+	"time"
+)
+
+//go:embed data/models.dev.json.gz data/models.dev.meta.json
+var embeddedFS embed.FS
+
+// Meta records when and with which ETag a models.dev snapshot was fetched
+// (spec §5, §6.4). The runtime cache carries the same shape.
+type Meta struct {
+	FetchedAt time.Time `json:"fetched_at"`
+	Etag      string    `json:"etag"`
+	Source    string    `json:"source"`
+}
+
+// ParseMeta decodes a models.dev.meta.json document.
+func ParseMeta(data []byte) (Meta, error) {
+	var m Meta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return Meta{}, fmt.Errorf("snapshot meta: %w", err)
+	}
+	return m, nil
+}
+
+// EmbeddedSnapshot returns the raw upstream JSON compiled into the binary and
+// its fetch metadata (spec §5 layer 1).
+func EmbeddedSnapshot() ([]byte, Meta, error) {
+	gz, err := embeddedFS.ReadFile("data/models.dev.json.gz")
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	raw, err := gunzip(gz)
+	if err != nil {
+		return nil, Meta{}, fmt.Errorf("embedded snapshot: %w", err)
+	}
+	metaRaw, err := embeddedFS.ReadFile("data/models.dev.meta.json")
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	meta, err := ParseMeta(metaRaw)
+	if err != nil {
+		return nil, Meta{}, err
+	}
+	return raw, meta, nil
+}
+
+func gunzip(data []byte) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = zr.Close() }()
+	return io.ReadAll(zr)
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestEmbeddedSnapshot|TestParseMeta' -v`
+Expected: PASS. Also confirm the embedded size is reasonable: `ls -la llm/registry/data/models.dev.json.gz` (under 1 MB).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/snapshot.go llm/registry/snapshot_test.go llm/registry/data/models.dev.json.gz llm/registry/data/models.dev.meta.json scripts/ops/refresh-model-catalog.sh
+git commit -m "feat(registry): embed the models.dev snapshot; rewrite the refresh script for models.dev"
+```
+
+### Task 4: TOML schema, `$ENV` expansion, `ParseOverlay`, and `ParseConfig`
+
+**Files:**
+- Create: `llm/registry/schema.go`
+- Create: `llm/registry/env.go`
+- Create: `llm/registry/overlay.go`
+- Create: `llm/registry/config.go`
+- Test: `llm/registry/schema_test.go`, `llm/registry/env_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 types (`Caps` now carries `toml` tags, so it embeds directly in the schema structs).
+- Produces: `type Layer struct { Tag string; Default string; DefaultOrder []string; Transports map[string]Transport; TopGlobs map[string]Model; Providers map[string]Provider }`, `ParseOverlay(data []byte) (*Layer, error)`, `ParseConfig(data []byte) (*Layer, error)`, `ErrOldSchema`, layer tag constants `LayerSnapshot/LayerCache/LayerOverlay/LayerLive/LayerConfig`, host-rule constants `HostRuleVertexLocation/HostRuleOllamaHost`, vocabulary maps (`protocols`, `surfaces`, `authSchemes`, `hostRules`, `thinkingFormats`, `thinkingShapes`, `reasoningControlNames`, …), `validProviderName(string) bool`, `checkEnvRefs(value, what string) error`, `expandEnv(value string, lookup func(string) (string, bool)) (string, []string)`.
+- Not done here (Task 6 does them, because they need the merged record or the overlay's presets): `base` resolution, `alias_of` target checks, `transport` preset existence for `providers.toml`, `fields` keys against the prunable set, `default` validation.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/env_test.go`:
+
+```go
+package registry
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestExpandEnv(t *testing.T) {
+	env := map[string]string{"KEY": "sk-1", "ORG": "org-9"}
+	lookup := func(n string) (string, bool) { v, ok := env[n]; return v, ok }
+	cases := []struct {
+		in, want string
+		missing  []string
+	}{
+		{"plain", "plain", nil},
+		{"$KEY", "sk-1", nil},
+		{"${KEY}", "sk-1", nil},
+		{"Bearer $KEY", "Bearer sk-1", nil},
+		{"a$$b", "a$b", nil},
+		{"$", "$", nil},
+		{"$1", "$1", nil},
+		{"$MISSING", "", []string{"MISSING"}},
+		{"x-$MISSING-$KEY", "x--sk-1", []string{"MISSING"}},
+	}
+	for _, c := range cases {
+		got, missing := expandEnv(c.in, lookup)
+		if got != c.want || !reflect.DeepEqual(missing, c.missing) {
+			t.Errorf("expandEnv(%q) = %q, %v; want %q, %v", c.in, got, missing, c.want, c.missing)
+		}
+	}
+}
+
+func TestCheckEnvRefs(t *testing.T) {
+	if err := checkEnvRefs("Bearer $KEY and ${OTHER}", "api_key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkEnvRefs("${UNTERMINATED", "api_key"); err == nil {
+		t.Fatal("unterminated ${ must error")
+	}
+	if err := checkEnvRefs("${9BAD}", "api_key"); err == nil {
+		t.Fatal("invalid name must error")
+	}
+}
+```
+
+`llm/registry/schema_test.go`:
+
+```go
+package registry
+
+import (
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+const specExampleConfig = `
+default = "groq"
+
+[providers.groq]
+api_key  = "$GROQ_API_KEY"
+protocol = "openai-responses"
+
+[providers.work]
+base     = "openai"
+base_url = "https://gw.example.com/v1"
+protocol = "openai-chat"
+surface  = "generic"
+headers  = { "X-Portkey-Provider" = "openai" }
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.work.fields]
+stream_options = false
+[providers.work.models."glm-5.2-nvfp4"]
+context_window    = 1048576
+max_output_tokens = 131072
+effort_values     = ["high", "max"]
+thinking_format   = "zai"
+
+[providers.local]
+base     = "openai-compatible"
+base_url = "http://localhost:8080/v1"
+auth     = "none"
+
+[providers.bedrock]
+base = "amazon-bedrock"
+[providers.bedrock.vars]
+"AWS_REGION" = "us-east-1"
+
+[providers.vertex]
+base = "google-vertex-anthropic"
+[providers.vertex.vars]
+"GOOGLE_VERTEX_PROJECT"  = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[models."*gemini-3*"]
+multimodal_tool_results = true
+`
+
+func TestParseConfig_SpecExample(t *testing.T) {
+	l, err := ParseConfig([]byte(specExampleConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Tag != LayerConfig || l.Default != "groq" {
+		t.Fatalf("tag/default: %q %q", l.Tag, l.Default)
+	}
+	work := l.Providers["work"]
+	if work.ID != "work" || work.Base != "openai" || work.Protocol != ProtocolOpenAIChat || work.Surface != SurfaceGeneric {
+		t.Fatalf("work: %+v", work)
+	}
+	if work.Transport.BaseURL != "https://gw.example.com/v1" || work.Headers["X-Portkey-Provider"] != "openai" || work.CredentialHeaders["Authorization"] != "Bearer $PORTKEY_KEY" {
+		t.Fatalf("work transport/headers: %+v", work)
+	}
+	if v, ok := work.Caps.Fields["stream_options"]; !ok || v {
+		t.Fatalf("work fields: %v", work.Caps.Fields)
+	}
+	row := work.Models["glm-5.2-nvfp4"]
+	if row.ID != "glm-5.2-nvfp4" || *row.Caps.ContextWindow != 1048576 || *row.Caps.MaxOutputTokens != 131072 || !reflect.DeepEqual(row.Caps.EffortValues, []string{"high", "max"}) || *row.Caps.ThinkingFormat != "zai" {
+		t.Fatalf("row: %+v", row)
+	}
+	if l.Providers["local"].Transport.Auth != AuthNone {
+		t.Fatalf("local auth: %+v", l.Providers["local"].Transport)
+	}
+	if l.Providers["bedrock"].Transport.Vars["AWS_REGION"] != "us-east-1" || l.Providers["vertex"].Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "global" {
+		t.Fatal("vars not decoded")
+	}
+	if g, ok := l.TopGlobs["*gemini-3*"]; !ok || g.Caps.MultimodalToolResults == nil || !*g.Caps.MultimodalToolResults {
+		t.Fatalf("top-level glob: %+v", l.TopGlobs)
+	}
+	if l.Providers["groq"].APIKeyEnv != nil {
+		t.Fatal("absent api_key_env must stay nil")
+	}
+}
+
+func TestParseConfig_ExplicitEmptyAPIKeyEnv(t *testing.T) {
+	l, err := ParseConfig([]byte("[providers.x]\napi_key_env = []\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Providers["x"].APIKeyEnv == nil || len(l.Providers["x"].APIKeyEnv) != 0 {
+		t.Fatalf("api_key_env = [] must be a non-nil empty slice, got %#v", l.Providers["x"].APIKeyEnv)
+	}
+}
+
+func TestParseConfig_Rejects(t *testing.T) {
+	cases := map[string]string{
+		"unknown key":              "[providers.x]\nthinking_levels = { a = \"b\" }\n",
+		"curated-only implicit":    "[providers.x]\nimplicit = true\n",
+		"curated-only name":        "[providers.x]\nname = \"X\"\n",
+		"curated-only doc":         "[providers.x]\ndoc = \"https://x\"\n",
+		"curated-only order":       "default_order = [\"x\"]\n[providers.x]\n",
+		"curated-only transports":  "[transports.t]\nauth = \"bearer\"\n",
+		"uppercase name":           "[providers.Work]\n",
+		"slash in name":            "[providers.\"a/b\"]\n",
+		"bad protocol":             "[providers.x]\nprotocol = \"grpc\"\n",
+		"bad surface":              "[providers.x]\nsurface = \"claude\"\n",
+		"bad auth":                 "[providers.x]\nauth = \"sigv4\"\n",
+		"bad host rule":            "[providers.x]\nhost_rule = \"magic\"\n",
+		"bad thinking_format":      "[providers.x]\nthinking_format = \"claude\"\n",
+		"bad thinking_shape":       "[providers.x.models.m]\nthinking_shape = \"effort\"\n",
+		"bad thinking_display":     "[providers.x.models.m]\nthinking_display = \"verbose\"\n",
+		"protocol on glob row":     "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",
+		"preset on glob row":       "[providers.x.models.\"g*\"]\ntransport = \"vertex-anthropic\"\n",
+		"bad max_tokens_field":     "[providers.x]\nmax_tokens_field = \"max_len\"\n",
+		"bad cache_control":        "[providers.x]\ncache_control = \"openai\"\n",
+		"bad reasoning_field":      "[providers.x]\nreasoning_field = \"thoughts\"\n",
+		"bad image_detail":         "[providers.x]\nimage_detail = \"medium\"\n",
+		"bad reasoning_summary":    "[providers.x]\nreasoning_summary = \"full\"\n",
+		"bad reasoning control":    "[providers.x.models.m]\nreasoning_controls = [\"levels\"]\n",
+		"effort off":               "[providers.x.models.m]\neffort_values = [\"off\"]\n",
+		"effort empty entry":       "[providers.x.models.m]\neffort_values = [\"\"]\n",
+		"top-level exact model":    "[models.\"gpt-5\"]\ncontext_window = 1\n",
+		"unterminated env ref":     "[providers.x]\napi_key = \"${OPEN\"\n",
+		"bad env name in header":   "[providers.x]\ncredential_headers = { \"Authorization\" = \"Bearer ${1X}\" }\n",
+		"preset inside transports": "[transports.t]\ntransport = \"other\"\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseConfig([]byte(src))
+			if err == nil {
+				t.Fatalf("expected an error for %s", name)
+			}
+			if errors.Is(err, ErrOldSchema) {
+				t.Fatalf("must not be reported as the old schema: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseConfig_UnknownKeyNamesIt(t *testing.T) {
+	_, err := ParseConfig([]byte("[providers.x]\nthinking_levels = { a = \"b\" }\n"))
+	if err == nil || !strings.Contains(err.Error(), "thinking_levels") {
+		t.Fatalf("error must name the key: %v", err)
+	}
+}
+
+func TestParseConfig_OldSchema(t *testing.T) {
+	for _, src := range []string{
+		"[instances.openai]\ntype = \"openai\"\n",
+		"[providers.openai]\ntype = \"openai\"\n",
+		"[providers.openai]\napi_style = \"responses\"\n",
+		"[providers.openai]\nquirks = \"x\"\n",
+		"[providers.openai]\ncompat = { a = 1 }\n",
+	} {
+		_, err := ParseConfig([]byte(src))
+		if !errors.Is(err, ErrOldSchema) {
+			t.Fatalf("%q: want ErrOldSchema, got %v", src, err)
+		}
+		if !strings.Contains(err.Error(), "§14.1") {
+			t.Fatalf("old-schema error must point at the spec: %v", err)
+		}
+	}
+}
+
+func TestParseOverlay_CuratedKeys(t *testing.T) {
+	src := `
+default_order = ["a", "b"]
+[transports.t]
+auth = "gcp-adc"
+endpoint = "/x/{model}:rawPredict"
+body = { anthropic_version = "vertex-2023-10-16" }
+[providers.a]
+implicit = true
+name = "A"
+doc = "https://a"
+transport = "t"
+[providers.b]
+implicit = true
+[providers.c]
+`
+	l, err := ParseOverlay([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Tag != LayerOverlay || !reflect.DeepEqual(l.DefaultOrder, []string{"a", "b"}) {
+		t.Fatalf("overlay: %+v", l)
+	}
+	tr := l.Transports["t"]
+	if tr.Auth != AuthGCPADC || tr.Endpoint != "/x/{model}:rawPredict" || tr.Body["anthropic_version"] != "vertex-2023-10-16" {
+		t.Fatalf("transport: %+v", tr)
+	}
+	a := l.Providers["a"]
+	if a.Implicit == nil || !*a.Implicit || a.Name != "A" || a.Doc != "https://a" || a.Transport.Preset != "t" {
+		t.Fatalf("provider a: %+v", a)
+	}
+	if l.Providers["c"].Implicit != nil {
+		t.Fatal("implicit must stay nil when unset")
+	}
+}
+
+func TestParseOverlay_DefaultOrderMustBeImplicit(t *testing.T) {
+	_, err := ParseOverlay([]byte("default_order = [\"a\"]\n[providers.a]\n"))
+	if err == nil || !strings.Contains(err.Error(), "default_order") {
+		t.Fatalf("want default_order error, got %v", err)
+	}
+	_, err = ParseOverlay([]byte("default_order = [\"zzz\"]\n[providers.a]\nimplicit = true\n"))
+	if err == nil {
+		t.Fatal("unknown default_order entry must error")
+	}
+}
+
+func TestParseConfig_ModelRowKeysAndTransport(t *testing.T) {
+	src := `
+[providers.azure.models."claude-prod"]
+alias_of = "claude-opus-4-5"
+wire_id  = "claude-prod-deploy"
+family   = "claude-opus"
+protocol = "anthropic"
+surface  = "anthropic"
+headers  = { "anthropic-beta" = "x" }
+base_url = "https://{AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1"
+[providers.azure.models."gpt-5*"]
+reasoning_summary = "detailed"
+`
+	l, err := ParseConfig([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := l.Providers["azure"].Models["claude-prod"]
+	if row.AliasOf != "claude-opus-4-5" || row.WireID != "claude-prod-deploy" || row.Family != "claude-opus" || row.Protocol != ProtocolAnthropic || row.Surface != SurfaceAnthropic || row.Headers["anthropic-beta"] != "x" {
+		t.Fatalf("row: %+v", row)
+	}
+	if row.Transport == nil || row.Transport.BaseURL != "https://{AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1" {
+		t.Fatalf("row transport: %+v", row.Transport)
+	}
+	glob := l.Providers["azure"].Models["gpt-5*"]
+	if glob.Transport != nil || *glob.Caps.ReasoningSummary != "detailed" {
+		t.Fatalf("glob row: %+v", glob)
+	}
+	if l.Providers["azure"].Models["gpt-5*"].ID != "gpt-5*" {
+		t.Fatal("row ID must equal its key, globs included")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestExpandEnv|TestCheckEnvRefs|TestParse' -v`
+Expected: FAIL to compile ("undefined: ParseConfig", "undefined: expandEnv").
+
+- [ ] **Step 3: Write `env.go`**
+
+```go
+package registry
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func isEnvNameByte(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+}
+
+// scanEnvRefs walks value with today's providers.toml rules (spec §10):
+// "$NAME" and "${NAME}" reference a variable, "$$" is a literal "$", a "$"
+// not followed by a name character is literal. It calls ref for every
+// reference and lit for every literal run, and returns a syntax error for an
+// unterminated "${" or an invalid name. It never echoes the value (it may
+// hold a secret).
+func scanEnvRefs(value string, lit func(string), ref func(string)) error {
+	for i := 0; i < len(value); {
+		c := value[i]
+		if c != '$' {
+			j := i
+			for j < len(value) && value[j] != '$' {
+				j++
+			}
+			lit(value[i:j])
+			i = j
+			continue
+		}
+		if i+1 >= len(value) {
+			lit("$")
+			i++
+			continue
+		}
+		next := value[i+1]
+		switch {
+		case next == '$':
+			lit("$")
+			i += 2
+		case next == '{':
+			end := strings.IndexByte(value[i+2:], '}')
+			if end < 0 {
+				return fmt.Errorf("unterminated ${ in value")
+			}
+			name := value[i+2 : i+2+end]
+			if !envNameRe.MatchString(name) {
+				return fmt.Errorf("invalid environment variable name %q", name)
+			}
+			ref(name)
+			i += 2 + end + 1
+		case isEnvNameByte(next) && !(next >= '0' && next <= '9'):
+			j := i + 1
+			for j < len(value) && isEnvNameByte(value[j]) {
+				j++
+			}
+			ref(value[i+1 : j])
+			i = j
+		default:
+			lit("$")
+			i++
+		}
+	}
+	return nil
+}
+
+// checkEnvRefs validates the $ENV syntax of a config value at load time;
+// what names the field in the error.
+func checkEnvRefs(value, what string) error {
+	if !strings.Contains(value, "$") {
+		return nil
+	}
+	if err := scanEnvRefs(value, func(string) {}, func(string) {}); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return nil
+}
+
+// expandEnv substitutes $ENV references through lookup and returns the
+// expanded value plus the names that did not resolve (each substituted by
+// the empty string). Values validated by checkEnvRefs never fail here.
+func expandEnv(value string, lookup func(string) (string, bool)) (string, []string) {
+	if !strings.Contains(value, "$") {
+		return value, nil
+	}
+	var b strings.Builder
+	var missing []string
+	_ = scanEnvRefs(value, func(s string) { b.WriteString(s) }, func(name string) {
+		v, ok := lookup(name)
+		if !ok || v == "" {
+			missing = append(missing, name)
+			return
+		}
+		b.WriteString(v)
+	})
+	return b.String(), missing
+}
+```
+
+- [ ] **Step 4: Write `schema.go`**
+
+```go
+package registry
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Layer tags (spec §5), used in Resolved.Provenance values and warnings.
+const (
+	LayerSnapshot = "snapshot"
+	LayerCache    = "cache"
+	LayerOverlay  = "overlay"
+	LayerLive     = "live"
+	LayerConfig   = "config"
+)
+
+// Host rules (spec §9.1): the only host-aware code in the system.
+const (
+	HostRuleVertexLocation = "vertex-location"
+	HostRuleOllamaHost     = "ollama-host"
+)
+
+// Layer is one parsed data layer: the curated overlay or providers.toml.
+// Provider glob rows live in Provider.Models under their `*` keys; top-level
+// [models."<glob>"] rows live in TopGlobs (spec §4.1, §10).
+type Layer struct {
+	Tag          string
+	Default      string
+	DefaultOrder []string
+	Transports   map[string]Transport
+	TopGlobs     map[string]Model
+	Providers    map[string]Provider
+}
+
+// ErrOldSchema marks a providers.toml written for the pre-registry schema
+// (spec §14.1). Callers match it with errors.Is.
+var ErrOldSchema = errors.New("providers.toml uses the pre-registry schema ([instances.*], type, api_style, quirks, compat); rewrite it per docs/superpowers/specs/2026-08-28-provider-registry-design.md §14.1")
+
+// Vocabularies validated at load (spec §10).
+var (
+	protocols   = map[string]bool{ProtocolOpenAIChat: true, ProtocolOpenAIResponses: true, ProtocolAnthropic: true, ProtocolGoogle: true}
+	surfaces    = map[string]bool{SurfaceOpenAI: true, SurfaceAnthropic: true, SurfaceGoogle: true, SurfaceGeneric: true}
+	authSchemes = map[string]bool{AuthBearer: true, AuthOptionalBearer: true, AuthHeader: true, AuthNone: true, AuthGCPADC: true, AuthOAuthOpenAICodex: true}
+	hostRules   = map[string]bool{HostRuleVertexLocation: true, HostRuleOllamaHost: true}
+
+	thinkingFormats       = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}
+	thinkingShapes        = map[string]bool{"adaptive": true, "budget": true, "budget+effort": true}
+	thinkingDisplays      = map[string]bool{"": true, "summarized": true}
+	maxTokensFields       = map[string]bool{"max_tokens": true, "max_completion_tokens": true}
+	cacheControls         = map[string]bool{"anthropic": true}
+	reasoningFields       = map[string]bool{"reasoning_content": true, "reasoning": true, "reasoning_text": true, "reasoning_details": true}
+	reasoningSummaries    = map[string]bool{"none": true, "auto": true, "detailed": true}
+	imageDetails          = map[string]bool{"original": true, "high": true, "low": true, "omit": true}
+	reasoningControlNames = map[string]bool{"effort": true, "budget_tokens": true, "toggle": true}
+)
+
+var providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// validProviderName enforces spec §10: lowercase, no slash.
+func validProviderName(name string) bool { return providerNameRe.MatchString(name) }
+
+// oldSchemaKeys are the pre-registry provider keys (spec §14.1).
+var oldSchemaKeys = []string{"type", "api_style", "quirks", "compat"}
+
+// fileSchema mirrors the TOML shape shared by the overlay and providers.toml
+// (spec §10). Caps embeds directly so every cap is a key by its snake_case
+// name; transportSchema adds the transport keys at the same level.
+type fileSchema struct {
+	Default      string                     `toml:"default"`
+	DefaultOrder []string                   `toml:"default_order"`
+	Transports   map[string]transportSchema `toml:"transports"`
+	Models       map[string]modelSchema     `toml:"models"`
+	Providers    map[string]providerSchema  `toml:"providers"`
+}
+
+type transportSchema struct {
+	Preset              string            `toml:"transport"`
+	Auth                string            `toml:"auth"`
+	AuthHeader          string            `toml:"auth_header"`
+	BaseURL             string            `toml:"base_url"`
+	HostRule            string            `toml:"host_rule"`
+	Endpoint            string            `toml:"endpoint"`
+	StreamEndpoint      string            `toml:"stream_endpoint"`
+	ModelsEndpoint      string            `toml:"models_endpoint"`
+	CountTokensEndpoint string            `toml:"count_tokens_endpoint"`
+	Vars                map[string]string `toml:"vars"`
+	VarsEnv             map[string]string `toml:"vars_env"`
+	Body                map[string]any    `toml:"body"`
+}
+
+func (ts transportSchema) transport() Transport {
+	return Transport{
+		Preset: ts.Preset, Auth: ts.Auth, AuthHeader: ts.AuthHeader, BaseURL: ts.BaseURL, HostRule: ts.HostRule,
+		Endpoint: ts.Endpoint, StreamEndpoint: ts.StreamEndpoint, ModelsEndpoint: ts.ModelsEndpoint,
+		CountTokensEndpoint: ts.CountTokensEndpoint, Vars: ts.Vars, VarsEnv: ts.VarsEnv, Body: ts.Body,
+	}
+}
+
+func (ts transportSchema) isZero() bool {
+	return ts.Preset == "" && ts.Auth == "" && ts.AuthHeader == "" && ts.BaseURL == "" && ts.HostRule == "" &&
+		ts.Endpoint == "" && ts.StreamEndpoint == "" && ts.ModelsEndpoint == "" && ts.CountTokensEndpoint == "" &&
+		len(ts.Vars) == 0 && len(ts.VarsEnv) == 0 && len(ts.Body) == 0
+}
+
+type providerSchema struct {
+	Base              string                 `toml:"base"`
+	InheritModels     *bool                  `toml:"inherit_models"`
+	Implicit          *bool                  `toml:"implicit"`
+	Name              string                 `toml:"name"`
+	Doc               string                 `toml:"doc"`
+	Protocol          string                 `toml:"protocol"`
+	Surface           string                 `toml:"surface"`
+	Family            string                 `toml:"family"`
+	APIKey            string                 `toml:"api_key"`
+	APIKeyEnv         []string               `toml:"api_key_env"`
+	Headers           map[string]string      `toml:"headers"`
+	CredentialHeaders map[string]string      `toml:"credential_headers"`
+	DefaultModel      string                 `toml:"default_model"`
+	CheapModel        string                 `toml:"cheap_model"`
+	Models            map[string]modelSchema `toml:"models"`
+	transportSchema
+	Caps
+}
+
+type modelSchema struct {
+	AliasOf  string            `toml:"alias_of"`
+	WireID   string            `toml:"wire_id"`
+	Family   string            `toml:"family"`
+	Protocol string            `toml:"protocol"`
+	Surface  string            `toml:"surface"`
+	Headers  map[string]string `toml:"headers"`
+	transportSchema
+	Caps
+}
+
+func (ms modelSchema) model(id string) Model {
+	m := Model{ID: id, WireID: ms.WireID, AliasOf: ms.AliasOf, Family: ms.Family, Protocol: ms.Protocol, Surface: ms.Surface, Headers: ms.Headers, Caps: ms.Caps}
+	if !ms.transportSchema.isZero() {
+		t := ms.transportSchema.transport()
+		m.Transport = &t
+	}
+	return m
+}
+
+// parseLayer decodes and validates one TOML layer. curated permits the
+// overlay-only keys (spec §10).
+func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
+	var fs fileSchema
+	md, err := toml.Decode(string(data), &fs)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", tag, err)
+	}
+	if !curated {
+		if md.IsDefined("instances") {
+			return nil, fmt.Errorf("%w ([instances.*])", ErrOldSchema)
+		}
+		for name := range fs.Providers {
+			for _, k := range oldSchemaKeys {
+				if md.IsDefined("providers", name, k) {
+					return nil, fmt.Errorf("%w (providers.%s.%s)", ErrOldSchema, name, k)
+				}
+			}
+		}
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, k := range undecoded {
+			keys = append(keys, k.String())
+		}
+		sort.Strings(keys)
+		return nil, fmt.Errorf("%s: unknown key(s): %s", tag, strings.Join(keys, ", "))
+	}
+	if !curated {
+		if fs.DefaultOrder != nil {
+			return nil, fmt.Errorf("%s: default_order is only valid in the curated overlay", tag)
+		}
+		if len(fs.Transports) > 0 {
+			return nil, fmt.Errorf("%s: [transports.*] is only valid in the curated overlay", tag)
+		}
+	}
+	l := &Layer{Tag: tag, Default: fs.Default, DefaultOrder: fs.DefaultOrder, Transports: map[string]Transport{}, TopGlobs: map[string]Model{}, Providers: map[string]Provider{}}
+	for name, ts := range fs.Transports {
+		if ts.Preset != "" {
+			return nil, fmt.Errorf("%s: transports.%s: a transport preset cannot name another preset", tag, name)
+		}
+		if err := validateTransport(ts, fmt.Sprintf("transports.%s", name)); err != nil {
+			return nil, fmt.Errorf("%s: %w", tag, err)
+		}
+		l.Transports[name] = ts.transport()
+	}
+	for key, ms := range fs.Models {
+		if !isGlob(key) {
+			return nil, fmt.Errorf("%s: models.%q: top-level model rows must be globs", tag, key)
+		}
+		if ms.Protocol != "" {
+			return nil, fmt.Errorf("%s: models.%q: protocol is not allowed on a glob row", tag, key)
+		}
+		if ms.Preset != "" {
+			return nil, fmt.Errorf("%s: models.%q: transport presets are not allowed on a glob row", tag, key)
+		}
+		if err := validateModel(ms, fmt.Sprintf("models.%q", key)); err != nil {
+			return nil, fmt.Errorf("%s: %w", tag, err)
+		}
+		l.TopGlobs[key] = ms.model(key)
+	}
+	for name, ps := range fs.Providers {
+		where := "providers." + name
+		if !validProviderName(name) {
+			return nil, fmt.Errorf("%s: %s: provider names are lowercase with no slash", tag, where)
+		}
+		if !curated && (ps.Implicit != nil || ps.Name != "" || ps.Doc != "") {
+			return nil, fmt.Errorf("%s: %s: implicit, name, and doc are only valid in the curated overlay", tag, where)
+		}
+		if err := validateProvider(ps, where); err != nil {
+			return nil, fmt.Errorf("%s: %w", tag, err)
+		}
+		p := Provider{
+			ID: name, Base: ps.Base, InheritModels: ps.InheritModels, Implicit: ps.Implicit, Name: ps.Name, Doc: ps.Doc,
+			Protocol: ps.Protocol, Surface: ps.Surface, Family: ps.Family, Transport: ps.transportSchema.transport(),
+			APIKey: ps.APIKey, Headers: ps.Headers, CredentialHeaders: ps.CredentialHeaders, Caps: ps.Caps,
+			DefaultModel: ps.DefaultModel, CheapModel: ps.CheapModel, Models: map[string]Model{},
+		}
+		if md.IsDefined("providers", name, "api_key_env") {
+			p.APIKeyEnv = append([]string{}, ps.APIKeyEnv...)
+		}
+		for key, ms := range ps.Models {
+			if isGlob(key) && ms.Protocol != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: protocol is not allowed on a glob row", tag, where, key)
+			}
+			if isGlob(key) && ms.Preset != "" {
+				return nil, fmt.Errorf("%s: %s.models.%q: transport presets are not allowed on a glob row", tag, where, key)
+			}
+			if err := validateModel(ms, fmt.Sprintf("%s.models.%q", where, key)); err != nil {
+				return nil, fmt.Errorf("%s: %w", tag, err)
+			}
+			p.Models[key] = ms.model(key)
+		}
+		l.Providers[name] = p
+	}
+	if curated {
+		for _, id := range fs.DefaultOrder {
+			p, ok := fs.Providers[id]
+			if !ok || p.Implicit == nil || !*p.Implicit {
+				return nil, fmt.Errorf("%s: default_order entry %q is not an implicit provider in this file", tag, id)
+			}
+		}
+	}
+	return l, nil
+}
+
+func validateProvider(ps providerSchema, where string) error {
+	if ps.Protocol != "" && !protocols[ps.Protocol] {
+		return fmt.Errorf("%s: unknown protocol %q", where, ps.Protocol)
+	}
+	if ps.Surface != "" && !surfaces[ps.Surface] {
+		return fmt.Errorf("%s: unknown surface %q", where, ps.Surface)
+	}
+	if err := checkEnvRefs(ps.APIKey, where+".api_key"); err != nil {
+		return err
+	}
+	for k, v := range ps.CredentialHeaders {
+		if err := checkEnvRefs(v, fmt.Sprintf("%s.credential_headers.%q", where, k)); err != nil {
+			return err
+		}
+	}
+	for k, v := range ps.Headers {
+		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
+	}
+	if err := validateTransport(ps.transportSchema, where); err != nil {
+		return err
+	}
+	return validateCaps(ps.Caps, where)
+}
+
+func validateModel(ms modelSchema, where string) error {
+	if ms.Protocol != "" && !protocols[ms.Protocol] {
+		return fmt.Errorf("%s: unknown protocol %q", where, ms.Protocol)
+	}
+	if ms.Surface != "" && !surfaces[ms.Surface] {
+		return fmt.Errorf("%s: unknown surface %q", where, ms.Surface)
+	}
+	for k, v := range ms.Headers {
+		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
+	}
+	if err := validateTransport(ms.transportSchema, where); err != nil {
+		return err
+	}
+	return validateCaps(ms.Caps, where)
+}
+
+func validateTransport(ts transportSchema, where string) error {
+	if ts.Auth != "" && !authSchemes[ts.Auth] {
+		return fmt.Errorf("%s: unknown auth %q", where, ts.Auth)
+	}
+	if ts.HostRule != "" && !hostRules[ts.HostRule] {
+		return fmt.Errorf("%s: unknown host_rule %q", where, ts.HostRule)
+	}
+	for k, v := range ts.Vars {
+		if err := checkEnvRefs(v, fmt.Sprintf("%s.vars.%s", where, k)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCaps(c Caps, where string) error {
+	check := func(field string, v *string, vocab map[string]bool) error {
+		if v != nil && !vocab[*v] {
+			return fmt.Errorf("%s: %s = %q is not one of %s", where, field, *v, vocabList(vocab))
+		}
+		return nil
+	}
+	for _, e := range []error{
+		check("thinking_format", c.ThinkingFormat, thinkingFormats),
+		check("thinking_shape", c.ThinkingShape, thinkingShapes),
+		check("thinking_display", c.ThinkingDisplay, thinkingDisplays),
+		check("max_tokens_field", c.MaxTokensField, maxTokensFields),
+		check("cache_control", c.CacheControl, cacheControls),
+		check("reasoning_field", c.ReasoningField, reasoningFields),
+		check("reasoning_summary", c.ReasoningSummary, reasoningSummaries),
+		check("image_detail", c.ImageDetail, imageDetails),
+	} {
+		if e != nil {
+			return e
+		}
+	}
+	for _, rc := range c.ReasoningControls {
+		if !reasoningControlNames[rc] {
+			return fmt.Errorf("%s: reasoning_controls entry %q is not one of %s", where, rc, vocabList(reasoningControlNames))
+		}
+	}
+	for _, ev := range c.EffortValues {
+		if ev == "" || ev == "off" {
+			return fmt.Errorf("%s: effort_values entries must be non-empty and not \"off\"", where)
+		}
+	}
+	return nil
+}
+
+func vocabList(m map[string]bool) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, " | ")
+}
+```
+
+- [ ] **Step 5: Write `overlay.go` and `config.go`**
+
+`llm/registry/overlay.go`:
+
+```go
+package registry
+
+// ParseOverlay parses the curated overlay (spec §6.2): providers.toml's
+// schema plus the curated-only keys implicit, name, doc, default_order, and
+// [transports.*]. The embedded overlay is added in Task 5.
+func ParseOverlay(data []byte) (*Layer, error) {
+	return parseLayer(data, LayerOverlay, true)
+}
+```
+
+`llm/registry/config.go`:
+
+```go
+package registry
+
+// ParseConfig parses a providers.toml (spec §10). Curated-only keys and any
+// unknown key are errors; a pre-registry file is reported as ErrOldSchema.
+func ParseConfig(data []byte) (*Layer, error) {
+	return parseLayer(data, LayerConfig, false)
+}
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestExpandEnv|TestCheckEnvRefs|TestParse' -v`
+Expected: PASS. If `TestParseConfig_ExplicitEmptyAPIKeyEnv` fails because BurntSushi decodes `[]` as nil, the `md.IsDefined` branch already handles it; check that branch runs (`p.APIKeyEnv = append([]string{}, …)` yields a non-nil slice).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add llm/registry/schema.go llm/registry/env.go llm/registry/overlay.go llm/registry/config.go llm/registry/schema_test.go llm/registry/env_test.go
+git commit -m "feat(registry): TOML schema, \$ENV expansion, overlay and config parsers with §10 validation"
+```
+
+### Task 5: The curated overlay
+
+**Files:**
+- Create: `llm/registry/data/providers_overlay.toml`
+- Modify: `llm/registry/overlay.go` (add the embed)
+- Test: `llm/registry/overlay_test.go`
+
+**Interfaces:**
+- Consumes: `ParseOverlay` (Task 4), `EmbeddedSnapshot` + `FromModelsDev` (Tasks 2–3) for the cross-check test.
+- Produces: `EmbeddedOverlay() []byte`, the overlay data itself (spec §6.2, verbatim), `implicitOrder` (the `default_order` list) available to Task 9 through `Layer.DefaultOrder`.
+
+Authoring notes (spec §6.2, checked against the 2026-08-28 snapshot):
+- `default_model`/`cheap_model` are the flagship and a cheap tool-capable row from the snapshot: anthropic `claude-opus-5`/`claude-haiku-4-5`; openai-codex `gpt-5.6`/`gpt-5.6-luna`; openai `gpt-5.6`/`gpt-4.1-nano` (today's cheap pick; `gpt-5-nano` is cheaper but reasons by default, which is wrong for session naming); google `gemini-3.7-flash`/`gemini-2.5-flash-lite`; groq `openai/gpt-oss-120b`/`llama-3.1-8b-instant`; zai `glm-5.3`/`glm-4.7-flash`; deepseek `deepseek-v4-pro`/`deepseek-v4-flash`; openrouter `anthropic/claude-opus-5`/`google/gemini-2.5-flash-lite`; xai `grok-4.6`/`grok-4.3`; mistral `mistral-medium-latest`/`ministral-3b-latest`; cerebras `gpt-oss-120b`/`gpt-oss-120b`; togetherai `moonshotai/Kimi-K3`/`openai/gpt-oss-20b`; moonshotai `kimi-k3`/`kimi-k2.5`; kimi-for-coding `k3`/`kimi-for-coding`; minimax `MiniMax-M3`/`MiniMax-M2.7`; zai-coding-plan `glm-5.3`/`glm-5.3-flash`; google-vertex-anthropic `claude-opus-5`/`claude-haiku-4-5@20251001`; google-vertex `gemini-3.7-flash`/`gemini-2.5-flash-lite`; amazon-bedrock `global.anthropic.claude-opus-5`/`global.anthropic.claude-haiku-4-5-20251001-v1:0` (the `global.` profiles Jesse verified live). `azure` and `ollama` have none. The cross-check test below fails on a typo.
+- The `openai-codex` `gpt-5.6*` glob row pins `context_window = 272000`: Jesse's 2026-07-28 decision (codex-cli 0.145.0 `models_cache.json`) carried in today's `evener_model_catalog_overrides.json`; the alias otherwise inherits the platform row's 922000.
+- `claude-mythos-preview` facts come from today's LiteLLM entry (`llm/data/litellm_model_catalog.json`: 1M input, 128000 output, $10/$50 with $1 cache read and $12.5 cache write, sampling unsupported, xhigh and max effort).
+- Anthropic's `cache_ttl` is left unset (5-minute default): nothing in evener sends the 1h TTL today.
+- tomlcheck: every key that is not snake_case is quoted (provider ids with `-`, all model ids, env var names, header names, globs).
+- The `azure-cognitive-services` template uses the AI Services host form (`{name}.cognitiveservices.azure.com/openai/v1`); it is not on the implicit list and plan 4 verifies it live before anything relies on it.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/overlay_test.go`:
+
+```go
+package registry
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+var specImplicitOrder = []string{
+	"anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
+	"cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
+	"google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
+}
+
+var pseudoProviders = []string{"openai-compatible", "anthropic-compatible", "google-compatible"}
+
+func loadOverlay(t *testing.T) *Layer {
+	t.Helper()
+	l, err := ParseOverlay(EmbeddedOverlay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+func TestCuratedOverlay_ImplicitListIsDefaultOrder(t *testing.T) {
+	l := loadOverlay(t)
+	if !reflect.DeepEqual(l.DefaultOrder, specImplicitOrder) {
+		t.Fatalf("default_order = %v", l.DefaultOrder)
+	}
+	inOrder := map[string]bool{}
+	for _, id := range l.DefaultOrder {
+		inOrder[id] = true
+	}
+	for id, p := range l.Providers {
+		implicit := p.Implicit != nil && *p.Implicit
+		pseudo := false
+		for _, ps := range pseudoProviders {
+			if ps == id {
+				pseudo = true
+			}
+		}
+		if implicit && !inOrder[id] && !pseudo {
+			t.Errorf("%s is implicit but not in default_order", id)
+		}
+		if pseudo && !implicit {
+			t.Errorf("pseudo-provider %s must be implicit", id)
+		}
+	}
+}
+
+func TestCuratedOverlay_DefaultsAndTemplates(t *testing.T) {
+	l := loadOverlay(t)
+	for _, id := range l.DefaultOrder {
+		p := l.Providers[id]
+		switch id {
+		case "azure", "ollama":
+			if p.DefaultModel != "" || p.CheapModel != "" {
+				t.Errorf("%s must have no default/cheap model", id)
+			}
+		default:
+			if p.DefaultModel == "" || p.CheapModel == "" {
+				t.Errorf("%s needs default_model and cheap_model", id)
+			}
+		}
+		if !strings.Contains(p.Transport.BaseURL, "{") {
+			t.Errorf("%s: base_url must be a template, got %q", id, p.Transport.BaseURL)
+		}
+	}
+	for _, id := range pseudoProviders {
+		p := l.Providers[id]
+		if p.Transport.BaseURL != "{BASE_URL}" || len(p.Transport.Vars) != 0 || p.DefaultModel != "" {
+			t.Errorf("%s: %+v", id, p.Transport)
+		}
+		want := strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
+		if p.Transport.VarsEnv["BASE_URL"] != want+"_BASE_URL" || !reflect.DeepEqual(p.APIKeyEnv, []string{want + "_API_KEY"}) {
+			t.Errorf("%s env names: %v %v", id, p.Transport.VarsEnv, p.APIKeyEnv)
+		}
+	}
+}
+
+func TestCuratedOverlay_Transports(t *testing.T) {
+	l := loadOverlay(t)
+	va := l.Transports[PresetVertexAnthropic]
+	if va.Auth != AuthGCPADC || va.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || va.StreamEndpoint != "/publishers/anthropic/models/{model}:streamRawPredict" || va.ModelsEndpoint != EndpointUnsupported || va.CountTokensEndpoint != EndpointUnsupported || va.Body["anthropic_version"] != "vertex-2023-10-16" {
+		t.Fatalf("vertex-anthropic: %+v", va)
+	}
+	vg := l.Transports[PresetVertexGemini]
+	if vg.Auth != AuthGCPADC || vg.Endpoint != "/publishers/google/models/{model}:generateContent" || vg.StreamEndpoint != "/publishers/google/models/{model}:streamGenerateContent?alt=sse" {
+		t.Fatalf("vertex-gemini: %+v", vg)
+	}
+	bm := l.Transports[PresetBedrockMantleOpenAI]
+	if bm.Auth != AuthBearer || bm.ModelsEndpoint != "/models" || bm.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("bedrock-mantle-openai: %+v", bm)
+	}
+}
+
+func TestCuratedOverlay_AnthropicRows(t *testing.T) {
+	l := loadOverlay(t)
+	a := l.Providers["anthropic"]
+	for _, id := range []string{"claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929[1m]", "claude-opus-4-5[1m]", "claude-opus-4-5-20251101[1m]"} {
+		row, ok := a.Models[id]
+		base := strings.TrimSuffix(id, "[1m]")
+		if !ok || row.AliasOf != base || row.WireID != base || row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1000000 || row.Headers["anthropic-beta"] != "context-1m-2025-08-07" {
+			t.Errorf("%s: %+v", id, row)
+		}
+	}
+	for _, id := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"} {
+		if cw := a.Models[id].Caps.ContextWindow; cw == nil || *cw != 200000 {
+			t.Errorf("%s must be pinned to 200000", id)
+		}
+	}
+	if a.Models["claude-mythos-5"].AliasOf != "azure/claude-mythos-5" {
+		t.Error("claude-mythos-5 must alias the Azure row")
+	}
+	mp := a.Models["claude-mythos-preview"]
+	if mp.Family != "claude-mythos" || mp.Caps.Cost == nil || mp.Caps.Cost.Input != 10 || *mp.Caps.MaxOutputTokens != 128000 || len(mp.Caps.EffortValues) != 5 {
+		t.Errorf("claude-mythos-preview: %+v", mp)
+	}
+	if a.Family != "claude" || a.Surface != SurfaceAnthropic {
+		t.Errorf("anthropic surface/family: %q %q", a.Surface, a.Family)
+	}
+	if _, ok := l.TopGlobs["*claude-opus-4-5*"]; !ok {
+		t.Error("missing top-level opus-4-5 glob")
+	}
+}
+
+func TestCuratedOverlay_CodexProvider(t *testing.T) {
+	l := loadOverlay(t)
+	c := l.Providers["openai-codex"]
+	if c.Base != "openai" || c.InheritModels == nil || *c.InheritModels || c.Transport.Auth != AuthOAuthOpenAICodex {
+		t.Fatalf("openai-codex: %+v", c)
+	}
+	if c.APIKeyEnv == nil || len(c.APIKeyEnv) != 0 {
+		t.Fatalf("openai-codex must pin api_key_env = [], got %#v", c.APIKeyEnv)
+	}
+	if c.Models["gpt-5.6"].WireID != "gpt-5.6-sol" || c.Models["gpt-5.6"].AliasOf != "openai/gpt-5.6" {
+		t.Fatalf("gpt-5.6 row: %+v", c.Models["gpt-5.6"])
+	}
+	for _, f := range []string{"temperature", "top_p", "max_output_tokens", "previous_response_id", "conversation", "service_tier", "safety_identifier", "prompt_cache_retention", "truncation", "max_tool_calls", "background"} {
+		if v, ok := c.Caps.Fields[f]; !ok || v {
+			t.Errorf("openai-codex fields.%s must be false", f)
+		}
+	}
+	lite := c.Models["gpt-5.6*"]
+	if lite.Caps.ResponsesLite == nil || !*lite.Caps.ResponsesLite || lite.Transport == nil || lite.Transport.Body["reasoning.context"] != "all_turns" || lite.Transport.Body["parallel_tool_calls"] != false {
+		t.Errorf("gpt-5.6* row: %+v", lite)
+	}
+	if c.Headers["OpenAI-Organization"] != "" {
+		t.Error("codex must blank the inherited org header")
+	}
+	if _, ok := c.Headers["OpenAI-Organization"]; !ok {
+		t.Error("codex must set the org header key to the empty string (removal), not omit it")
+	}
+}
+
+// Every default_model, cheap_model, and alias_of target names a row that
+// exists upstream or in the overlay, so a typo cannot ship.
+func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
+	l := loadOverlay(t)
+	raw, _, err := EmbeddedSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := FromModelsDev(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]map[string]bool{}
+	for _, p := range upstream {
+		rows[p.ID] = map[string]bool{}
+		for id := range p.Models {
+			rows[p.ID][id] = true
+		}
+	}
+	for id, p := range l.Providers {
+		if rows[id] == nil {
+			rows[id] = map[string]bool{}
+		}
+		for mid := range p.Models {
+			if !isGlob(mid) {
+				rows[id][mid] = true
+			}
+		}
+	}
+	// openai-codex has inherit_models = false: only its own rows count.
+	has := func(provider, id string) bool { return rows[provider][id] }
+	for id, p := range l.Providers {
+		for _, ref := range []string{p.DefaultModel, p.CheapModel} {
+			if ref != "" && !has(id, ref) {
+				t.Errorf("%s: %q is not a row of that provider", id, ref)
+			}
+		}
+		for mid, m := range p.Models {
+			if m.AliasOf == "" {
+				continue
+			}
+			target, targetProv := m.AliasOf, id
+			if i := strings.Index(m.AliasOf, "/"); i > 0 && rows[m.AliasOf[:i]] != nil {
+				targetProv, target = m.AliasOf[:i], m.AliasOf[i+1:]
+			}
+			if !has(targetProv, target) {
+				t.Errorf("%s/%s: alias_of %q does not resolve", id, mid, m.AliasOf)
+			}
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestCuratedOverlay' -v`
+Expected: FAIL to compile ("undefined: EmbeddedOverlay").
+
+- [ ] **Step 3: Write the overlay**
+
+`llm/registry/data/providers_overlay.toml`:
+
+```toml
+# providers_overlay.toml — evener's curated corrections to models.dev (layer 3).
+# Same schema as providers.toml (spec §10) plus the curated-only keys
+# `implicit`, `name`, `doc`, `default_order`, and `[transports.*]`. Only what
+# models.dev lacks or gets wrong belongs here (spec §6.2). Keys that are not
+# snake_case (ids with dashes, model ids, env var and header names, globs) are
+# quoted for tomlcheck.
+
+default_order = [
+  "anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
+  "cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
+  "google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
+]
+
+# ---------------------------------------------------------------------------
+# Transport presets (§4.3, §9.3, §9.4)
+# ---------------------------------------------------------------------------
+
+[transports."vertex-anthropic"]
+auth = "gcp-adc"
+endpoint = "/publishers/anthropic/models/{model}:rawPredict"
+stream_endpoint = "/publishers/anthropic/models/{model}:streamRawPredict"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+body = { anthropic_version = "vertex-2023-10-16" }
+
+[transports."vertex-gemini"]
+auth = "gcp-adc"
+endpoint = "/publishers/google/models/{model}:generateContent"
+stream_endpoint = "/publishers/google/models/{model}:streamGenerateContent?alt=sse"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+
+[transports."bedrock-mantle-openai"]
+auth = "bearer"
+models_endpoint = "/models"
+count_tokens_endpoint = "-"
+
+# ---------------------------------------------------------------------------
+# Top-level glob rows, applied to every provider (§6.2, §8.3)
+# ---------------------------------------------------------------------------
+
+# Opus 4.5 takes effort + budget_tokens but not the adaptive body.
+[models."*claude-opus-4-5*"]
+thinking_shape = "budget+effort"
+
+[models."*gemini-3*"]
+multimodal_tool_results = true
+
+# ---------------------------------------------------------------------------
+# Anthropic
+# ---------------------------------------------------------------------------
+
+[providers.anthropic]
+implicit = true
+surface = "anthropic"
+family = "claude"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.anthropic.com/v1" }
+vars_env = { "BASE_URL" = "ANTHROPIC_BASE_URL" }
+default_model = "claude-opus-5"
+cheap_model = "claude-haiku-4-5"
+web_search = true
+
+# Sonnet 4.5 is 200k; models.dev says 1M (Anthropic's context-window page,
+# 2026-08-28, lists 1M only for Opus 4.6+, Sonnet 4.6+, and Claude 5).
+[providers.anthropic.models."claude-sonnet-4-5"]
+context_window = 200000
+[providers.anthropic.models."claude-sonnet-4-5-20250929"]
+context_window = 200000
+
+# [1m] rows exist only where the 1M window is a beta.
+[providers.anthropic.models."claude-sonnet-4-5[1m]"]
+alias_of = "claude-sonnet-4-5"
+wire_id = "claude-sonnet-4-5"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-sonnet-4-5-20250929[1m]"]
+alias_of = "claude-sonnet-4-5-20250929"
+wire_id = "claude-sonnet-4-5-20250929"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-opus-4-5[1m]"]
+alias_of = "claude-opus-4-5"
+wire_id = "claude-opus-4-5"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+[providers.anthropic.models."claude-opus-4-5-20251101[1m]"]
+alias_of = "claude-opus-4-5-20251101"
+wire_id = "claude-opus-4-5-20251101"
+context_window = 1000000
+headers = { "anthropic-beta" = "context-1m-2025-08-07" }
+
+# Mythos rows models.dev lacks under anthropic. Facts only; the transport
+# stays anthropic's (§4.2). The refresh report flags both when upstream adds them.
+[providers.anthropic.models."claude-mythos-5"]
+alias_of = "azure/claude-mythos-5"
+[providers.anthropic.models."claude-mythos-preview"]
+family = "claude-mythos"
+context_window = 1000000
+max_output_tokens = 128000
+tools = true
+structured_output = true
+reasoning = true
+sampling = false
+effort_values = ["low", "medium", "high", "xhigh", "max"]
+input_modalities = ["text", "image", "pdf"]
+cost = { input = 10.0, output = 50.0, cache_read = 1.0, cache_write = 12.5 }
+
+# ---------------------------------------------------------------------------
+# OpenAI platform and Codex
+# ---------------------------------------------------------------------------
+
+[providers.openai]
+implicit = true
+surface = "openai"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.openai.com/v1" }
+vars_env = { "BASE_URL" = "OPENAI_BASE_URL" }
+count_tokens_endpoint = "/responses/input_tokens"
+headers = { "OpenAI-Organization" = "$OPENAI_ORG_ID", "OpenAI-Project" = "$OPENAI_PROJECT_ID" }
+default_model = "gpt-5.6"
+cheap_model = "gpt-4.1-nano"
+max_tokens_field = "max_completion_tokens"
+strict_tools = true
+web_search = true
+reasoning_summary = "auto"
+[providers.openai.fields]
+store = true
+prompt_cache_key = true
+include = true
+truncation = true
+safety_identifier = true
+service_tier = true
+previous_response_id = true
+conversation = true
+max_tool_calls = true
+background = true
+metadata = true
+
+[providers.openai.models."gpt-4.1*"]
+fields = { prompt_cache_retention = true }
+[providers.openai.models."gpt-5*"]
+fields = { prompt_cache_retention = true }
+reasoning_summary = "detailed"
+[providers.openai.models."gpt-6*"]
+reasoning_summary = "detailed"
+image_detail = "original"
+[providers.openai.models."gpt-5.4*"]
+image_detail = "original"
+[providers.openai.models."gpt-5.5*"]
+image_detail = "original"
+# GPT-5.6 moved to prompt_cache_options.ttl; the platform-side lite shape
+# sends the reasoning object on every request and no image detail.
+[providers.openai.models."gpt-5.6*"]
+fields = { prompt_cache_retention = false }
+thinking_always_on = true
+image_detail = "omit"
+
+[providers."openai-codex"]
+implicit = true
+name = "OpenAI (Codex subscription)"
+doc = "https://developers.openai.com/codex"
+base = "openai"
+inherit_models = false
+surface = "openai"
+auth = "oauth-openai-codex"
+api_key_env = []
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://chatgpt.com/backend-api/codex" }
+vars_env = { "BASE_URL" = "OPENAI_CODEX_BASE_URL" }
+models_endpoint = "/models?client_version=0.0.0"
+count_tokens_endpoint = "-"
+headers = { "OpenAI-Organization" = "", "OpenAI-Project" = "" }
+default_model = "gpt-5.6"
+cheap_model = "gpt-5.6-luna"
+[providers."openai-codex".fields]
+temperature = false
+top_p = false
+max_output_tokens = false
+previous_response_id = false
+conversation = false
+service_tier = false
+safety_identifier = false
+prompt_cache_retention = false
+truncation = false
+max_tool_calls = false
+background = false
+
+[providers."openai-codex".models."gpt-5.6"]
+alias_of = "openai/gpt-5.6"
+wire_id = "gpt-5.6-sol"
+[providers."openai-codex".models."gpt-5.6-sol"]
+alias_of = "openai/gpt-5.6-sol"
+[providers."openai-codex".models."gpt-5.6-terra"]
+alias_of = "openai/gpt-5.6-terra"
+[providers."openai-codex".models."gpt-5.6-luna"]
+alias_of = "openai/gpt-5.6-luna"
+# Codex lite shaping (§9.5). context_window: the effective Codex window is
+# 272000 (codex-cli 0.145.0 models_cache.json; Jesse, 2026-07-28).
+[providers."openai-codex".models."gpt-5.6*"]
+context_window = 272000
+responses_lite = true
+thinking_always_on = true
+image_detail = "omit"
+reasoning_summary = "detailed"
+body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
+# ---------------------------------------------------------------------------
+# Azure (§9.2)
+# ---------------------------------------------------------------------------
+
+[providers.azure]
+implicit = true
+surface = "openai"
+base_url = "https://{AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1"
+[providers.azure.fields]
+store = true
+include = true
+previous_response_id = true
+metadata = true
+
+# AI Services host form; not implicit, verified live in plan 4.
+[providers."azure-cognitive-services"]
+base_url = "https://{AZURE_COGNITIVE_SERVICES_RESOURCE_NAME}.cognitiveservices.azure.com/openai/v1"
+[providers."azure-cognitive-services".fields]
+store = true
+include = true
+previous_response_id = true
+metadata = true
+
+# ---------------------------------------------------------------------------
+# Google, Vertex (§9.4)
+# ---------------------------------------------------------------------------
+
+[providers.google]
+implicit = true
+surface = "google"
+api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://generativelanguage.googleapis.com/v1beta" }
+vars_env = { "BASE_URL" = "GOOGLE_BASE_URL" }
+default_model = "gemini-3.7-flash"
+cheap_model = "gemini-2.5-flash-lite"
+web_search = true
+
+[providers."google-vertex-anthropic"]
+implicit = true
+surface = "anthropic"
+family = "claude"
+transport = "vertex-anthropic"
+api_key_env = []
+base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+host_rule = "vertex-location"
+default_model = "claude-opus-5"
+cheap_model = "claude-haiku-4-5@20251001"
+web_search = true
+
+[providers."google-vertex"]
+implicit = true
+surface = "google"
+transport = "vertex-gemini"
+api_key_env = []
+base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+host_rule = "vertex-location"
+default_model = "gemini-3.7-flash"
+cheap_model = "gemini-2.5-flash-lite"
+web_search = true
+
+# ---------------------------------------------------------------------------
+# Amazon Bedrock (§9.3): Anthropic's Messages endpoint on bedrock-mantle
+# ---------------------------------------------------------------------------
+
+[providers."amazon-bedrock"]
+implicit = true
+surface = "anthropic"
+family = "claude"
+api_key_env = ["AWS_BEARER_TOKEN_BEDROCK"]
+base_url = "https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1"
+auth = "header"
+auth_header = "x-api-key"
+models_endpoint = "-"
+count_tokens_endpoint = "-"
+default_model = "global.anthropic.claude-opus-5"
+cheap_model = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# The Messages endpoint lacks structured outputs and web search; the Mantle
+# OpenAI rows keep their own values.
+[providers."amazon-bedrock".models."*anthropic.*"]
+structured_output = false
+web_search = false
+
+# Two ids on Anthropic's Bedrock table that models.dev lacks.
+[providers."amazon-bedrock".models."anthropic.claude-haiku-4-5"]
+alias_of = "anthropic.claude-haiku-4-5-20251001-v1:0"
+[providers."amazon-bedrock".models."anthropic.claude-mythos-preview"]
+alias_of = "anthropic/claude-mythos-preview"
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible vendors
+# ---------------------------------------------------------------------------
+
+[providers.groq]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.groq.com/openai/v1" }
+vars_env = { "BASE_URL" = "GROQ_BASE_URL" }
+default_model = "openai/gpt-oss-120b"
+cheap_model = "llama-3.1-8b-instant"
+
+[providers.xai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.x.ai/v1" }
+vars_env = { "BASE_URL" = "XAI_BASE_URL" }
+default_model = "grok-4.6"
+cheap_model = "grok-4.3"
+fields = { store = true, include = true }
+
+[providers.cerebras]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.cerebras.ai/v1" }
+vars_env = { "BASE_URL" = "CEREBRAS_BASE_URL" }
+default_model = "gpt-oss-120b"
+cheap_model = "gpt-oss-120b"
+
+[providers.mistral]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.mistral.ai/v1" }
+vars_env = { "BASE_URL" = "MISTRAL_BASE_URL" }
+default_model = "mistral-medium-latest"
+cheap_model = "ministral-3b-latest"
+
+[providers.togetherai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.together.ai/v1" }
+vars_env = { "BASE_URL" = "TOGETHERAI_BASE_URL" }
+default_model = "moonshotai/Kimi-K3"
+cheap_model = "openai/gpt-oss-20b"
+
+[providers.deepseek]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.deepseek.com" }
+vars_env = { "BASE_URL" = "DEEPSEEK_BASE_URL" }
+default_model = "deepseek-v4-pro"
+cheap_model = "deepseek-v4-flash"
+thinking_format = "deepseek"
+empty_reasoning_content = true
+
+[providers.openrouter]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://openrouter.ai/api/v1" }
+vars_env = { "BASE_URL" = "OPENROUTER_BASE_URL" }
+default_model = "anthropic/claude-opus-5"
+cheap_model = "google/gemini-2.5-flash-lite"
+thinking_format = "openrouter"
+tool_choice_forcing = false
+session_affinity_headers = true
+[providers.openrouter.models."anthropic/*"]
+cache_control = "anthropic"
+[providers.openrouter.models."minimax/*"]
+reasoning_controls = ["toggle"]
+thinking_always_on = true
+reasoning_field = "reasoning_details"
+
+# ---------------------------------------------------------------------------
+# z.ai / Zhipu (openai-chat with the zai thinking dialect)
+# ---------------------------------------------------------------------------
+
+[providers.zai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.z.ai/api/paas/v4" }
+vars_env = { "BASE_URL" = "ZAI_BASE_URL" }
+default_model = "glm-5.3"
+cheap_model = "glm-4.7-flash"
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers."zai-coding-plan"]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.z.ai/api/coding/paas/v4" }
+vars_env = { "BASE_URL" = "ZAI_CODING_PLAN_BASE_URL" }
+default_model = "glm-5.3"
+cheap_model = "glm-5.3-flash"
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers.zhipuai]
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+[providers."zhipuai-coding-plan"]
+thinking_format = "zai"
+strip_empty_content = true
+max_stop_sequences = 1
+finish_reason_map = { sensitive = "content_filter", network_error = "error" }
+structured_output = false
+tool_choice_forcing = false
+fields = { developer_role = false }
+
+# ---------------------------------------------------------------------------
+# Moonshot / Kimi
+# ---------------------------------------------------------------------------
+
+[providers.moonshotai]
+implicit = true
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.moonshot.ai/v1" }
+vars_env = { "BASE_URL" = "MOONSHOTAI_BASE_URL" }
+default_model = "kimi-k3"
+cheap_model = "kimi-k2.5"
+structured_output = false
+tool_choice_forcing = false
+fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
+
+[providers."moonshotai-cn"]
+structured_output = false
+tool_choice_forcing = false
+fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
+
+[providers."kimi-for-coding"]
+implicit = true
+surface = "anthropic"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.kimi.com/coding/v1" }
+vars_env = { "BASE_URL" = "KIMI_FOR_CODING_BASE_URL" }
+headers = { "User-Agent" = "claude-cli/2.1.177 (external, cli)" }
+default_model = "k3"
+cheap_model = "kimi-for-coding"
+[providers."kimi-for-coding".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+[providers."kimi-for-coding".models."k3*"]
+thinking_shape = "budget+effort"
+
+# ---------------------------------------------------------------------------
+# MiniMax (anthropic protocol; Anthropic-style tool calls)
+# ---------------------------------------------------------------------------
+
+[providers.minimax]
+implicit = true
+surface = "anthropic"
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.minimax.io/anthropic/v1" }
+vars_env = { "BASE_URL" = "MINIMAX_BASE_URL" }
+default_model = "MiniMax-M3"
+cheap_model = "MiniMax-M2.7"
+[providers.minimax.models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-cn".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-coding-plan".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+[providers."minimax-cn-coding-plan".models."*"]
+surface = "anthropic"
+thinking_shape = "budget"
+
+# ---------------------------------------------------------------------------
+# Ollama and the protocol-only pseudo-providers (not in models.dev)
+# ---------------------------------------------------------------------------
+
+[providers.ollama]
+implicit = true
+name = "Ollama"
+doc = "https://docs.ollama.com"
+protocol = "openai-chat"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["OLLAMA_API_KEY"]
+base_url = "{OLLAMA_HOST}"
+host_rule = "ollama-host"
+vars = { "OLLAMA_HOST" = "localhost" }
+vars_env = { "OLLAMA_HOST" = "OLLAMA_HOST" }
+context_window = 131072
+
+[providers."openai-compatible"]
+implicit = true
+name = "OpenAI-compatible endpoint"
+protocol = "openai-chat"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["OPENAI_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "OPENAI_COMPATIBLE_BASE_URL" }
+context_window = 131072
+
+[providers."anthropic-compatible"]
+implicit = true
+name = "Anthropic-compatible endpoint"
+protocol = "anthropic"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["ANTHROPIC_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "ANTHROPIC_COMPATIBLE_BASE_URL" }
+context_window = 131072
+
+[providers."google-compatible"]
+implicit = true
+name = "Google-compatible endpoint"
+protocol = "google"
+surface = "generic"
+auth = "optional-bearer"
+api_key_env = ["GOOGLE_COMPATIBLE_API_KEY"]
+base_url = "{BASE_URL}"
+vars_env = { "BASE_URL" = "GOOGLE_COMPATIBLE_BASE_URL" }
+context_window = 131072
+```
+
+Then add the embed to `llm/registry/overlay.go` (replace the file):
+
+```go
+package registry
+
+import _ "embed"
+
+//go:embed data/providers_overlay.toml
+var embeddedOverlay []byte
+
+// EmbeddedOverlay returns the curated overlay compiled into the binary
+// (spec §5 layer 3, §6.2).
+func EmbeddedOverlay() []byte { return embeddedOverlay }
+
+// ParseOverlay parses a curated overlay (spec §6.2): providers.toml's schema
+// plus the curated-only keys implicit, name, doc, default_order, and
+// [transports.*].
+func ParseOverlay(data []byte) (*Layer, error) {
+	return parseLayer(data, LayerOverlay, true)
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestCuratedOverlay|TestParse' -v && go run ./cmd/evener-dev/bin tomlcheck`
+Expected: PASS and no tomlcheck violations. If `TestCuratedOverlay_ReferencesResolve` reports a missing id, models.dev renamed it since 2026-08-28: pick the current id from `python3 -c "import gzip,json;d=json.load(gzip.open('llm/registry/data/models.dev.json.gz'));print(sorted(d['<provider>']['models']))"` and fix the overlay, never the test.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/registry/data/providers_overlay.toml llm/registry/overlay.go llm/registry/overlay_test.go
+git commit -m "feat(registry): curated overlay with transports, implicit list, and provider corrections"
+```
+
+### Task 6: Prunable paths, baselines, and `Prune`
+
+**Files:**
+- Create: `llm/registry/prune.go`
+- Test: `llm/registry/prune_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 constants and `Caps`.
+- Produces: `PrunablePaths(protocol string) []string` (sorted; nil for an unknown protocol), `Baseline(protocol string) map[string]bool` (fresh copy), `ValidateFields(fields map[string]bool, protocol, where string) error`, `seedFields(c *Caps, protocol string)` (fills every missing prunable path with its baseline), `Prune(body map[string]any, caps Caps) []string` (deletes each prunable path whose `caps.Fields` flag is false; returns the paths it actually removed, sorted), `FieldDeveloperRole = "developer_role"`, `FieldMaxTokens = "max_tokens"`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/prune_test.go`:
+
+```go
+package registry
+
+import (
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestPrunableTable_MatchesSpec(t *testing.T) {
+	want := map[string]map[string]bool{
+		ProtocolOpenAIChat: {
+			"temperature": true, "top_p": true, "stop": true, "stream_options": true, "max_tokens": true,
+			"store": false, "frequency_penalty": false, "presence_penalty": false, "developer_role": false,
+			"parallel_tool_calls": false, "prompt_cache_key": false, "prompt_cache_retention": false,
+			"service_tier": false, "metadata": false, "logprobs": false, "n": false, "seed": false, "user": false,
+		},
+		ProtocolOpenAIResponses: {
+			"temperature": true, "top_p": true, "max_output_tokens": true,
+			"store": false, "include": false, "truncation": false, "safety_identifier": false, "service_tier": false,
+			"prompt_cache_key": false, "prompt_cache_retention": false, "previous_response_id": false,
+			"conversation": false, "metadata": false, "max_tool_calls": false, "background": false,
+			"parallel_tool_calls": false, "text.verbosity": false, "reasoning.context": false,
+		},
+		ProtocolAnthropic: {
+			"temperature": true, "top_p": true, "stop_sequences": true, "max_tokens": true,
+			"metadata": false, "service_tier": false, "fallbacks": false, "container": false,
+		},
+		ProtocolGoogle: {
+			"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
+			"toolConfig": true, "safetySettings": true, "cachedContent": false, "labels": false,
+		},
+	}
+	for proto, table := range want {
+		if got := Baseline(proto); !reflect.DeepEqual(got, table) {
+			t.Errorf("%s baseline = %v", proto, got)
+		}
+		paths := PrunablePaths(proto)
+		if !sort.StringsAreSorted(paths) || len(paths) != len(table) {
+			t.Errorf("%s PrunablePaths = %v", proto, paths)
+		}
+	}
+	if PrunablePaths("grpc") != nil {
+		t.Error("unknown protocol must yield nil")
+	}
+	b := Baseline(ProtocolAnthropic)
+	b["metadata"] = true
+	if Baseline(ProtocolAnthropic)["metadata"] {
+		t.Error("Baseline must return a copy")
+	}
+}
+
+func TestValidateFields(t *testing.T) {
+	if err := ValidateFields(map[string]bool{"store": true, "text.verbosity": false}, ProtocolOpenAIResponses, "providers.x"); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateFields(map[string]bool{"stream_options": false}, ProtocolOpenAIResponses, "providers.x")
+	if err == nil || !strings.Contains(err.Error(), "stream_options") || !strings.Contains(err.Error(), ProtocolOpenAIResponses) || !strings.Contains(err.Error(), "providers.x") {
+		t.Fatalf("error must name key, protocol, and record: %v", err)
+	}
+}
+
+func TestSeedFields(t *testing.T) {
+	c := Caps{Fields: map[string]bool{"store": true}}
+	seedFields(&c, ProtocolOpenAIResponses)
+	if !c.Fields["store"] || c.Fields["include"] || !c.Fields["temperature"] || len(c.Fields) != len(PrunablePaths(ProtocolOpenAIResponses)) {
+		t.Fatalf("seeded fields: %v", c.Fields)
+	}
+}
+
+func fullBody(proto string) map[string]any {
+	body := map[string]any{"model": "m", "input": "x"}
+	for _, p := range PrunablePaths(proto) {
+		if p == FieldDeveloperRole {
+			continue
+		}
+		setPath(body, p, 1)
+	}
+	return body
+}
+
+func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
+	for _, proto := range []string{ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolGoogle} {
+		allFalse := Caps{Fields: map[string]bool{}}
+		for _, p := range PrunablePaths(proto) {
+			allFalse.Fields[p] = false
+		}
+		body := fullBody(proto)
+		pruned := Prune(body, allFalse)
+		if !sort.StringsAreSorted(pruned) {
+			t.Errorf("%s: pruned list must be sorted: %v", proto, pruned)
+		}
+		for _, p := range PrunablePaths(proto) {
+			if p == FieldDeveloperRole {
+				continue
+			}
+			if _, ok := getPath(body, p); ok {
+				t.Errorf("%s: %s survived the prune", proto, p)
+			}
+		}
+		if body["model"] != "m" || body["input"] != "x" {
+			t.Errorf("%s: non-prunable paths must survive", proto)
+		}
+		allTrue := Caps{Fields: map[string]bool{}}
+		for _, p := range PrunablePaths(proto) {
+			allTrue.Fields[p] = true
+		}
+		body = fullBody(proto)
+		if got := Prune(body, allTrue); len(got) != 0 {
+			t.Errorf("%s: nothing should be pruned, got %v", proto, got)
+		}
+	}
+}
+
+func TestPrune_NestedLeafKeepsSiblingAndDropsEmptyParent(t *testing.T) {
+	body := map[string]any{"text": map[string]any{"verbosity": "low", "format": map[string]any{"type": "text"}}, "reasoning": map[string]any{"context": "all_turns"}}
+	pruned := Prune(body, Caps{Fields: map[string]bool{"text.verbosity": false, "reasoning.context": false}})
+	if !reflect.DeepEqual(pruned, []string{"reasoning.context", "text.verbosity"}) {
+		t.Fatalf("pruned = %v", pruned)
+	}
+	if _, ok := body["text"].(map[string]any)["format"]; !ok {
+		t.Fatal("sibling must survive")
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatal("emptied parent must be removed")
+	}
+}
+
+func TestPrune_MaxTokensSpelling(t *testing.T) {
+	body := map[string]any{"max_completion_tokens": 10}
+	spelling := "max_completion_tokens"
+	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}})
+	if !reflect.DeepEqual(pruned, []string{"max_completion_tokens"}) || len(body) != 0 {
+		t.Fatalf("pruned = %v body = %v", pruned, body)
+	}
+	body = map[string]any{"max_tokens": 10}
+	if pruned := Prune(body, Caps{Fields: map[string]bool{"max_tokens": false}}); !reflect.DeepEqual(pruned, []string{"max_tokens"}) {
+		t.Fatalf("default spelling: %v", pruned)
+	}
+}
+
+func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
+	body := map[string]any{"messages": []any{map[string]any{"role": "developer"}}}
+	if pruned := Prune(body, Caps{Fields: map[string]bool{"developer_role": false, "store": false}}); len(pruned) != 0 {
+		t.Fatalf("pseudo path and absent paths must not be reported: %v", pruned)
+	}
+	if len(body["messages"].([]any)) != 1 {
+		t.Fatal("developer_role must not touch the body")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestPrunable|TestValidateFields|TestSeedFields|TestPrune' -v`
+Expected: FAIL to compile ("undefined: Baseline").
+
+- [ ] **Step 3: Write `prune.go`**
+
+```go
+package registry
+
+import (
+	"fmt"
+	"maps"
+	"sort"
+	"strings"
+)
+
+// Pseudo-paths in the prunable tables (spec §8.2): developer_role is not a
+// body path (false = system prompt sent as `system`, true = `developer`);
+// max_tokens names whichever spelling Caps.MaxTokensField selects.
+const (
+	FieldDeveloperRole = "developer_role"
+	FieldMaxTokens     = "max_tokens"
+)
+
+// prunable is the authoritative per-protocol table of optional wire fields
+// and their baseline (send or not) before any layer applies (spec §8.2).
+// Each protocol package's PrunablePaths() must return the same paths; a
+// test in that package asserts it.
+var prunable = map[string]map[string]bool{
+	ProtocolOpenAIChat: {
+		"temperature": true, "top_p": true, "stop": true, "stream_options": true, FieldMaxTokens: true,
+		"store": false, "frequency_penalty": false, "presence_penalty": false, FieldDeveloperRole: false,
+		"parallel_tool_calls": false, "prompt_cache_key": false, "prompt_cache_retention": false,
+		"service_tier": false, "metadata": false, "logprobs": false, "n": false, "seed": false, "user": false,
+	},
+	ProtocolOpenAIResponses: {
+		"temperature": true, "top_p": true, "max_output_tokens": true,
+		"store": false, "include": false, "truncation": false, "safety_identifier": false, "service_tier": false,
+		"prompt_cache_key": false, "prompt_cache_retention": false, "previous_response_id": false,
+		"conversation": false, "metadata": false, "max_tool_calls": false, "background": false,
+		"parallel_tool_calls": false, "text.verbosity": false, "reasoning.context": false,
+	},
+	ProtocolAnthropic: {
+		"temperature": true, "top_p": true, "stop_sequences": true, FieldMaxTokens: true,
+		"metadata": false, "service_tier": false, "fallbacks": false, "container": false,
+	},
+	ProtocolGoogle: {
+		"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
+		"toolConfig": true, "safetySettings": true, "cachedContent": false, "labels": false,
+	},
+}
+
+// PrunablePaths returns the sorted prunable paths of a protocol, or nil for
+// an unknown protocol.
+func PrunablePaths(protocol string) []string {
+	table, ok := prunable[protocol]
+	if !ok {
+		return nil
+	}
+	paths := make([]string, 0, len(table))
+	for p := range table {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// Baseline returns a copy of the protocol's path → send-by-default table.
+func Baseline(protocol string) map[string]bool {
+	table, ok := prunable[protocol]
+	if !ok {
+		return nil
+	}
+	return maps.Clone(table)
+}
+
+// ValidateFields is the load-time typo guard (spec §10): every key must be
+// in the record's resolved protocol's prunable set.
+func ValidateFields(fields map[string]bool, protocol, where string) error {
+	table := prunable[protocol]
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if _, ok := table[k]; !ok {
+			return fmt.Errorf("%s: fields.%s is not a prunable path of protocol %s (valid: %s)", where, k, protocol, strings.Join(PrunablePaths(protocol), ", "))
+		}
+	}
+	return nil
+}
+
+// seedFields fills every prunable path missing from c.Fields with its
+// baseline, so a Resolved record always carries the full table (spec §4.4).
+func seedFields(c *Caps, protocol string) {
+	table := prunable[protocol]
+	if c.Fields == nil {
+		c.Fields = make(map[string]bool, len(table))
+	}
+	for p, send := range table {
+		if _, ok := c.Fields[p]; !ok {
+			c.Fields[p] = send
+		}
+	}
+}
+
+// Prune deletes from body every prunable path whose caps.Fields flag is
+// false and returns the paths it removed, sorted (spec §8.2 step 2). Keys
+// absent from the body are not reported; developer_role is never a body
+// path; max_tokens maps to caps.MaxTokensField's spelling.
+func Prune(body map[string]any, caps Caps) []string {
+	var pruned []string
+	for key, send := range caps.Fields {
+		if send || key == FieldDeveloperRole {
+			continue
+		}
+		path := key
+		if key == FieldMaxTokens && caps.MaxTokensField != nil && *caps.MaxTokensField != "" {
+			path = *caps.MaxTokensField
+		}
+		if deletePath(body, path) {
+			pruned = append(pruned, path)
+		}
+	}
+	sort.Strings(pruned)
+	return pruned
+}
+
+// setPath sets a dotted path, creating parent objects (used by Transport.Body
+// constants and tests).
+func setPath(body map[string]any, path string, value any) {
+	parts := strings.Split(path, ".")
+	cur := body
+	for _, p := range parts[:len(parts)-1] {
+		next, ok := cur[p].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			cur[p] = next
+		}
+		cur = next
+	}
+	cur[parts[len(parts)-1]] = value
+}
+
+// getPath reads a dotted path.
+func getPath(body map[string]any, path string) (any, bool) {
+	parts := strings.Split(path, ".")
+	cur := body
+	for _, p := range parts[:len(parts)-1] {
+		next, ok := cur[p].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur = next
+	}
+	v, ok := cur[parts[len(parts)-1]]
+	return v, ok
+}
+
+// deletePath removes a dotted path and any parent object it leaves empty.
+// It reports whether the leaf existed.
+func deletePath(body map[string]any, path string) bool {
+	parts := strings.Split(path, ".")
+	if len(parts) == 1 {
+		if _, ok := body[path]; !ok {
+			return false
+		}
+		delete(body, path)
+		return true
+	}
+	child, ok := body[parts[0]].(map[string]any)
+	if !ok {
+		return false
+	}
+	deleted := deletePath(child, strings.Join(parts[1:], "."))
+	if deleted && len(child) == 0 {
+		delete(body, parts[0])
+	}
+	return deleted
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestPrunable|TestValidateFields|TestSeedFields|TestPrune' -v`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/registry/prune.go llm/registry/prune_test.go
+git commit -m "feat(registry): per-protocol prunable path tables, baselines, and Prune"
+```
+
+### Task 7: `Load`: layers, base chains, presets, validation, and `Hidden`
+
+**Files:**
+- Create: `llm/registry/load.go`
+- Create: `llm/registry/hostrules.go` (the Ollama helpers ported from `envvars/ollama_host.go`, which the root module keeps until step 3 because `llm` cannot import it; plus the Vertex host rule)
+- Test: `llm/registry/load_test.go`, `llm/registry/hostrules_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 1–6 (`FromModelsDev`, `EmbeddedSnapshot`, `EmbeddedOverlay`, `ParseOverlay`, `ParseConfig`, `ErrOldSchema`, `mergeTransport`, `mergeStringMap`, `expandEnv`, `ValidateFields`, `isGlob`).
+- Produces: `type Registry`, `Load(opts ...Option) (*Registry, error)`, options `WithConfigPath(string)`, `WithNoUserLayer()`, `WithStateRoot(string)`, `WithEnv(func(string) (string, bool))`, `WithCredentials(CredentialSource)`, `WithFetcher(Fetcher)`, `WithOffline(bool)`, `WithInstances(map[string]Provider)`, `WithNow(func() time.Time)`, `WithSnapshot([]byte)`, `WithOverlay([]byte)`; `type CredentialSource interface{ Lookup(instance string) (string, bool) }`; `type Fetcher func(ctx context.Context, etag string) (body []byte, newEtag string, notModified bool, err error)`; accessors `(*Registry).ProviderIDs() []string`, `(*Registry).Provider(id string) (Provider, bool)` (curated merged head, `Hidden` computed), `(*Registry).UserLayerNote() string`, `(*Registry).Warnings() []string`, `(*Registry).Catalog() (tag string, meta Meta)`; internals later tasks use: `record`, `capLayer`, `(*Registry).curated`, `(*Registry).explicit` (user-layer + injected instance records), `(*Registry).userDefault`, `(*Registry).defaultOrder`, `(*Registry).presets`, `(*Registry).env`, `(*Registry).creds`, `(*Registry).stateRoot`, `(*Registry).topGlobs map[string]map[string]Model` (layer tag → glob rows), `(*Registry).varLookup(rec *record) func(string) (string, bool)`, `(*Registry).resolveBaseURL(rec *record, t Transport) (url string, missing []string, warnings []string)`, `expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []string)`, `clearProtocolTransport(*Transport)`, `defaultConfigRoot(env)`, `defaultStateRoot(env)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/hostrules_test.go`:
+
+```go
+package registry
+
+import "testing"
+
+func TestResolveOllamaHost(t *testing.T) {
+	cases := []struct{ baseURL, host, want string }{
+		{"", "localhost", "http://localhost:11434/v1"},
+		{"", "::1", "http://[::1]:11434/v1"},
+		{"", "ollama.com", "https://ollama.com:443/v1"},
+		{"", "https://ollama.com", "https://ollama.com:443/v1"},
+		{"", "http://proxy.example/ollama/v1", "http://proxy.example/ollama/v1"},
+		{"", "gpu-box:11435", "http://gpu-box:11435/v1"},
+		{"http://proxy.example/ollama/v1/", "localhost", "http://proxy.example/ollama/v1"},
+		{"", "", "http://localhost:11434/v1"},
+	}
+	for _, c := range cases {
+		got, err := resolveOllamaHost(c.baseURL, c.host)
+		if err != nil || got != c.want {
+			t.Errorf("resolveOllamaHost(%q, %q) = %q, %v; want %q", c.baseURL, c.host, got, err, c.want)
+		}
+	}
+	for _, bad := range []string{"ftp://x", "http://user@x", "http://x?y=1", "http://x#frag", "http://x:"} {
+		if _, err := resolveOllamaHost("", bad); err == nil {
+			t.Errorf("host %q must be rejected", bad)
+		}
+	}
+	if _, err := resolveOllamaHost("ftp://x", "localhost"); err == nil {
+		t.Error("invalid OLLAMA_BASE_URL must be rejected")
+	}
+}
+
+func TestVertexHost(t *testing.T) {
+	cases := map[string]string{
+		"global":       "https://aiplatform.googleapis.com",
+		"us":           "https://aiplatform.us.rep.googleapis.com",
+		"eu":           "https://aiplatform.eu.rep.googleapis.com",
+		"europe-west1": "https://europe-west1-aiplatform.googleapis.com",
+	}
+	for loc, want := range cases {
+		if got := vertexHost(loc); got != want {
+			t.Errorf("vertexHost(%q) = %q, want %q", loc, got, want)
+		}
+	}
+}
+```
+
+`llm/registry/load_test.go`:
+
+```go
+package registry
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// fixtureLoad loads the 40-provider fixture with the real curated overlay,
+// no user layer unless config is non-empty, and the given environment.
+func fixtureLoad(t *testing.T, env map[string]string, config string, extra ...Option) *Registry {
+	t.Helper()
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := []Option{WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir())}
+	if config == "" {
+		opts = append(opts, WithNoUserLayer())
+	} else {
+		path := filepath.Join(t.TempDir(), "providers.toml")
+		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts = append(opts, WithConfigPath(path))
+	}
+	opts = append(opts, extra...)
+	r, err := Load(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func mapEnv(env map[string]string) func(string) (string, bool) {
+	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
+}
+
+// overlayWith appends extra TOML to the embedded curated overlay: a custom
+// overlay must keep the transport presets the converter's rows reference.
+func overlayWith(extra string) []byte {
+	return []byte(string(EmbeddedOverlay()) + "\n" + extra)
+}
+
+func layerTags(rec *record) []string {
+	out := make([]string, 0, len(rec.layers))
+	for _, l := range rec.layers {
+		out = append(out, l.tag+":"+l.owner)
+	}
+	return out
+}
+
+func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	codex := r.curated["openai-codex"]
+	if codex == nil {
+		t.Fatal("openai-codex missing")
+	}
+	if got := layerTags(codex); !reflect.DeepEqual(got, []string{"snapshot:openai", "overlay:openai", "overlay:openai-codex"}) {
+		t.Fatalf("codex layers = %v", got)
+	}
+	h := codex.head
+	if h.Protocol != ProtocolOpenAIResponses || h.Transport.Auth != AuthOAuthOpenAICodex || h.Transport.BaseURL != "{BASE_URL}" || h.Transport.Vars["BASE_URL"] != "https://chatgpt.com/backend-api/codex" || h.Transport.ModelsEndpoint != "/models?client_version=0.0.0" {
+		t.Fatalf("codex head: %+v", h.Transport)
+	}
+	if h.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("codex must override the inherited count-tokens endpoint, got %q", h.Transport.CountTokensEndpoint)
+	}
+	if _, ok := h.Models["gpt-5.5"]; ok {
+		t.Fatal("inherit_models = false must drop the base's rows")
+	}
+	if _, ok := h.Models["gpt-5.6"]; !ok || h.Models["gpt-5.6"].WireID != "gpt-5.6-sol" {
+		t.Fatalf("codex rows: %v", h.Models["gpt-5.6"])
+	}
+	for _, l := range codex.layers[:2] {
+		if l.rows != nil {
+			t.Fatal("base layers must carry no rows after inherit_models = false")
+		}
+	}
+	if codex.providerID != "openai-codex" || codex.head.APIKeyEnv == nil || len(codex.head.APIKeyEnv) != 0 {
+		t.Fatalf("providerID=%q apiKeyEnv=%#v", codex.providerID, codex.head.APIKeyEnv)
+	}
+	openai := r.curated["openai"]
+	if openai.head.Transport.CountTokensEndpoint != "/responses/input_tokens" || openai.head.Headers["OpenAI-Organization"] != "$OPENAI_ORG_ID" {
+		t.Fatalf("openai head: %+v", openai.head)
+	}
+}
+
+func TestLoad_ExplicitInstances(t *testing.T) {
+	cfg := `
+[providers.groq]
+protocol = "openai-responses"
+[providers.work]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw.example.com/v1"
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.openai]
+base = "openai-codex"
+[providers.mycodex]
+base = "openai-codex"
+`
+	r := fixtureLoad(t, nil, cfg)
+	groq := r.explicit["groq"]
+	if groq.providerID != "groq" || groq.head.Protocol != ProtocolOpenAIResponses || !reflect.DeepEqual(layerTags(groq), []string{"snapshot:groq", "overlay:groq", "config:groq"}) {
+		t.Fatalf("groq: %q %q %v", groq.providerID, groq.head.Protocol, layerTags(groq))
+	}
+	work := r.explicit["work"]
+	if work.providerID != "openai" || work.head.Protocol != ProtocolOpenAIChat || work.head.Transport.Auth != AuthBearer {
+		t.Fatalf("work: %+v", work.head)
+	}
+	if work.head.Transport.CountTokensEndpoint != "" || work.head.Transport.BaseURL != "https://gw.example.com/v1" {
+		t.Fatalf("cross-protocol instance must drop the base's endpoint fields: %+v", work.head.Transport)
+	}
+	if !work.layers[len(work.layers)-1].resetFields {
+		t.Fatal("cross-protocol layer must reset inherited Fields")
+	}
+	if r.explicit["openai"].providerID != "openai-codex" || r.explicit["openai"].head.Transport.Auth != AuthOAuthOpenAICodex {
+		t.Fatal("an explicit base must beat the name match")
+	}
+	if r.explicit["mycodex"].providerID != "openai-codex" {
+		t.Fatalf("mycodex providerID = %q", r.explicit["mycodex"].providerID)
+	}
+	if _, ok := r.explicit["work"].userVars["BASE_URL"]; ok {
+		t.Fatal("no user vars were set")
+	}
+}
+
+func TestLoad_PresetExpansion(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	va := r.curated["google-vertex-anthropic"].head.Transport
+	if va.Preset != PresetVertexAnthropic || va.Auth != AuthGCPADC || va.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || va.Body["anthropic_version"] != "vertex-2023-10-16" || va.HostRule != HostRuleVertexLocation {
+		t.Fatalf("vertex-anthropic transport: %+v", va)
+	}
+	row := r.curated["google-vertex"].head.Models["claude-opus-5"]
+	if row.Transport == nil || row.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || row.Protocol != ProtocolAnthropic {
+		t.Fatalf("vertex claude row must expand the converter's preset: %+v", row)
+	}
+	mantle := r.curated["amazon-bedrock"].head.Models["openai.gpt-oss-120b"]
+	if mantle.Transport == nil || mantle.Transport.Auth != AuthBearer || mantle.Transport.BaseURL != "https://bedrock-mantle.{AWS_REGION}.api.aws/v1" || mantle.Transport.ModelsEndpoint != "/models" {
+		t.Fatalf("mantle row: %+v", mantle.Transport)
+	}
+}
+
+func TestLoad_Errors(t *testing.T) {
+	cases := map[string]string{
+		"unknown base":             "[providers.x]\nbase = \"nope\"\n",
+		"unknown preset":           "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n",
+		"no protocol":              "[providers.x]\nbase_url = \"https://x/v1\"\n",
+		"no base url":              "[providers.x]\nprotocol = \"openai-chat\"\n",
+		"dangling alias":           "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n",
+		"alias of alias":           "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n",
+		"cross-provider unknown":   "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n",
+		"fields key wrong protocol": "[providers.groq.fields]\ninclude = true\n",
+		"row fields wrong protocol": "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n",
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "providers.toml")
+			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data, _ := os.ReadFile("testdata/models.dev.sample.json")
+			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()))
+			if err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+			if strings.Contains(name, "fields") && !strings.Contains(err.Error(), "include") {
+				t.Fatalf("fields error must name the key: %v", err)
+			}
+		})
+	}
+	// Inherited fields from a base on another protocol are ignored, not
+	// errors — even when the instance is named after a registry id in its own
+	// base chain (openai-codex inherits openai's Responses-only fields).
+	fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nprotocol = \"openai-chat\"\nbase_url = \"https://gw/v1\"\n")
+	fixtureLoad(t, nil, "[providers.openai]\nbase = \"openai-codex\"\nprotocol = \"anthropic\"\nbase_url = \"https://gw/v1\"\n")
+}
+
+func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
+		WithOverlay(overlayWith("[providers.a]\nbase = \"b\"\n[providers.b]\nbase = \"a\"\n")))
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("want base cycle error, got %v", err)
+	}
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
+		WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := r.curated["anthropic"].head.Models["gone"]
+	if !row.Hidden {
+		t.Fatal("a curated dangling alias must degrade to a hidden row")
+	}
+	if !strings.Contains(strings.Join(r.Warnings(), "\n"), "dangling alias") {
+		t.Fatalf("warnings = %v", r.Warnings())
+	}
+	// An instance that inherits the curated dangling alias must still load.
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("[providers.myclaude]\nbase = \"anthropic\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()),
+		WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	if err != nil {
+		t.Fatalf("an inherited curated dangling alias must not fail the load: %v", err)
+	}
+	if !r.explicit["myclaude"].head.Models["gone"].Hidden {
+		t.Fatal("the inherited dangling row must be hidden on the instance too")
+	}
+}
+
+func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	for id, want := range map[string]bool{
+		"azure": true, "amazon-bedrock": true, "google-vertex": true, "google-vertex-anthropic": true,
+		"cohere": true, "deepinfra": true, "openai-compatible": true,
+		"ollama": false, "openai": false, "anthropic": false, "groq": false,
+	} {
+		p, ok := r.Provider(id)
+		if !ok {
+			t.Fatalf("%s missing", id)
+		}
+		if p.Hidden != want {
+			t.Errorf("%s Hidden = %v, want %v", id, p.Hidden, want)
+		}
+	}
+	r = fixtureLoad(t, map[string]string{"AZURE_RESOURCE_NAME": "contoso", "AWS_REGION": "us-east-1", "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global", "OPENAI_COMPATIBLE_BASE_URL": "http://localhost:8080/v1"}, "")
+	for _, id := range []string{"azure", "amazon-bedrock", "google-vertex", "google-vertex-anthropic", "openai-compatible"} {
+		if p, _ := r.Provider(id); p.Hidden {
+			t.Errorf("%s must be visible with its variables set", id)
+		}
+	}
+	url, missing, _ := r.resolveBaseURL(r.curated["amazon-bedrock"], r.curated["amazon-bedrock"].head.Transport)
+	if url != "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1" || len(missing) != 0 {
+		t.Fatalf("bedrock url = %q missing = %v", url, missing)
+	}
+	url, _, _ = r.resolveBaseURL(r.curated["google-vertex-anthropic"], r.curated["google-vertex-anthropic"].head.Transport)
+	if url != "https://aiplatform.googleapis.com/v1/projects/p/locations/global" {
+		t.Fatalf("vertex url = %q", url)
+	}
+}
+
+func TestLoad_UserVarsBeatEnvBeatCurated(t *testing.T) {
+	cfg := "[providers.bedrock]\nbase = \"amazon-bedrock\"\n[providers.bedrock.vars]\n\"AWS_REGION\" = \"eu-west-1\"\n[providers.mine]\nbase = \"openai\"\n"
+	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "OPENAI_BASE_URL": "https://proxy.example/v1"}, cfg)
+	url, _, _ := r.resolveBaseURL(r.explicit["bedrock"], r.explicit["bedrock"].head.Transport)
+	if url != "https://bedrock-mantle.eu-west-1.api.aws/anthropic/v1" {
+		t.Fatalf("user vars must win: %q", url)
+	}
+	url, _, _ = r.resolveBaseURL(r.explicit["mine"], r.explicit["mine"].head.Transport)
+	if url != "https://proxy.example/v1" {
+		t.Fatalf("env must beat the curated default: %q", url)
+	}
+	url, _, _ = r.resolveBaseURL(r.curated["anthropic"], r.curated["anthropic"].head.Transport)
+	if url != "https://api.anthropic.com/v1" {
+		t.Fatalf("curated default: %q", url)
+	}
+}
+
+func TestLoad_OllamaHostRule(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OLLAMA_HOST": "::1"}, "")
+	url, _, _ := r.resolveBaseURL(r.curated["ollama"], r.curated["ollama"].head.Transport)
+	if url != "http://[::1]:11434/v1" {
+		t.Fatalf("OLLAMA_HOST: %q", url)
+	}
+	r = fixtureLoad(t, map[string]string{"OLLAMA_HOST": "::1", "OLLAMA_BASE_URL": "http://proxy/ollama/v1"}, "")
+	url, _, _ = r.resolveBaseURL(r.curated["ollama"], r.curated["ollama"].head.Transport)
+	if url != "http://proxy/ollama/v1" {
+		t.Fatalf("OLLAMA_BASE_URL must win: %q", url)
+	}
+	r = fixtureLoad(t, nil, "[providers.ollama]\nbase_url = \"http://gpu:11434/v1\"\n")
+	url, _, _ = r.resolveBaseURL(r.explicit["ollama"], r.explicit["ollama"].head.Transport)
+	if url != "http://gpu:11434/v1" {
+		t.Fatalf("a literal base_url bypasses the host rule: %q", url)
+	}
+	r = fixtureLoad(t, map[string]string{"OLLAMA_HOST": "ftp://bad"}, "")
+	if _, _, warns := r.resolveBaseURL(r.curated["ollama"], r.curated["ollama"].head.Transport); len(warns) == 0 {
+		t.Fatal("an invalid OLLAMA_HOST must warn")
+	}
+}
+
+func TestLoad_RowHidden(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	rows := r.curated["amazon-bedrock"].head.Models
+	if !rows["global.openai.gpt-5.6-sol"].Hidden || rows["openai.gpt-oss-120b"].Hidden || rows["anthropic.claude-opus-5"].Hidden {
+		t.Fatal("bedrock row hiding wrong")
+	}
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	ov := overlayWith("[providers.\"amazon-bedrock\".models.\"global.openai.gpt-5.6-sol\"]\ntransport = \"bedrock-mantle-openai\"\nprotocol = \"openai-responses\"\n")
+	r2, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(ov))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.curated["amazon-bedrock"].head.Models["global.openai.gpt-5.6-sol"].Hidden {
+		t.Fatal("a layer that supplies a transport must un-hide the row")
+	}
+}
+
+func TestLoad_UserLayerTriState(t *testing.T) {
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	dir := t.TempDir()
+	env := map[string]string{"XDG_CONFIG_HOME": dir, "EVENER_PROVIDERS_CONFIG": ""}
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir()))
+	if err != nil || !strings.Contains(r.UserLayerNote(), "EVENER_PROVIDERS_CONFIG is empty") {
+		t.Fatalf("empty variable: err=%v note=%q", err, r.UserLayerNote())
+	}
+	delete(env, "EVENER_PROVIDERS_CONFIG")
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir()))
+	if err != nil || !strings.Contains(r.UserLayerNote(), filepath.Join(dir, "evener", "providers.toml")) {
+		t.Fatalf("default path: err=%v note=%q", err, r.UserLayerNote())
+	}
+	path := filepath.Join(dir, "custom.toml")
+	if err := os.WriteFile(path, []byte("[providers.groq]\nprotocol = \"openai-responses\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env["EVENER_PROVIDERS_CONFIG"] = path
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir()))
+	if err != nil || r.explicit["groq"] == nil {
+		t.Fatalf("explicit path: err=%v", err)
+	}
+	if err := os.WriteFile(path, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(WithSnapshot(data), WithEnv(mapEnv(env)), WithStateRoot(t.TempDir())); !errors.Is(err, ErrOldSchema) {
+		t.Fatalf("old schema must surface as ErrOldSchema: %v", err)
+	}
+}
+
+func TestLoad_WithInstances(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithInstances(map[string]Provider{
+		"tiny": {Base: "openai", Protocol: ProtocolOpenAIChat, Transport: Transport{BaseURL: "http://127.0.0.1:1/v1"}},
+	}))
+	tiny := r.explicit["tiny"]
+	if tiny == nil || tiny.providerID != "openai" || tiny.head.Protocol != ProtocolOpenAIChat || !tiny.injected {
+		t.Fatalf("tiny: %+v", tiny)
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestLoad|TestResolveOllamaHost|TestVertexHost' -v`
+Expected: FAIL to compile ("undefined: Load").
+
+- [ ] **Step 3: Write `hostrules.go`**
+
+```go
+package registry
+
+import (
+	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+// defaultOllamaBaseURL is the URL an empty OLLAMA_HOST resolves to.
+const defaultOllamaBaseURL = "http://localhost:11434/v1"
+
+// resolveOllamaHost is the ollama-host rule (spec §9.1): OLLAMA_BASE_URL
+// wins outright (trailing slash stripped, validated); otherwise the
+// OLLAMA_HOST value (host, host:port, or URL) becomes a full base URL ending
+// in /v1. Ported from envvars.ResolveOllamaBaseURL, which step 3 deletes.
+func resolveOllamaHost(baseURL, host string) (string, error) {
+	if b := strings.TrimSpace(baseURL); b != "" {
+		return validateOllamaURL(strings.TrimRight(b, "/"), false)
+	}
+	return normalizeOllamaHost(host)
+}
+
+func normalizeOllamaHost(h string) (string, error) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return defaultOllamaBaseURL, nil
+	}
+	if h == "ollama.com" {
+		return "https://ollama.com:443/v1", nil
+	}
+	hasScheme := strings.Contains(h, "://")
+	if !hasScheme {
+		if net.ParseIP(h) != nil {
+			h = "[" + h + "]"
+		}
+		h = "http://" + h
+	}
+	result, err := validateOllamaURL(h, true)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(result)
+	if err != nil {
+		return "", err
+	}
+	if hasScheme {
+		if u.Scheme == "https" && u.Hostname() == "ollama.com" && u.Port() == "" {
+			u.Host = net.JoinHostPort(u.Hostname(), "443")
+		}
+		return u.String(), nil
+	}
+	if u.Port() == "" {
+		u.Host = net.JoinHostPort(u.Hostname(), "11434")
+	}
+	return u.String(), nil
+}
+
+func validateOllamaURL(raw string, normalizePath bool) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid Ollama URL %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid Ollama URL %q: scheme must be http or https", raw)
+	}
+	if u.Opaque != "" || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("invalid Ollama URL %q: URL must have an authority without userinfo", raw)
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") {
+		return "", fmt.Errorf("invalid Ollama URL %q: query and fragment are not supported", raw)
+	}
+	host := u.Hostname()
+	if host == "" || strings.TrimSpace(host) != host {
+		return "", fmt.Errorf("invalid Ollama URL %q: host is empty or contains whitespace", raw)
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return "", fmt.Errorf("invalid Ollama URL %q: port is empty", raw)
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid Ollama URL %q: port must be between 1 and 65535", raw)
+		}
+	}
+	if normalizePath {
+		escapedPath := strings.TrimRight(u.EscapedPath(), "/")
+		if !strings.HasSuffix(escapedPath, "/v1") {
+			escapedPath += "/v1"
+		}
+		path, err := url.PathUnescape(escapedPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid Ollama URL %q: invalid escaped path: %w", raw, err)
+		}
+		u.Path = path
+		if u.RawPath != "" || escapedPath != path {
+			u.RawPath = escapedPath
+		} else {
+			u.RawPath = ""
+		}
+	}
+	return u.String(), nil
+}
+
+// vertexHost is the vertex-location rule (spec §9.4): the Vertex API host
+// for a location.
+func vertexHost(location string) string {
+	switch location {
+	case "global":
+		return "https://aiplatform.googleapis.com"
+	case "us", "eu":
+		return "https://aiplatform." + location + ".rep.googleapis.com"
+	}
+	return "https://" + location + "-aiplatform.googleapis.com"
+}
+```
+
+- [ ] **Step 4: Write `load.go`**
+
+```go
+package registry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+)
+
+// CredentialSource is the credentials-store view the registry needs: the
+// file-layer entry stored under an instance name (spec §10). Environment
+// lookups are the registry's own job.
+type CredentialSource interface {
+	Lookup(instance string) (value string, ok bool)
+}
+
+// Fetcher fetches models.dev for the runtime cache (spec §6.4). notModified
+// is true when the server answered 304 for etag.
+type Fetcher func(ctx context.Context, etag string) (body []byte, newEtag string, notModified bool, err error)
+
+// Option configures Load.
+type Option func(*options)
+
+type options struct {
+	configPath  string
+	configSet   bool
+	noUserLayer bool
+	stateRoot   string
+	env         func(string) (string, bool)
+	creds       CredentialSource
+	fetcher     Fetcher
+	offline     *bool
+	instances   map[string]Provider
+	now         func() time.Time
+	snapshot    []byte
+	overlay     []byte
+	noCache     bool
+}
+
+// WithConfigPath reads providers.toml from path instead of
+// EVENER_PROVIDERS_CONFIG / the default config root.
+func WithConfigPath(path string) Option {
+	return func(o *options) { o.configPath, o.configSet = path, true }
+}
+
+// WithNoUserLayer loads no providers.toml at all (spec §10's "present and
+// empty" state, forced).
+func WithNoUserLayer() Option { return func(o *options) { o.noUserLayer = true } }
+
+// WithStateRoot sets the state root that holds catalog/ (spec §6.4).
+func WithStateRoot(dir string) Option { return func(o *options) { o.stateRoot = dir } }
+
+// WithEnv replaces os.LookupEnv for every environment read.
+func WithEnv(lookup func(string) (string, bool)) Option { return func(o *options) { o.env = lookup } }
+
+// WithCredentials supplies the credentials store's file layer.
+func WithCredentials(c CredentialSource) Option { return func(o *options) { o.creds = c } }
+
+// WithFetcher injects the models.dev fetcher and, on its own, opts a test
+// back into the refresh path (spec §6.4).
+func WithFetcher(f Fetcher) Option { return func(o *options) { o.fetcher = f } }
+
+// WithOffline sets whether Load may start the background refresh.
+func WithOffline(offline bool) Option { return func(o *options) { o.offline = &offline } }
+
+// WithInstances injects named instances before layering (spec §5.2); they
+// behave like [providers.X] entries and shadow file entries of the same name.
+func WithInstances(instances map[string]Provider) Option {
+	return func(o *options) { o.instances = instances }
+}
+
+// WithNow replaces time.Now for cache-age decisions.
+func WithNow(now func() time.Time) Option { return func(o *options) { o.now = now } }
+
+// WithSnapshot replaces the embedded models.dev JSON (tests).
+func WithSnapshot(raw []byte) Option { return func(o *options) { o.snapshot = raw } }
+
+// WithoutCache ignores the runtime catalog cache so the load reflects the
+// snapshot alone: the refresh validation checks the candidate body, and the
+// snapshot report reads what ships in the binary.
+func WithoutCache() Option { return func(o *options) { o.noCache = true } }
+
+// WithOverlay replaces the embedded curated overlay (tests).
+func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = data } }
+
+// Registry is the loaded, layered provider registry (spec §5). It is
+// immutable after Load except for the live listings Resolve consults.
+type Registry struct {
+	presets      map[string]Transport
+	defaultOrder []string
+	topGlobs     map[string]map[string]Model // layer tag → glob rows
+	curated      map[string]*record          // registry ids (layers 1–3)
+	explicit     map[string]*record          // user-layer and injected instances
+	userDefault  string
+	userNote     string
+	env          func(string) (string, bool)
+	creds        CredentialSource
+	stateRoot    string
+	catalogTag   string
+	catalogMeta  Meta
+	warnings     []string
+	instances    map[string]*instance // filled by Task 10
+	live         map[string]liveListing // filled by Task 8
+}
+
+// record is one merged provider: its head (scalar fields folded across the
+// base chain and the layers) plus the per-layer capability contributions
+// that Resolve replays in order (spec §4.1, §4.2).
+type record struct {
+	name       string
+	providerID string
+	curated    bool
+	injected   bool
+	head       Provider
+	userVars   map[string]string
+	layers     []capLayer
+	notes      []string
+}
+
+// capLayer is one layer's contribution to a record. own is true for the
+// layers the record itself contributed (false for layers copied from its
+// base chain), which is what "own layers" means in spec §10.
+type capLayer struct {
+	tag         string
+	owner       string
+	own         bool
+	provider    Caps
+	rows        map[string]Model
+	resetFields bool
+}
+
+func defaultOptions() *options {
+	return &options{env: os.LookupEnv, now: time.Now}
+}
+
+// defaultConfigRoot mirrors cmdutil.DefaultConfigRoot, which the llm module
+// cannot import: $XDG_CONFIG_HOME/evener, else ~/.config/evener.
+func defaultConfigRoot(env func(string) (string, bool)) string {
+	if base, ok := env("XDG_CONFIG_HOME"); ok && base != "" {
+		return filepath.Join(base, "evener")
+	}
+	home, _ := env("HOME")
+	if home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".config", "evener")
+}
+
+// defaultStateRoot mirrors cmdutil.DefaultStateRoot: $XDG_STATE_HOME/evener,
+// else ~/.local/state/evener.
+func defaultStateRoot(env func(string) (string, bool)) string {
+	if base, ok := env("XDG_STATE_HOME"); ok && base != "" {
+		return filepath.Join(base, "evener")
+	}
+	home, _ := env("HOME")
+	if home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".local", "state", "evener")
+}
+
+// Load assembles the registry from the embedded snapshot, the curated
+// overlay, and the user layer (spec §5). The runtime cache and refresh are
+// wired in by Task 11.
+func Load(opts ...Option) (*Registry, error) {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	if o.stateRoot == "" {
+		o.stateRoot = defaultStateRoot(o.env)
+	}
+	r := &Registry{
+		presets: map[string]Transport{}, topGlobs: map[string]map[string]Model{},
+		curated: map[string]*record{}, explicit: map[string]*record{},
+		env: o.env, creds: o.creds, stateRoot: o.stateRoot,
+	}
+	raw, meta := o.snapshot, Meta{}
+	if raw == nil {
+		var err error
+		raw, meta, err = EmbeddedSnapshot()
+		if err != nil {
+			return nil, err
+		}
+	}
+	upstream, err := FromModelsDev(raw)
+	if err != nil {
+		return nil, err
+	}
+	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
+	upstreamByID := make(map[string]Provider, len(upstream))
+	for _, p := range upstream {
+		upstreamByID[p.ID] = p
+	}
+	overlayData := o.overlay
+	if overlayData == nil {
+		overlayData = EmbeddedOverlay()
+	}
+	ov, err := ParseOverlay(overlayData)
+	if err != nil {
+		return nil, err
+	}
+	r.presets, r.defaultOrder, r.topGlobs[LayerOverlay] = ov.Transports, ov.DefaultOrder, ov.TopGlobs
+
+	user, note, err := loadUserLayer(o)
+	if err != nil {
+		return nil, err
+	}
+	r.userNote = note
+	if len(o.instances) > 0 {
+		if user == nil {
+			user = &Layer{Tag: LayerConfig, Providers: map[string]Provider{}}
+		}
+		for name, p := range o.instances {
+			p.ID = name
+			user.Providers[name] = p
+		}
+	}
+	if user != nil {
+		r.userDefault = user.Default
+		r.topGlobs[LayerConfig] = user.TopGlobs
+	}
+
+	ids := make([]string, 0, len(upstreamByID)+len(ov.Providers))
+	for id := range upstreamByID {
+		ids = append(ids, id)
+	}
+	for id := range ov.Providers {
+		if _, ok := upstreamByID[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if _, err := r.curatedRecord(id, upstreamByID, ov, map[string]bool{}); err != nil {
+			return nil, err
+		}
+	}
+	if user != nil {
+		names := make([]string, 0, len(user.Providers))
+		for name := range user.Providers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			rec, err := r.instanceRecord(user.Providers[name])
+			if err != nil {
+				return nil, err
+			}
+			if o.instances != nil {
+				_, rec.injected = o.instances[name]
+			}
+			r.explicit[name] = rec
+		}
+	}
+	for _, rec := range r.allRecords() {
+		if err := r.validateRecord(rec); err != nil {
+			return nil, err
+		}
+	}
+	for _, rec := range r.allRecords() {
+		r.computeHidden(rec)
+	}
+	return r, nil
+}
+
+func loadUserLayer(o *options) (*Layer, string, error) {
+	path := ""
+	switch {
+	case o.noUserLayer:
+		return nil, "user layer: none (disabled)", nil
+	case o.configSet:
+		path = o.configPath
+	default:
+		v, ok := o.env("EVENER_PROVIDERS_CONFIG")
+		switch {
+		case ok && v == "":
+			return nil, "user layer: none (EVENER_PROVIDERS_CONFIG is empty)", nil
+		case ok:
+			path = v
+		default:
+			path = filepath.Join(defaultConfigRoot(o.env), "providers.toml")
+		}
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Sprintf("user layer: none (%s does not exist)", path), nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", path, err)
+	}
+	l, err := ParseConfig(data)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", path, err)
+	}
+	return l, "user layer: " + path, nil
+}
+
+func (r *Registry) allRecords() []*record {
+	out := make([]*record, 0, len(r.curated)+len(r.explicit))
+	for _, id := range sortedKeys(r.curated) {
+		out = append(out, r.curated[id])
+	}
+	for _, name := range sortedKeys(r.explicit) {
+		out = append(out, r.explicit[name])
+	}
+	return out
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// curatedRecord builds (memoized) the merged record of a registry id:
+// its base chain first, then its upstream entry, then its overlay entry.
+func (r *Registry) curatedRecord(id string, upstream map[string]Provider, ov *Layer, visiting map[string]bool) (*record, error) {
+	if rec, ok := r.curated[id]; ok {
+		return rec, nil
+	}
+	if visiting[id] {
+		return nil, fmt.Errorf("providers.%s: base cycle", id)
+	}
+	visiting[id] = true
+	up, hasUp := upstream[id]
+	ovp, hasOv := ov.Providers[id]
+	if !hasUp && !hasOv {
+		return nil, fmt.Errorf("unknown provider %q", id)
+	}
+	rec := &record{name: id, providerID: id, curated: true, head: Provider{ID: id, Models: map[string]Model{}}}
+	if hasOv && ovp.Base != "" {
+		base, err := r.curatedRecord(ovp.Base, upstream, ov, visiting)
+		if err != nil {
+			return nil, fmt.Errorf("providers.%s: base: %w", id, err)
+		}
+		rec.inherit(base)
+	}
+	if hasUp {
+		if err := rec.fold(up, r.catalogTag, r.presets); err != nil {
+			return nil, err
+		}
+	}
+	if hasOv {
+		if err := rec.fold(ovp, LayerOverlay, r.presets); err != nil {
+			return nil, err
+		}
+	}
+	r.curated[id] = rec
+	return rec, nil
+}
+
+// instanceRecord builds a user-layer instance: an explicit base wins over a
+// name match; base names resolve against the curated registry only (spec §4.2).
+func (r *Registry) instanceRecord(p Provider) (*record, error) {
+	rec := &record{name: p.ID, head: Provider{ID: p.ID, Models: map[string]Model{}}}
+	baseID := p.Base
+	if baseID == "" {
+		if _, ok := r.curated[p.ID]; ok {
+			baseID = p.ID
+		}
+	}
+	if baseID != "" {
+		base, ok := r.curated[baseID]
+		if !ok {
+			return nil, fmt.Errorf("providers.%s: base %q is not a registry id", p.ID, baseID)
+		}
+		rec.inherit(base)
+		rec.providerID = baseID
+	}
+	if err := rec.fold(p, LayerConfig, r.presets); err != nil {
+		return nil, err
+	}
+	if rec.head.Protocol == "" {
+		return nil, fmt.Errorf("providers.%s: no protocol: set protocol = … or base = <registry id>", p.ID)
+	}
+	if rec.head.Transport.BaseURL == "" {
+		return nil, fmt.Errorf("providers.%s: no base URL: set base_url = … or base = <registry id>", p.ID)
+	}
+	return rec, nil
+}
+
+// inherit copies the base record's merged form (spec §4.2). Implicit and
+// Hidden are never inherited; ID stays the record's own.
+func (rec *record) inherit(base *record) {
+	h := base.head
+	h.ID = rec.name
+	h.Implicit = nil
+	h.Hidden = false
+	h.Models = make(map[string]Model, len(base.head.Models))
+	for id, m := range base.head.Models {
+		h.Models[id] = cloneModel(m)
+	}
+	h.Transport = cloneTransport(base.head.Transport)
+	h.Headers = mergeStringMap(nil, base.head.Headers)
+	h.CredentialHeaders = mergeStringMap(nil, base.head.CredentialHeaders)
+	h.APIKeyEnv = append([]string(nil), base.head.APIKeyEnv...)
+	rec.head = h
+	rec.layers = append([]capLayer(nil), base.layers...)
+	for i := range rec.layers {
+		rec.layers[i].own = false
+	}
+	rec.userVars = mergeStringMap(nil, base.userVars)
+	rec.notes = append([]string(nil), base.notes...)
+}
+
+func cloneTransport(t Transport) Transport {
+	out := t
+	out.Vars = mergeStringMap(nil, t.Vars)
+	out.VarsEnv = mergeStringMap(nil, t.VarsEnv)
+	if t.Body != nil {
+		out.Body = make(map[string]any, len(t.Body))
+		for k, v := range t.Body {
+			out.Body[k] = v
+		}
+	}
+	return out
+}
+
+func cloneModel(m Model) Model {
+	out := m
+	out.Headers = mergeStringMap(nil, m.Headers)
+	if m.Transport != nil {
+		t := cloneTransport(*m.Transport)
+		out.Transport = &t
+	}
+	return out
+}
+
+// clearProtocolTransport drops the protocol-specific transport fields a
+// cross-protocol record does not inherit (spec §4.2).
+func clearProtocolTransport(t *Transport) {
+	t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint, t.Body = "", "", "", "", nil
+}
+
+// expandPreset starts from the named preset and overlays t's own fields.
+func expandPreset(t Transport, presets map[string]Transport, where string) (Transport, error) {
+	if t.Preset == "" {
+		return t, nil
+	}
+	base, ok := presets[t.Preset]
+	if !ok {
+		return Transport{}, fmt.Errorf("%s: unknown transport preset %q", where, t.Preset)
+	}
+	out := cloneTransport(base)
+	own := t
+	own.Preset = ""
+	mergeTransport(&out, own)
+	out.Preset = t.Preset
+	return out, nil
+}
+
+func setIfNonEmpty(dst *string, src string) {
+	if src != "" {
+		*dst = src
+	}
+}
+
+// fold overlays one layer's record onto rec (spec §4.1, §4.2): scalars set
+// if non-empty, maps key-wise, transports field-wise after preset expansion,
+// the cross-protocol rule, and inherit_models = false.
+func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
+	h := &rec.head
+	where := "providers." + src.ID
+	layer := capLayer{tag: tag, owner: src.ID, own: true, provider: src.Caps, rows: map[string]Model{}}
+	if src.Protocol != "" && h.Protocol != "" && src.Protocol != h.Protocol {
+		clearProtocolTransport(&h.Transport)
+		layer.resetFields = true
+	}
+	if src.InheritModels != nil && !*src.InheritModels {
+		h.Models = map[string]Model{}
+		for i := range rec.layers {
+			rec.layers[i].rows = nil
+		}
+	}
+	t, err := expandPreset(src.Transport, presets, where)
+	if err != nil {
+		return err
+	}
+	if tag == LayerConfig {
+		rec.userVars = mergeStringMap(rec.userVars, t.Vars)
+		t.Vars = nil
+	}
+	mergeTransport(&h.Transport, t)
+	setIfNonEmpty(&h.Name, src.Name)
+	setIfNonEmpty(&h.Doc, src.Doc)
+	setIfNonEmpty(&h.Protocol, src.Protocol)
+	setIfNonEmpty(&h.Surface, src.Surface)
+	setIfNonEmpty(&h.Family, src.Family)
+	setIfNonEmpty(&h.APIKey, src.APIKey)
+	setIfNonEmpty(&h.DefaultModel, src.DefaultModel)
+	setIfNonEmpty(&h.CheapModel, src.CheapModel)
+	if src.Implicit != nil {
+		h.Implicit = src.Implicit
+	}
+	if src.InheritModels != nil {
+		h.InheritModels = src.InheritModels
+	}
+	if src.APIKeyEnv != nil {
+		h.APIKeyEnv = append([]string{}, src.APIKeyEnv...)
+	}
+	h.Headers = mergeStringMap(h.Headers, src.Headers)
+	h.CredentialHeaders = mergeStringMap(h.CredentialHeaders, src.CredentialHeaders)
+	rec.notes = append(rec.notes, src.notes...)
+	for id, m := range src.Models {
+		merged, err := foldModel(h.Models[id], m, presets, fmt.Sprintf("%s.models.%q", where, id))
+		if err != nil {
+			return err
+		}
+		h.Models[id] = merged
+		layer.rows[id] = m
+	}
+	rec.layers = append(rec.layers, layer)
+	return nil
+}
+
+// foldModel overlays one layer's row onto the merged row head. Hidden comes
+// from the layer that introduces the row and clears when any layer supplies
+// a protocol or transport (spec §6.1).
+func foldModel(prev, src Model, presets map[string]Transport, where string) (Model, error) {
+	if prev.ID == "" {
+		prev = Model{ID: src.ID, Hidden: src.Hidden}
+	}
+	setIfNonEmpty(&prev.WireID, src.WireID)
+	setIfNonEmpty(&prev.AliasOf, src.AliasOf)
+	setIfNonEmpty(&prev.Family, src.Family)
+	setIfNonEmpty(&prev.Protocol, src.Protocol)
+	setIfNonEmpty(&prev.Surface, src.Surface)
+	setIfNonEmpty(&prev.Status, src.Status)
+	prev.Headers = mergeStringMap(prev.Headers, src.Headers)
+	if src.Transport != nil {
+		t, err := expandPreset(*src.Transport, presets, where)
+		if err != nil {
+			return Model{}, err
+		}
+		if prev.Transport == nil {
+			prev.Transport = &Transport{}
+		} else {
+			c := cloneTransport(*prev.Transport)
+			prev.Transport = &c
+		}
+		mergeTransport(prev.Transport, t)
+	}
+	if src.Protocol != "" || src.Transport != nil {
+		prev.Hidden = false
+	}
+	return prev, nil
+}
+
+// validateRecord applies the load-time rules that need the merged record:
+// fields keys against the resolved protocol (own layers only; keys inherited
+// from a base on another protocol are ignored) and alias targets (spec §4.2,
+// §10).
+func (r *Registry) validateRecord(rec *record) error {
+	where := "providers." + rec.name
+	for _, layer := range rec.layers {
+		if !layer.own {
+			continue
+		}
+		// A record with no protocol (the upstream entry vanished, or an npm
+		// the converter hides) is Hidden and has no prunable set to check
+		// provider-level fields against; rows that declare their own
+		// protocol are still checked.
+		if rec.head.Protocol != "" {
+			if err := ValidateFields(layer.provider.Fields, rec.head.Protocol, layer.tag+" "+where); err != nil {
+				return err
+			}
+		}
+		for id, row := range layer.rows {
+			if isGlob(id) {
+				continue
+			}
+			proto := rec.head.Models[id].Protocol
+			if proto == "" {
+				proto = rec.head.Protocol
+			}
+			if proto == "" {
+				continue
+			}
+			if err := ValidateFields(row.Caps.Fields, proto, fmt.Sprintf("%s %s.models.%q", layer.tag, where, id)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range sortedKeys(rec.head.Models) {
+		row := rec.head.Models[id]
+		if row.AliasOf == "" || isGlob(id) {
+			continue
+		}
+		target, err := r.aliasTarget(rec, row.AliasOf)
+		switch {
+		case err == nil && target.AliasOf != "":
+			return fmt.Errorf("%s.models.%q: alias_of %q is itself an alias (aliases are one hop)", where, id, row.AliasOf)
+		case err != nil && rec.aliasFromConfig(id):
+			return fmt.Errorf("%s.models.%q: %w", where, id, err)
+		case err != nil:
+			// A dangling alias contributed by a curated layer (upstream dropped
+			// the target) degrades to a hidden row, on the curated record and
+			// on every instance that inherits it (spec §4.2).
+			row.Hidden = true
+			rec.head.Models[id] = row
+			r.warnings = append(r.warnings, fmt.Sprintf("%s.models.%q: dangling alias %q (row hidden)", where, id, row.AliasOf))
+		}
+	}
+	return nil
+}
+
+// aliasFromConfig reports whether the user layer set this row's alias_of.
+func (rec *record) aliasFromConfig(id string) bool {
+	for _, l := range rec.layers {
+		if l.tag != LayerConfig {
+			continue
+		}
+		if m, ok := l.rows[id]; ok && m.AliasOf != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// aliasTarget resolves an alias_of reference: an exact row of the same
+// record first, else "provider-id/id" against the curated registry.
+func (r *Registry) aliasTarget(rec *record, ref string) (Model, error) {
+	if m, ok := rec.head.Models[ref]; ok && !isGlob(ref) {
+		return m, nil
+	}
+	if i := strings.Index(ref, "/"); i > 0 {
+		if prov, ok := r.curated[ref[:i]]; ok {
+			if m, ok := prov.head.Models[ref[i+1:]]; ok {
+				return m, nil
+			}
+			return Model{}, fmt.Errorf("alias_of %q: no row %q on %s", ref, ref[i+1:], ref[:i])
+		}
+	}
+	return Model{}, fmt.Errorf("alias_of %q does not name an existing row", ref)
+}
+
+var placeholderRe = regexp.MustCompile(`\{([A-Z][A-Z0-9_]*)\}`)
+
+// expandTemplate substitutes {VAR} placeholders (uppercase names only;
+// {model} is left for request time) and returns the names it could not resolve.
+func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []string) {
+	var missing []string
+	out := placeholderRe.ReplaceAllStringFunc(tpl, func(m string) string {
+		name := m[1 : len(m)-1]
+		if v, ok := lookup(name); ok {
+			return v
+		}
+		missing = append(missing, name)
+		return m
+	})
+	return out, missing
+}
+
+// varLookup is the spec §9.1 order: the user layer's vars, then the
+// environment through vars_env, then the curated and upstream defaults.
+func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		if v, ok := rec.userVars[name]; ok {
+			if expanded, missing := expandEnv(v, r.env); len(missing) == 0 && expanded != "" {
+				return expanded, true
+			}
+		}
+		if envName, ok := rec.head.Transport.VarsEnv[name]; ok {
+			if v, ok := r.env(envName); ok && v != "" {
+				return v, true
+			}
+		}
+		if v, ok := rec.head.Transport.Vars[name]; ok && v != "" {
+			return v, true
+		}
+		return "", false
+	}
+}
+
+// resolveBaseURL substitutes t.BaseURL for rec, applying the transport's
+// host rule (spec §9.1). missing lists unresolved variables; warnings carry
+// host-rule failures.
+func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
+	lookup := r.varLookup(rec)
+	var warnings []string
+	switch t.HostRule {
+	case HostRuleOllamaHost:
+		inner := lookup
+		lookup = func(name string) (string, bool) {
+			if name != "OLLAMA_HOST" {
+				return inner(name)
+			}
+			baseURL, _ := r.env("OLLAMA_BASE_URL")
+			host, _ := inner("OLLAMA_HOST")
+			u, err := resolveOllamaHost(baseURL, host)
+			if err != nil {
+				warnings = append(warnings, err.Error())
+				return "", false
+			}
+			return u, true
+		}
+	case HostRuleVertexLocation:
+		inner := lookup
+		lookup = func(name string) (string, bool) {
+			if name != "GOOGLE_VERTEX_HOST" {
+				return inner(name)
+			}
+			if v, ok := inner("GOOGLE_VERTEX_HOST"); ok {
+				return v, true
+			}
+			loc, ok := inner("GOOGLE_VERTEX_LOCATION")
+			if !ok {
+				return "", false
+			}
+			return vertexHost(loc), true
+		}
+	}
+	url, missing := expandTemplate(t.BaseURL, lookup)
+	return url, missing, warnings
+}
+
+// computeHidden applies spec §4's rule after the merge, against the
+// environment: no registered protocol or no resolvable base URL hides a
+// provider; rows keep the flag foldModel computed.
+func (r *Registry) computeHidden(rec *record) {
+	hidden := rec.head.Protocol == "" || !protocols[rec.head.Protocol]
+	if !hidden {
+		url, missing, _ := r.resolveBaseURL(rec, rec.head.Transport)
+		hidden = url == "" || len(missing) > 0
+	}
+	rec.head.Hidden = hidden
+}
+
+// ProviderIDs lists the curated registry ids, sorted.
+func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
+
+// Provider returns the merged curated record for a registry id, with Hidden
+// computed against the environment.
+func (r *Registry) Provider(id string) (Provider, bool) {
+	rec, ok := r.curated[id]
+	if !ok {
+		return Provider{}, false
+	}
+	return rec.head, true
+}
+
+// UserLayerNote describes where the user layer came from ("user layer:
+// none (EVENER_PROVIDERS_CONFIG is empty)", spec §14.1).
+func (r *Registry) UserLayerNote() string { return r.userNote }
+
+// Warnings returns load-level warnings (curated dangling aliases, …).
+func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings...) }
+
+// Catalog reports which upstream layer is in use and its fetch metadata.
+func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }
+```
+
+The `instance` and `liveListing` types referenced by the `Registry` struct do not exist yet; declare placeholders in `load.go` for now so the package compiles, and let Tasks 8 and 10 replace them:
+
+```go
+// instance and liveListing are filled in by the instances (Task 10) and
+// resolve (Task 8) files.
+type instance struct{ rec *record }
+type liveListing struct{ rows map[string]Model }
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestLoad|TestResolveOllamaHost|TestVertexHost' -v`
+Expected: PASS. Then run the whole package: `go test ./llm/registry/` (everything from Tasks 1–6 must still pass).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/load.go llm/registry/hostrules.go llm/registry/load_test.go llm/registry/hostrules_test.go
+git commit -m "feat(registry): Load with base chains, presets, cross-protocol rule, validation, and Hidden"
+```
+
+### Task 8: Instances, credentials, and the default instance
+
+**Files:**
+- Create: `llm/registry/instances.go`
+- Modify: `llm/registry/load.go` (record fields `ownBaseURL`/`ownAPIKeyEnv` set in `fold`; `Load` calls `computeInstances` and `validateDefault`; drop the `instance` placeholder type)
+- Test: `llm/registry/instances_test.go`
+
+**Interfaces:**
+- Consumes: Task 7 (`Registry`, `record`, `resolveBaseURL`, `varLookup`, `expandEnv`, `CredentialSource`).
+- Produces: `type Instance struct { Name, ProviderID, Base, Protocol, Surface, Auth string; Implicit, Hidden, Default bool; CredentialSource string; Warnings []string }`, `(*Registry).Instances() []Instance` (ranked, spec §5.1), `(*Registry).DefaultInstance() (name string, warnings []string, err error)`, `(*Registry).credential(rec *record) (Credential, []string)` (spec §10 order), `(*Registry).recordFor(name string) (*record, bool)` (explicit instance, else implicit instance, else curated implicit id; used by `Resolve`), `(*Registry).rankedInstances() []*instance`, `envVarName(id string) string` (`kimi-for-coding` → `KIMI_FOR_CODING`), `oauthRecordPath(stateRoot, instance string) string`, `adcAvailable(env) bool`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/instances_test.go`:
+
+```go
+package registry
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+type fakeCreds map[string]string
+
+func (f fakeCreds) Lookup(name string) (string, bool) { v, ok := f[name]; return v, ok }
+
+func instanceNames(r *Registry) []string {
+	var out []string
+	for _, i := range r.Instances() {
+		out = append(out, i.Name)
+	}
+	return out
+}
+
+func TestInstances_ImplicitFromEnv(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"XAI_API_KEY": "k"}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"xai", "ollama"}) {
+		t.Fatalf("instances = %v", got)
+	}
+	name, _, err := r.DefaultInstance()
+	if err != nil || name != "xai" {
+		t.Fatalf("default = %q, %v", name, err)
+	}
+	r = fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"openai", "ollama"}) {
+		t.Fatalf("OPENAI_API_KEY alone must not conjure openai-codex: %v", got)
+	}
+	r = fixtureLoad(t, map[string]string{"GITHUB_TOKEN": "t", "HF_TOKEN": "t", "TOGETHERAI_API_KEY": "t"}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"ollama"}) {
+		t.Fatalf("non-implicit providers and undocumented aliases must not become instances: %v", got)
+	}
+}
+
+func TestInstances_PseudoProviderNeedsBaseURL(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OPENAI_COMPATIBLE_BASE_URL": "http://localhost:8080/v1"}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"ollama", "openai-compatible"}) {
+		t.Fatalf("instances = %v", got)
+	}
+	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "ollama") || !strings.Contains(err.Error(), "openai-compatible") {
+		t.Fatalf("no default model anywhere must name the instances: %v", err)
+	}
+	r = fixtureLoad(t, nil, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"ollama"}) {
+		t.Fatalf("unset base URL must yield no pseudo-provider instance: %v", got)
+	}
+}
+
+func TestInstances_GCPADCAndOAuth(t *testing.T) {
+	home := t.TempDir()
+	adc := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	if err := os.MkdirAll(filepath.Dir(adc), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adc, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := fixtureLoad(t, map[string]string{"HOME": home}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"ollama"}) {
+		t.Fatalf("the ADC file alone makes no Vertex instance: %v", got)
+	}
+	r = fixtureLoad(t, map[string]string{"HOME": home, "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"}, "")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"google-vertex-anthropic", "google-vertex", "ollama"}) {
+		t.Fatalf("instances = %v", got)
+	}
+	if name, _, _ := r.DefaultInstance(); name != "google-vertex-anthropic" {
+		t.Fatalf("default = %q", name)
+	}
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, "", WithStateRoot(state))
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"openai-codex", "openai", "ollama"}) {
+		t.Fatalf("instances = %v", got)
+	}
+	if name, _, _ := r.DefaultInstance(); name != "openai-codex" {
+		t.Fatalf("stored OAuth must beat the API key: %q", name)
+	}
+}
+
+func TestInstances_RankingAndShadowing(t *testing.T) {
+	env := map[string]string{"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}
+	r := fixtureLoad(t, env, "[providers.groq]\nprotocol = \"openai-responses\"\n")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"anthropic", "groq", "ollama"}) {
+		t.Fatalf("instances = %v", got)
+	}
+	insts := r.Instances()
+	if insts[1].Implicit || insts[1].Protocol != ProtocolOpenAIResponses || !insts[0].Implicit || !insts[0].Default {
+		t.Fatalf("shadowing entry must be explicit and keep its rank: %+v", insts)
+	}
+	r = fixtureLoad(t, env, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw/v1\"\napi_key_env = [\"GW_KEY\"]\n")
+	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"anthropic", "groq", "ollama", "work"}) {
+		t.Fatalf("custom entries rank after default_order: %v", got)
+	}
+	r = fixtureLoad(t, env, "[providers.ollama]\ndefault_model = \"llama3:8b\"\n")
+	if name, _, _ := r.DefaultInstance(); name != "anthropic" {
+		t.Fatalf("anthropic must outrank an explicit ollama with a default model: %q", name)
+	}
+	r = fixtureLoad(t, nil, "[providers.ollama]\ndefault_model = \"llama3:8b\"\n")
+	if name, _, _ := r.DefaultInstance(); name != "ollama" {
+		t.Fatalf("ollama wins when it is the sole candidate: %q", name)
+	}
+	r = fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "g", "OPENAI_API_KEY": "o"}, "")
+	if name, _, _ := r.DefaultInstance(); name != "openai" {
+		t.Fatalf("§14.1: GEMINI + OPENAI now defaults to openai, got %q", name)
+	}
+}
+
+func TestInstances_DefaultKey(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "a"}, "default = \"groq\"\n")
+	name, warns, err := r.DefaultInstance()
+	if err != nil || name != "anthropic" || len(warns) == 0 || !strings.Contains(warns[0], "groq") {
+		t.Fatalf("credential-less implicit default must warn and fall through: %q %v %v", name, warns, err)
+	}
+	r = fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "a"}, "default = \"azure\"\n")
+	if name, warns, _ := r.DefaultInstance(); name != "anthropic" || len(warns) == 0 {
+		t.Fatalf("hidden implicit default must warn and fall through: %q %v", name, warns)
+	}
+	r = fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}, "default = \"groq\"\n")
+	if name, _, err := r.DefaultInstance(); err != nil || name != "groq" {
+		t.Fatalf("explicit default: %q %v", name, err)
+	}
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	_ = os.WriteFile(path, []byte("default = \"huggingface\"\n"), 0o600)
+	if _, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir())); err == nil || !strings.Contains(err.Error(), "huggingface") {
+		t.Fatalf("a non-implicit registry id as default is a load error: %v", err)
+	}
+	r = fixtureLoad(t, nil, "")
+	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "ollama") {
+		t.Fatalf("only ollama, no default model: %v", err)
+	}
+	// An invalid OLLAMA_HOST hides ollama, the one provider that is an
+	// instance with no credential, leaving no instance at all.
+	r = fixtureLoad(t, map[string]string{"OLLAMA_HOST": "ftp://bad"}, "")
+	if _, _, err := r.DefaultInstance(); err == nil || !strings.Contains(err.Error(), "no default instance") {
+		t.Fatalf("no instance at all: %v", err)
+	}
+}
+
+func TestCredential_Order(t *testing.T) {
+	cfg := `
+[providers.lit]
+base = "openai"
+api_key = "literal-key"
+[providers.envref]
+base = "openai"
+api_key = "$MY_KEY"
+[providers.hdr]
+base = "openai"
+base_url = "https://gw/v1"
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.stored]
+base = "openai"
+base_url = "https://gw/v1"
+[providers.work]
+base = "openai"
+base_url = "https://gw/v1"
+[providers.work2]
+base = "openai"
+base_url = "https://gw/v1"
+api_key_env = ["GW_KEY"]
+[providers.gw]
+base = "openai"
+base_url = "https://gw/v1"
+[providers.anthropic]
+base_url = "https://gw/v1"
+[providers.same]
+base = "openai"
+base_url = "https://api.openai.com/v1"
+[providers.mine]
+base = "openai"
+[providers.bedrock]
+base = "amazon-bedrock"
+[providers.bedrock.vars]
+"AWS_REGION" = "us-east-1"
+`
+	env := map[string]string{"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk", "GW_KEY": "gw", "GW_API_KEY": "gw2", "ANTHROPIC_API_KEY": "sk-ant", "AWS_BEARER_TOKEN_BEDROCK": "bt", "OPENAI_BASE_URL": "https://proxy/v1"}
+	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
+	want := map[string]Credential{
+		"lit":       {Value: "literal-key", Source: "api_key"},
+		"envref":    {Value: "", Source: "none"},
+		"hdr":       {Value: "Bearer pk", Source: "credential_headers"},
+		"stored":    {Value: "from-store", Source: "store"},
+		"work":      {Value: "", Source: "none"},
+		"work2":     {Value: "gw", Source: "env:GW_KEY"},
+		"gw":        {Value: "gw2", Source: "env:GW_API_KEY"},
+		"anthropic": {Value: "", Source: "none"},
+		"same":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"mine":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"bedrock":   {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
+	}
+	for name, w := range want {
+		got, warns := r.credential(r.explicit[name])
+		if got != w {
+			t.Errorf("%s: credential = %+v, want %+v", name, got, w)
+		}
+		if w.Source == "none" && len(warns) == 0 {
+			t.Errorf("%s: missing 'no credential' warning", name)
+		}
+		if w.Source != "none" && len(warns) != 0 {
+			t.Errorf("%s: unexpected warnings %v", name, warns)
+		}
+	}
+	if _, warns := r.credential(r.explicit["envref"]); !strings.Contains(strings.Join(warns, " "), "MY_KEY unset") {
+		t.Fatalf("unset $VAR must be named: %v", warns)
+	}
+	if got, warns := r.credential(r.curated["ollama"]); got.Source != "none" || len(warns) != 0 {
+		t.Fatalf("optional-bearer without a key must not warn: %+v %v", got, warns)
+	}
+	r = fixtureLoad(t, map[string]string{"OLLAMA_API_KEY": "ok"}, "")
+	if got, _ := r.credential(r.curated["ollama"]); got.Source != "env:OLLAMA_API_KEY" {
+		t.Fatalf("optional-bearer with a key: %+v", got)
+	}
+}
+
+func TestEnvVarName(t *testing.T) {
+	if envVarName("kimi-for-coding") != "KIMI_FOR_CODING" || envVarName("zai-coding-plan") != "ZAI_CODING_PLAN" || envVarName("work") != "WORK" {
+		t.Fatal("envVarName wrong")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestInstances|TestCredential|TestEnvVarName' -v`
+Expected: FAIL to compile ("undefined: oauthRecordPath", `r.Instances`).
+
+- [ ] **Step 3: Modify `load.go`**
+
+Add to `record`:
+
+```go
+	ownBaseURL   string   // a literal base_url set by the config layer (endpoint stop, spec §10)
+	ownAPIKeyEnv []string // api_key_env set by the config layer (survives the endpoint stop)
+```
+
+In `fold`, inside `if tag == LayerConfig { … }` after the `t.Vars = nil` line, add:
+
+```go
+		rec.ownBaseURL = t.BaseURL
+		if src.APIKeyEnv != nil {
+			rec.ownAPIKeyEnv = append([]string{}, src.APIKeyEnv...)
+		}
+```
+
+Replace the placeholder `type instance struct{ rec *record }` with nothing (Task 8 defines it).
+
+Split `resolveBaseURL` so the endpoint-stop comparison can resolve a base URL with curated defaults only (spec §10: "compared after substituting the curated defaults, so copying the default URL verbatim is not 'different'"): rename the existing body to `resolveBaseURLWith(rec *record, t Transport, lookup func(string) (string, bool)) (string, []string, []string)` taking the variable lookup as a parameter (the host-rule wrappers wrap that `lookup` exactly as they wrapped `r.varLookup(rec)` before), and re-add:
+
+```go
+// resolveBaseURL substitutes t.BaseURL for rec with the spec §9.1 variable
+// order (user vars, environment, curated defaults).
+func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, []string) {
+	return r.resolveBaseURLWith(rec, t, r.varLookup(rec))
+}
+
+// defaultVarLookup consults only the curated and upstream defaults — no user
+// vars, no environment (spec §10's "after substituting the curated defaults").
+func (r *Registry) defaultVarLookup(rec *record) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		v, ok := rec.head.Transport.Vars[name]
+		return v, ok && v != ""
+	}
+}
+```
+
+At the end of `Load`, after the `computeHidden` loop and before `return r, nil`, add:
+
+```go
+	r.computeInstances()
+	if err := r.validateDefault(); err != nil {
+		return nil, err
+	}
+```
+
+- [ ] **Step 4: Write `instances.go`**
+
+```go
+package registry
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// instance is a usable named provider (spec §5.1).
+type instance struct {
+	name     string
+	rec      *record
+	implicit bool
+	rank     int
+}
+
+// Instance is the listing view of an instance (spec §5.1, §11.2).
+type Instance struct {
+	Name             string   `json:"name"`
+	ProviderID       string   `json:"provider_id,omitempty"`
+	Base             string   `json:"base,omitempty"`
+	Protocol         string   `json:"protocol"`
+	Surface          string   `json:"surface,omitempty"`
+	Auth             string   `json:"auth"`
+	Implicit         bool     `json:"implicit"`
+	Hidden           bool     `json:"hidden,omitempty"`
+	Default          bool     `json:"default,omitempty"`
+	CredentialSource string   `json:"credential_source"`
+	Warnings         []string `json:"warnings,omitempty"`
+}
+
+// envVarName is the spec §6.2 rule: the id uppercased with `-` → `_`.
+func envVarName(id string) string {
+	return strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
+}
+
+// oauthRecordPath is where the Codex transport keeps an instance's OAuth
+// record (spec §9.5): auth/<instance>.json under the state root.
+func oauthRecordPath(stateRoot, instance string) string {
+	return filepath.Join(stateRoot, "auth", instance+".json")
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+// adcAvailable reports whether application-default credentials can be found
+// without the network: the GOOGLE_APPLICATION_CREDENTIALS file or the
+// well-known gcloud file. The metadata server is never probed (spec §5.1).
+func adcAvailable(env func(string) (string, bool)) bool {
+	if p, ok := env("GOOGLE_APPLICATION_CREDENTIALS"); ok && p != "" {
+		return fileExists(p)
+	}
+	home, _ := env("HOME")
+	if home == "" {
+		return false
+	}
+	return fileExists(filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"))
+}
+
+// effectiveAPIKeyEnv applies the endpoint stop (spec §10): an explicit
+// instance whose literal base_url names a different endpoint from its base
+// does not inherit the base's api_key_env; its own api_key_env always
+// counts. "Different" is judged against the base's URL both as resolved in
+// this environment and with the curated defaults alone, so copying the
+// default URL verbatim is not different even when an env override is set.
+func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
+	if rec.curated || rec.providerID == "" || rec.ownBaseURL == "" {
+		return rec.head.APIKeyEnv
+	}
+	base := r.curated[rec.providerID]
+	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
+	live, _, _ := r.resolveBaseURL(base, base.head.Transport)
+	defaults, _, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
+	if own == live || own == defaults {
+		return rec.head.APIKeyEnv
+	}
+	return rec.ownAPIKeyEnv
+}
+
+// credential resolves an instance's credential in spec §10's order and
+// returns the "no credential" warnings (none for the none/optional-bearer
+// schemes). It never performs I/O beyond a file-existence check.
+func (r *Registry) credential(rec *record) (Credential, []string) {
+	h := rec.head
+	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
+	none := func(reason string) (Credential, []string) {
+		if optional {
+			return Credential{Source: "none"}, nil
+		}
+		return Credential{Source: "none"}, []string{reason}
+	}
+	switch h.Transport.Auth {
+	case AuthOAuthOpenAICodex:
+		if fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
+			return Credential{Source: "oauth"}, nil
+		}
+		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
+	case AuthGCPADC:
+		if adcAvailable(r.env) {
+			return Credential{Source: "adc"}, nil
+		}
+		return none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)")
+	}
+	if h.APIKey != "" {
+		v, missing := expandEnv(h.APIKey, r.env)
+		if len(missing) > 0 {
+			return none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+		}
+		return Credential{Value: v, Source: "api_key"}, nil
+	}
+	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
+		v, missing := expandEnv(auth, r.env)
+		if len(missing) > 0 {
+			return none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+		}
+		return Credential{Value: v, Source: "credential_headers"}, nil
+	}
+	if r.creds != nil {
+		if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+			return Credential{Value: v, Source: "store"}, nil
+		}
+	}
+	for _, name := range r.effectiveAPIKeyEnv(rec) {
+		if v, ok := r.env(name); ok && v != "" {
+			return Credential{Value: v, Source: "env:" + name}, nil
+		}
+	}
+	if _, isRegistryID := r.curated[rec.name]; !isRegistryID {
+		name := envVarName(rec.name) + "_API_KEY"
+		if v, ok := r.env(name); ok && v != "" {
+			return Credential{Value: v, Source: "env:" + name}, nil
+		}
+	}
+	return none("no credential")
+}
+
+// computeInstances derives the instance set (spec §5.1): every explicit
+// entry, plus every curated implicit provider that is not shadowed, not
+// hidden, and whose credential resolves without the network.
+func (r *Registry) computeInstances() {
+	rank := map[string]int{}
+	for i, id := range r.defaultOrder {
+		rank[id] = i
+	}
+	custom := len(r.defaultOrder)
+	r.instances = map[string]*instance{}
+	for name, rec := range r.explicit {
+		pos, ok := rank[name]
+		if !ok {
+			pos = custom
+		}
+		r.instances[name] = &instance{name: name, rec: rec, rank: pos}
+	}
+	for id, rec := range r.curated {
+		if rec.head.Implicit == nil || !*rec.head.Implicit || rec.head.Hidden {
+			continue
+		}
+		if _, shadowed := r.explicit[id]; shadowed {
+			continue
+		}
+		if cred, _ := r.credential(rec); cred.Source == "none" && rec.head.Transport.Auth != AuthNone && rec.head.Transport.Auth != AuthOptionalBearer {
+			continue
+		}
+		pos, ok := rank[id]
+		if !ok {
+			pos = custom // pseudo-providers: after every default_order entry
+		}
+		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos}
+	}
+}
+
+// rankedInstances orders instances by spec §5.1: default_order position
+// (a shadowing explicit entry keeps its id's rank), then every other
+// instance by name.
+func (r *Registry) rankedInstances() []*instance {
+	out := make([]*instance, 0, len(r.instances))
+	for _, inst := range r.instances {
+		out = append(out, inst)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].rank != out[j].rank {
+			return out[i].rank < out[j].rank
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+// recordFor finds what a reference's instance half names: an explicit
+// instance, an implicit instance, or any curated implicit provider id
+// (resolvable without a credential, spec §5.2).
+func (r *Registry) recordFor(name string) (*record, bool) {
+	if inst, ok := r.instances[name]; ok {
+		return inst.rec, true
+	}
+	if rec, ok := r.curated[name]; ok && rec.head.Implicit != nil && *rec.head.Implicit {
+		return rec, true
+	}
+	return nil, false
+}
+
+// validateDefault enforces spec §5.1 at load: `default` must name an
+// explicit instance or a curated implicit id.
+func (r *Registry) validateDefault() error {
+	if r.userDefault == "" {
+		return nil
+	}
+	if _, ok := r.explicit[r.userDefault]; ok {
+		return nil
+	}
+	if rec, ok := r.curated[r.userDefault]; ok && rec.head.Implicit != nil && *rec.head.Implicit {
+		return nil
+	}
+	return fmt.Errorf("default = %q names neither an explicit instance nor an implicit provider (add a [providers.%s] entry)", r.userDefault, r.userDefault)
+}
+
+// DefaultInstance picks the default instance (spec §5.1): `default` when it
+// is an instance here; else the first ranked instance with a default model.
+// A `default` that is a credential-less or hidden implicit id warns and
+// falls through.
+func (r *Registry) DefaultInstance() (string, []string, error) {
+	var warnings []string
+	if r.userDefault != "" {
+		if _, ok := r.instances[r.userDefault]; ok {
+			return r.userDefault, nil, nil
+		}
+		rec := r.curated[r.userDefault]
+		switch {
+		case rec == nil:
+			return "", nil, fmt.Errorf("default = %q is not an instance", r.userDefault)
+		case rec.head.Hidden:
+			warnings = append(warnings, fmt.Sprintf("default = %q: provider is hidden (base URL variable unset); falling through", r.userDefault))
+		default:
+			warnings = append(warnings, fmt.Sprintf("default = %q: no credential in this environment; falling through", r.userDefault))
+		}
+	}
+	ranked := r.rankedInstances()
+	if len(ranked) == 0 {
+		return "", warnings, errors.New("no default instance: set `default` in providers.toml or export a provider key")
+	}
+	var without []string
+	for _, inst := range ranked {
+		if inst.rec.head.DefaultModel != "" {
+			return inst.name, warnings, nil
+		}
+		without = append(without, inst.name)
+	}
+	first := ranked[0].name
+	return "", warnings, fmt.Errorf("%s has no default model; pass `%s/<model>` or set `default` (instances without one: %s)", first, first, strings.Join(without, ", "))
+}
+
+// Instances lists every instance in default ranking with its credential
+// source and warnings (spec §11.2).
+func (r *Registry) Instances() []Instance {
+	def, _, _ := r.DefaultInstance()
+	var out []Instance
+	for _, inst := range r.rankedInstances() {
+		cred, warns := r.credential(inst.rec)
+		h := inst.rec.head
+		base := ""
+		if !inst.rec.curated && inst.rec.providerID != inst.name {
+			base = inst.rec.providerID
+		}
+		out = append(out, Instance{
+			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
+			Auth: h.Transport.Auth, Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
+			CredentialSource: cred.Source, Warnings: warns,
+		})
+	}
+	return out
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -v -run 'TestInstances|TestCredential|TestEnvVarName' && go test ./llm/registry/`
+Expected: PASS. The ordering assertions depend on `default_order` from the overlay (Task 5); `ollama` sorts last among implicit ids because it is last in that list.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/instances.go llm/registry/instances_test.go llm/registry/load.go
+git commit -m "feat(registry): implicit and explicit instances, credential resolution order, default ranking"
+```
+
+### Task 9: Derived caps (§7.4)
+
+**Files:**
+- Create: `llm/registry/derive.go`
+- Test: `llm/registry/derive_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 `Caps`/`Model`; the provenance tag convention Task 10 uses: `<layer>/<level>` (`snapshot/row`, `overlay/glob:gpt-5*`, `config/provider`, `live`, `alias`, `derived`).
+- Produces: `type deriveInput struct { Protocol string; Synthesized bool; ProviderSurface, ProviderFamily string }`, `derive(c *Caps, m *Model, in deriveInput, prov map[string]string)` — mutates caps and `m.Surface`, records `derived` provenance.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/derive_test.go`:
+
+```go
+package registry
+
+import (
+	"reflect"
+	"testing"
+)
+
+func anth(fam string, controls ...string) (Caps, Model, deriveInput) {
+	return Caps{ReasoningControls: controls}, Model{Family: fam}, deriveInput{Protocol: ProtocolAnthropic, ProviderSurface: SurfaceAnthropic, ProviderFamily: "claude"}
+}
+
+func TestDerive_ThinkingShapes(t *testing.T) {
+	type want struct {
+		shape, display string
+		alwaysOn       bool
+	}
+	cases := []struct {
+		name     string
+		fam      string
+		controls []string
+		synth    bool
+		provFam  string
+		want     want
+	}{
+		{"sonnet-4-5 budget only", "claude-sonnet", []string{"budget_tokens"}, false, "claude", want{"budget", "", false}},
+		{"haiku-4-5", "claude-haiku", []string{"budget_tokens"}, false, "claude", want{"budget", "", false}},
+		{"opus-4-6 effort+budget", "claude-opus", []string{"effort", "budget_tokens"}, false, "claude", want{"adaptive", "", true}},
+		{"opus-4-7 effort only", "claude-opus", []string{"effort"}, false, "claude", want{"adaptive", "summarized", true}},
+		{"sonnet-5 toggle+effort", "claude-sonnet", []string{"toggle", "effort"}, false, "claude", want{"adaptive", "summarized", true}},
+		{"minimax toggle only", "minimax", []string{"toggle"}, false, "", want{"budget", "", false}},
+		{"kimi k3 effort+toggle, not claude", "kimi-k3", []string{"toggle", "effort"}, false, "", want{"", "", false}},
+		{"uncataloged claude on anthropic", "", nil, true, "claude", want{"adaptive", "summarized", true}},
+		{"uncataloged on anthropic-compatible", "", nil, true, "", want{"budget", "", false}},
+		{"cataloged, controls empty, not claude", "glm", nil, false, "", want{"budget", "", false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			caps, m, in := anth(c.fam, c.controls...)
+			in.Synthesized, in.ProviderFamily = c.synth, c.provFam
+			prov := map[string]string{}
+			derive(&caps, &m, in, prov)
+			got := want{}
+			if caps.ThinkingShape != nil {
+				got.shape = *caps.ThinkingShape
+			}
+			if caps.ThinkingDisplay != nil {
+				got.display = *caps.ThinkingDisplay
+			}
+			got.alwaysOn = caps.ThinkingAlwaysOn != nil && *caps.ThinkingAlwaysOn
+			if got != c.want {
+				t.Fatalf("got %+v want %+v (controls now %v)", got, c.want, caps.ReasoningControls)
+			}
+			if got.shape != "" && prov["ThinkingShape"] != "derived" {
+				t.Fatalf("provenance = %v", prov)
+			}
+		})
+	}
+}
+
+func TestDerive_PinnedShapeAndOtherProtocolsUntouched(t *testing.T) {
+	shape := "budget+effort"
+	caps, m, in := anth("claude-opus", "effort", "budget_tokens")
+	caps.ThinkingShape = &shape
+	derive(&caps, &m, in, map[string]string{})
+	if *caps.ThinkingShape != "budget+effort" || caps.ThinkingAlwaysOn != nil || caps.ThinkingDisplay != nil {
+		t.Fatalf("a pinned shape must be kept and never gain always-on: %+v", caps)
+	}
+	caps = Caps{ReasoningControls: []string{"effort"}}
+	m = Model{Family: "claude-opus"}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat, ProviderSurface: SurfaceGeneric}, map[string]string{})
+	if caps.ThinkingShape != nil || caps.ThinkingAlwaysOn != nil {
+		t.Fatal("thinking shape is derived on the anthropic protocol only")
+	}
+}
+
+func TestDerive_ReasoningFalseClearsEverything(t *testing.T) {
+	caps, m, in := anth("claude-opus", "effort")
+	caps.Reasoning = new(false)
+	caps.EffortValues = []string{"low", "high"}
+	derive(&caps, &m, in, map[string]string{})
+	if caps.ReasoningControls != nil || caps.EffortValues != nil || caps.ThinkingShape != nil || caps.ThinkingAlwaysOn != nil {
+		t.Fatalf("reasoning = false must clear controls, ladder, and shape: %+v", caps)
+	}
+}
+
+func TestDerive_EffortControlRules(t *testing.T) {
+	caps := Caps{}
+	m := Model{}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, map[string]string{})
+	if !reflect.DeepEqual(caps.ReasoningControls, []string{"effort"}) {
+		t.Fatalf("empty controls must pass effort through: %v", caps.ReasoningControls)
+	}
+	caps = Caps{ReasoningControls: []string{"toggle"}, EffortValues: []string{"high", "max"}}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, map[string]string{})
+	if !reflect.DeepEqual(caps.ReasoningControls, []string{"toggle", "effort"}) {
+		t.Fatalf("a non-empty ladder implies effort: %v", caps.ReasoningControls)
+	}
+	caps = Caps{ReasoningControls: []string{"budget_tokens"}}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, map[string]string{})
+	if !reflect.DeepEqual(caps.ReasoningControls, []string{"budget_tokens"}) {
+		t.Fatalf("explicit controls without effort stay as listed: %v", caps.ReasoningControls)
+	}
+}
+
+func TestDerive_MaxOutputTokensJunkCap(t *testing.T) {
+	caps := Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)}
+	m := Model{}
+	prov := map[string]string{"MaxOutputTokens": "snapshot/row"}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
+	if caps.MaxOutputTokens != nil || prov["MaxOutputTokens"] != "derived" {
+		t.Fatalf("catalog cap ≥ window must be cleared: %v %v", caps.MaxOutputTokens, prov)
+	}
+	caps = Caps{ContextWindow: new(1000), MaxOutputTokens: new(2000)}
+	prov = map[string]string{"MaxOutputTokens": "config/row"}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
+	if caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 2000 {
+		t.Fatal("a user-layer cap is kept as written")
+	}
+	caps = Caps{ContextWindow: new(1000), MaxOutputTokens: new(2000)}
+	prov = map[string]string{"MaxOutputTokens": "live"}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, prov)
+	if caps.MaxOutputTokens != nil {
+		t.Fatal("a live cap ≥ window is cleared")
+	}
+}
+
+func TestDerive_SurfaceFallback(t *testing.T) {
+	caps := Caps{}
+	m := Model{}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat, ProviderSurface: SurfaceAnthropic}, map[string]string{})
+	if m.Surface != SurfaceAnthropic {
+		t.Fatalf("provider surface must apply to a family-less row, got %q", m.Surface)
+	}
+	m = Model{}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, map[string]string{})
+	if m.Surface != SurfaceGeneric {
+		t.Fatalf("generic fallback, got %q", m.Surface)
+	}
+	m = Model{Surface: SurfaceGoogle}
+	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat, ProviderSurface: SurfaceAnthropic}, map[string]string{})
+	if m.Surface != SurfaceGoogle {
+		t.Fatal("a row surface wins")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestDerive' -v`
+Expected: FAIL to compile ("undefined: derive").
+
+- [ ] **Step 3: Write `derive.go`**
+
+```go
+package registry
+
+import (
+	"slices"
+	"strings"
+)
+
+// deriveInput carries what the §7.4 derivations need beyond the caps.
+type deriveInput struct {
+	Protocol        string
+	Synthesized     bool
+	ProviderSurface string
+	ProviderFamily  string
+}
+
+const provDerived = "derived"
+
+// derive applies the spec §7.4 derivations, in order, to a merged row:
+// effort pass-through, the junk-cap guard, the surface fallback, and the
+// anthropic thinking shape / always-on / display. Each is applied only
+// where the field is still unset (the junk cap excepted) and recorded as
+// "derived" in prov.
+func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
+	reasoningOff := c.Reasoning != nil && !*c.Reasoning
+	if reasoningOff {
+		if c.ReasoningControls != nil || c.EffortValues != nil {
+			c.ReasoningControls, c.EffortValues = nil, nil
+			prov["ReasoningControls"], prov["EffortValues"] = provDerived, provDerived
+		}
+	}
+
+	// 1. Effort control pass-through.
+	controlsWereEmpty := len(c.ReasoningControls) == 0
+	if !reasoningOff {
+		if controlsWereEmpty {
+			c.ReasoningControls = []string{"effort"}
+			prov["ReasoningControls"] = provDerived
+		} else if len(c.EffortValues) > 0 && !slices.Contains(c.ReasoningControls, "effort") {
+			c.ReasoningControls = append(append([]string(nil), c.ReasoningControls...), "effort")
+			prov["ReasoningControls"] = provDerived
+		}
+	}
+
+	// 2. Junk output cap from a catalog or live layer.
+	if c.MaxOutputTokens != nil && c.ContextWindow != nil && *c.MaxOutputTokens >= *c.ContextWindow {
+		src := prov["MaxOutputTokens"]
+		if strings.HasPrefix(src, LayerSnapshot) || strings.HasPrefix(src, LayerCache) || strings.HasPrefix(src, LayerLive) {
+			c.MaxOutputTokens = nil
+			prov["MaxOutputTokens"] = provDerived
+		}
+	}
+
+	// 3. Surface fallback.
+	if m.Surface == "" {
+		m.Surface = in.ProviderSurface
+		if m.Surface == "" {
+			m.Surface = SurfaceGeneric
+		}
+		prov["Surface"] = provDerived
+	}
+
+	if in.Protocol != ProtocolAnthropic || reasoningOff {
+		return
+	}
+	// 4. Thinking shape, keyed on family (never on Surface).
+	claude := strings.HasPrefix(m.Family, "claude") || (in.Synthesized && in.ProviderFamily == "claude")
+	has := func(ctrl string) bool { return slices.Contains(c.ReasoningControls, ctrl) }
+	if c.ThinkingShape == nil {
+		var shape string
+		switch {
+		case has("effort") && claude:
+			shape = "adaptive"
+		case has("budget_tokens"):
+			shape = "budget"
+		case len(c.ReasoningControls) == 1 && has("toggle"):
+			shape = "budget"
+		case controlsWereEmpty && claude:
+			shape = "adaptive"
+		case controlsWereEmpty:
+			shape = "budget"
+		}
+		if shape != "" {
+			c.ThinkingShape = &shape
+			prov["ThinkingShape"] = provDerived
+		}
+	}
+	if c.ThinkingShape == nil || *c.ThinkingShape != "adaptive" {
+		return
+	}
+	// 5. Adaptive rows send the thinking object on every request.
+	if c.ThinkingAlwaysOn == nil {
+		c.ThinkingAlwaysOn = new(true)
+		prov["ThinkingAlwaysOn"] = provDerived
+	}
+	// 6. Effort-only adaptive rows get the summarized display.
+	if c.ThinkingDisplay == nil && !has("budget_tokens") {
+		display := "summarized"
+		c.ThinkingDisplay = &display
+		prov["ThinkingDisplay"] = provDerived
+	}
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestDerive' -v && go test ./llm/registry/`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/registry/derive.go llm/registry/derive_test.go
+git commit -m "feat(registry): derived caps: effort pass-through, junk-cap guard, surface fallback, thinking shape"
+```
+
+### Task 10: `Resolve`, `FindModel`, and live listings
+
+**Files:**
+- Create: `llm/registry/resolve.go`
+- Modify: `llm/registry/load.go` (add `liveMu sync.RWMutex` to `Registry`; drop the `liveListing` placeholder), `llm/registry/types.go` (add `CredentialHeaders map[string]string `json:"-"`` to `Resolved`, after `Credential`: the authenticator needs the expanded map; `Credential.Value` keeps the Authorization value for the continuation scope), `llm/registry/schema.go` + `schema_test.go` (a glob row may not set `protocol`: `Resolve` takes a protocol only from exact rows, so `parseLayer` rejects `protocol` on any glob key — top-level or provider — with an error naming the row; add the case `"protocol on glob row": "[providers.x.models.\"g*\"]\nprotocol = \"anthropic\"\n",` to `TestParseConfig_Rejects`)
+- Test: `llm/registry/resolve_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 7–9 (`record`, `capLayer`, `recordFor`, `DefaultInstance`, `credential`, `resolveBaseURL`, `varLookup`, `expandTemplate`, `expandEnv`, `mergeCaps`, `matchGlob`, `sortGlobs`, `seedFields`, `derive`, `stripRegionPrefix`, `cloneModel`, `cloneTransport`, `clearProtocolTransport`).
+- Produces: `ParseRef(ref string) Ref`, `(*Registry).Resolve(ref string) (Resolved, error)`, `(*Registry).FindModel(id string) []Ref`, `(*Registry).ApplyLive(instance string, rows []Model)`, `(*Registry).LiveModels(instance string) []Model`, `(*Registry).ModelIDs(instance string) ([]string, error)` (exact catalog rows plus live ids, sorted; for `evener models list`), `IsChatModelID(id string) bool`, `protocolDefaults map[string]Transport`, `nonChatPatterns`. Provenance tags: `<layer>/provider`, `<layer>/glob:<pattern>`, `<layer>/row`, `live`, `alias`, `derived`; `Provenance["model"]` = `row:<id>` | `region:<id>` | `dated:<id>` | `live` | `synthesized`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/resolve_test.go`:
+
+```go
+package registry
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func mustResolve(t *testing.T, r *Registry, ref string) Resolved {
+	t.Helper()
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", ref, err)
+	}
+	return res
+}
+
+func hasWarning(res Resolved, substr string) bool {
+	return strings.Contains(strings.Join(res.Warnings, "\n"), substr)
+}
+
+func TestParseRef(t *testing.T) {
+	if ParseRef("groq/openai/gpt-oss-120b") != (Ref{Instance: "groq", Model: "openai/gpt-oss-120b"}) || ParseRef("gpt-5.5") != (Ref{Model: "gpt-5.5"}) {
+		t.Fatal("ParseRef splits on the first slash only")
+	}
+}
+
+func TestResolve_LookupSteps(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"}, "")
+	res := mustResolve(t, r, "anthropic/claude-opus-4-5")
+	if res.Provenance["model"] != "row:claude-opus-4-5" || res.WireID != "claude-opus-4-5" || res.ModelID != "claude-opus-4-5" {
+		t.Fatalf("exact: %+v", res.Provenance["model"])
+	}
+	res = mustResolve(t, r, "amazon-bedrock/global.anthropic.claude-haiku-4-5")
+	if res.Provenance["model"] != "region:anthropic.claude-haiku-4-5" || res.WireID != "global.anthropic.claude-haiku-4-5" || *res.Caps.ContextWindow != 200000 {
+		t.Fatalf("region: %+v ctx=%v", res.Provenance["model"], res.Caps.ContextWindow)
+	}
+	res = mustResolve(t, r, "anthropic/claude-opus-4-5-20260101")
+	if res.Provenance["model"] != "dated:claude-opus-4-5" || res.WireID != "claude-opus-4-5-20260101" {
+		t.Fatalf("dated: %+v", res.Provenance["model"])
+	}
+	res = mustResolve(t, r, "google-vertex/claude-opus-5@20260101")
+	if res.Provenance["model"] != "dated:claude-opus-5" || res.WireID != "claude-opus-5@20260101" || res.Protocol != ProtocolAnthropic {
+		t.Fatalf("vertex dated: %+v", res)
+	}
+	res = mustResolve(t, r, "anthropic/claude-opus-4-6[1m]")
+	if res.Provenance["model"] != "synthesized" || !hasWarning(res, "model not in catalog") || res.WireID != "claude-opus-4-6[1m]" || res.Caps.ContextWindow != nil {
+		t.Fatalf("synthesized: %+v", res)
+	}
+	if _, err := r.Resolve("openai-codex/gpt-5.9"); err == nil || !strings.Contains(err.Error(), "gpt-5.6-sol") {
+		t.Fatalf("codex unknown id must error naming the allowlist: %v", err)
+	}
+	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: new(8192)}}, {ID: "qwen3:8b"}})
+	res = mustResolve(t, r, "ollama/llama3:8b")
+	if res.Provenance["model"] != "live" || *res.Caps.ContextWindow != 8192 || res.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("live: %+v", res.Provenance)
+	}
+	res = mustResolve(t, r, "ollama/qwen3:8b")
+	if *res.Caps.ContextWindow != 131072 || res.Provenance["ContextWindow"] != "overlay/provider" {
+		t.Fatalf("live row without a window keeps the provider default: %v %v", res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+	r = fixtureLoad(t, nil, "[providers.ollama.models.\"qwen3*\"]\ncontext_window = 40960\n")
+	r.ApplyLive("ollama", []Model{{ID: "qwen3:8b", Caps: Caps{ContextWindow: new(8192)}}})
+	res = mustResolve(t, r, "ollama/qwen3:8b")
+	if *res.Caps.ContextWindow != 40960 || res.Provenance["ContextWindow"] != "config/glob:qwen3*" {
+		t.Fatalf("a user glob beats live and reaches a live-only id: %v %v", res.Caps.ContextWindow, res.Provenance)
+	}
+}
+
+const orderOverlay = `
+[models."*"]
+max_output_tokens = 10
+[providers.x]
+implicit = true
+protocol = "openai-chat"
+base_url = "https://x/v1"
+context_window = 1000
+[providers.x.models."a*"]
+context_window = 2000
+[providers.x.models."ab*"]
+context_window = 3000
+[providers.x.models."abc"]
+context_window = 4000
+[providers.x.models."m"]
+context_window = 1000
+`
+
+func orderLoad(t *testing.T, config string) *Registry {
+	t.Helper()
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	opts := []Option{WithSnapshot(data), WithEnv(mapEnv(nil)), WithStateRoot(t.TempDir()), WithOverlay(overlayWith(orderOverlay))}
+	if config == "" {
+		opts = append(opts, WithNoUserLayer())
+	} else {
+		path := filepath.Join(t.TempDir(), "providers.toml")
+		_ = os.WriteFile(path, []byte(config), 0o600)
+		opts = append(opts, WithConfigPath(path))
+	}
+	r, err := Load(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestResolve_LayerOrder(t *testing.T) {
+	r := orderLoad(t, "[providers.x]\nmax_output_tokens = 20\n")
+	for ref, want := range map[string]struct {
+		ctx  int
+		prov string
+	}{
+		"x/abc": {4000, "overlay/row"},
+		"x/abd": {3000, "overlay/glob:ab*"},
+		"x/az":  {2000, "overlay/glob:a*"},
+		"x/zzz": {1000, "overlay/provider"},
+	} {
+		res := mustResolve(t, r, ref)
+		if *res.Caps.ContextWindow != want.ctx || res.Provenance["ContextWindow"] != want.prov {
+			t.Errorf("%s: ctx=%d prov=%q", ref, *res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+		}
+		if *res.Caps.MaxOutputTokens != 20 || res.Provenance["MaxOutputTokens"] != "config/provider" {
+			t.Errorf("%s: a later layer wins regardless of level: %v %q", ref, *res.Caps.MaxOutputTokens, res.Provenance["MaxOutputTokens"])
+		}
+	}
+	res := mustResolve(t, orderLoad(t, ""), "x/zzz")
+	if *res.Caps.MaxOutputTokens != 10 || res.Provenance["MaxOutputTokens"] != "overlay/glob:*" {
+		t.Fatalf("top-level glob reaches a synthesized id: %v %q", *res.Caps.MaxOutputTokens, res.Provenance["MaxOutputTokens"])
+	}
+}
+
+func TestResolve_LiveSitsBetweenOverlayAndConfig(t *testing.T) {
+	r := orderLoad(t, "")
+	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: new(5000)}}})
+	if res := mustResolve(t, r, "x/m"); *res.Caps.ContextWindow != 5000 || res.Provenance["ContextWindow"] != "live" {
+		t.Fatalf("live must beat the curated fact: %+v", res.Provenance)
+	}
+	r = orderLoad(t, "[providers.x.models.\"m\"]\ncontext_window = 7000\n")
+	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: new(5000)}}})
+	if res := mustResolve(t, r, "x/m"); *res.Caps.ContextWindow != 7000 || res.Provenance["ContextWindow"] != "config/row" {
+		t.Fatalf("live must never beat the user layer: %+v", res.Provenance)
+	}
+}
+
+func TestResolve_AliasSeeding(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"AZURE_RESOURCE_NAME": "contoso"}, "[providers.azure.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
+	res := mustResolve(t, r, "anthropic/claude-sonnet-4-5[1m]")
+	if *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
+		t.Fatalf("[1m]: %v %v", res.Caps.ContextWindow, res.Provenance)
+	}
+	if res.WireID != "claude-sonnet-4-5" || res.Surface != SurfaceAnthropic || res.Model.Family != "claude-sonnet" || res.Headers["anthropic-beta"] != "context-1m-2025-08-07" || *res.Caps.ThinkingShape != "budget" || res.Caps.ThinkingAlwaysOn != nil || res.Caps.Sampling != nil {
+		t.Fatalf("[1m] row: %+v", res)
+	}
+	res = mustResolve(t, r, "openai-codex/gpt-5.6")
+	if res.WireID != "gpt-5.6-sol" || res.Caps.Sampling == nil || *res.Caps.Sampling || *res.Caps.ContextWindow != 272000 || res.Caps.Cost == nil || len(res.Caps.EffortValues) != 5 {
+		t.Fatalf("codex gpt-5.6: %+v", res.Caps)
+	}
+	if res.Caps.Fields["temperature"] || res.Caps.Fields["max_output_tokens"] || !res.Caps.Fields["prompt_cache_key"] || !res.Caps.Fields["store"] || !res.Caps.Fields["metadata"] {
+		t.Fatalf("codex fields: %v", res.Caps.Fields)
+	}
+	if res.Transport.Auth != AuthOAuthOpenAICodex || res.Transport.BaseURL != "https://chatgpt.com/backend-api/codex" || res.Transport.Body["reasoning.context"] != "all_turns" || !*res.Caps.ResponsesLite {
+		t.Fatalf("codex transport: %+v", res.Transport)
+	}
+	if _, ok := res.Headers["OpenAI-Organization"]; ok {
+		t.Fatal("codex must not carry the platform org header")
+	}
+	res = mustResolve(t, r, "anthropic/claude-mythos-5")
+	if res.Transport.BaseURL != "https://api.anthropic.com/v1" || res.Protocol != ProtocolAnthropic || *res.Caps.ContextWindow != 1000000 || res.Caps.Cost.Input != 10 || *res.Caps.Sampling || res.Model.Family != "claude-mythos" || *res.Caps.ThinkingShape != "adaptive" || *res.Caps.ThinkingDisplay != "summarized" {
+		t.Fatalf("mythos-5: %+v", res)
+	}
+	res = mustResolve(t, r, "azure/claude-prod")
+	if res.Protocol != ProtocolAnthropic || res.Transport.BaseURL != "https://contoso.services.ai.azure.com/anthropic/v1" || res.Transport.Endpoint != "/messages" || res.Transport.AuthHeader != "api-key" || res.WireID != "claude-prod" || *res.Caps.ThinkingShape != "budget+effort" {
+		t.Fatalf("azure/claude-prod: %+v", res)
+	}
+	if _, ok := res.Caps.Fields["store"]; ok {
+		t.Fatal("a cross-protocol row must not inherit the provider's Fields")
+	}
+	if _, ok := res.Caps.Fields["stop_sequences"]; !ok {
+		t.Fatal("a cross-protocol row starts from its own protocol's baseline")
+	}
+}
+
+func TestResolve_TransportAssembly(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global", "AWS_REGION": "us-east-1"}, "")
+	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
+	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1/projects/p/locations/global" || res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Transport.StreamEndpoint != "/publishers/anthropic/models/{model}:streamRawPredict" || res.Transport.Body["anthropic_version"] != "vertex-2023-10-16" || res.Transport.ModelsEndpoint != EndpointUnsupported {
+		t.Fatalf("vertex anthropic: %+v", res.Transport)
+	}
+	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); res.Transport.Endpoint != "/publishers/google/models/{model}:generateContent" || res.Protocol != ProtocolGoogle {
+		t.Fatalf("vertex gemini: %+v", res.Transport)
+	}
+	if res := mustResolve(t, r, "google-vertex/claude-opus-5"); res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Protocol != ProtocolAnthropic {
+		t.Fatalf("vertex claude under google-vertex: %+v", res.Transport)
+	}
+	if res := mustResolve(t, r, "openai/gpt-5.5"); res.Transport.Endpoint != "/responses" || res.Transport.StreamEndpoint != "/responses" || res.Transport.ModelsEndpoint != "/models" || res.Transport.CountTokensEndpoint != "/responses/input_tokens" || res.Transport.BaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("openai: %+v", res.Transport)
+	}
+	if res := mustResolve(t, r, "groq/llama-3.3-70b-versatile"); res.Transport.Endpoint != "/chat/completions" || res.Transport.CountTokensEndpoint != EndpointUnsupported || res.Transport.BaseURL != "https://api.groq.com/openai/v1" {
+		t.Fatalf("groq: %+v", res.Transport)
+	}
+	res = mustResolve(t, r, "amazon-bedrock/openai.gpt-5.5")
+	if res.Transport.BaseURL != "https://bedrock-mantle.us-east-1.api.aws/openai/v1" || res.Transport.Auth != AuthBearer || res.Transport.Endpoint != "/responses" || res.Caps.StructuredOutput == nil || !*res.Caps.StructuredOutput {
+		t.Fatalf("mantle: %+v %v", res.Transport, res.Caps.StructuredOutput)
+	}
+	res = mustResolve(t, r, "amazon-bedrock/anthropic.claude-sonnet-5")
+	if *res.Caps.StructuredOutput || *res.Caps.WebSearch || *res.Caps.ThinkingDisplay != "summarized" || res.Transport.BaseURL != "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1" || res.Transport.AuthHeader != "x-api-key" {
+		t.Fatalf("bedrock claude: %+v", res)
+	}
+	res = mustResolve(t, r, "amazon-bedrock/anthropic.claude-new-model")
+	if !hasWarning(res, "model not in catalog") || *res.Caps.StructuredOutput || *res.Caps.ThinkingShape != "adaptive" || res.Surface != SurfaceAnthropic {
+		t.Fatalf("bedrock synthesized: %+v", res)
+	}
+	r = fixtureLoad(t, nil, "")
+	res = mustResolve(t, r, "azure/gpt-5.5")
+	if !strings.Contains(res.Transport.BaseURL, "{AZURE_RESOURCE_NAME}") || !hasWarning(res, "unresolved variable AZURE_RESOURCE_NAME") || !hasWarning(res, "no credential") {
+		t.Fatalf("azure without vars: %+v", res)
+	}
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"}, "")
+	if res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5"); !hasWarning(res, "regional") || res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/v1/projects/p/locations/europe-west1" {
+		t.Fatalf("regional vertex: %+v", res)
+	}
+	if res := mustResolve(t, r, "google-vertex-anthropic/claude-sonnet-4-6"); hasWarning(res, "regional") {
+		t.Fatal("Sonnet 4.6 and earlier are fine on regional endpoints")
+	}
+}
+
+func TestResolve_HeadersAndCredential(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_ORG_ID": "org-1"}, "")
+	res := mustResolve(t, r, "openai/gpt-5.5")
+	if res.Headers["OpenAI-Organization"] != "org-1" || res.Credential != (Credential{Value: "sk", Source: "env:OPENAI_API_KEY"}) || hasWarning(res, "no credential") {
+		t.Fatalf("openai: %+v %+v", res.Headers, res.Credential)
+	}
+	if _, ok := res.Headers["OpenAI-Project"]; ok {
+		t.Fatal("an unset $VAR drops the header")
+	}
+	r = fixtureLoad(t, nil, "")
+	res = mustResolve(t, r, "openai/gpt-5.5")
+	if res.Credential.Source != "none" || !hasWarning(res, "no credential") {
+		t.Fatalf("credential-less resolve must succeed with a warning: %+v", res.Credential)
+	}
+	res = mustResolve(t, r, "kimi-for-coding/k3")
+	if res.Headers["User-Agent"] != "claude-cli/2.1.177 (external, cli)" || res.Surface != SurfaceAnthropic || *res.Caps.ThinkingShape != "budget+effort" {
+		t.Fatalf("kimi k3: %+v", res)
+	}
+	res = mustResolve(t, r, "minimax/MiniMax-M3")
+	if *res.Caps.ThinkingShape != "budget" || res.Surface != SurfaceAnthropic || res.ModelID != "MiniMax-M3" {
+		t.Fatalf("minimax: %+v", res)
+	}
+	r = fixtureLoad(t, map[string]string{"PORTKEY_KEY": "pk"}, "[providers.gw]\nbase = \"openai\"\nbase_url = \"https://gw/v1\"\ncredential_headers = { \"Authorization\" = \"Bearer $PORTKEY_KEY\", \"X-Portkey-Key\" = \"$PORTKEY_KEY\" }\n")
+	res = mustResolve(t, r, "gw/gpt-5.5")
+	if res.CredentialHeaders["X-Portkey-Key"] != "pk" || res.Credential.Value != "Bearer pk" || res.Credential.Source != "credential_headers" {
+		t.Fatalf("credential headers: %+v %+v", res.CredentialHeaders, res.Credential)
+	}
+}
+
+func TestResolve_CrossProtocolInstances(t *testing.T) {
+	cfg := `
+[providers.work]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw/v1"
+[providers.orclaude]
+base = "openrouter"
+protocol = "anthropic"
+[providers.orclaude.models."minimax/*"]
+surface = "anthropic"
+`
+	r := fixtureLoad(t, map[string]string{"OPENROUTER_API_KEY": "or"}, cfg)
+	res := mustResolve(t, r, "work/gpt-5.5")
+	if res.Protocol != ProtocolOpenAIChat || res.Transport.Endpoint != "/chat/completions" || res.Transport.CountTokensEndpoint != EndpointUnsupported || res.Transport.Auth != AuthBearer {
+		t.Fatalf("work: %+v", res.Transport)
+	}
+	if _, ok := res.Caps.Fields["include"]; ok {
+		t.Fatal("responses-only keys must not leak onto a chat instance")
+	}
+	if res.Caps.Fields["store"] || !res.Caps.Fields["stream_options"] || *res.Caps.MaxTokensField != "max_completion_tokens" {
+		t.Fatalf("work fields: %v max_tokens_field=%v", res.Caps.Fields, res.Caps.MaxTokensField)
+	}
+	res = mustResolve(t, r, "orclaude/minimax/minimax-m2.7")
+	if res.Transport.Endpoint != "/messages" || res.Transport.BaseURL != "https://openrouter.ai/api/v1" || res.Credential.Source != "env:OPENROUTER_API_KEY" || res.Surface != SurfaceAnthropic || res.WireID != "minimax/minimax-m2.7" {
+		t.Fatalf("orclaude: %+v", res)
+	}
+}
+
+func TestFindModel(t *testing.T) {
+	state := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(state, "auth"), 0o700)
+	_ = os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600)
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, "", WithStateRoot(state))
+	if got := r.FindModel("gpt-5.6"); !reflect.DeepEqual(got, []Ref{{"openai-codex", "gpt-5.6"}, {"openai", "gpt-5.6"}}) {
+		t.Fatalf("FindModel(gpt-5.6) = %v", got)
+	}
+	if got := r.FindModel("claude-opus-5"); !reflect.DeepEqual(got, []Ref{{"anthropic", "claude-opus-5"}}) {
+		t.Fatalf("FindModel(claude-opus-5) = %v", got)
+	}
+	if got := r.FindModel("nope"); len(got) != 0 {
+		t.Fatalf("FindModel(nope) = %v", got)
+	}
+	r.ApplyLive("ollama", []Model{{ID: "llama3:8b"}})
+	if got := r.FindModel("llama3:8b"); !reflect.DeepEqual(got, []Ref{{"ollama", "llama3:8b"}}) {
+		t.Fatalf("FindModel(llama3:8b) = %v", got)
+	}
+}
+
+func TestApplyLive_FactsOnlyAndNonChatDropped(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	shape := "adaptive"
+	r.ApplyLive("openrouter", []Model{
+		{ID: "whisper-large", Caps: Caps{Tools: new(true)}},
+		{ID: "anthropic/claude-opus-4.6", Caps: Caps{Tools: new(true), ContextWindow: new(1000000), ThinkingShape: &shape, ThinkingAlwaysOn: new(false)}},
+		{ID: "minimax/minimax-m3", Caps: Caps{ThinkingAlwaysOn: new(true)}},
+	})
+	live := r.LiveModels("openrouter")
+	if len(live) != 2 {
+		t.Fatalf("non-chat ids must be dropped: %v", live)
+	}
+	res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6")
+	if res.Provenance["ContextWindow"] != "live" || res.Caps.ThinkingShape != nil || res.Caps.ThinkingAlwaysOn != nil {
+		t.Fatalf("live must carry only advertised facts: %+v", res.Provenance)
+	}
+	res = mustResolve(t, r, "openrouter/minimax/minimax-m3")
+	if res.Caps.ThinkingAlwaysOn == nil || !*res.Caps.ThinkingAlwaysOn {
+		t.Fatal("mandatory reasoning reaches ThinkingAlwaysOn")
+	}
+	ids, err := r.ModelIDs("openrouter")
+	if err != nil || !strings.Contains(strings.Join(ids, ","), "minimax/minimax-m3") {
+		t.Fatalf("ModelIDs must include live ids: %v %v", ids, err)
+	}
+}
+
+var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
+
+func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1"}, "[providers.groq]\ncontext_window = 9000\n")
+	for _, ref := range []string{"anthropic/claude-sonnet-4-5[1m]", "openai-codex/gpt-5.6", "amazon-bedrock/anthropic.claude-sonnet-5", "groq/llama-3.3-70b-versatile", "groq/brand-new"} {
+		res := mustResolve(t, r, ref)
+		for k, v := range res.Provenance {
+			if k == "model" {
+				continue
+			}
+			if !provRe.MatchString(v) {
+				t.Errorf("%s: %s = %q is not a real layer", ref, k, v)
+			}
+		}
+		if ref == "groq/brand-new" && (res.Provenance["ContextWindow"] != "config/provider" || *res.Caps.ContextWindow != 9000) {
+			t.Errorf("instance-wide context_window must rewrite every row: %v", res.Provenance)
+		}
+	}
+}
+
+func TestResolve_DefaultInstanceAndErrors(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, "")
+	if res := mustResolve(t, r, "gpt-5.5"); res.Instance != "openai" {
+		t.Fatalf("bare id → default instance: %q", res.Instance)
+	}
+	if _, err := r.Resolve("nope/x"); err == nil || !strings.Contains(err.Error(), "unknown instance") || !strings.Contains(err.Error(), "openai") {
+		t.Fatalf("unknown instance must list the available ones: %v", err)
+	}
+	if _, err := r.Resolve("huggingface/x"); err == nil {
+		t.Fatal("a non-implicit registry id is not an instance without a [providers.huggingface] entry")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestParseRef|TestResolve|TestFindModel|TestApplyLive' -v`
+Expected: FAIL to compile ("undefined: ParseRef").
+
+- [ ] **Step 3: Modify `load.go` and `types.go`**
+
+In `load.go`: add `"sync"` to the imports, replace the `live map[string]liveListing` field with
+
+```go
+	liveMu sync.RWMutex
+	live   map[string]liveListing
+```
+
+and delete the placeholder `type liveListing struct{ rows map[string]Model }` line (Task 10 defines it). In `types.go`, add to `Resolved` after `Credential`:
+
+```go
+	CredentialHeaders map[string]string `json:"-"`
+```
+
+- [ ] **Step 4: Write `resolve.go`**
+
+```go
+package registry
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+)
+
+// protocolDefaults are the endpoint paths a protocol uses when the
+// transport sets none (spec §6.1).
+var protocolDefaults = map[string]Transport{
+	ProtocolOpenAIChat:      {Endpoint: "/chat/completions", StreamEndpoint: "/chat/completions", ModelsEndpoint: "/models", CountTokensEndpoint: EndpointUnsupported},
+	ProtocolOpenAIResponses: {Endpoint: "/responses", StreamEndpoint: "/responses", ModelsEndpoint: "/models", CountTokensEndpoint: EndpointUnsupported},
+	ProtocolAnthropic:       {Endpoint: "/messages", StreamEndpoint: "/messages", ModelsEndpoint: "/models", CountTokensEndpoint: "/messages/count_tokens"},
+	ProtocolGoogle:          {Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse", ModelsEndpoint: "/models", CountTokensEndpoint: "/models/{model}:countTokens"},
+}
+
+// nonChatPatterns identifies live listing ids that are not text models
+// (spec §5); one list, replacing nonChatModelSubstrings and skipOpenAIModel.
+var nonChatPatterns = []string{"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image", "realtime", "davinci", "babbage", "sora"}
+
+// IsChatModelID reports whether a live listing id names a text model.
+func IsChatModelID(id string) bool {
+	lower := strings.ToLower(id)
+	if lower == "" {
+		return false
+	}
+	for _, p := range nonChatPatterns {
+		if strings.Contains(lower, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// vertexGlobalOnly lists Claude ids Anthropic serves only from the global
+// and us/eu endpoints (spec §9.4: "regional endpoints support Sonnet 4.6
+// and earlier").
+var vertexGlobalOnly = []string{"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos"}
+
+var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
+
+const provAlias = "alias"
+
+// ParseRef splits "instance/model" on the first slash (spec §7.1); a bare
+// model id yields an empty Instance.
+func ParseRef(ref string) Ref {
+	ref = strings.TrimSpace(ref)
+	if i := strings.Index(ref, "/"); i > 0 {
+		return Ref{Instance: ref[:i], Model: ref[i+1:]}
+	}
+	return Ref{Model: ref}
+}
+
+type liveListing struct{ rows map[string]Model }
+
+// liveFacts keeps only what the live layer may supply (spec §5).
+func liveFacts(m Model) Model {
+	out := Model{ID: m.ID, WireID: m.ID, Caps: Caps{
+		Tools: m.Caps.Tools, InputModalities: m.Caps.InputModalities, ContextWindow: m.Caps.ContextWindow,
+		MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
+	}}
+	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
+		out.Caps.ThinkingAlwaysOn = new(true)
+	}
+	return out
+}
+
+// ApplyLive records an instance's live listing. Non-chat ids are dropped and
+// only advertised facts are kept; the listing replaces any previous one.
+func (r *Registry) ApplyLive(instance string, rows []Model) {
+	listing := liveListing{rows: map[string]Model{}}
+	for _, m := range rows {
+		if !IsChatModelID(m.ID) {
+			continue
+		}
+		listing.rows[m.ID] = liveFacts(m)
+	}
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if r.live == nil {
+		r.live = map[string]liveListing{}
+	}
+	r.live[instance] = listing
+}
+
+// LiveModels returns the cached live listing of an instance, sorted by id.
+func (r *Registry) LiveModels(instance string) []Model {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	listing, ok := r.live[instance]
+	if !ok {
+		return nil
+	}
+	out := make([]Model, 0, len(listing.rows))
+	for _, id := range sortedKeys(listing.rows) {
+		out = append(out, listing.rows[id])
+	}
+	return out
+}
+
+func (r *Registry) liveRow(instance, id string) *Model {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	if m, ok := r.live[instance].rows[id]; ok {
+		return &m
+	}
+	return nil
+}
+
+type lookupHit struct {
+	rowID       string
+	wireID      string
+	step        string
+	synthesized bool
+}
+
+// lookupRow is spec §7.2: exact row, region prefix stripped, dated suffix
+// removed, live listing, else synthesized. Steps 1–2 use the row's wire id;
+// the rest send the reference verbatim.
+func (r *Registry) lookupRow(rec *record, model string) lookupHit {
+	rows := rec.head.Models
+	if m, ok := rows[model]; ok && !isGlob(model) {
+		wire := m.WireID
+		if wire == "" {
+			wire = model
+		}
+		return lookupHit{rowID: model, wireID: wire, step: "row"}
+	}
+	if s := stripRegionPrefix(model); s != model {
+		if _, ok := rows[s]; ok {
+			return lookupHit{rowID: s, wireID: model, step: "region"}
+		}
+	}
+	if s := datedSuffixRe.ReplaceAllString(model, ""); s != model && s != "" {
+		if _, ok := rows[s]; ok {
+			return lookupHit{rowID: s, wireID: model, step: "dated"}
+		}
+	}
+	if r.liveRow(rec.name, model) != nil {
+		return lookupHit{wireID: model, step: "live"}
+	}
+	return lookupHit{wireID: model, step: "synthesized", synthesized: true}
+}
+
+func exactRowIDs(rec *record) []string {
+	var ids []string
+	for id := range rec.head.Models {
+		if !isGlob(id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Resolve is the single lookup path (spec §7): reference → instance record →
+// row → layered caps → transport, headers, credential → derived caps.
+func (r *Registry) Resolve(ref string) (Resolved, error) {
+	pr := ParseRef(ref)
+	if pr.Model == "" {
+		return Resolved{}, fmt.Errorf("%q: empty model reference", ref)
+	}
+	var warnings []string
+	if pr.Instance == "" {
+		name, w, err := r.DefaultInstance()
+		if err != nil {
+			return Resolved{}, err
+		}
+		pr.Instance = name
+		warnings = append(warnings, w...)
+	}
+	rec, ok := r.recordFor(pr.Instance)
+	if !ok {
+		names := make([]string, 0, len(r.instances))
+		for _, inst := range r.rankedInstances() {
+			names = append(names, inst.name)
+		}
+		return Resolved{}, fmt.Errorf("unknown instance %q (available: %s)", pr.Instance, strings.Join(names, ", "))
+	}
+	return r.resolveOn(rec, pr, warnings)
+}
+
+func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
+	hit := r.lookupRow(rec, ref.Model)
+	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
+		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
+	}
+	prov := map[string]string{"model": hit.step}
+	if hit.rowID != "" {
+		prov["model"] = hit.step + ":" + hit.rowID
+	}
+	row := Model{ID: ref.Model, WireID: hit.wireID}
+	if hit.rowID != "" {
+		row = cloneModel(rec.head.Models[hit.rowID])
+		row.WireID = hit.wireID
+	}
+	// Surface, Family, and Headers are rebuilt by the replay so glob rows
+	// interleave with row entries in layer order.
+	row.Surface, row.Family, row.Headers = "", "", nil
+
+	caps := Caps{}
+	altID := ""
+	if hit.rowID != "" && hit.rowID != ref.Model {
+		altID = hit.rowID
+	}
+	// Layer 0: alias seeding (spec §4.2).
+	if row.AliasOf != "" {
+		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
+		if err != nil {
+			warnings = append(warnings, "dangling alias: "+err.Error())
+		} else {
+			seedFromAlias(&caps, &row, target, prov)
+			if same && rec.head.Models[hit.rowID].Protocol == "" && rec.head.Models[hit.rowID].Transport == nil {
+				row.Protocol = target.Model.Protocol
+				if target.Model.Transport != nil {
+					t := cloneTransport(*target.Model.Transport)
+					row.Transport = &t
+				}
+				if row.Protocol != "" || row.Transport != nil {
+					row.Hidden = false // spec §4.2: an alias import that supplies a transport un-hides the row
+				}
+			}
+			if altID == "" {
+				altID = target.Model.ID
+			}
+		}
+	}
+	rowProto := row.Protocol
+	if rowProto == "" {
+		rowProto = rec.head.Protocol
+	}
+	crossProto := rowProto != rec.head.Protocol
+
+	seenTag := map[string]bool{}
+	liveApplied := false
+	for _, layer := range rec.layers {
+		if layer.tag == LayerConfig && !liveApplied {
+			r.applyLive(&caps, rec, ref.Model, hit, prov)
+			liveApplied = true
+		}
+		if layer.resetFields {
+			caps.Fields = nil
+			for k := range prov {
+				if strings.HasPrefix(k, "Fields.") {
+					delete(prov, k)
+				}
+			}
+		}
+		pc := layer.provider
+		if crossProto {
+			pc.Fields = nil
+		}
+		mergeCaps(&caps, pc, layer.tag+"/provider", prov)
+		if !seenTag[layer.tag] {
+			seenTag[layer.tag] = true
+			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref.Model, altID, rowProto, crossProto, prov)
+		}
+		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref.Model, altID, rowProto, crossProto, prov)
+		if hit.rowID != "" {
+			if lr, ok := layer.rows[hit.rowID]; ok {
+				mergeCaps(&caps, lr.Caps, layer.tag+"/row", prov)
+				applyRowScalars(&row, lr, layer.tag+"/row", prov)
+			}
+		}
+	}
+	if !liveApplied {
+		r.applyLive(&caps, rec, ref.Model, hit, prov)
+	}
+	seedFields(&caps, rowProto)
+
+	transport, tw := r.buildTransport(rec, row, rowProto)
+	warnings = append(warnings, tw...)
+	headers := r.buildHeaders(rec.head.Headers, row.Headers)
+	cred, cw := r.credential(rec)
+	warnings = append(warnings, cw...)
+	credHeaders := map[string]string{}
+	for k, v := range rec.head.CredentialHeaders {
+		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
+			credHeaders[k] = e
+		}
+	}
+
+	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
+
+	if hit.synthesized {
+		warnings = append(warnings, "model not in catalog")
+	}
+	if row.Hidden {
+		warnings = append(warnings, "hidden: row has no transport on this provider")
+	}
+	if rec.head.Hidden {
+		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
+	}
+	warnings = append(warnings, rec.notes...)
+	if transport.HostRule == HostRuleVertexLocation {
+		if loc, ok := r.varLookup(rec)("GOOGLE_VERTEX_LOCATION"); ok && loc != "global" && loc != "us" && loc != "eu" {
+			for _, p := range vertexGlobalOnly {
+				if strings.Contains(hit.wireID, p) {
+					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q supports Claude Sonnet 4.6 and earlier; use global, us, or eu for %s", loc, hit.wireID))
+					break
+				}
+			}
+		}
+	}
+	providerID := rec.providerID
+	if providerID == "" {
+		providerID = rec.name
+	}
+	return Resolved{
+		Instance: rec.name, ProviderID: providerID, Protocol: rowProto, Surface: row.Surface, Transport: transport,
+		ModelID: ref.Model, WireID: hit.wireID, Model: row, Caps: caps, Headers: headers,
+		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
+	}, nil
+}
+
+// resolveAliasTarget resolves an alias target through the same machinery:
+// a same-provider row on rec, else "provider-id/id" on the curated record.
+func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
+		res, err := r.resolveOn(rec, Ref{Instance: rec.name, Model: aliasOf}, nil)
+		return res, true, err
+	}
+	if i := strings.Index(aliasOf, "/"); i > 0 {
+		if prov, ok := r.curated[aliasOf[:i]]; ok {
+			if m, ok := prov.head.Models[aliasOf[i+1:]]; ok && m.AliasOf == "" {
+				res, err := r.resolveOn(prov, Ref{Instance: prov.name, Model: aliasOf[i+1:]}, nil)
+				return res, false, err
+			}
+		}
+	}
+	return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+}
+
+// seedFromAlias copies the target's facts, surface, and family in as the
+// alias row's layer 0 (spec §4.2).
+func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string) {
+	facts := Caps{
+		ContextWindow: target.Caps.ContextWindow, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
+		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
+		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
+		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
+	}
+	mergeCaps(c, facts, provAlias, prov)
+	if target.Surface != "" {
+		row.Surface = target.Surface
+		prov["Surface"] = provAlias
+	}
+	if target.Model.Family != "" {
+		row.Family = target.Model.Family
+		prov["Family"] = provAlias
+	}
+}
+
+// applyGlobs applies matching glob rows in spec §4.1 order: shorter
+// patterns first, target-matching globs before reference-matching ones, each
+// glob at most once. Cross-protocol rows take only Fields keys their own
+// protocol knows.
+func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+	var globs []string
+	for k := range rows {
+		if isGlob(k) {
+			globs = append(globs, k)
+		}
+	}
+	if len(globs) == 0 {
+		return
+	}
+	globs = sortGlobs(globs)
+	applied := map[string]bool{}
+	apply := func(g string) {
+		applied[g] = true
+		gr := rows[g]
+		gc := gr.Caps
+		if crossProto && len(gc.Fields) > 0 {
+			table := prunable[rowProto]
+			filtered := map[string]bool{}
+			for k, v := range gc.Fields {
+				if _, ok := table[k]; ok {
+					filtered[k] = v
+				}
+			}
+			gc.Fields = filtered
+		}
+		mergeCaps(c, gc, tag+"/glob:"+g, prov)
+		applyRowScalars(row, gr, tag+"/glob:"+g, prov)
+	}
+	if altID != "" {
+		for _, g := range globs {
+			if matchGlob(g, altID) {
+				apply(g)
+			}
+		}
+	}
+	for _, g := range globs {
+		if !applied[g] && matchGlob(g, ref) {
+			apply(g)
+		}
+	}
+}
+
+// applyRowScalars overlays a layer row's or glob row's scalars onto the
+// resolved row. Replay order per layer is globs then the exact row, so within
+// a layer the exact row wins and across layers the later layer wins (spec
+// §4.1). A glob row's transport (the Codex `gpt-5.6*` row's `body` constants,
+// spec §6.2) merges field-wise onto the row transport; glob rows carry
+// neither a protocol nor a preset (the parser rejects both), so nothing here
+// needs preset expansion.
+func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) {
+	if src.Surface != "" {
+		row.Surface = src.Surface
+		prov["Surface"] = tag
+	}
+	if src.Family != "" {
+		row.Family = src.Family
+		prov["Family"] = tag
+	}
+	if len(src.Headers) > 0 {
+		row.Headers = mergeStringMap(row.Headers, src.Headers)
+	}
+	if src.Transport != nil {
+		if row.Transport == nil {
+			row.Transport = &Transport{}
+		} else {
+			c := cloneTransport(*row.Transport)
+			row.Transport = &c
+		}
+		mergeTransport(row.Transport, *src.Transport)
+	}
+}
+
+// applyLive merges the instance's live facts for the reference (or the
+// matched wire id) between the curated and user layers (spec §5).
+func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, prov map[string]string) {
+	lr := r.liveRow(rec.name, model)
+	if lr == nil && hit.wireID != model {
+		lr = r.liveRow(rec.name, hit.wireID)
+	}
+	if lr == nil {
+		return
+	}
+	mergeCaps(c, lr.Caps, LayerLive, prov)
+}
+
+// buildTransport applies the cross-protocol rule, the row transport, the
+// protocol defaults, and variable substitution (spec §9.1).
+func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transport, []string) {
+	t := cloneTransport(rec.head.Transport)
+	if proto != rec.head.Protocol {
+		clearProtocolTransport(&t)
+	}
+	if row.Transport != nil {
+		mergeTransport(&t, *row.Transport)
+	}
+	d := protocolDefaults[proto]
+	setIfEmpty := func(dst *string, def string) {
+		if *dst == "" {
+			*dst = def
+		}
+	}
+	setIfEmpty(&t.Endpoint, d.Endpoint)
+	setIfEmpty(&t.StreamEndpoint, d.StreamEndpoint)
+	setIfEmpty(&t.ModelsEndpoint, d.ModelsEndpoint)
+	setIfEmpty(&t.CountTokensEndpoint, d.CountTokensEndpoint)
+	// The templates, captured before substitution, are the authoritative list
+	// of variables Resolved may expose (URL parts such as a region, resource,
+	// or project). Resolved is serialized by `evener models inspect`, so no
+	// vars_env value that a template does not reference is ever exposed.
+	templates := []string{rec.head.Transport.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint}
+	if row.Transport != nil && row.Transport.BaseURL != "" {
+		templates = append(templates, row.Transport.BaseURL)
+	}
+
+	var warnings []string
+	url, missing, hostWarnings := r.resolveBaseURL(rec, t)
+	t.BaseURL = url
+	warnings = append(warnings, hostWarnings...)
+	lookup := r.varLookup(rec)
+	for _, field := range []*string{&t.Endpoint, &t.StreamEndpoint, &t.ModelsEndpoint, &t.CountTokensEndpoint} {
+		expanded, m := expandTemplate(*field, lookup)
+		*field = expanded
+		missing = append(missing, m...)
+	}
+	slices.Sort(missing)
+	for _, name := range slices.Compact(missing) {
+		warnings = append(warnings, "unresolved variable "+name)
+	}
+	resolved := map[string]string{}
+	for _, tpl := range templates {
+		for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
+			if v, ok := lookup(m[1]); ok {
+				resolved[m[1]] = v
+			}
+		}
+	}
+	t.Vars = resolved
+	return t, warnings
+}
+
+// buildHeaders merges header layers and applies spec §10: an unset $VAR
+// drops the header; an empty value removes an inherited header.
+func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, layer := range layers {
+		for k, v := range layer {
+			merged[k] = v
+		}
+	}
+	out := map[string]string{}
+	for k, v := range merged {
+		if v == "" {
+			continue
+		}
+		expanded, missing := expandEnv(v, r.env)
+		if len(missing) > 0 || expanded == "" {
+			continue
+		}
+		out[k] = expanded
+	}
+	return out
+}
+
+// FindModel lists the instances that serve a model id, in default ranking
+// (spec §7.5). It never performs network I/O.
+func (r *Registry) FindModel(id string) []Ref {
+	var out []Ref
+	for _, inst := range r.rankedInstances() {
+		if hit := r.lookupRow(inst.rec, id); !hit.synthesized {
+			out = append(out, Ref{Instance: inst.name, Model: id})
+		}
+	}
+	return out
+}
+
+// ModelIDs lists an instance's exact catalog rows plus its cached live ids,
+// sorted (for `evener models list`).
+func (r *Registry) ModelIDs(instance string) ([]string, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, fmt.Errorf("unknown instance %q", instance)
+	}
+	seen := map[string]bool{}
+	for _, id := range exactRowIDs(rec) {
+		seen[id] = true
+	}
+	for _, m := range r.LiveModels(instance) {
+		seen[m.ID] = true
+	}
+	return sortedKeys(seen), nil
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/ && go test ./llm/registry/ -run 'TestParseRef|TestResolve|TestFindModel|TestApplyLive' -v && go test ./llm/registry/`
+Expected: PASS. Two assertions depend on facts in the fixture (`amazon-bedrock/openai.gpt-5.5` per-model `api` ending in `/openai/v1`; `google-vertex/claude-sonnet-4-6` existing as `claude-sonnet-4-6@default`); if the fixture was regenerated from a newer models.dev, confirm the value with `python3 -c 'import json; ...'` before touching the test.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add llm/registry/resolve.go llm/registry/resolve_test.go llm/registry/load.go llm/registry/types.go llm/registry/schema.go llm/registry/schema_test.go
+git commit -m "feat(registry): Resolve with lookup order, alias seeding, glob ordering, live layer, transport assembly"
+```
+
+### Task 11: Runtime cache, `Refresh`, and the snapshot report
+
+**Files:**
+- Create: `llm/registry/refresh.go`
+- Create: `llm/registry/internal/snapshotreport/main.go`
+- Modify: `llm/registry/load.go` (`Load` prefers a newer cache; starts the background refresh unless offline; new fields `refreshStarted bool`, `refreshDone chan struct{}`; new option `WithLog`; `validateRecord` skips the `fields` check for a record with no protocol — such a record is hidden and has no prunable set — so an overlay stanza for a provider that vanished upstream cannot fail a load or a refresh validation)
+- Test: `llm/registry/refresh_test.go`
+
+**Interfaces:**
+- Consumes: `EmbeddedSnapshot`, `FromModelsDev`, `ParseMeta`, `Meta`, `Fetcher`, `Load` options.
+- Produces: `WithoutCache() Option`, `type RefreshOptions struct { StateRoot string; Fetcher Fetcher; Force bool; Now func() time.Time; Baseline []byte }`, `type RefreshResult struct { Skipped, NotModified, Updated bool; Path string; Etag string; ProvidersBefore, ProvidersAfter, ModelsBefore, ModelsAfter int }`, `Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error)`, `readCache(stateRoot string) (raw []byte, meta Meta, ok bool)`, `cachePaths(stateRoot string) (jsonPath, metaPath string)`, `HTTPFetcher(client *http.Client) Fetcher`, `WithLog(func(format string, args ...any)) Option`, `(*Registry).RefreshStarted() bool`, `(*Registry).WaitRefresh()` (blocks until the background refresh finishes; returns at once when none started), `UpstreamURL`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry/refresh_test.go`:
+
+```go
+package registry
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"testing"
+	"time"
+)
+
+func fixtureBytes(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// subsetFixture drops the first n providers (by sorted id) from the fixture,
+// so the subset is the same on every run.
+func subsetFixture(t *testing.T, n int) []byte {
+	t.Helper()
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(fixtureBytes(t), &all); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids[:n] {
+		delete(all, id)
+	}
+	out, err := json.Marshal(all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// An overlay stanza for a provider that vanished upstream must not fail the
+// load: the record has no protocol, is hidden, and its fields go unchecked.
+func TestLoad_OverlayProviderMissingUpstreamIsHidden(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith("[providers.vanished]\nfields = { store = true }\nbase_url = \"https://x/v1\"\n")))
+	p, ok := r.Provider("vanished")
+	if !ok || !p.Hidden {
+		t.Fatalf("vanished provider: ok=%v hidden=%v", ok, p.Hidden)
+	}
+}
+
+type fakeFetch struct {
+	body        []byte
+	etag        string
+	calls       int
+	gotEtag     []string
+	notModified bool
+	err         error
+}
+
+func (f *fakeFetch) fetcher() Fetcher {
+	return func(_ context.Context, etag string) ([]byte, string, bool, error) {
+		f.calls++
+		f.gotEtag = append(f.gotEtag, etag)
+		if f.err != nil {
+			return nil, "", false, f.err
+		}
+		if f.notModified {
+			return nil, f.etag, true, nil
+		}
+		return f.body, f.etag, false, nil
+	}
+}
+
+func TestRefresh_WritesCacheAndRoundTripsEtag(t *testing.T) {
+	state := t.TempDir()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: `W/"v1"`}
+	res, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Now: func() time.Time { return now }, Baseline: fixtureBytes(t)})
+	if err != nil || !res.Updated || res.ProvidersAfter != 39 || res.ProvidersBefore != 40 {
+		t.Fatalf("first refresh: %+v %v", res, err)
+	}
+	raw, meta, ok := readCache(state)
+	if !ok || meta.Etag != `W/"v1"` || !meta.FetchedAt.Equal(now) || len(raw) == 0 {
+		t.Fatalf("cache: ok=%v meta=%+v", ok, meta)
+	}
+	f.notModified = true
+	later := now.Add(25 * time.Hour)
+	res, err = Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Now: func() time.Time { return later }, Baseline: fixtureBytes(t)})
+	if err != nil || !res.NotModified || res.Updated {
+		t.Fatalf("304: %+v %v", res, err)
+	}
+	if f.gotEtag[1] != `W/"v1"` {
+		t.Fatalf("If-None-Match must carry the stored etag, got %q", f.gotEtag[1])
+	}
+	if _, meta, _ := readCache(state); !meta.FetchedAt.Equal(later) {
+		t.Fatal("a 304 refreshes fetched_at")
+	}
+	res, err = Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Now: func() time.Time { return later.Add(time.Hour) }, Baseline: fixtureBytes(t)})
+	if err != nil || !res.Skipped || f.calls != 2 {
+		t.Fatalf("a fresh cache is skipped without --force: %+v calls=%d", res, f.calls)
+	}
+}
+
+func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
+	state := t.TempDir()
+	good := &fakeFetch{body: fixtureBytes(t), etag: "a"}
+	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: good.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := readCache(state)
+	for name, f := range map[string]*fakeFetch{
+		"too few providers": {body: subsetFixture(t, 10), etag: "b"},
+		"invalid json":      {body: []byte("{"), etag: "c"},
+		"empty":             {body: []byte("{}"), etag: "d"},
+		"network error":     {err: errors.New("boom")},
+	} {
+		if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+		after, _, _ := readCache(state)
+		if !bytes.Equal(after, before) {
+			t.Errorf("%s: a failed refresh must keep the previous cache", name)
+		}
+	}
+}
+
+func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
+	state := t.TempDir()
+	data := fixtureBytes(t)
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.RefreshStarted() {
+		t.Fatal("under go test, Load must not start a refresh")
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot {
+		t.Fatalf("catalog = %q", tag)
+	}
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: "e"}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state), WithFetcher(f.fetcher()), WithLog(func(string, ...any) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.RefreshStarted() {
+		t.Fatal("an injected fetcher opts back into the refresh")
+	}
+	r.WaitRefresh()
+	if _, _, ok := readCache(state); !ok {
+		t.Fatal("background refresh must write the cache")
+	}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerCache {
+		t.Fatalf("a newer cache must replace the snapshot, got %q", tag)
+	}
+	if len(r.ProviderIDs()) < 39 {
+		t.Fatalf("cache providers = %d", len(r.ProviderIDs()))
+	}
+	r, err = Load(WithSnapshot(data), WithEnv(mapEnv(map[string]string{"EVENER_OFFLINE": "1"})), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithFetcher(f.fetcher()))
+	if err != nil || r.RefreshStarted() {
+		t.Fatalf("EVENER_OFFLINE=1 must win over an injected fetcher: %v", err)
+	}
+}
+
+func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
+	state := t.TempDir()
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: "n"}
+	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
+		t.Fatal(err)
+	}
+	// subsetFixture(t, 1) drops amazon-bedrock (first by sorted id): with the
+	// cache in effect the overlay's stanza alone remains, protocol-less.
+	r, err := Load(WithSnapshot(fixtureBytes(t)), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerCache {
+		t.Fatalf("without the option the newer cache wins: %q", tag)
+	}
+	if p, _ := r.Provider("amazon-bedrock"); p.Protocol != "" {
+		t.Fatalf("the cache lacks amazon-bedrock upstream; protocol = %q", p.Protocol)
+	}
+	r, err = Load(WithSnapshot(fixtureBytes(t)), WithoutCache(), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot {
+		t.Fatalf("WithoutCache must load the snapshot alone: %q", tag)
+	}
+	if p, _ := r.Provider("amazon-bedrock"); p.Protocol != ProtocolAnthropic {
+		t.Fatalf("the snapshot has amazon-bedrock upstream; protocol = %q", p.Protocol)
+	}
+}
+
+func TestLoad_CorruptCacheFallsBackToSnapshot(t *testing.T) {
+	state := t.TempDir()
+	jsonPath, metaPath := cachePaths(state)
+	_ = os.MkdirAll(filepath.Dir(jsonPath), 0o700)
+	_ = os.WriteFile(jsonPath, []byte("{"), 0o600)
+	_ = os.WriteFile(metaPath, []byte(`{"fetched_at":"2099-01-01T00:00:00Z","etag":"x","source":"y"}`), 0o600)
+	r, err := Load(WithSnapshot(fixtureBytes(t)), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerSnapshot || len(r.Warnings()) == 0 {
+		t.Fatalf("corrupt cache must fall back with a warning: %q %v", tag, r.Warnings())
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/registry/ -run 'TestRefresh|TestLoad_PrefersNewerCache|TestLoad_CorruptCache' -v`
+Expected: FAIL to compile ("undefined: Refresh").
+
+- [ ] **Step 3: Write `refresh.go`**
+
+```go
+package registry
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// UpstreamURL is where the catalog comes from (spec §6.4).
+const UpstreamURL = "https://models.dev/api.json"
+
+const (
+	cacheMaxAge  = 24 * time.Hour
+	minKeepRatio = 0.9
+)
+
+// cachePaths returns the runtime cache files under <state-root>/catalog/.
+func cachePaths(stateRoot string) (jsonPath, metaPath string) {
+	dir := filepath.Join(stateRoot, "catalog")
+	return filepath.Join(dir, "models.dev.json"), filepath.Join(dir, "models.dev.meta.json")
+}
+
+// readCache returns the cached snapshot and its meta when both exist and
+// parse. Validation against the converter happens in Load.
+func readCache(stateRoot string) ([]byte, Meta, bool) {
+	jsonPath, metaPath := cachePaths(stateRoot)
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, Meta{}, false
+	}
+	metaRaw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return nil, Meta{}, false
+	}
+	meta, err := ParseMeta(metaRaw)
+	if err != nil {
+		return nil, Meta{}, false
+	}
+	return raw, meta, true
+}
+
+func writeAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// HTTPFetcher returns a Fetcher that GETs UpstreamURL with If-None-Match.
+func HTTPFetcher(client *http.Client) Fetcher {
+	return func(ctx context.Context, etag string) ([]byte, string, bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, UpstreamURL, nil)
+		if err != nil {
+			return nil, "", false, err
+		}
+		if etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, "", false, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusNotModified {
+			return nil, etag, true, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, "", false, fmt.Errorf("models.dev: HTTP %d", resp.StatusCode)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		if err != nil {
+			return nil, "", false, err
+		}
+		return body, resp.Header.Get("ETag"), false, nil
+	}
+}
+
+// RefreshOptions configures Refresh. Baseline is the snapshot the sanity
+// floors compare against (the embedded one when nil).
+type RefreshOptions struct {
+	StateRoot string
+	Fetcher   Fetcher
+	Force     bool
+	Now       func() time.Time
+	Baseline  []byte
+}
+
+// RefreshResult reports what Refresh did.
+type RefreshResult struct {
+	Skipped         bool
+	NotModified     bool
+	Updated         bool
+	Path            string
+	Etag            string
+	ProvidersBefore int
+	ProvidersAfter  int
+	ModelsBefore    int
+	ModelsAfter     int
+}
+
+func countCatalog(raw []byte) (providers, models int, err error) {
+	provs, err := FromModelsDev(raw)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, p := range provs {
+		models += len(p.Models)
+	}
+	return len(provs), models, nil
+}
+
+// Refresh fetches models.dev into the cache (spec §6.4): skipped when the
+// cache is fresh and Force is false; a 304 only bumps fetched_at; a new
+// body must convert, keep ≥ 90% of the baseline's providers and models, and
+// load under the curated overlay before it is written atomically. A
+// failure leaves the previous cache untouched.
+func Refresh(ctx context.Context, opts RefreshOptions) (RefreshResult, error) {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	if opts.Fetcher == nil {
+		return RefreshResult{}, errors.New("refresh: no fetcher")
+	}
+	jsonPath, metaPath := cachePaths(opts.StateRoot)
+	res := RefreshResult{Path: jsonPath}
+	_, meta, cached := readCache(opts.StateRoot)
+	if cached && !opts.Force && now().Sub(meta.FetchedAt) < cacheMaxAge {
+		res.Skipped = true
+		return res, nil
+	}
+	baseline := opts.Baseline
+	if baseline == nil {
+		var err error
+		if baseline, _, err = EmbeddedSnapshot(); err != nil {
+			return res, err
+		}
+	}
+	var err error
+	if res.ProvidersBefore, res.ModelsBefore, err = countCatalog(baseline); err != nil {
+		return res, fmt.Errorf("refresh: baseline: %w", err)
+	}
+	etag := ""
+	if cached {
+		etag = meta.Etag
+	}
+	body, newEtag, notModified, err := opts.Fetcher(ctx, etag)
+	if err != nil {
+		return res, fmt.Errorf("refresh: fetch: %w", err)
+	}
+	if notModified && cached {
+		meta.FetchedAt = now()
+		metaRaw, _ := json.MarshalIndent(meta, "", "  ")
+		if err := writeAtomic(metaPath, append(metaRaw, '\n')); err != nil {
+			return res, err
+		}
+		res.NotModified, res.Etag = true, meta.Etag
+		res.ProvidersAfter, res.ModelsAfter = res.ProvidersBefore, res.ModelsBefore
+		return res, nil
+	}
+	if res.ProvidersAfter, res.ModelsAfter, err = countCatalog(body); err != nil {
+		return res, fmt.Errorf("refresh: rejected: %w", err)
+	}
+	if float64(res.ProvidersAfter) < float64(res.ProvidersBefore)*minKeepRatio || float64(res.ModelsAfter) < float64(res.ModelsBefore)*minKeepRatio {
+		return res, fmt.Errorf("refresh: rejected: upstream shrank to %d providers / %d models (baseline %d / %d)", res.ProvidersAfter, res.ModelsAfter, res.ProvidersBefore, res.ModelsBefore)
+	}
+	if _, err := Load(WithSnapshot(body), WithoutCache(), WithNoUserLayer(), WithOffline(true), WithEnv(func(string) (string, bool) { return "", false }), WithStateRoot(opts.StateRoot)); err != nil {
+		return res, fmt.Errorf("refresh: rejected: overlay does not load on the new snapshot: %w", err)
+	}
+	newMeta := Meta{FetchedAt: now(), Etag: newEtag, Source: UpstreamURL}
+	metaRaw, _ := json.MarshalIndent(newMeta, "", "  ")
+	if err := writeAtomic(jsonPath, body); err != nil {
+		return res, err
+	}
+	if err := writeAtomic(metaPath, append(metaRaw, '\n')); err != nil {
+		return res, err
+	}
+	res.Updated, res.Etag = true, newEtag
+	return res, nil
+}
+```
+
+- [ ] **Step 4: Wire the cache and the background refresh into `Load`**
+
+In `load.go`, add to `options`: `logf func(format string, args ...any)`, and the option:
+
+```go
+// WithLog receives the one-line messages a failed background refresh
+// produces (default: log.Printf).
+func WithLog(logf func(format string, args ...any)) Option { return func(o *options) { o.logf = logf } }
+```
+
+Set the default in `defaultOptions()`: `logf: log.Printf` (import `log`, `testing`, `net/http`, `time`). Add to `Registry`:
+
+```go
+	refreshStarted bool
+	refreshDone    chan struct{}
+```
+
+with accessors:
+
+```go
+// RefreshStarted reports whether Load started a background refresh.
+func (r *Registry) RefreshStarted() bool { return r.refreshStarted }
+
+// WaitRefresh blocks until the background refresh (if any) has finished.
+func (r *Registry) WaitRefresh() {
+	if r.refreshDone != nil {
+		<-r.refreshDone
+	}
+}
+```
+
+Replace the snapshot block at the top of `Load` (from `raw, meta := o.snapshot, Meta{}` through `r.catalogTag, r.catalogMeta = LayerSnapshot, meta`) with:
+
+```go
+	raw, meta := o.snapshot, Meta{}
+	if raw == nil {
+		var err error
+		raw, meta, err = EmbeddedSnapshot()
+		if err != nil {
+			return nil, err
+		}
+	}
+	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
+	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); !o.noCache && ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
+		if _, err := FromModelsDev(cachedRaw); err != nil {
+			jsonPath, _ := cachePaths(o.stateRoot)
+			r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
+		} else {
+			raw, meta = cachedRaw, cachedMeta
+			r.catalogTag, r.catalogMeta = LayerCache, cachedMeta
+		}
+	}
+	upstream, err := FromModelsDev(raw)
+	if err != nil {
+		return nil, err
+	}
+```
+
+(and delete the now-duplicated `upstream, err := FromModelsDev(raw)` / `r.catalogTag, r.catalogMeta = …` lines that followed). Then, just before `return r, nil` at the end of `Load`, add:
+
+```go
+	r.maybeStartRefresh(o)
+```
+
+with:
+
+```go
+// maybeStartRefresh starts the background models.dev refresh (spec §6.4)
+// unless offline: EVENER_OFFLINE=1, an explicit WithOffline(true), or —
+// under go test — no injected fetcher.
+func (r *Registry) maybeStartRefresh(o *options) {
+	offline := false
+	switch {
+	case o.offline != nil:
+		offline = *o.offline
+	case testing.Testing():
+		offline = o.fetcher == nil
+	}
+	if v, _ := o.env("EVENER_OFFLINE"); v == "1" {
+		offline = true
+	}
+	if offline {
+		return
+	}
+	if _, meta, ok := readCache(o.stateRoot); ok && o.now().Sub(meta.FetchedAt) < cacheMaxAge {
+		return
+	}
+	fetcher := o.fetcher
+	if fetcher == nil {
+		fetcher = HTTPFetcher(&http.Client{Timeout: 60 * time.Second})
+	}
+	r.refreshStarted = true
+	r.refreshDone = make(chan struct{})
+	// The sanity floors compare against the embedded snapshot (spec §6.4);
+	// o.snapshot is nil in production and the injected snapshot in tests.
+	stateRoot, now, logf, baseline := o.stateRoot, o.now, o.logf, o.snapshot
+	go func() {
+		defer close(r.refreshDone)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Now: now, Baseline: baseline}); err != nil {
+			logf("models.dev refresh: %v (keeping the previous catalog)", err)
+		}
+	}()
+}
+```
+
+`Refresh` and `Load` call each other (validation loads the candidate snapshot with `WithOffline(true)`), so the validation load never starts another refresh.
+
+- [ ] **Step 5: Write the snapshot report tool**
+
+`llm/registry/internal/snapshotreport/main.go`:
+
+```go
+// Command snapshotreport prints what the refresh script needs a human to
+// look at after the embedded models.dev snapshot changes (spec §6.4):
+// overlay rows upstream now covers, dangling overlay aliases, upstream rows
+// whose output cap is at or above their context window, and overlay pins
+// whose upstream value changed. Run by scripts/ops/refresh-model-catalog.sh;
+// safe to run by hand: go run ./llm/registry/internal/snapshotreport
+package main
+
+import (
+	"fmt"
+	"os"
+	"sort"
+
+	"primeradiant.com/evener/llm/registry"
+)
+
+func main() {
+	raw, meta, err := registry.EmbeddedSnapshot()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	upstream, err := registry.FromModelsDev(raw)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	overlay, err := registry.ParseOverlay(registry.EmbeddedOverlay())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	byID := map[string]registry.Provider{}
+	for _, p := range upstream {
+		byID[p.ID] = p
+	}
+	fmt.Printf("snapshot fetched %s (etag %s)\n", meta.FetchedAt.Format("2006-01-02"), meta.Etag)
+
+	fmt.Println("\n== overlay rows upstream now covers (consider deleting the overlay row)")
+	for _, pid := range sortedKeys(overlay.Providers) {
+		for _, mid := range sortedKeys(overlay.Providers[pid].Models) {
+			if up, ok := byID[pid]; ok {
+				if _, ok := up.Models[mid]; ok && overlay.Providers[pid].Models[mid].AliasOf != "" {
+					fmt.Printf("  %s/%s (overlay alias row; upstream has the id)\n", pid, mid)
+				}
+			}
+		}
+	}
+
+	fmt.Println("\n== dangling overlay aliases")
+	r, err := registry.Load(registry.WithoutCache(), registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(func(string) (string, bool) { return "", false }))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, w := range r.Warnings() {
+		fmt.Println("  " + w)
+	}
+
+	fmt.Println("\n== upstream rows with output cap >= context window (cleared at resolve time; listed for awareness)")
+	junk := 0
+	for _, p := range upstream {
+		for _, mid := range sortedKeys(p.Models) {
+			c := p.Models[mid].Caps
+			if c.ContextWindow != nil && c.MaxOutputTokens != nil && *c.MaxOutputTokens >= *c.ContextWindow {
+				junk++
+				if junk <= 20 {
+					fmt.Printf("  %s/%s %d/%d\n", p.ID, mid, *c.MaxOutputTokens, *c.ContextWindow)
+				}
+			}
+		}
+	}
+	fmt.Printf("  total: %d\n", junk)
+
+	fmt.Println("\n== overlay pins whose upstream value differs (re-examine the pin)")
+	for _, pid := range sortedKeys(overlay.Providers) {
+		up, ok := byID[pid]
+		if !ok {
+			continue
+		}
+		for _, mid := range sortedKeys(overlay.Providers[pid].Models) {
+			pin := overlay.Providers[pid].Models[mid].Caps
+			upRow, ok := up.Models[mid]
+			if !ok {
+				continue
+			}
+			if pin.ContextWindow != nil && upRow.Caps.ContextWindow != nil && *pin.ContextWindow != *upRow.Caps.ContextWindow {
+				fmt.Printf("  %s/%s context_window: overlay %d, upstream %d\n", pid, mid, *pin.ContextWindow, *upRow.Caps.ContextWindow)
+			}
+			if pin.MaxOutputTokens != nil && upRow.Caps.MaxOutputTokens != nil && *pin.MaxOutputTokens != *upRow.Caps.MaxOutputTokens {
+				fmt.Printf("  %s/%s max_output_tokens: overlay %d, upstream %d\n", pid, mid, *pin.MaxOutputTokens, *upRow.Caps.MaxOutputTokens)
+			}
+		}
+		if _, ok := up.Models["claude-mythos-5"]; ok && pid == "anthropic" {
+			fmt.Println("  anthropic/claude-mythos-5 now exists upstream; drop the overlay alias")
+		}
+		if _, ok := up.Models["claude-mythos-preview"]; ok && pid == "anthropic" {
+			fmt.Println("  anthropic/claude-mythos-preview now exists upstream; drop the overlay row")
+		}
+	}
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `gofmt -w llm/registry/*.go && gofmt -l llm/registry && go vet ./llm/registry/... && go test ./llm/registry/ -run 'TestRefresh|TestLoad_PrefersNewerCache|TestLoad_CorruptCache' -v && go test ./llm/registry/... && go run ./llm/registry/internal/snapshotreport | head -40`
+Expected: PASS; the report prints its four sections (the "overlay rows upstream now covers" section is empty on the 2026-08-28 snapshot).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add llm/registry/refresh.go llm/registry/refresh_test.go llm/registry/load.go llm/registry/internal/snapshotreport/main.go
+git commit -m "feat(registry): runtime catalog cache, Refresh with ETag and sanity floors, snapshot report"
+```
+
+### Task 12: `llm.ShapeRequest` and the protocol interfaces
+
+**Files:**
+- Create: `llm/registry_shape.go` (package `llm`)
+- Test: `llm/registry_shape_test.go`
+
+**Interfaces:**
+- Consumes: `registry.Resolved`, `registry.Caps`, `registry.Model`, the protocol constants, `llm.Request` (fields `Temperature *float64`, `TopP *float64`, `MaxTokens *int`, `StopSequences []string`, `ReasoningEffort *string`, `PromptCacheKey string`, `PromptCacheRetention string`), `llm.ClampReasoningEffort(requested string, supportedLevels []string) string`, `llm.Response`, `llm.Stream`, `llm.ErrInputTokenCountUnsupported`.
+- Produces: `type Protocol interface`, `type Authenticator interface`, `type RequestPreparer interface`, `ErrModelListingUnsupported`, `ShapeRequest(req Request, res registry.Resolved) Request`, `samplingPaths(protocol string) (temperature, topP, stop string)`.
+- Deferred to plan 3 (needs the client's continuation planner): the "apply the Responses-continuation store override when a continuation is planned" step of §7.5; `ShapeRequest` here never touches `store`. Builders ignore reasoning-related `ProviderOptions` when `Caps.Reasoning == false` (plan 2), so `ShapeRequest` only clears the effort.
+
+- [ ] **Step 1: Write the failing tests**
+
+`llm/registry_shape_test.go`:
+
+```go
+package llm
+
+import (
+	"reflect"
+	"testing"
+
+	"primeradiant.com/evener/llm/registry"
+)
+
+func resolved(protocol string, caps registry.Caps) registry.Resolved {
+	if caps.Fields == nil {
+		caps.Fields = registry.Baseline(protocol)
+	}
+	return registry.Resolved{Protocol: protocol, Caps: caps}
+}
+
+func TestShapeRequest_ReasoningOffAndClamp(t *testing.T) {
+	req := Request{ReasoningEffort: new("high")}
+	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Reasoning: new(false)}))
+	if got.ReasoningEffort != nil {
+		t.Fatal("reasoning = false must clear the effort")
+	}
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{EffortValues: []string{"low", "medium"}}))
+	if got.ReasoningEffort == nil || *got.ReasoningEffort != "medium" {
+		t.Fatalf("effort must clamp to the ladder, got %v", got.ReasoningEffort)
+	}
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{}))
+	if got.ReasoningEffort == nil || *got.ReasoningEffort != "high" {
+		t.Fatal("an empty ladder passes the effort through")
+	}
+	got = ShapeRequest(Request{}, resolved(registry.ProtocolAnthropic, registry.Caps{ThinkingAlwaysOn: new(true), EffortValues: []string{"low", "high"}}))
+	if got.ReasoningEffort != nil {
+		t.Fatal("ShapeRequest never adds an effort the caller did not set")
+	}
+}
+
+func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
+	req := Request{Temperature: new(0.2), TopP: new(0.9), StopSequences: []string{"a", "b"}}
+	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: new(4096)}))
+	if got.MaxTokens == nil || *got.MaxTokens != 4096 || got.Temperature == nil || got.TopP == nil || len(got.StopSequences) != 2 {
+		t.Fatalf("defaults: %+v", got)
+	}
+	req.MaxTokens = new(10)
+	if got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: new(4096)})); *got.MaxTokens != 10 {
+		t.Fatal("a caller's max tokens is kept")
+	}
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: new(false)}))
+	if got.Temperature != nil || got.TopP != nil {
+		t.Fatal("sampling = false drops temperature and top_p")
+	}
+	fields := registry.Baseline(registry.ProtocolOpenAIChat)
+	fields["temperature"], fields["stop"] = false, false
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Fields: fields}))
+	if got.Temperature != nil || got.TopP == nil || got.StopSequences != nil {
+		t.Fatalf("fields gate the request-level values: %+v", got)
+	}
+	gfields := registry.Baseline(registry.ProtocolGoogle)
+	gfields["generationConfig.topP"] = false
+	got = ShapeRequest(req, resolved(registry.ProtocolGoogle, registry.Caps{Fields: gfields}))
+	if got.TopP != nil || got.Temperature == nil || len(got.StopSequences) != 2 {
+		t.Fatalf("google paths: %+v", got)
+	}
+	got = ShapeRequest(req, resolved(registry.ProtocolOpenAIResponses, registry.Caps{}))
+	if got.StopSequences != nil {
+		t.Fatal("the Responses API has no stop parameter")
+	}
+	got = ShapeRequest(req, resolved(registry.ProtocolAnthropic, registry.Caps{MaxStopSequences: new(1)}))
+	if !reflect.DeepEqual(got.StopSequences, []string{"a"}) {
+		t.Fatalf("max_stop_sequences truncates: %v", got.StopSequences)
+	}
+}
+
+func TestShapeRequest_PromptCacheGates(t *testing.T) {
+	req := Request{PromptCacheKey: "k", PromptCacheRetention: "24h"}
+	fields := registry.Baseline(registry.ProtocolOpenAIResponses)
+	fields["prompt_cache_key"] = true
+	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIResponses, registry.Caps{Fields: fields}))
+	if got.PromptCacheKey != "k" || got.PromptCacheRetention != "" {
+		t.Fatalf("two independent gates: %+v", got)
+	}
+}
+
+func TestShapeRequest_DoesNotMutateInput(t *testing.T) {
+	req := Request{Temperature: new(0.2), ReasoningEffort: new("max")}
+	_ = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: new(false), EffortValues: []string{"low"}}))
+	if *req.Temperature != 0.2 || *req.ReasoningEffort != "max" {
+		t.Fatal("ShapeRequest must not write through the caller's pointers")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./llm/ -run 'TestShapeRequest' -v`
+Expected: FAIL to compile ("undefined: ShapeRequest").
+
+- [ ] **Step 3: Write `registry_shape.go`**
+
+```go
+package llm
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"primeradiant.com/evener/llm/registry"
+)
+
+// ErrModelListingUnsupported is returned by Protocol.ListModels when the
+// transport has no models endpoint (registry.EndpointUnsupported). Callers
+// treat it as "registry-only listing", never as a failure (spec §8.1).
+var ErrModelListingUnsupported = errors.New("model listing unsupported")
+
+// Protocol is one wire protocol (spec §8.1): openai-chat, openai-responses,
+// anthropic, or google. One instance of each is registered at init; base
+// URL, headers, auth, and caps arrive in the Resolved record.
+type Protocol interface {
+	ID() string
+	// PrunablePaths must equal registry.PrunablePaths(ID()); a test asserts it.
+	PrunablePaths() []string
+	BuildBody(req Request, res registry.Resolved) (map[string]any, error)
+	Complete(ctx context.Context, req Request, res registry.Resolved) (Response, error)
+	Stream(ctx context.Context, req Request, res registry.Resolved) (Stream, error)
+	// ListModels returns ErrModelListingUnsupported when res.Transport.ModelsEndpoint is "-".
+	ListModels(ctx context.Context, res registry.Resolved) ([]registry.Model, error)
+	// CountTokens returns ErrInputTokenCountUnsupported when res.Transport.CountTokensEndpoint is "-".
+	CountTokens(ctx context.Context, req Request, res registry.Resolved) (int, error)
+}
+
+// Authenticator sets the auth headers for one auth scheme from
+// res.Credential, res.Transport.AuthHeader, and per-instance token state
+// keyed by res.Instance (spec §8.1).
+type Authenticator interface {
+	Apply(ctx context.Context, req *http.Request, res registry.Resolved) error
+}
+
+// RequestPreparer is the optional last pass over the built body and the
+// HTTP request; only the Codex transport implements it (spec §9.5).
+type RequestPreparer interface {
+	PrepareRequest(ctx context.Context, req *http.Request, body map[string]any, r Request, res registry.Resolved) error
+	RequiresStreamingComplete() bool
+}
+
+// samplingPaths names the prunable paths that carry the request-level
+// temperature, top-p, and stop values on each protocol (spec §8.2). An
+// empty stop path means the protocol has no stop parameter.
+func samplingPaths(protocol string) (temperature, topP, stop string) {
+	switch protocol {
+	case registry.ProtocolGoogle:
+		return "generationConfig.temperature", "generationConfig.topP", "generationConfig.stopSequences"
+	case registry.ProtocolAnthropic:
+		return "temperature", "top_p", "stop_sequences"
+	case registry.ProtocolOpenAIResponses:
+		return "temperature", "top_p", ""
+	default:
+		return "temperature", "top_p", "stop"
+	}
+}
+
+// ShapeRequest is the single place request-level shaping happens (spec
+// §7.5), in this order: clear reasoning controls when the row has
+// Reasoning = false; clamp the effort to EffortValues (an empty ladder
+// passes it through; no effort is ever added); apply MaxOutputTokens when
+// the request has none; drop request-level sampling parameters the row's
+// Sampling or Fields say not to send; gate the prompt-cache fields. It
+// returns a shaped copy and never writes through the caller's pointers.
+func ShapeRequest(req Request, res registry.Resolved) Request {
+	caps := res.Caps
+	send := func(path string) bool {
+		if path == "" {
+			return false
+		}
+		v, ok := caps.Fields[path]
+		return !ok || v
+	}
+	if caps.Reasoning != nil && !*caps.Reasoning {
+		req.ReasoningEffort = nil
+	}
+	if req.ReasoningEffort != nil && len(caps.EffortValues) > 0 {
+		clamped := ClampReasoningEffort(*req.ReasoningEffort, caps.EffortValues)
+		req.ReasoningEffort = &clamped
+	}
+	if req.MaxTokens == nil && caps.MaxOutputTokens != nil {
+		v := *caps.MaxOutputTokens
+		req.MaxTokens = &v
+	}
+	tempPath, topPPath, stopPath := samplingPaths(res.Protocol)
+	samplingOff := caps.Sampling != nil && !*caps.Sampling
+	if samplingOff || !send(tempPath) {
+		req.Temperature = nil
+	}
+	if samplingOff || !send(topPPath) {
+		req.TopP = nil
+	}
+	if !send(stopPath) {
+		req.StopSequences = nil
+	} else if caps.MaxStopSequences != nil && len(req.StopSequences) > *caps.MaxStopSequences {
+		req.StopSequences = append([]string(nil), req.StopSequences[:*caps.MaxStopSequences]...)
+	}
+	if !caps.Fields["prompt_cache_key"] {
+		req.PromptCacheKey = ""
+	}
+	if !caps.Fields["prompt_cache_retention"] {
+		req.PromptCacheRetention = ""
+	}
+	return req
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `gofmt -l llm && go vet ./llm/ && go test ./llm/ -run 'TestShapeRequest' -v && go build ./...`
+Expected: PASS; the workspace still builds (nothing else consumes the registry yet).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add llm/registry_shape.go llm/registry_shape_test.go
+git commit -m "feat(llm): ShapeRequest and the Protocol, Authenticator, RequestPreparer interfaces"
+```
+
+### Task 13: Golden `Resolved` records (§13)
+
+**Files:**
+- Create: `llm/registry/golden_test.go`
+- Create: `llm/registry/testdata/golden/*.json` (generated with `-update`, committed)
+
+**Interfaces:**
+- Consumes: everything in `registry`.
+- Produces: the golden corpus later plans regenerate when they change resolution (plan 2 adds wire-body goldens next to these; the body-level assertions in spec §13 — "no reasoning object", "reasoning.effort == high on the wire", "max_tokens = 32000" — belong there).
+
+- [ ] **Step 1: Write the test**
+
+`llm/registry/golden_test.go`:
+
+```go
+package registry
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+var updateGolden = flag.Bool("update", false, "rewrite testdata/golden files")
+
+const goldenConfig = `
+default = "anthropic"
+
+[providers."groq-responses"]
+base = "groq"
+protocol = "openai-responses"
+
+[providers.work]
+base = "openai"
+base_url = "https://gw.example.com/v1"
+protocol = "openai-chat"
+surface = "generic"
+headers = { "X-Portkey-Provider" = "openai" }
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.work.fields]
+stream_options = false
+[providers.work.models."glm-5.2-nvfp4"]
+context_window = 1048576
+max_output_tokens = 131072
+effort_values = ["high", "max"]
+thinking_format = "zai"
+
+[providers.local]
+base = "openai-compatible"
+base_url = "http://localhost:8080/v1"
+auth = "none"
+
+[providers.bedrock]
+base = "amazon-bedrock"
+[providers.bedrock.vars]
+"AWS_REGION" = "us-east-1"
+
+[providers.vertex]
+base = "google-vertex-anthropic"
+[providers.vertex.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.azure]
+[providers.azure.vars]
+"AZURE_RESOURCE_NAME" = "contoso-prod"
+[providers.azure.models."gpt55-prod"]
+alias_of = "gpt-5.5"
+[providers.azure.models."claude-prod"]
+alias_of = "claude-opus-4-5"
+
+[providers.orclaude]
+base = "openrouter"
+protocol = "anthropic"
+[providers.orclaude.models."minimax/*"]
+surface = "anthropic"
+
+[providers.ollama.models."qwen3*"]
+context_window = 40960
+`
+
+// goldenSecrets are the credential values of the golden environment; the
+// test asserts none of them ever appears in a serialized Resolved record.
+var goldenSecrets = map[string]string{
+	"ANTHROPIC_API_KEY": "SECRET-anthropic", "OPENAI_API_KEY": "SECRET-openai", "GROQ_API_KEY": "SECRET-groq",
+	"OPENROUTER_API_KEY": "SECRET-openrouter", "KIMI_API_KEY": "SECRET-kimi", "MINIMAX_API_KEY": "SECRET-minimax",
+	"MOONSHOT_API_KEY": "SECRET-moonshot", "AZURE_API_KEY": "SECRET-azure", "AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock",
+	"PORTKEY_KEY": "SECRET-portkey", "XAI_API_KEY": "SECRET-xai",
+}
+
+var goldenEnv = map[string]string{
+	"OPENAI_ORG_ID": "org-golden", "GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global", "OLLAMA_HOST": "localhost",
+}
+
+type goldenView struct {
+	Resolved
+	CredentialSource string   `json:"credential_source"`
+	PrunedFields     []string `json:"pruned_fields"`
+}
+
+func goldenRegistry(t *testing.T, extraEnv map[string]string) *Registry {
+	t.Helper()
+	home := t.TempDir()
+	adc := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	_ = os.MkdirAll(filepath.Dir(adc), 0o700)
+	_ = os.WriteFile(adc, []byte("{}"), 0o600)
+	state := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(state, "auth"), 0o700)
+	_ = os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600)
+	env := map[string]string{"HOME": home}
+	for k, v := range goldenEnv {
+		env[k] = v
+	}
+	for k, v := range goldenSecrets {
+		env[k] = v
+	}
+	for k, v := range extraEnv {
+		env[k] = v
+	}
+	r := fixtureLoad(t, env, goldenConfig, WithStateRoot(state))
+	r.ApplyLive("ollama", []Model{{ID: "llama3:8b", Caps: Caps{ContextWindow: new(8192)}}, {ID: "qwen3:8b"}})
+	return r
+}
+
+func prunedFields(c Caps) []string {
+	var out []string
+	for k, v := range c.Fields {
+		if !v {
+			out = append(out, k)
+		}
+	}
+	return sortedStrings(out)
+}
+
+func sortedStrings(s []string) []string {
+	out := append([]string(nil), s...)
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}
+
+func sp(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func ip(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func bp(v *bool) string {
+	if v == nil {
+		return "nil"
+	}
+	if *v {
+		return "true"
+	}
+	return "false"
+}
+
+func TestGoldenResolved(t *testing.T) {
+	cases := []struct {
+		name  string
+		ref   string
+		env   map[string]string
+		check func(t *testing.T, res Resolved)
+	}{
+		{"groq-chat", "groq/openai/gpt-oss-120b", nil, func(t *testing.T, res Resolved) {
+			if res.Protocol != ProtocolOpenAIChat || res.Transport.Endpoint != "/chat/completions" || res.Surface != SurfaceGeneric {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"groq-responses", "groq-responses/openai/gpt-oss-120b", nil, func(t *testing.T, res Resolved) {
+			if res.Protocol != ProtocolOpenAIResponses || res.Transport.Endpoint != "/responses" || res.Caps.Fields["store"] || res.Caps.Fields["include"] || res.Caps.StrictTools != nil {
+				t.Errorf("groq responses must stay at the baseline: %+v", res.Caps.Fields)
+			}
+		}},
+		{"openai-gpt-5.5", "openai/gpt-5.5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ImageDetail) != "original" || sp(res.Caps.ReasoningSummary) != "detailed" || !res.Caps.Fields["prompt_cache_retention"] || sp(res.Caps.MaxTokensField) != "max_completion_tokens" || res.Headers["OpenAI-Organization"] != "org-golden" {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"openai-gpt-5.6", "openai/gpt-5.6", nil, func(t *testing.T, res Resolved) {
+			if bp(res.Caps.ThinkingAlwaysOn) != "true" || sp(res.Caps.ImageDetail) != "omit" || res.Caps.Fields["prompt_cache_retention"] || !res.Caps.Fields["prompt_cache_key"] {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"openai-gpt-5.5-proxy", "openai/gpt-5.5", map[string]string{"OPENAI_BASE_URL": "https://proxy.example/v1"}, func(t *testing.T, res Resolved) {
+			if res.Transport.BaseURL != "https://proxy.example/v1" || res.Credential.Source != "env:OPENAI_API_KEY" || res.Credential.Value != goldenSecrets["OPENAI_API_KEY"] {
+				t.Errorf("override must keep the inherited credential: %+v %+v", res.Transport, res.Credential)
+			}
+		}},
+		{"openai-codex-gpt-5.6", "openai-codex/gpt-5.6", nil, func(t *testing.T, res Resolved) {
+			if res.WireID != "gpt-5.6-sol" || res.Transport.Auth != AuthOAuthOpenAICodex || res.Credential.Source != "oauth" || bp(res.Caps.Sampling) != "false" || ip(res.Caps.ContextWindow) != 272000 || res.Caps.Cost == nil || res.Transport.Body["text.verbosity"] != "low" {
+				t.Errorf("%+v", res)
+			}
+			for _, k := range []string{"temperature", "top_p", "max_output_tokens", "previous_response_id", "truncation"} {
+				if res.Caps.Fields[k] {
+					t.Errorf("codex off-list %s must stay off", k)
+				}
+			}
+			if _, ok := res.Headers["OpenAI-Organization"]; ok || len(res.Headers) != 0 {
+				t.Errorf("codex header set must be empty at this layer (the authenticator adds its own): %v", res.Headers)
+			}
+		}},
+		{"anthropic-sonnet-4-5", "anthropic/claude-sonnet-4-5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget" || res.Caps.ThinkingAlwaysOn != nil || ip(res.Caps.ContextWindow) != 200000 {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-sonnet-4-5-1m", "anthropic/claude-sonnet-4-5[1m]", nil, func(t *testing.T, res Resolved) {
+			if res.WireID != "claude-sonnet-4-5" || ip(res.Caps.ContextWindow) != 1000000 || res.Headers["anthropic-beta"] != "context-1m-2025-08-07" || sp(res.Caps.ThinkingShape) != "budget" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"anthropic-opus-4-6-1m-unknown", "anthropic/claude-opus-4-6[1m]", nil, func(t *testing.T, res Resolved) {
+			if !strings.Contains(strings.Join(res.Warnings, ";"), "model not in catalog") || res.WireID != "claude-opus-4-6[1m]" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"anthropic-haiku-4-5", "anthropic/claude-haiku-4-5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget" {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-opus-4-6", "anthropic/claude-opus-4-6", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "adaptive" || bp(res.Caps.ThinkingAlwaysOn) != "true" || res.Caps.ThinkingDisplay != nil {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-opus-4-7", "anthropic/claude-opus-4-7", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "adaptive" || sp(res.Caps.ThinkingDisplay) != "summarized" || bp(res.Caps.Sampling) != "false" {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-opus-4-5", "anthropic/claude-opus-4-5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget+effort" || res.Caps.ThinkingAlwaysOn != nil || res.Caps.Sampling != nil {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-opus-4-5-1m", "anthropic/claude-opus-4-5[1m]", nil, func(t *testing.T, res Resolved) {
+			if res.Caps.Sampling != nil || sp(res.Caps.ThinkingShape) != "budget+effort" || ip(res.Caps.ContextWindow) != 1000000 {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-opus-5", "anthropic/claude-opus-5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "adaptive" || sp(res.Caps.ThinkingDisplay) != "summarized" || !reflect.DeepEqual(res.Caps.EffortValues, []string{"low", "medium", "high", "xhigh", "max"}) {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"anthropic-mythos-5", "anthropic/claude-mythos-5", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.BaseURL != "https://api.anthropic.com/v1" || sp(res.Caps.ThinkingDisplay) != "summarized" || bp(res.Caps.Sampling) != "false" || res.Caps.Cost == nil {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"anthropic-some-new-model", "anthropic/some-new-model", nil, func(t *testing.T, res Resolved) {
+			if res.Surface != SurfaceAnthropic || sp(res.Caps.ThinkingShape) != "adaptive" || sp(res.Caps.ThinkingDisplay) != "summarized" || res.Caps.ContextWindow != nil {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"azure-gpt55-prod", "azure/gpt55-prod", nil, func(t *testing.T, res Resolved) {
+			if res.WireID != "gpt55-prod" || res.Protocol != ProtocolOpenAIResponses || res.Transport.BaseURL != "https://contoso-prod.openai.azure.com/openai/v1" || res.Transport.AuthHeader != "api-key" || ip(res.Caps.ContextWindow) == 0 {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"azure-claude-prod", "azure/claude-prod", nil, func(t *testing.T, res Resolved) {
+			if res.Protocol != ProtocolAnthropic || res.Transport.BaseURL != "https://contoso-prod.services.ai.azure.com/anthropic/v1" || sp(res.Caps.ThinkingShape) != "budget+effort" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"azure-claude-opus-4-5", "azure/claude-opus-4-5", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget+effort" || res.Transport.AuthHeader != "api-key" || res.Protocol != ProtocolAnthropic {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"azure-llama", "azure/llama-3.3-70b-instruct", nil, func(t *testing.T, res Resolved) {
+			if res.Surface != SurfaceGeneric {
+				t.Errorf("surface = %q", res.Surface)
+			}
+		}},
+		{"bedrock-sonnet-5", "bedrock/anthropic.claude-sonnet-5", nil, func(t *testing.T, res Resolved) {
+			if bp(res.Caps.StructuredOutput) != "false" || sp(res.Caps.ThinkingDisplay) != "summarized" || res.Credential.Source != "env:AWS_BEARER_TOKEN_BEDROCK" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"bedrock-gpt-5.5", "bedrock/openai.gpt-5.5", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.Preset != PresetBedrockMantleOpenAI || bp(res.Caps.StructuredOutput) == "false" || res.Transport.Auth != AuthBearer {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"bedrock-global-opus-5", "bedrock/global.anthropic.claude-opus-5", nil, func(t *testing.T, res Resolved) {
+			if res.WireID != "global.anthropic.claude-opus-5" || res.Provenance["model"] != "row:global.anthropic.claude-opus-5" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"bedrock-new-model", "bedrock/anthropic.claude-new-model", nil, func(t *testing.T, res Resolved) {
+			if bp(res.Caps.StructuredOutput) != "false" || bp(res.Caps.WebSearch) != "false" || sp(res.Caps.ThinkingShape) != "adaptive" {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"vertex-opus-5", "vertex/claude-opus-5", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global" || res.Credential.Source != "adc" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"google-vertex-opus-5", "google-vertex/claude-opus-5", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Protocol != ProtocolAnthropic {
+				t.Errorf("%+v", res.Transport)
+			}
+		}},
+		{"openrouter-opus-5", "openrouter/anthropic/claude-opus-5", nil, func(t *testing.T, res Resolved) {
+			if res.Surface != SurfaceAnthropic || sp(res.Caps.CacheControl) != "anthropic" || sp(res.Caps.ThinkingFormat) != "openrouter" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"openrouter-opus-4.6", "openrouter/anthropic/claude-opus-4.6", nil, func(t *testing.T, res Resolved) {
+			if res.Caps.ThinkingAlwaysOn != nil || res.Caps.ThinkingShape != nil {
+				t.Errorf("OpenAI protocols never derive always-on: %+v", res.Caps)
+			}
+		}},
+		{"openrouter-sonnet-4.5", "openrouter/anthropic/claude-sonnet-4.5", nil, func(t *testing.T, res Resolved) {
+			if !reflect.DeepEqual(res.Caps.ReasoningControls, []string{"toggle"}) {
+				t.Errorf("toggle-only stays as listed; the openrouter dialect sends the effort regardless: %v", res.Caps.ReasoningControls)
+			}
+		}},
+		{"orclaude-minimax", "orclaude/minimax/minimax-m2.7", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.Endpoint != "/messages" || res.Credential.Source != "env:OPENROUTER_API_KEY" || res.Surface != SurfaceAnthropic {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"openrouter-minimax", "openrouter/minimax/minimax-m2.7", nil, func(t *testing.T, res Resolved) {
+			if bp(res.Caps.ThinkingAlwaysOn) != "true" || sp(res.Caps.ReasoningField) != "reasoning_details" || !reflect.DeepEqual(res.Caps.ReasoningControls, []string{"toggle"}) {
+				t.Errorf("%+v", res.Caps)
+			}
+		}},
+		{"openrouter-deepseek-r1", "openrouter/deepseek/deepseek-r1", nil, func(t *testing.T, res Resolved) {
+			if !contains(res.Caps.ReasoningControls, "effort") {
+				t.Errorf("effort must pass through: %v", res.Caps.ReasoningControls)
+			}
+		}},
+		{"kimi-for-coding", "kimi-for-coding/kimi-for-coding", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget" || res.Surface != SurfaceAnthropic || !contains(res.Caps.ReasoningControls, "effort") {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"kimi-k3", "kimi-for-coding/k3", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget+effort" || res.Surface != SurfaceAnthropic {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"minimax-m3", "minimax/MiniMax-M3", nil, func(t *testing.T, res Resolved) {
+			if sp(res.Caps.ThinkingShape) != "budget" || res.Surface != SurfaceAnthropic {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"local-whatever-claude", "local/whatever-claude", nil, func(t *testing.T, res Resolved) {
+			if res.Caps.ThinkingShape != nil || res.Surface != SurfaceGeneric || res.Credential.Source != "none" || len(res.Warnings) == 0 {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"local-whatever", "local/whatever", nil, func(t *testing.T, res Resolved) {
+			if ip(res.Caps.ContextWindow) != 131072 || res.Transport.Auth != AuthNone {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"work-glm", "work/glm-5.2-nvfp4", nil, func(t *testing.T, res Resolved) {
+			if !contains(res.Caps.ReasoningControls, "effort") || res.Surface != SurfaceGeneric || res.Caps.Fields["stream_options"] || res.Credential.Source != "credential_headers" || sp(res.Caps.ThinkingFormat) != "zai" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"moonshotai-kimi-k2.5", "moonshotai/kimi-k2.5", nil, func(t *testing.T, res Resolved) {
+			if res.Caps.MaxOutputTokens != nil || res.Provenance["MaxOutputTokens"] != "derived" {
+				t.Errorf("junk cap must be cleared: %v %v", res.Caps.MaxOutputTokens, res.Provenance["MaxOutputTokens"])
+			}
+		}},
+		{"ollama-llama3", "ollama/llama3:8b", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.BaseURL != "http://localhost:11434/v1" || ip(res.Caps.ContextWindow) != 8192 || res.Transport.Auth != AuthOptionalBearer || strings.Contains(strings.Join(res.Warnings, ";"), "no credential") {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"ollama-llama3-ipv6", "ollama/llama3:8b", map[string]string{"OLLAMA_HOST": "::1", "OLLAMA_API_KEY": "SECRET-ollama"}, func(t *testing.T, res Resolved) {
+			if res.Transport.BaseURL != "http://[::1]:11434/v1" || res.Credential.Source != "env:OLLAMA_API_KEY" {
+				t.Errorf("%+v", res)
+			}
+		}},
+		{"ollama-llama3-base-url", "ollama/llama3:8b", map[string]string{"OLLAMA_BASE_URL": "http://proxy.example/ollama/v1"}, func(t *testing.T, res Resolved) {
+			if res.Transport.BaseURL != "http://proxy.example/ollama/v1" {
+				t.Errorf("%+v", res.Transport)
+			}
+		}},
+		{"ollama-qwen3", "ollama/qwen3:8b", nil, func(t *testing.T, res Resolved) {
+			if ip(res.Caps.ContextWindow) != 40960 || res.Provenance["ContextWindow"] != "config/glob:qwen3*" {
+				t.Errorf("%+v", res.Provenance)
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := goldenRegistry(t, c.env)
+			res, err := r.Resolve(c.ref)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", c.ref, err)
+			}
+			c.check(t, res)
+			view := goldenView{Resolved: res, CredentialSource: res.Credential.Source, PrunedFields: prunedFields(res.Caps)}
+			got, err := json.MarshalIndent(view, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, '\n')
+			for name, secret := range goldenSecrets {
+				if bytes.Contains(got, []byte(secret)) {
+					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
+				}
+			}
+			for name, value := range c.env {
+				if isKeyVar(name) && bytes.Contains(got, []byte(value)) {
+					t.Fatalf("%s: the serialized record contains the value of %s", c.ref, name)
+				}
+			}
+			path := filepath.Join("testdata", "golden", c.name+".json")
+			if *updateGolden {
+				_ = os.MkdirAll(filepath.Dir(path), 0o755)
+				if err := os.WriteFile(path, got, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("missing golden %s (run: go test ./llm/registry -run TestGoldenResolved -update)", path)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("%s differs from golden %s (run with -update after confirming the change is intended)\n--- got ---\n%s", c.ref, path, got)
+			}
+		})
+	}
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+```
+
+- [ ] **Step 2: Run once to generate the goldens, then run for real**
+
+Run: `go test ./llm/registry/ -run TestGoldenResolved -update && ls llm/registry/testdata/golden | wc -l && go test ./llm/registry/ -run TestGoldenResolved -v`
+Expected: 44 files; PASS. The inline `check` functions run in both modes, so a wrong derivation fails even during `-update`. Spot-check two files by eye: `openai-codex-gpt-5.6.json` (`"wire_id": "gpt-5.6-sol"`, `"pruned_fields"` listing the off-list, no `OpenAI-Organization` header) and `bedrock-sonnet-5.json` (`"structured_output": false` with provenance `overlay/glob:*anthropic.*`).
+
+If a `check` fails because the fixture's facts differ from the 2026-08-28 snapshot (a renamed id, a changed control list), confirm the upstream value and adjust the expectation; never change the resolver to fit a stale expectation.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add llm/registry/golden_test.go llm/registry/testdata/golden/
+git commit -m "test(registry): golden Resolved records for the spec §13 reference set"
+```
+
+### Task 14: `evener models list|inspect|refresh`
+
+**Files:**
+- Create: `cmd/evener/models.go`
+- Modify: `cmd/evener/main.go` (`cliCommandRunners` gets `models`; the constructor at `main.go:378` sets `models: runModels`; `dispatchCLICommandWith` gets `case "models"`; `printRunCommands` gets a `models` line)
+- Modify: `cmd/evener/main_coverage_fuzz_test.go` (`testDispatchCLICommandWith`: add a `models` runner and `"models"` to the command list)
+- Test: `cmd/evener/models_test.go`
+
+**Interfaces:**
+- Consumes: `registry.Load` + options, `registry.ErrOldSchema`, `(*Registry).Instances/ProviderIDs/Provider/ModelIDs/Resolve/UserLayerNote/Warnings/Catalog`, `registry.Refresh`, `registry.HTTPFetcher`, `registry.RefreshOptions`, `cmdutil.DefaultConfigRoot`, `cmdutil.DefaultStateRoot`, `envvars.EVENERProvidersConfig.LookupEnv`, `credentials.LoadStore`, `(*credentials.Store).Layers/Get`.
+- Produces: `runModels(args []string, stdin io.Reader, stdout, stderr io.Writer) error`, `loadRegistryForCLI(stderr io.Writer) (*registry.Registry, error)`, `modelsRefreshFetcher` (package var tests override), `storeCredentialSource`.
+- During steps 1–2 an old-schema `providers.toml` is treated as absent with a one-line note (spec §14 step 1); plan 3 replaces the note with the §14.1 pointer.
+
+- [ ] **Step 1: Write the failing tests**
+
+`cmd/evener/models_test.go`:
+
+```go
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"primeradiant.com/evener/llm/registry"
+)
+
+func modelsTestEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("EVENER_PROVIDERS_CONFIG", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("EVENER_OFFLINE", "1")
+	for _, v := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENAI_BASE_URL", "OLLAMA_HOST", "OLLAMA_BASE_URL"} {
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+}
+
+func TestModelsInspect(t *testing.T) {
+	modelsTestEnv(t)
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"inspect", "openai/gpt-5.5"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("inspect: %v (%s)", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("inspect must print JSON: %v\n%s", err, stdout.String())
+	}
+	if out["protocol"] != "openai-responses" || out["wire_id"] != "gpt-5.5" || out["credential_source"] != "none" {
+		t.Fatalf("inspect output: %v", out)
+	}
+	req := out["request"].(map[string]any)
+	if req["url"] != "https://api.openai.com/v1/responses" || req["auth"] != "bearer" {
+		t.Fatalf("request skeleton: %v", req)
+	}
+	if _, ok := out["provenance"]; !ok {
+		t.Fatal("inspect must include provenance")
+	}
+	if !strings.Contains(strings.Join(anyStrings(out["warnings"]), ";"), "no credential") {
+		t.Fatalf("credential-less inspect must warn: %v", out["warnings"])
+	}
+}
+
+func anyStrings(v any) []string {
+	var out []string
+	if list, ok := v.([]any); ok {
+		for _, x := range list {
+			out = append(out, x.(string))
+		}
+	}
+	return out
+}
+
+func TestModelsList(t *testing.T) {
+	modelsTestEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk")
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "anthropic/claude-opus-5") || strings.Contains(stdout.String(), "openai/gpt-5.5") {
+		t.Fatalf("list shows instances only by default:\n%s", stdout.String())
+	}
+	stdout.Reset()
+	if err := runModels([]string{"list", "--provider", "groq", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --provider: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "groq/openai/gpt-oss-120b") || !strings.Contains(stdout.String(), "openai-chat") {
+		t.Fatalf("list --provider groq:\n%s", stdout.String())
+	}
+	stdout.Reset()
+	if err := runModels([]string{"list", "--provider", "cohere", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "needs base_url") {
+		t.Fatalf("--all must flag a hidden provider:\n%s", stdout.String())
+	}
+}
+
+func TestModelsOldSchemaIgnoredWithNote(t *testing.T) {
+	modelsTestEnv(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(path, []byte("[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"inspect", "anthropic/claude-opus-5"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("old schema must be ignored during step 1: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "ignored until the cut-over") {
+		t.Fatalf("stderr must carry the note: %q", stderr.String())
+	}
+}
+
+func TestModelsRefreshUsesInjectedFetcher(t *testing.T) {
+	modelsTestEnv(t)
+	raw, _, err := registry.EmbeddedSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	old := modelsRefreshFetcher
+	t.Cleanup(func() { modelsRefreshFetcher = old })
+	modelsRefreshFetcher = func(_ context.Context, _ string) ([]byte, string, bool, error) {
+		calls++
+		return raw, `W/"test"`, false, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"refresh", "--force"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if calls != 1 || !strings.Contains(stdout.String(), "updated") {
+		t.Fatalf("refresh output: %q calls=%d", stdout.String(), calls)
+	}
+	stdout.Reset()
+	if err := runModels([]string{"refresh"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !strings.Contains(stdout.String(), "fresh") {
+		t.Fatalf("a fresh cache is skipped without --force: %q", stdout.String())
+	}
+}
+
+func TestModelsUsageAndUnknown(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := runModels(nil, strings.NewReader(""), &stdout, &stderr); err != nil || !strings.Contains(stderr.String(), "Usage: evener models") {
+		t.Fatalf("usage: %v %q", err, stderr.String())
+	}
+	if err := runModels([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("unknown subcommand must error")
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./cmd/evener/ -run 'TestModels' -v`
+Expected: FAIL to compile ("undefined: runModels").
+
+- [ ] **Step 3: Write `models.go`**
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"path/filepath"
+	"sort"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
+)
+
+// modelsRefreshFetcher fetches models.dev for `evener models refresh`; tests
+// replace it so the command never touches the network.
+var modelsRefreshFetcher = registry.HTTPFetcher(&http.Client{Timeout: 60 * time.Second})
+
+func printModelsUsage(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "Usage: evener models <list|inspect|refresh> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "Inspect the provider registry (docs/superpowers/specs/2026-08-28-provider-registry-design.md §11.1).\n\n")
+	_, _ = fmt.Fprintf(w, "Commands:\n")
+	_, _ = fmt.Fprintf(w, "  list [--provider X] [--all]   Resolved rows: protocol, surface, context, output cap, cost, effort ladder, warnings\n")
+	_, _ = fmt.Fprintf(w, "  inspect <instance/model>      The full Resolved record as JSON, with provenance, pruned fields, and the request skeleton\n")
+	_, _ = fmt.Fprintf(w, "  refresh [--force]             Fetch models.dev into the runtime cache now\n")
+}
+
+// runModels dispatches `evener models` (spec §11.1).
+func runModels(args []string, _ io.Reader, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		printModelsUsage(stderr)
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		return runModelsList(args[1:], stdout, stderr)
+	case "inspect":
+		return runModelsInspect(args[1:], stdout, stderr)
+	case "refresh":
+		return runModelsRefresh(args[1:], stdout, stderr)
+	case "help", "-h", "--help":
+		printModelsUsage(stderr)
+		return nil
+	default:
+		printModelsUsage(stderr)
+		return fmt.Errorf("unknown models command %q", args[0])
+	}
+}
+
+// storeCredentialSource exposes the credentials.toml file layer to the
+// registry (spec §10: store entries are looked up by instance name only).
+type storeCredentialSource struct{ store *credentials.Store }
+
+func (s storeCredentialSource) Lookup(name string) (string, bool) {
+	if s.store == nil {
+		return "", false
+	}
+	if hasFile, _ := s.store.Layers(name); !hasFile {
+		return "", false
+	}
+	v, _ := s.store.Get(name)
+	return v, v != ""
+}
+
+// credentialsPath is credentials.toml's location: the sibling of the
+// providers.toml in use, else <config-root>/credentials.toml.
+func credentialsPath() string {
+	if p, ok := envvars.EVENERProvidersConfig.LookupEnv(); ok && strings.TrimSpace(p) != "" {
+		return filepath.Join(filepath.Dir(p), "credentials.toml")
+	}
+	return filepath.Join(cmdutil.DefaultConfigRoot(), "credentials.toml")
+}
+
+// loadRegistryForCLI loads the registry with the credentials store. During
+// steps 1–2 an old-schema providers.toml is ignored with a note (spec §14).
+func loadRegistryForCLI(stderr io.Writer) (*registry.Registry, error) {
+	store, err := credentials.LoadStore(credentialsPath())
+	if err != nil {
+		return nil, fmt.Errorf("credentials: %w", err)
+	}
+	opts := []registry.Option{registry.WithCredentials(storeCredentialSource{store}), registry.WithStateRoot(cmdutil.DefaultStateRoot())}
+	r, err := registry.Load(opts...)
+	if errors.Is(err, registry.ErrOldSchema) {
+		_, _ = fmt.Fprintf(stderr, "note: %v; ignored until the cut-over\n", err)
+		r, err = registry.Load(append(opts, registry.WithNoUserLayer())...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range r.Warnings() {
+		_, _ = fmt.Fprintln(stderr, "warning:", w)
+	}
+	return r, nil
+}
+
+func runModelsList(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("models list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	provider := fs.String("provider", "", "list one instance or registry provider")
+	all := fs.Bool("all", false, "include hidden providers, hidden rows, and rows without tool calling")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	r, err := loadRegistryForCLI(stderr)
+	if err != nil {
+		return err
+	}
+	var names []string
+	switch {
+	case *provider != "":
+		names = []string{*provider}
+	case *all:
+		names = r.ProviderIDs()
+		seen := map[string]bool{}
+		for _, id := range names {
+			seen[id] = true
+		}
+		for _, inst := range r.Instances() {
+			if !seen[inst.Name] {
+				names = append(names, inst.Name)
+			}
+		}
+		sort.Strings(names)
+	default:
+		for _, inst := range r.Instances() {
+			names = append(names, inst.Name)
+		}
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "REF\tPROTOCOL\tSURFACE\tCONTEXT\tOUTPUT\tCOST $/M\tEFFORT\tNOTES")
+	for _, name := range names {
+		if p, ok := r.Provider(name); ok && p.Hidden {
+			if *all {
+				_, _ = fmt.Fprintf(tw, "%s/\t%s\t\t\t\t\t\tneeds base_url (hidden)\n", name, p.Protocol)
+			}
+			continue
+		}
+		ids, err := r.ModelIDs(name)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			res, err := r.Resolve(name + "/" + id)
+			if err != nil {
+				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\terror: %v\n", name, id, err)
+				continue
+			}
+			if !*all && (res.Model.Hidden || (res.Caps.Tools != nil && !*res.Caps.Tools)) {
+				continue
+			}
+			cost := ""
+			if res.Caps.Cost != nil {
+				cost = fmt.Sprintf("%g/%g", res.Caps.Cost.Input, res.Caps.Cost.Output)
+			}
+			_, _ = fmt.Fprintf(tw, "%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, id, res.Protocol, res.Surface,
+				intOrDash(res.Caps.ContextWindow), intOrDash(res.Caps.MaxOutputTokens), cost,
+				strings.Join(res.Caps.EffortValues, ","), strings.Join(res.Warnings, "; "))
+		}
+	}
+	return tw.Flush()
+}
+
+func intOrDash(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprint(*v)
+}
+
+// inspectView is what `evener models inspect` prints: the Resolved record
+// plus the credential source, the pruned-field list, and the request
+// skeleton (spec §11.1). Secrets never appear.
+type inspectView struct {
+	registry.Resolved
+	CredentialSource string          `json:"credential_source"`
+	PrunedFields     []string        `json:"pruned_fields"`
+	Request          inspectRequest  `json:"request"`
+}
+
+type inspectRequest struct {
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Auth    string            `json:"auth"`
+	Headers map[string]string `json:"headers"`
+}
+
+func runModelsInspect(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("models inspect", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: evener models inspect <instance/model>")
+	}
+	r, err := loadRegistryForCLI(stderr)
+	if err != nil {
+		return err
+	}
+	res, err := r.Resolve(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	var pruned []string
+	for k, v := range res.Caps.Fields {
+		if !v {
+			pruned = append(pruned, k)
+		}
+	}
+	sort.Strings(pruned)
+	headers := map[string]string{}
+	for k, v := range res.Headers {
+		headers[k] = v
+	}
+	for k := range res.CredentialHeaders {
+		headers[k] = "***"
+	}
+	view := inspectView{
+		Resolved: res, CredentialSource: res.Credential.Source, PrunedFields: pruned,
+		Request: inspectRequest{
+			Method:  "POST",
+			URL:     res.Transport.BaseURL + strings.ReplaceAll(res.Transport.Endpoint, "{model}", res.WireID),
+			Auth:    res.Transport.Auth,
+			Headers: headers,
+		},
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(view)
+}
+
+func runModelsRefresh(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("models refresh", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	force := fs.Bool("force", false, "fetch even when the cache is under 24h old")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	res, err := registry.Refresh(ctx, registry.RefreshOptions{StateRoot: cmdutil.DefaultStateRoot(), Fetcher: modelsRefreshFetcher, Force: *force})
+	if err != nil {
+		return err
+	}
+	switch {
+	case res.Skipped:
+		_, _ = fmt.Fprintf(stdout, "cache is fresh (under 24h); pass --force to fetch anyway: %s\n", res.Path)
+	case res.NotModified:
+		_, _ = fmt.Fprintf(stdout, "not modified upstream (etag %s); cache kept: %s\n", res.Etag, res.Path)
+	default:
+		_, _ = fmt.Fprintf(stdout, "updated %s: providers %d -> %d, models %d -> %d (etag %s)\n", res.Path, res.ProvidersBefore, res.ProvidersAfter, res.ModelsBefore, res.ModelsAfter, res.Etag)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Wire the command into `main.go` and the dispatch test**
+
+In `cmd/evener/main.go`:
+
+- `cliCommandRunners`: add `models      func([]string, io.Reader, io.Writer, io.Writer) error` after `migrate`.
+- The constructor at `main.go:378` (`return dispatchCLICommandWith(args, stdin, stdout, stderr, cliCommandRunners{ … })`): add `models: runModels,`.
+- `dispatchCLICommandWith`: add before `default:`
+
+```go
+	case "models":
+		return true, "evener models", runners.models(args[1:], stdin, stdout, stderr)
+```
+
+- `printRunCommands`: add after the `migrate` line
+
+```go
+	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
+```
+
+In `cmd/evener/main_coverage_fuzz_test.go`, `testDispatchCLICommandWith`: add to the `runners` literal
+
+```go
+		models: func(args []string, _ io.Reader, _, _ io.Writer) error {
+			called = "models:" + strings.Join(args, ",")
+			return nil
+		},
+```
+
+and change the command list to `[]string{"serve", "launch-check", "openai", "upgrade", "plugin", "models"}`.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `gofmt -l cmd/evener && go vet ./cmd/evener/ && go test ./cmd/evener/ -run 'TestModels' -v && go build ./... && make lint-naming lint-gofmt lint-fuzz-registry`
+Expected: PASS, no lint findings. Then the full package: `go test ./cmd/evener/`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cmd/evener/models.go cmd/evener/models_test.go cmd/evener/main.go cmd/evener/main_coverage_fuzz_test.go
+git commit -m "feat(evener): models list|inspect|refresh over the provider registry"
+```
+
+### Task 15: Whole-plan gate
+
+**Files:** none new.
+
+- [ ] **Step 1: Run the full gate**
+
+Run: `make lint && go test ./llm/... ./cmd/evener/ && go test ./... 2>&1 | tail -20`
+Expected: lint clean; every package green. `make lint` runs golangci-lint over the workspace (revive `exported` doc comments on every exported identifier in `llm/registry` and `llm`; tagliatelle on the new tags), tomlcheck over `providers_overlay.toml`, and the fuzz registry check for `FuzzFromModelsDev`.
+
+- [ ] **Step 2: Fix anything the gate reports, re-run, and commit**
+
+```bash
+git add -u llm/registry llm/registry_shape.go cmd/evener scripts/fuzz/fuzz-targets.txt
+git commit -m "chore(registry): lint fixes after the step 1 gate"
+```
+
+(only if the gate required changes).
+
+## Out of scope for this plan (plans 2–4)
+
+- Plan 2 (spec §14 step 2): the `chatcompletions`, `responses`, `anthropic`, and `google` protocol packages with `BuildBody`, `PrunablePaths`, the `PrunablePaths() == registry.PrunablePaths(id)` contract test, every authenticator (`bearer`, `optional-bearer`, `header`, `none`, `gcp-adc` with `golang.org/x/oauth2/google`, `oauth-openai-codex` with `RequestPreparer`), the reasoning dialects of §8.4, the error classifier of §12, wire captures, and the adapted difftest.
+- Plan 3 (step 3): the cut-over: `llm.Client` routing by protocol, continuation planning from `Resolved`, `agent/provider.Profile` over `Resolved`, the thirteen §7.5 branches, hub/appwire/frontend, `providers probe|add`, the credentials store on the registry table, the `EVENER_PROVIDERS_CONFIG` tri-state at every reader, `EVENER_CREDENTIALS_CONFIG`, deletions, and the docs.
+- Plan 4 (step 4): live verification of Azure, Bedrock, and Vertex.

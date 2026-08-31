@@ -26,18 +26,7 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
-	_ "primeradiant.com/evener/llm/providers/anthropic"
-	_ "primeradiant.com/evener/llm/providers/glm"
-	_ "primeradiant.com/evener/llm/providers/google"
-	_ "primeradiant.com/evener/llm/providers/kimi"
-	_ "primeradiant.com/evener/llm/providers/kimi_anthropic"
-	_ "primeradiant.com/evener/llm/providers/minimax"
-	_ "primeradiant.com/evener/llm/providers/ollama"
-	_ "primeradiant.com/evener/llm/providers/openai"
-	_ "primeradiant.com/evener/llm/providers/openaicompat"
-	_ "primeradiant.com/evener/llm/providers/openrouter"
-	_ "primeradiant.com/evener/llm/providers/openrouter_anthropic"
+	_ "primeradiant.com/evener/llm/providers/all"
 )
 
 var exitProcess = os.Exit
@@ -113,7 +102,10 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	if err != nil {
 		return nil, err
 	}
-	profile, err := cmdutil.ResolveProfileForProvider(providerName, modelName)
+	// The catalog is what a model of this shape is offered, so it resolves on
+	// the embedded registry: no credentials, no network, and no dependence on
+	// whatever the developer happens to have configured.
+	profile, err := provider.Resolve(provider.EmbeddedRegistry(), providerName+"/"+modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +507,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	client, provCfg, hasProvConfig, err := runnerLoadClient(llm.WithStateDir(res.StateDir))
+	client, err := runnerLoadClient(res.StateDir)
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
@@ -525,7 +517,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 	defer closeAPILog() //nolint:errcheck
 
-	profile, err := runnerInitialProfile(provCfg, modelRef)
+	profile, err := runnerInitialProfile(client, modelRef)
 	if err != nil {
 		return err
 	}
@@ -545,7 +537,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		SystemPromptAppend:    cfg.systemPromptAppend,
 		NonInteractive:        true,
 		ContextStrategy:       "compact",
-		ResolveProfile:        cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ResolveProfile:        cmdutil.BuildResolveProfile(client),
 	}
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
@@ -658,8 +650,8 @@ func maybeClearOpenAIAPIKey(shouldClear bool) func() {
 	}
 }
 
-func runnerInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
+func runnerInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err != nil {
 		return nil, err
 	}

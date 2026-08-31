@@ -17,8 +17,6 @@ const (
 	// HistoryModeFullHistoryFallback sends full history after a continuation
 	// attempt was abandoned.
 	HistoryModeFullHistoryFallback HistoryMode = "full_history_fallback"
-	// HistoryModeChatFallback sends history via the chat-completions shape as a fallback.
-	HistoryModeChatFallback HistoryMode = "chat_completions_fallback"
 )
 
 // ResponsesContinuationMode is the configured policy for using server-side
@@ -30,22 +28,6 @@ const (
 	ResponsesContinuationOff ResponsesContinuationMode = "off"
 	// ResponsesContinuationAuto enables continuation when the endpoint family supports it.
 	ResponsesContinuationAuto ResponsesContinuationMode = "auto"
-)
-
-// ResponsesErrorClass categorizes a Responses-API error to drive retry and
-// fallback handling.
-type ResponsesErrorClass string
-
-const (
-	// ResponsesErrorContinuationRejected means the server rejected the
-	// continuation anchor (e.g. an unknown or expired previous response).
-	ResponsesErrorContinuationRejected ResponsesErrorClass = "continuation_rejected"
-	// ResponsesErrorModelEndpoint means the model or endpoint is unavailable or misconfigured.
-	ResponsesErrorModelEndpoint ResponsesErrorClass = "model_endpoint"
-	// ResponsesErrorTransient is a temporary error that is safe to retry.
-	ResponsesErrorTransient ResponsesErrorClass = "transient"
-	// ResponsesErrorPermanentOther is a permanent error not covered by the other classes.
-	ResponsesErrorPermanentOther ResponsesErrorClass = "permanent_other"
 )
 
 const (
@@ -105,7 +87,6 @@ type ContinuationMetadata struct {
 	ContextMarker           string
 	StoragePolicyLabel      string
 	StorageScopeFingerprint string
-	ChatFallbackHistoryLen  int
 }
 
 // AuthScopeIdentity identifies the authenticated scope (auth source plus hashed
@@ -160,7 +141,7 @@ type ResponsesContinuationPlanInput struct {
 
 // ResponsesContinuationPlan is the resolved continuation context for a request:
 // endpoint family, auth scope, fingerprints, storage scope and policy, and
-// whether continuation storage and chat fallback are allowed.
+// whether continuation storage is allowed.
 type ResponsesContinuationPlan struct {
 	EndpointFamily             ResponsesEndpointFamily
 	AuthScopeIdentity          AuthScopeIdentity
@@ -171,13 +152,12 @@ type ResponsesContinuationPlan struct {
 	StorageScopeFingerprint    string
 	StoragePolicyLabel         string
 	ContinuationStorageAllowed bool
-	CanFallbackToChat          bool
 }
 
 // PlanResponsesContinuation builds a ResponsesContinuationPlan from the input,
 // carrying through the endpoint family, auth scope identity, and trimmed
 // org/project ID hashes. It does not yet compute the request fingerprint,
-// storage scope, or storage/fallback decisions (those plan fields are left zero).
+// storage scope, or the storage decision (those plan fields are left zero).
 func PlanResponsesContinuation(input ResponsesContinuationPlanInput) ResponsesContinuationPlan {
 	return ResponsesContinuationPlan{
 		EndpointFamily:    input.EndpointFamily,

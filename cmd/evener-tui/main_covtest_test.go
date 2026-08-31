@@ -75,19 +75,18 @@ func TestCovRun_EnsureDirsErrorReturns1(t *testing.T) {
 // ---- run(): hub connect error returns 1 -------------------------------------
 
 func TestCovRun_HubErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, startHubClient
 	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
 	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
-	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 		return hubstart.HubRuntime{}, errors.New("hub unreachable")
 	}
 	t.Cleanup(func() {
 		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
-		warmModelCatalog, startHubClient = oldWarm, oldStart
+		startHubClient = oldStart
 	})
 	if code := run(); code != 1 {
 		t.Fatalf("run with hub error = %d, want 1", code)
@@ -97,14 +96,13 @@ func TestCovRun_HubErrorReturns1(t *testing.T) {
 // ---- run(): program.Run error returns 1 -------------------------------------
 
 func TestCovRun_ProgramErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
 	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
 	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
-	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 		return hubstart.HubRuntime{Address: hubstart.HubAddress{BaseURL: "http://hub"}}, nil
 	}
@@ -117,7 +115,7 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
-		warmModelCatalog, startHubClient = oldWarm, oldStart
+		startHubClient = oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 	if code := run(); code != 1 {
@@ -131,7 +129,7 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 // ---- run(): success returns 0 and prints post-quit message -------------------
 
 func TestCovRun_SuccessReturns0(t *testing.T) {
-	oldArgs, oldOut, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardOutput, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldOut, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardOutput, standardError, processGetenv, ensureUserConfigDirs, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
 	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stdout, stderr bytes.Buffer
@@ -139,7 +137,6 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 	standardError = &stderr
 	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
-	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 		return hubstart.HubRuntime{Address: hubstart.HubAddress{BaseURL: "http://hub"}}, nil
 	}
@@ -154,7 +151,7 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		processArgs, standardOutput, standardError, processGetenv = oldArgs, oldOut, oldErr, oldGetenv
-		ensureUserConfigDirs, warmModelCatalog, startHubClient = oldDirs, oldWarm, oldStart
+		ensureUserConfigDirs, startHubClient = oldDirs, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 	if code := run(); code != 0 {
@@ -171,14 +168,13 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 // ---- run(): debug mode skips alt screen -------------------------------------
 
 func TestCovRun_DebugModeNoAltScreen(t *testing.T) {
-	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
 	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x", "--debug"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
 	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
-	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 		return hubstart.HubRuntime{Address: hubstart.HubAddress{BaseURL: "http://hub"}}, nil
 	}
@@ -194,7 +190,7 @@ func TestCovRun_DebugModeNoAltScreen(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		processArgs, standardError, processGetenv = oldArgs, oldErr, oldGetenv
-		ensureUserConfigDirs, warmModelCatalog, startHubClient = oldDirs, oldWarm, oldStart
+		ensureUserConfigDirs, startHubClient = oldDirs, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 	if code := run(); code != 0 {

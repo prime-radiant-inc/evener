@@ -11,11 +11,9 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
@@ -410,12 +408,7 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 }
 
 func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
-	profile, err := provider.ResolveProfileFromConfig(providercfg.Config{
-		Instances: []providercfg.InstanceConfig{{Name: "ant", Type: "anthropic"}},
-	}, "ant/claude-sonnet-4-5")
-	if err != nil {
-		t.Fatalf("resolve anthropic profile: %v", err)
-	}
+	profile := namedInstanceProfile("ant", "anthropic", "claude-sonnet-4-5")
 	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
@@ -433,7 +426,7 @@ func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
 	runtime.mu.Unlock()
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	var timings events.RoundTimings
-	_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
 	if err != nil {
 		t.Fatalf("prepare delegate model request: %v", err)
 	}
@@ -486,7 +479,7 @@ func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 	go func() {
 		var timings events.RoundTimings
-		_, _, history, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+		_, _, history, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
 		result <- prepareResult{history: history, err: err}
 	}()
 

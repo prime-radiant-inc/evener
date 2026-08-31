@@ -19,10 +19,10 @@ func s5covWriteSection(t *testing.T, dir, name, content string) {
 // s5covResolver builds a sectionResolver reading from a single disk directory.
 func s5covResolver(dir, provider, agent string, agentFS fstest.MapFS) *sectionResolver {
 	return &sectionResolver{
-		provider: provider,
-		agent:    agent,
-		sources:  []sectionSource{diskSource{dir: dir}},
-		agentFS:  agentFS,
+		surface: provider,
+		agent:   agent,
+		sources: []sectionSource{diskSource{dir: dir}},
+		agentFS: agentFS,
 	}
 }
 

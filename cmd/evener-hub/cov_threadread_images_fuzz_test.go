@@ -82,7 +82,7 @@ func covThreadReadSeed(t *testing.T) {
 		_, _ = pastEntryThread(hubcore.WebConfig{}, hubcore.PastEntry{Meta: meta, StateDir: t.TempDir()}, false)
 	}
 	_ = windowedReadResponse(past, 1)
-	_, _ = pastEntryTurns(entry)
+	_, _ = pastEntryTurns(hubcore.WebConfig{}, entry)
 	for _, p := range []appwire.ThreadReadParams{{}, {ThreadID: " x "}, {Ref: "bad"}, {Ref: "remote:x"}, {Ref: "local:x"}} {
 		_, _ = localPastThreadID(p)
 	}

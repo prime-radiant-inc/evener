@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,8 +124,11 @@ func TestGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 			if tt.succeedLast && gotErr != nil {
 				t.Fatalf("Generate error = %v, want nil", gotErr)
 			}
-			if !tt.succeedLast && !errors.Is(gotErr, lastErr) {
-				t.Fatalf("Generate error = %v, want final provider error %v", gotErr, lastErr)
+			// The surfaced error is the FINAL attempt's, matched on its
+			// message: the client re-attributes an error to the instance that
+			// produced it by copying, so it is never the scripted instance.
+			if !tt.succeedLast && (gotErr == nil || !strings.Contains(gotErr.Error(), "last")) {
+				t.Fatalf("Generate error = %v, want the final provider error %v", gotErr, lastErr)
 			}
 			if err := logger.Close(); err != nil {
 				t.Fatalf("Close API logger: %v", err)
@@ -164,8 +168,8 @@ func TestStreamGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 			if tt.succeedLast && gotErr != nil {
 				t.Fatalf("StreamGenerate response error = %v, want nil", gotErr)
 			}
-			if !tt.succeedLast && !errors.Is(gotErr, lastErr) {
-				t.Fatalf("StreamGenerate response error = %v, want final provider error %v", gotErr, lastErr)
+			if !tt.succeedLast && (gotErr == nil || !strings.Contains(gotErr.Error(), "last")) {
+				t.Fatalf("StreamGenerate response error = %v, want the final provider error %v", gotErr, lastErr)
 			}
 			if err := logger.Close(); err != nil {
 				t.Fatalf("Close API logger: %v", err)

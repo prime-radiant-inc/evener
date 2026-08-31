@@ -498,23 +498,35 @@ export interface InputItem {
 }
 
 export interface InstanceCreateParams {
-  type: string;
   name: string;
-  apiStyle: string;
-  baseUrl: string;
+  base: string;
+  baseUrl?: string;
+  protocol?: string;
+  surface?: string;
+  vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  credentialHeader?: string;
 }
 
 export interface InstanceEditParams {
   name: string;
-  apiStyle: string;
-  baseUrl: string;
+  baseUrl?: string;
+  protocol?: string;
+  surface?: string;
+  vars?: Record<string, string>;
 }
 
 export interface InstanceEntry {
   name: string;
-  type: string;
-  apiStyle: string;
-  baseUrl: string;
+  base?: string;
+  providerId: string;
+  protocol: string;
+  surface?: string;
+  auth: string;
+  baseUrl?: string;
+  vars?: Record<string, string>;
+  implicit: boolean;
+  hidden?: boolean;
   isDefault: boolean;
   authModes?: string[];
   activeSource: string;
@@ -523,11 +535,15 @@ export interface InstanceEntry {
   envVar?: string;
   storedEmail?: string;
   credentialRequired: boolean;
+  warnings?: string[];
 }
 
 export interface InstanceListResponse {
   instances: InstanceEntry[];
-  availableTypes: string[];
+  availableProviders: ProviderDescriptor[];
+  diagnostics?: string[];
+  userLayer?: string;
+  writesRefused?: boolean;
 }
 
 export interface InstanceRemoveParams {
@@ -1256,6 +1272,16 @@ export interface ProjectsRecentParams {
 
 export interface ProjectsRecentResponse {
   data: string[];
+}
+
+export interface ProviderDescriptor {
+  id: string;
+  name?: string;
+  protocol: string;
+  auth: string;
+  varsEnv?: string[];
+  apiKeyEnv?: string[];
+  implicit: boolean;
 }
 
 export interface QueueState {

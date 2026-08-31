@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
@@ -25,12 +24,18 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 	f.Fuzz(func(t *testing.T, program byte) {
 		switch program % 9 {
 		case 0:
+			// The registry's credential vocabulary (spec §10), which is what
+			// the hub sends; hub_auth_wire_test.go pins the renderings.
 			statuses := []authStatus{
-				{Provider: "openai", ActiveSource: openai.AuthSourceEnv, HasStoredOAuth: true, Email: "a@b"},
-				{Provider: "openai", ActiveSource: openai.AuthSourceEnv},
-				{Provider: "openai", ActiveSource: openai.AuthSourceOAuth, NeedsLogin: true, StoredEmail: "s@b", Error: "expired"},
-				{Provider: "openai", ActiveSource: openai.AuthSourceOAuth, NeedsRefresh: true},
-				{Provider: "openai", ActiveSource: openai.AuthSourceSignedOut, HasStoredOAuth: true, Error: "bad"},
+				{Provider: "openai", Supported: true, ActiveSource: "env:OPENAI_API_KEY", AuthModes: []string{"apiKey"}, Email: "a@b"},
+				{Provider: "work", Supported: true, ActiveSource: "api_key", AuthModes: []string{"apiKey"}},
+				{Provider: "gateway", Supported: true, ActiveSource: "credential_headers", AuthModes: []string{"none", "apiKey"}},
+				{Provider: "anthropic", Supported: true, ActiveSource: "store", AuthModes: []string{"apiKey"}},
+				{Provider: "openai-codex", Supported: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}, NeedsLogin: true, StoredEmail: "s@b", Error: "expired"},
+				{Provider: "openai-codex", Supported: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}, NeedsRefresh: true},
+				{Provider: "vertexish", Supported: true, ActiveSource: "adc", AuthModes: []string{"adc"}},
+				{Provider: "local", Supported: true, ActiveSource: "none", AuthModes: []string{"none"}},
+				{Provider: "anthropic", Supported: true, ActiveSource: "none", AuthModes: []string{"apiKey"}},
 				{Provider: "", Error: "ignored"}, {Provider: "anthropic"},
 			}
 			for _, s := range statuses {
@@ -39,6 +44,9 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 			_ = authProviderArg("   ")
 			_ = authProviderArg("anthropic extra")
 			_ = authStatusFromAppWire(appwire.AuthStatusResponse{})
+			for _, s := range statuses {
+				_ = hubModel{authStatusSeen: true, authStatus: s}.hubAuthLoginBlockedReason(s.Provider)
+			}
 		case 1:
 			entries := []commandPaletteEntry{{Item: tuipick.PickerPanelItem{ID: "a", Label: "/a"}}, {Item: tuipick.PickerPanelItem{ID: "b", Label: "/b", Detail: "detail", DisabledReason: "why"}}}
 			p := newCommandPalette("Commands", entries, 0)

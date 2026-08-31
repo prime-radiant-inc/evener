@@ -7,12 +7,13 @@ import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { InstanceDetailSheet } from "./InstanceDetailSheet";
 
-function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
-    apiStyle: "",
-    baseUrl: "",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
     isDefault: false,
-    activeSource: "absent",
+    activeSource: "none",
     hasStoredOAuth: false,
     credentialRequired: true,
     ...overrides,
@@ -58,144 +59,239 @@ describe("visibility", () => {
   });
 
   test("renders a dialog named after the instance, with the default chip when set", () => {
-    renderSheet(instance({ name: "openai-work", type: "openai", isDefault: true }));
+    renderSheet(instance({ name: "openai-work", providerId: "openai", isDefault: true }));
     expect(screen.getByRole("dialog", { name: "openai-work" })).toBeTruthy();
     expect(screen.getByText(/default/i)).toBeTruthy();
   });
 
+  // The sheet is the whole screen on mobile and the only place Remove would
+  // have been, so the badge explaining an implicit instance has to be here
+  // too - not only on the row behind it.
+  test("an implicit instance is badged 'from environment'", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+    expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a non-implicit instance carries no such badge", () => {
+    renderSheet(instance({ name: "work", providerId: "groq", base: "groq", implicit: false }));
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
   test("the close button calls onClose", async () => {
     const user = userEvent.setup();
-    const { onClose } = renderSheet(instance({ name: "a", type: "x" }));
+    const { onClose } = renderSheet(instance({ name: "a", providerId: "x" }));
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalled();
   });
 
   test("closes itself when the instance disappears from the store", async () => {
-    const { onClose } = renderSheet(instance({ name: "a", type: "x" }));
+    const { onClose } = renderSheet(instance({ name: "a", providerId: "x" }));
     expect(screen.getByRole("dialog", { name: "a" })).toBeTruthy();
     credentialsStore.setState({ instances: [] });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
   test("the heading dot reads idle for a configured instance", () => {
-    renderSheet(instance({ name: "a", type: "x", hasStoredFile: true, activeSource: "file" }));
+    renderSheet(instance({ name: "a", providerId: "x", hasStoredFile: true, activeSource: "store" }));
     expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
   });
 
   test("the heading dot reads ended when a required key is missing", () => {
-    renderSheet(instance({ name: "a", type: "x", activeSource: "absent", credentialRequired: true }));
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "none", credentialRequired: true }));
     expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy();
   });
 });
 
 describe("credential display", () => {
-  test("multiple layers show effective + shadowed chips", () => {
+  test("a stored key behind a higher-ranked source shows effective + shadowed chips", () => {
     renderSheet(
-      instance({ name: "a", type: "openai", hasStoredOAuth: true, hasStoredFile: true, activeSource: "oauth" }),
+      instance({
+        name: "a",
+        providerId: "anthropic",
+        hasStoredFile: true,
+        activeSource: "api_key",
+      }),
     );
     expect(screen.getByText("effective")).toBeTruthy();
     expect(screen.getByText("shadowed")).toBeTruthy();
+    expect(screen.getByText(/Configured via providers\.toml/)).toBeTruthy();
     expect(screen.getByText(/Configured via stored API key/)).toBeTruthy();
   });
 
   test("an oauth layer carries the stored email", () => {
     renderSheet(
-      instance({ name: "a", type: "openai", hasStoredOAuth: true, storedEmail: "me@x.com", activeSource: "oauth" }),
+      instance({
+        name: "a",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        hasStoredOAuth: true,
+        storedEmail: "me@x.com",
+        activeSource: "oauth",
+      }),
     );
     expect(screen.getByText(/Configured via OAuth \(me@x\.com\)/)).toBeTruthy();
   });
 
   test("an unconfigured instance shows its label instead of layers", () => {
-    renderSheet(instance({ name: "a", type: "x", activeSource: "absent" }));
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "none" }));
     expect(screen.getByText("Not configured")).toBeTruthy();
     expect(screen.queryByText("effective")).toBeNull();
   });
 });
 
 describe("the meta table", () => {
-  test("shows the instance type, and the API style/base row only when present", () => {
+  test("shows the instance's provider and its protocol/base URL", () => {
     renderSheet(
       instance({
         name: "a",
-        type: "openai",
-        apiStyle: "responses",
+        providerId: "openai",
+        protocol: "openai-responses",
         baseUrl: "https://x",
         hasStoredFile: true,
-        activeSource: "file",
+        activeSource: "store",
       }),
     );
-    expect(screen.getByText("Type")).toBeTruthy();
+    expect(screen.getByText("Provider")).toBeTruthy();
     expect(screen.getByText("openai")).toBeTruthy();
-    expect(screen.getByText("responses · base https://x")).toBeTruthy();
+    expect(screen.getByText("openai-responses · base https://x")).toBeTruthy();
   });
 
-  test("omits the API row when neither apiStyle nor baseUrl is set", () => {
-    renderSheet(instance({ name: "a", type: "x", hasStoredFile: true, activeSource: "file" }));
-    expect(screen.queryByText("API")).toBeNull();
+  // protocol has no omitempty on the wire, so the API row always has
+  // something to show.
+  test("the API row shows the protocol alone when no base URL is set", () => {
+    renderSheet(
+      instance({ name: "a", providerId: "x", protocol: "openai-chat", hasStoredFile: true, activeSource: "store" }),
+    );
+    expect(screen.getByText("openai-chat")).toBeTruthy();
   });
 });
 
 describe("actions are conditionally rendered", () => {
   test("Set key only when authModes includes apiKey", () => {
-    renderSheet(instance({ name: "a", type: "x", authModes: ["oauth"] }));
+    renderSheet(instance({ name: "a", providerId: "x", authModes: ["oauth"] }));
     expect(screen.queryByRole("button", { name: /set key|replace key/i })).toBeNull();
   });
 
   test("Sign in… only when authModes includes oauth", () => {
-    renderSheet(instance({ name: "a", type: "x", authModes: ["apiKey"] }));
+    renderSheet(instance({ name: "a", providerId: "x", authModes: ["apiKey"] }));
     expect(screen.queryByRole("button", { name: /sign in|refresh oauth/i })).toBeNull();
   });
 
-  test("Clear only when activeSource is file or oauth", () => {
-    renderSheet(instance({ name: "a", type: "x", activeSource: "env", envVar: "X_KEY" }));
+  test("Clear only when activeSource is store or oauth", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "env:X_API_KEY", envVar: "X_API_KEY" }));
     expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
   });
 
-  test("Edit and Remove are always present", () => {
-    renderSheet(instance({ name: "a", type: "x" }));
+  test("Clear once a stored key is what resolves", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "store", hasStoredFile: true }));
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+  });
+
+  test("Edit and Remove are both offered for a non-implicit instance", () => {
+    renderSheet(instance({ name: "a", providerId: "x" }));
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
+  // Removing an implicit instance is refused server-side (spec §11.3), so
+  // the sheet must not even offer the button; Edit stays, since editing an
+  // implicit instance writes a shadow rather than changing it.
+  test("an implicit instance offers Edit but no Remove", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  // The danger zone is Clear + Remove under a divider; an implicit instance
+  // with nothing stored offers neither, so the divider must go too rather
+  // than trailing an empty section.
+  test("no danger-zone divider when the instance offers neither Clear nor Remove", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    expect(document.querySelectorAll("hr").length).toBe(0);
+  });
+
+  test("the danger-zone divider stays when Clear alone is offered", () => {
+    renderSheet(
+      instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+    );
+    expect(document.querySelectorAll("hr").length).toBe(1);
+  });
+
   test("make default only when not already default", () => {
-    renderSheet(instance({ name: "a", type: "x", isDefault: false }));
+    renderSheet(instance({ name: "a", providerId: "x", isDefault: false }));
     expect(screen.getByRole("button", { name: /make default/i })).toBeTruthy();
   });
 
   test("make default hidden when already default", () => {
-    renderSheet(instance({ name: "a", type: "x", isDefault: true }));
+    renderSheet(instance({ name: "a", providerId: "x", isDefault: true }));
     expect(screen.queryByRole("button", { name: /make default/i })).toBeNull();
   });
 });
 
 describe("action labels follow stored state", () => {
-  test("'Set key' when no file-sourced key exists", () => {
-    renderSheet(instance({ name: "a", type: "x", authModes: ["apiKey"], hasStoredFile: false }));
+  test("'Set key' when no stored key exists", () => {
+    renderSheet(instance({ name: "a", providerId: "x", authModes: ["apiKey"], hasStoredFile: false }));
     expect(screen.getByRole("button", { name: "Set key" })).toBeTruthy();
   });
 
-  test("'Replace key' whenever a file-sourced key exists, even if a different source is currently effective", () => {
+  test("'Replace key' whenever a stored key exists, and the sheet says that key is shadowed", () => {
     renderSheet(
       instance({
         name: "a",
-        type: "x",
+        providerId: "x",
         authModes: ["apiKey"],
         hasStoredFile: true,
-        hasStoredOAuth: true,
-        activeSource: "oauth",
+        activeSource: "api_key",
       }),
     );
     expect(screen.getByRole("button", { name: "Replace key" })).toBeTruthy();
+    // Replacing a key that providers.toml outranks changes nothing the
+    // instance actually uses, so the shadowed chip has to be on screen next
+    // to the offer.
+    expect(screen.getByText("shadowed")).toBeTruthy();
   });
 
   test("'Sign in…' when no OAuth is stored", () => {
-    renderSheet(instance({ name: "a", type: "x", authModes: ["oauth"], hasStoredOAuth: false }));
+    renderSheet(
+      instance({
+        name: "a",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        authModes: ["oauth"],
+        hasStoredOAuth: false,
+      }),
+    );
     expect(screen.getByRole("button", { name: "Sign in…" })).toBeTruthy();
   });
 
   test("'Refresh OAuth' once signed in", () => {
-    renderSheet(instance({ name: "a", type: "x", authModes: ["oauth"], hasStoredOAuth: true }));
+    renderSheet(
+      instance({
+        name: "a",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        authModes: ["oauth"],
+        hasStoredOAuth: true,
+        activeSource: "oauth",
+      }),
+    );
     expect(screen.getByRole("button", { name: "Refresh OAuth" })).toBeTruthy();
+  });
+
+  // authModesFor maps each auth scheme to a fixed, non-overlapping set, so a
+  // bearer instance is never oauth-capable however its credential is stored.
+  test("a bearer-auth instance never offers Sign in, even with a stored key", () => {
+    renderSheet(
+      instance({
+        name: "a",
+        providerId: "openai",
+        auth: "bearer",
+        authModes: ["apiKey"],
+        hasStoredFile: true,
+        activeSource: "store",
+      }),
+    );
+    expect(screen.queryByRole("button", { name: /sign in|refresh oauth/i })).toBeNull();
   });
 });
 
@@ -205,16 +301,14 @@ describe("action callbacks fire", () => {
     const { handlers } = renderSheet(
       instance({
         name: "a",
-        type: "openai",
-        authModes: ["apiKey", "oauth"],
+        providerId: "anthropic",
+        authModes: ["apiKey"],
         hasStoredFile: true,
-        activeSource: "file",
+        activeSource: "store",
       }),
     );
     await user.click(screen.getByRole("button", { name: "Replace key" }));
     expect(handlers.onSetApiKey).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Sign in…" }));
-    expect(handlers.onOAuthStart).toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Clear" }));
     expect(handlers.onClear).toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Edit" }));
@@ -225,33 +319,76 @@ describe("action callbacks fire", () => {
     expect(handlers.onSetDefault).toHaveBeenCalled();
   });
 
+  test("clicking Sign in calls its handler", async () => {
+    const user = userEvent.setup();
+    const { handlers } = renderSheet(
+      instance({ name: "a", providerId: "openai-codex", auth: "oauth-openai-codex", authModes: ["oauth"] }),
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    expect(handlers.onOAuthStart).toHaveBeenCalled();
+  });
+
   test("clicking Test credentials calls its handler", async () => {
     const user = userEvent.setup();
-    const { handlers } = renderSheet(instance({ name: "a", type: "x" }));
+    const { handlers } = renderSheet(instance({ name: "a", providerId: "x" }));
     await user.click(screen.getByRole("button", { name: "Test credentials" }));
     expect(handlers.onTestCredentials).toHaveBeenCalledTimes(1);
   });
 
   test("pending verification disables only the Test credentials action", () => {
-    renderSheet(instance({ name: "a", type: "x" }), { testCredentialsPending: true });
+    renderSheet(instance({ name: "a", providerId: "x" }), { testCredentialsPending: true });
     expect((screen.getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("a credential test result renders as a status line", () => {
-    renderSheet(instance({ name: "a", type: "x" }), {
+    renderSheet(instance({ name: "a", providerId: "x" }), {
       testCredentialsResult: { provider: "a", status: "success", message: "Credentials verified." },
     });
     expect(screen.getByRole("status").textContent).toContain("Credentials verified.");
   });
 
   test("an unknown test status is sanitized to the endpoint-failure message", () => {
-    renderSheet(instance({ name: "a", type: "x" }), {
+    renderSheet(instance({ name: "a", providerId: "x" }), {
       testCredentialsResult: { provider: "a", status: "garbage", message: "raw provider prose" },
     });
     const line = screen.getByRole("status");
     expect(line.textContent).toContain("The provider endpoint could not be reached.");
     expect(line.textContent).not.toContain("raw provider prose");
+  });
+});
+
+// writesRefused is the wire's "providers.toml cannot be written" flag
+// (InstanceListResponse, spec §11.3): it gates the evener/instance/* writes
+// only. Set key/Sign in/Clear/Test credentials write the credentials store
+// or an OAuth record, never providers.toml, so they stay live.
+describe("writesRefused disables instance-CRUD actions only", () => {
+  test("disables Edit, Remove, and make default", () => {
+    renderSheet(instance({ name: "a", providerId: "x", isDefault: false }), { writesRefused: true });
+    expect((screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("leaves Test credentials, Set/Replace key, and Clear enabled", () => {
+    renderSheet(
+      instance({
+        name: "a",
+        providerId: "x",
+        authModes: ["apiKey"],
+        hasStoredFile: true,
+        activeSource: "store",
+      }),
+      { writesRefused: true },
+    );
+    expect((screen.getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Replace key" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("an implicit instance under writesRefused still has no Remove button at all", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }), { writesRefused: true });
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });

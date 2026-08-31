@@ -1,0 +1,96 @@
+{
+  "instance": "anthropic",
+  "provider_id": "anthropic",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://api.anthropic.com/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://api.anthropic.com/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "ANTHROPIC_BASE_URL"
+    }
+  },
+  "model_id": "claude-sonnet-4-5[1m]",
+  "wire_id": "claude-sonnet-4-5",
+  "model": {
+    "id": "claude-sonnet-4-5[1m]",
+    "wire_id": "claude-sonnet-4-5",
+    "alias_of": "claude-sonnet-4-5",
+    "family": "claude-sonnet",
+    "headers": {
+      "anthropic-beta": "context-1m-2025-08-07"
+    },
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1000000,
+    "max_output_tokens": 64000,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "budget_tokens"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2025-07-31",
+    "cost": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3.75
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "budget",
+    "web_search": true
+  },
+  "headers": {
+    "anthropic-beta": "context-1m-2025-08-07"
+  },
+  "provenance": {
+    "ContextWindow": "overlay/row",
+    "Cost": "alias",
+    "Family": "alias",
+    "InputModalities": "alias",
+    "KnowledgeCutoff": "alias",
+    "MaxOutputTokens": "alias",
+    "Reasoning": "alias",
+    "ReasoningControls": "alias",
+    "StructuredOutput": "alias",
+    "Surface": "alias",
+    "ThinkingShape": "derived",
+    "Tools": "alias",
+    "WebSearch": "overlay/provider",
+    "model": "row:claude-sonnet-4-5[1m]"
+  },
+  "default_model": "claude-opus-5",
+  "cheap_model": "claude-haiku-4-5",
+  "credential_source": "env:ANTHROPIC_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

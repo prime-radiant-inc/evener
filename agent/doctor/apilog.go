@@ -11,8 +11,8 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providers/openai"
-	"primeradiant.com/evener/llm/providers/openaicompat"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/providers/responses"
 )
 
 // APILogOpts selects which calls to display. Filters narrow the rows shown; the
@@ -28,7 +28,7 @@ type APILogOpts struct {
 	// Recompute re-extracts text/tool-call counts from stored response
 	// bodies for rows whose recorded TextLength and ToolCalls are both zero
 	// (historical records from before the accumulated-item settlement fix
-	// -- see llm/providers/openai.ExtractRecordedResponse). It reads bodies
+	// -- see responses.ExtractRecordedResponse). It reads bodies
 	// on demand for those rows only; it does not change the decoder mode
 	// APILog otherwise uses for the whole log.
 	Recompute bool
@@ -783,28 +783,24 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 	return row
 }
 
-// recomputeExtractors maps an EndpointFamily to the provider-package
+// recomputeExtractors maps an EndpointFamily to the protocol-package
 // function that re-extracts a settled llm.Response from a stored body of
-// that family's own wire shape -- each reusing that family's real live
-// parser (see the referenced functions' docs for which live decoder each
-// one shares state or logic with), never a second hand-rolled one:
-//   - openai_public / openai_codex: the Responses API. openaicompat's
-//     codex-continuation family delegates to the same OpenAI Responses
-//     adapter (openairesponses.Adapter, called via responsesAdapter()), so
-//     its records carry these same EndpointFamily values too -- one
-//     extractor covers both origins.
-//   - openai_chat_completions: this adapter's own Chat Completions
-//     fallback (always streamed in this codebase).
-//   - openai_compatible_chat_completions: openaicompat's Chat Completions
-//     adapter (JSON only -- see openaicompat.ExtractRecordedResponse).
+// that family's own wire shape, each reusing that family's real live
+// decoder rather than a second hand-rolled one:
+//   - openai_public / openai_codex: the Responses API, whichever transport
+//     recorded it.
+//   - openai_chat_completions: the Chat Completions API, JSON or stream.
+//   - openai_compatible_chat_completions: the same wire shape under the
+//     family name a log written before the registry carries. No new record
+//     uses it; reading old ones is what --recompute is for.
 //
-// Other providers' bodies are a different wire shape entirely and are left
+// Other protocols' bodies are a different wire shape entirely and are left
 // alone.
 var recomputeExtractors = map[string]func(body []byte, requestedModel string) (llm.Response, error){
-	"openai_public":                      openai.ExtractRecordedResponse,
-	"openai_codex":                       openai.ExtractRecordedResponse,
-	"openai_chat_completions":            openai.ExtractRecordedChatCompletionsResponse,
-	"openai_compatible_chat_completions": openaicompat.ExtractRecordedResponse,
+	"openai_public":                      responses.ExtractRecordedResponse,
+	"openai_codex":                       responses.ExtractRecordedResponse,
+	"openai_chat_completions":            chatcompletions.ExtractRecordedResponse,
+	"openai_compatible_chat_completions": chatcompletions.ExtractRecordedResponse,
 }
 
 // recomputeRow re-extracts TextLength/ToolCalls from record's stored

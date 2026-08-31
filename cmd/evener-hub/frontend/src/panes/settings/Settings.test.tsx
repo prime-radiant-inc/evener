@@ -77,7 +77,10 @@ test("Escape closes this pane", () => {
 // OverlayPanel produces.
 function connectFakeClientWithNoInstances(): void {
   const fake = new FakeClient("ready");
-  fake.on("evener/instance/list", () => ({ instances: [], availableTypes: ["anthropic"] }));
+  fake.on("evener/instance/list", () => ({
+    instances: [],
+    availableProviders: [{ id: "anthropic", protocol: "anthropic", auth: "bearer", implicit: true }],
+  }));
   connectionStore.getState().connect(fake);
 }
 

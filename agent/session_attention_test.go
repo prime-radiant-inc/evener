@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
@@ -1627,7 +1628,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 	}
 
 	var probeErr error
-	adapter := &delegateAttentionListModelsAdapter{
+	adapter := &delegateAttentionLiveModelsAdapter{
 		onList: func() {
 			events, err := delegatestore.ReadEvents(storePath)
 			if err != nil {
@@ -3539,7 +3540,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 		t.Fatalf("save root metadata: %v", err)
 	}
 	client := llm.NewClient()
-	adapter := &delegateAttentionListModelsAdapter{}
+	adapter := &delegateAttentionLiveModelsAdapter{}
 	client.Register(adapter)
 	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
@@ -3868,7 +3869,7 @@ type attentionSyncBarrierFS struct {
 	releaseOnce sync.Once
 }
 
-type delegateAttentionListModelsAdapter struct {
+type delegateAttentionLiveModelsAdapter struct {
 	delegateAttentionPanicProvider
 	onList    func()
 	listCalls int
@@ -3877,7 +3878,7 @@ type delegateAttentionListModelsAdapter struct {
 type delegateAttentionPanicProvider struct{}
 
 var _ llm.ProviderAdapter = (*delegateAttentionPanicProvider)(nil)
-var _ llm.ModelLister = (*delegateAttentionPanicProvider)(nil)
+var _ llm.LiveModelLister = (*delegateAttentionPanicProvider)(nil)
 
 func (*delegateAttentionPanicProvider) Name() string { return "openai" }
 
@@ -3889,11 +3890,11 @@ func (*delegateAttentionPanicProvider) Stream(context.Context, llm.Request) (llm
 	panic("cold delivery replay called provider Stream")
 }
 
-func (*delegateAttentionPanicProvider) ListModels(context.Context) ([]llm.ModelInfo, error) {
-	panic("cold delivery replay called provider ListModels")
+func (*delegateAttentionPanicProvider) LiveModels(context.Context) ([]registry.Model, error) {
+	panic("cold delivery replay listed provider models")
 }
 
-func (a *delegateAttentionListModelsAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a *delegateAttentionLiveModelsAdapter) LiveModels(context.Context) ([]registry.Model, error) {
 	a.listCalls++
 	if a.onList != nil {
 		a.onList()

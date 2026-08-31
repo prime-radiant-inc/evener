@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 func TestModelRefQualifiedWithMissingPart(t *testing.T) {
@@ -42,22 +41,6 @@ func TestResolveResumeModelRefNoModel(t *testing.T) {
 	_, err := ResolveResumeModelRef("", "", "", "")
 	if err == nil || !strings.Contains(err.Error(), "provider/model") {
 		t.Fatalf("err=%v, want no-model guidance", err)
-	}
-}
-
-func TestInstanceEndpoint(t *testing.T) {
-	cfg := providercfg.Config{
-		Instances: []providercfg.InstanceConfig{
-			{Name: "kc", BaseURL: " https://api.kimi.com/coding/v1 ", APIKey: " sk-abc "},
-		},
-	}
-	baseURL, apiKey, _, _ := instanceEndpoint(cfg, "kc")
-	if baseURL != "https://api.kimi.com/coding/v1" || apiKey != "sk-abc" {
-		t.Fatalf("instanceEndpoint=%q,%q (must trim)", baseURL, apiKey)
-	}
-	baseURL, apiKey, _, _ = instanceEndpoint(cfg, "missing")
-	if baseURL != "" || apiKey != "" {
-		t.Fatalf("instanceEndpoint(missing)=%q,%q, want empty", baseURL, apiKey)
 	}
 }
 

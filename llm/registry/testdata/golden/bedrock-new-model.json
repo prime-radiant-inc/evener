@@ -1,0 +1,72 @@
+{
+  "instance": "bedrock",
+  "provider_id": "amazon-bedrock",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "-",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "AWS_REGION": "us-east-1"
+    },
+    "vars_env": {
+      "AWS_REGION": "AWS_REGION"
+    }
+  },
+  "model_id": "anthropic.claude-new-model",
+  "wire_id": "anthropic.claude-new-model",
+  "model": {
+    "id": "anthropic.claude-new-model",
+    "wire_id": "anthropic.claude-new-model",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "structured_output": false,
+    "reasoning_controls": [
+      "effort"
+    ],
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "adaptive",
+    "thinking_display": "summarized",
+    "thinking_always_on": true,
+    "web_search": false
+  },
+  "provenance": {
+    "ReasoningControls": "derived",
+    "StructuredOutput": "overlay/glob:*anthropic.*",
+    "Surface": "derived",
+    "ThinkingAlwaysOn": "derived",
+    "ThinkingDisplay": "derived",
+    "ThinkingShape": "derived",
+    "WebSearch": "overlay/glob:*anthropic.*",
+    "model": "synthesized"
+  },
+  "warnings": [
+    "model not in catalog"
+  ],
+  "default_model": "global.anthropic.claude-opus-5",
+  "cheap_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "synthesized": true,
+  "credential_source": "env:AWS_BEARER_TOKEN_BEDROCK",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

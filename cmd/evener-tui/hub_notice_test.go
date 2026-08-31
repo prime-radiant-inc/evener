@@ -125,7 +125,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	m = updated.(hubModel)
 	got := m.sessionView()
 	// View() format: summary line contains the notice summary/title, source·cause on second line.
-	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth openai or check Hub auth configuration."} {
+	for _, want := range []string{"auth endpoint unavailable", "evener", "Retry /auth <instance> or check the hub's credentials."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
@@ -143,7 +143,7 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	if strings.Contains(got, "Auth error") {
 		t.Fatalf("successful login did not clear auth notice:\n%s", got)
 	}
-	if !strings.Contains(got, "OpenAI login complete. OpenAI auth: oauth (j@example.com)") {
+	if !strings.Contains(got, "Sign-in complete for openai. openai auth: OAuth (j@example.com)") {
 		t.Fatalf("login success message missing:\n%s", got)
 	}
 }

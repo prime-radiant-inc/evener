@@ -1,0 +1,106 @@
+{
+  "instance": "bedrock",
+  "provider_id": "amazon-bedrock",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "header",
+    "auth_header": "x-api-key",
+    "base_url": "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "-",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "AWS_REGION": "us-east-1"
+    },
+    "vars_env": {
+      "AWS_REGION": "AWS_REGION"
+    }
+  },
+  "model_id": "anthropic.claude-sonnet-5",
+  "wire_id": "anthropic.claude-sonnet-5",
+  "model": {
+    "id": "anthropic.claude-sonnet-5",
+    "wire_id": "anthropic.claude-sonnet-5",
+    "family": "claude-sonnet",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 1000000,
+    "max_output_tokens": 128000,
+    "tools": true,
+    "structured_output": false,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle",
+      "effort"
+    ],
+    "effort_values": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default_effort": "high",
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "knowledge_cutoff": "2026-01-31",
+    "cost": {
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.2,
+      "cache_write": 2.5
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_shape": "adaptive",
+    "thinking_display": "summarized",
+    "thinking_always_on": true,
+    "web_search": false
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "DefaultEffort": "overlay/glob:*claude-sonnet-5*",
+    "EffortValues": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "Sampling": "snapshot/row",
+    "StructuredOutput": "overlay/glob:*anthropic.*",
+    "Surface": "snapshot/row",
+    "ThinkingAlwaysOn": "derived",
+    "ThinkingDisplay": "derived",
+    "ThinkingShape": "derived",
+    "Tools": "snapshot/row",
+    "WebSearch": "overlay/glob:*anthropic.*",
+    "model": "row:anthropic.claude-sonnet-5"
+  },
+  "default_model": "global.anthropic.claude-opus-5",
+  "cheap_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "credential_source": "env:AWS_BEARER_TOKEN_BEDROCK",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

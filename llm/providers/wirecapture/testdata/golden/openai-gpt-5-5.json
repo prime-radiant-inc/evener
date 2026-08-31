@@ -1,0 +1,61 @@
+{
+  "case": "openai-gpt-5-5",
+  "ref": "openai/gpt-5.5",
+  "stream": false,
+  "method": "POST",
+  "url": "https://api.openai.com/v1/responses",
+  "headers": {
+    "Authorization": "Bearer \u003ccredential\u003e",
+    "Content-Type": "application/json",
+    "Openai-Organization": "org-golden"
+  },
+  "body": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "What is the weather in Oslo?",
+            "type": "input_text"
+          }
+        ],
+        "role": "user",
+        "type": "message"
+      }
+    ],
+    "instructions": "You are terse.",
+    "max_output_tokens": 128000,
+    "model": "gpt-5.5",
+    "prompt_cache_key": "pck-golden",
+    "prompt_cache_retention": "24h",
+    "reasoning": {
+      "effort": "high",
+      "summary": "detailed"
+    },
+    "store": false,
+    "tool_choice": "required",
+    "tools": [
+      {
+        "description": "Current weather",
+        "name": "weather",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true,
+        "type": "function"
+      }
+    ]
+  },
+  "pruned_fields": null
+}

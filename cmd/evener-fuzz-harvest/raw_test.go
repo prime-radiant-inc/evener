@@ -75,25 +75,25 @@ func TestHarvestProviderAliasesKeepDecoderSeeds(t *testing.T) {
 			name:           "OpenAI public Responses",
 			endpointFamily: "openai_public",
 			body:           `data: {"type":"response.completed","response":{}}` + "\n\n",
-			wantDir:        dirOpenAIResponses,
+			wantDir:        dirResponsesStream,
 		},
 		{
 			name:           "OpenAI Codex Responses",
 			endpointFamily: "openai_codex",
 			body:           `data: {"type":"response.completed","response":{}}` + "\n\n",
-			wantDir:        dirOpenAIResponses,
+			wantDir:        dirResponsesStream,
 		},
 		{
 			name:           "OpenAI Chat Completions",
 			endpointFamily: "openai_chat_completions",
 			body:           `data: {"object":"chat.completion.chunk","choices":[]}` + "\n\n",
-			wantDir:        dirOpenAIChatComplete,
+			wantDir:        dirChatCompletionsSSE,
 		},
 		{
-			name:           "OpenAI-compatible Chat Completions",
+			name:           "retired OpenAI-compatible Chat Completions",
 			endpointFamily: "openai_compatible_chat_completions",
 			body:           `data: {"object":"chat.completion.chunk","choices":[]}` + "\n\n",
-			wantDir:        dirOpenAICompatStream,
+			wantDir:        dirChatCompletionsSSE,
 		},
 	}
 
@@ -123,12 +123,12 @@ func TestHarvestProviderAliasesRouteByBodyShapeWithoutEndpointFamily(t *testing.
 		{
 			name:     "Responses is unambiguous",
 			body:     `data: {"type":"response.completed","response":{}}` + "\n\n",
-			wantDirs: []string{dirOpenAIResponses},
+			wantDirs: []string{dirResponsesStream},
 		},
 		{
-			name:     "Chat Completions fans out to both compatible decoders",
+			name:     "Chat Completions goes to the one chat decoder",
 			body:     `data: {"object":"chat.completion.chunk","choices":[]}` + "\n\n",
-			wantDirs: []string{dirOpenAIChatComplete, dirOpenAICompatStream},
+			wantDirs: []string{dirChatCompletionsSSE},
 		},
 	}
 
@@ -156,11 +156,10 @@ func assertHarvestedProviderDirs(t *testing.T, endpointFamily string, body []byt
 		want[dir] = true
 	}
 	for _, dir := range []string{
-		dirOpenAIResponses,
-		dirOpenAIChatComplete,
+		dirResponsesStream,
+		dirChatCompletionsSSE,
 		dirAnthropicStream,
 		dirGeminiStream,
-		dirOpenAICompatStream,
 	} {
 		wantCount := 0
 		if want[dir] {

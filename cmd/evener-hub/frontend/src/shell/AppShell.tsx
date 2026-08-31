@@ -33,6 +33,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
+import { useKeyboardInset } from "./useKeyboardInset";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
@@ -490,6 +491,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
       .catch(() => undefined);
   }, [locationFailed, locationRef, locationResource]);
   const isMobile = useIsMobile();
+  // Keeps --keyboard-inset current for the mobile .shell rule; see
+  // useKeyboardInset.ts's header for the why.
+  useKeyboardInset();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
   // chrome - the rail (which carries the search/settings entry points, floor

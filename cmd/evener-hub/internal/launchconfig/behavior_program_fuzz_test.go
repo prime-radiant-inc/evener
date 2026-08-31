@@ -7,13 +7,13 @@ import "testing"
 // ordering and repetition without relying on network, wall clock, or host state.
 func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
-		checkToEnv_BaselineSetsRunStateAndProvider,
-		checkToEnv_PerLaunchEnvBeatsCredsStore,
-		checkToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv,
-		checkToEnv_NoProviderNoInjection,
-		checkToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey,
+		checkToEnv_BaselineSetsRunStateAndToken,
+		checkToEnv_PerLaunchEnvBeatsParentEnv,
+		checkToEnv_AddsOnlyItsOwnControls,
 		checkToEnv_ProvidersConfigPathSetsEnvVar,
 		checkToEnv_NoProvidersConfigPathDoesNotSetEnvVar,
+		checkToEnv_NoUserLayerSetsEmptyProvidersConfig,
+		checkToEnv_CredentialsPathSetsEnvVar,
 		checkToEnv_DoesNotIntroduceObsoleteRawHTTPLogging,
 		checkPathsFor_MetaAndLegacyProjectKeyedByStableRoot,
 		checkResolve_TrustFromMainRootAppliesInLinkedWorktree,

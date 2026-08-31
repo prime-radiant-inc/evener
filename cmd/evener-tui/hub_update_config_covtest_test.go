@@ -27,14 +27,15 @@ func TestCovHandleAuthLoginStart(t *testing.T) {
 		t.Fatal("handleAuthLoginStart error path should add an auth notice")
 	}
 
-	// Success path with empty provider: defaults to "openai".
+	// Success path with no instance named: the hub echoes the one it
+	// normalized to, so nothing here invents a default.
 	m = hubModel{session: newModel(nil)}
 	got, _ = m.handleAuthLoginStart(hubAuthLoginStartMsg{
 		resp: appwire.AuthLoginStartResponse{Provider: "", FlowID: "flow1", URL: "http://sign.in"},
 	})
 	after = got.(hubModel)
-	if after.authLoginProvider != "openai" {
-		t.Fatalf("authLoginProvider = %q, want openai", after.authLoginProvider)
+	if after.authLoginProvider != "" {
+		t.Fatalf("authLoginProvider = %q, want the hub's own echo", after.authLoginProvider)
 	}
 	if after.authLoginFlowID != "flow1" {
 		t.Fatalf("authLoginFlowID = %q, want flow1", after.authLoginFlowID)

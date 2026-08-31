@@ -397,7 +397,7 @@ func scenarioRunnerFailureAccountingAndHelpers(t *testing.T) {
 	if !strings.Contains(r.summary(), "x: scanned") || !strings.Contains(log.String(), "emit error") {
 		t.Fatalf("summary/log %q %q", r.summary(), log.String())
 	}
-	if got := providerTargetDirs(r, "openai", []byte(`{"choices":[]}`)); len(got) != 2 {
+	if got := providerTargetDirs(r, "openai", []byte(`{"choices":[]}`)); len(got) != 1 {
 		t.Fatalf("chat dirs=%v", got)
 	}
 	if !isChatCompletionsStream([]byte("chat.completion")) {

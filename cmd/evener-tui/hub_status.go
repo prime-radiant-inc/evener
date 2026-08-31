@@ -293,6 +293,10 @@ func taskSummary(tasks []taskpkg.Task) string {
 	return summary
 }
 
+// authSummary is the session-status pane's one-line credential field. It
+// shares authSourceLabel with /auth rather than carrying a second reading of
+// activeSource: the two disagreeing about the same instance is the drift this
+// wave was filed for.
 func authSummary(auth appwire.AuthStatusResponse) string {
 	provider := strings.TrimSpace(auth.Provider)
 	if provider == "" {
@@ -301,28 +305,23 @@ func authSummary(auth appwire.AuthStatusResponse) string {
 	if !auth.Supported {
 		return provider + " not supported"
 	}
-	if !auth.SignedIn {
-		return provider + " signed out"
+	status := authStatusFromAppWire(auth)
+	summary := provider + " " + authSourceLabel(status)
+	if account := authStatusEmail(status); account != "" {
+		summary += " " + account
 	}
-	source := strings.TrimSpace(auth.ActiveSource)
-	if source == "" {
-		source = "signed in"
-	}
-	account := strings.TrimSpace(auth.Email)
-	if account == "" {
-		account = strings.TrimSpace(auth.StoredEmail)
-	}
-	if account == "" {
-		return provider + " " + source
-	}
-	return provider + " " + source + " " + account
+	return summary
 }
 
+// authProviderForStatus is the instance the status pane asks about: the
+// session's own, or nothing when it has no profile. Nothing means the hub's
+// normalizeAuthProvider picks the default — one definition of it, on the side
+// that owns the registry, the same rule authProviderArg follows for /auth.
+// Naming an instance here instead is what let the pane report a different one
+// than /auth answered for, and naming "openai" client-side is what once made
+// /logout delete the platform API key while reporting an OAuth sign-out.
 func authProviderForStatus(detail hubSessionDetail) string {
-	if provider := strings.TrimSpace(detail.Profile); provider != "" {
-		return provider
-	}
-	return "openai"
+	return strings.TrimSpace(detail.Profile)
 }
 
 func hubErrorReason(err error) string {

@@ -80,11 +80,10 @@ func isPersonalStateDir(dir string) bool {
 // a fuzz target's native testdata/fuzz/<FuzzName>/ so Go auto-loads the seeds.
 const (
 	dirParseSSE           = "llm/testdata/fuzz/FuzzParseSSE"
-	dirOpenAIResponses    = "llm/providers/openai/testdata/fuzz/FuzzOpenAIResponsesMetamorphic"
-	dirOpenAIChatComplete = "llm/providers/openai/testdata/fuzz/FuzzOpenAIChatCompletionsMetamorphic"
+	dirResponsesStream    = "llm/providers/responses/testdata/fuzz/FuzzResponsesStreamMetamorphic"
+	dirChatCompletionsSSE = "llm/providers/chatcompletions/testdata/fuzz/FuzzChatCompletionsStreamMetamorphic"
 	dirAnthropicStream    = "llm/providers/anthropic/testdata/fuzz/FuzzAnthropicStreamMetamorphic"
 	dirGeminiStream       = "llm/providers/google/testdata/fuzz/FuzzGeminiStreamMetamorphic"
-	dirOpenAICompatStream = "llm/providers/openaicompat/testdata/fuzz/FuzzOpenAICompatStreamMetamorphic"
 	dirToolArgsValidate   = "agent/testdata/fuzz/FuzzToolArgsValidate"
 	dirMessageDecode      = "appwire/testdata/fuzz/FuzzMessageDecode"
 	dirMethodParams       = "appwire/testdata/fuzz/FuzzMethodParams"

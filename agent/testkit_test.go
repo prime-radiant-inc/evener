@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,11 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+
+	// registryClientAt's live instances dispatch over the real Responses
+	// protocol at an httptest server, which needs it registered.
+	_ "primeradiant.com/evener/llm/providers/responses"
 )
 
 // Shared test fixtures for the agent package.
@@ -71,13 +77,18 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		fn(&o)
 	}
 	if o.client == nil {
-		o.client = llm.NewClient()
 		if len(o.adapters) == 0 {
+			// The default fixture needs no registry: openai is a curated
+			// implicit id, so a bare client resolves it on the embedded one.
+			o.client = llm.NewClient()
 			o.client.Register(&fakeAdapter{name: "openai", steps: o.steps})
+		} else {
+			o.client = registryClient(t, nil, o.adapters...)
 		}
-	}
-	for _, a := range o.adapters {
-		o.client.Register(a)
+	} else {
+		for _, a := range o.adapters {
+			o.client.Register(a)
+		}
 	}
 	if o.dir == "" {
 		o.dir = sharedSessionWorkspace
@@ -105,6 +116,82 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+// registryClient builds a client whose resolutions come from the fixture
+// registry extended with instances, with no user layer, no cache, and no
+// environment. Supplied adapters are registered as overrides, and an adapter
+// name the registry does not already know is injected as an instance so the
+// profile for it resolves. Every remaining instance the registry knows (the
+// credential-less implicit ones included) gets a mute fake, so no test client
+// can reach a real transport.
+func registryClient(t *testing.T, instances map[string]registry.Provider, adapters ...llm.ProviderAdapter) *llm.Client {
+	t.Helper()
+	return registryClientAt(t, "", instances, nil, adapters...)
+}
+
+// registryClientAt is registryClient with the two additions a session test that
+// dispatches for real needs: stateDir holds the continuation scope secret the
+// plan is keyed from, and the instances named in live keep their own transport
+// instead of the mute fake, so the session reaches its httptest server.
+func registryClientAt(t *testing.T, stateDir string, instances map[string]registry.Provider, live []string, adapters ...llm.ProviderAdapter) *llm.Client {
+	t.Helper()
+	merged := map[string]registry.Provider{}
+	maps.Copy(merged, instances)
+	for _, a := range adapters {
+		name := a.Name()
+		if _, ok := merged[name]; ok {
+			continue
+		}
+		if _, ok := testRegistryInstances()[name]; ok {
+			continue
+		}
+		merged[name] = adapterInstance(name)
+	}
+	r := testRegistry(t)
+	if len(merged) > 0 {
+		var err error
+		if r, err = testRegistryWith(merged); err != nil {
+			t.Fatalf("registryClient: %v", err)
+		}
+	}
+	c := llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
+	covered := map[string]bool{}
+	for _, a := range adapters {
+		c.Register(a)
+		covered[a.Name()] = true
+	}
+	for _, name := range live {
+		covered[name] = true
+	}
+	for _, inst := range r.Instances() {
+		if !covered[inst.Name] {
+			c.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
+	return c
+}
+
+// resolveClientProfile resolves ref on the client's own registry, so the
+// session's profile is the row that client will dispatch on.
+func resolveClientProfile(t *testing.T, client *llm.Client, ref string) *provider.Profile {
+	t.Helper()
+	p, err := provider.Resolve(client.Registry(), ref)
+	if err != nil {
+		t.Fatalf("resolve %q: %v", ref, err)
+	}
+	return p
+}
+
+// adapterInstance is the registry entry a test adapter's name needs when it is
+// not a curated id: an unreachable openai-compatible gateway, so a profile for
+// it resolves and only the override ever serves it. The name rides in the host
+// so a stray request names the adapter it escaped from.
+func adapterInstance(name string) registry.Provider {
+	return registry.Provider{
+		Base: "openai-compatible", APIKey: "test",
+		Transport: registry.Transport{BaseURL: "http://" + name + ".test.invalid/v1"},
+	}
 }
 
 // --- deterministic clock ---

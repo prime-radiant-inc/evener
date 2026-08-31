@@ -124,10 +124,11 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 	}
 }
 
-// An openrouter-anthropic fallback carries an upstream-qualified ID
-// ("anthropic/claude-opus-4-5-20251101[1m]"). The clamp must canonicalize the
-// provider namespace AND the dated/[1m] suffixes to resolve the opus-4-5 family
-// levels — otherwise a "max" request reaches the 4.5 fallback unclamped.
+// A fallback carrying both a dated snapshot and the "[1m]" suffix
+// ("claude-opus-4-5-20251101[1m]") must still resolve the opus-4-5 family's
+// effort ladder — the registry folds the dated suffix onto the base row and
+// the "[1m]" row is an alias of it — otherwise a "max" request reaches the
+// 4.5 fallback unclamped.
 func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -137,7 +138,7 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 	permErr := llm.ErrorFromHTTPStatus("anthropic", 403, "primary denied", nil, nil)
 
 	f := &agenttest.ModelTrackingAdapter{
-		Provider: "openrouter-anthropic",
+		Provider: "anthropic",
 		Respond: func(req llm.Request) (llm.Response, error) {
 			if strings.Contains(req.Model, "opus-4-6") {
 				return llm.Response{}, permErr
@@ -153,10 +154,10 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, withTestSessionNamer(c, newOpenRouterAnthropicProfile("anthropic/claude-opus-4-6")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
-		ModelFallbacks:  []string{"anthropic/claude-opus-4-5-20251101[1m]"},
+		ModelFallbacks:  []string{"claude-opus-4-5-20251101[1m]"},
 		ReasoningEffort: "max",
 		testOnly:        testConfig{metaFS: afero.NewMemMapFs()},
 	})
@@ -179,6 +180,6 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 		t.Fatal("fallback model was not invoked")
 	}
 	if fbEffort != "high" {
-		t.Fatalf("fallback effort = %q for model %q, want high (max clamped to opus-4-5 family after canonicalizing namespace + dated/[1m])", fbEffort, fbModel)
+		t.Fatalf("fallback effort = %q for model %q, want high (max clamped to the opus-4-5 family the dated/[1m] ref resolves to)", fbEffort, fbModel)
 	}
 }

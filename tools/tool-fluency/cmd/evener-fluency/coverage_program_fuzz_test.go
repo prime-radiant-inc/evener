@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 type coverageAdapter struct{}
@@ -145,8 +144,8 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = runnerClientHasProvider(client, "openai")
 		_ = runnerClientHasProvider(client, "OPENAI")
 		_ = runnerClientHasProvider(nil, "openai")
-		_, _ = runnerInitialProfile(providercfg.Config{}, cmdutil.ModelRef{Provider: "missing", Model: "m"})
-		_, _ = runnerInitialProfile(providercfg.Config{}, cmdutil.ModelRef{Provider: "openai", Model: "m"})
+		_, _ = runnerInitialProfile(llm.NewClient(), cmdutil.ModelRef{Provider: "missing", Model: "m"})
+		_, _ = runnerInitialProfile(llm.NewClient(), cmdutil.ModelRef{Provider: "openai", Model: "m"})
 		_, _ = runnerApplyFastCheapModel(nil, "x", nil)
 		_, _ = runnerApplyFastCheapModel(profile, " ", nil)
 		_, _ = runnerApplyFastCheapModel(profile, "other/cheap", llm.NewClient())
@@ -373,10 +372,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 
 		fakeClient := llm.NewClient()
 		fakeClient.Register(coverageAdapter{})
-		fakeCfg := providercfg.Config{Default: "openai", Instances: []providercfg.InstanceConfig{{Name: "openai", Type: "openai", APIStyle: providercfg.StyleResponses}}}
-		runnerLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-			return fakeClient, fakeCfg, true, nil
-		}
+		runnerLoadClient = func(string) (*llm.Client, error) { return fakeClient, nil }
 		liveProbeCfg := runConfig{model: "openai/m", harness: "live", outDir: filepath.Join(t.TempDir(), "live-out"), timeout: time.Second, reasoningEffort: "low"}
 		_ = runProbe(liveProbeCfg, probeFile{ID: "live", Prompt: "hello"}, 1, nil)
 		t.Setenv(envvars.EVENERFluencyModel.Name, "")
@@ -394,13 +390,9 @@ func FuzzFluencyCoverage(f *testing.F) {
 			t.Logf("successful live probe setup: %v", err)
 		}
 		_ = runLiveProbe(context.Background(), runConfig{model: "bad", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)
-		runnerLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-			return nil, providercfg.Config{}, false, errors.New("load client")
-		}
+		runnerLoadClient = func(string) (*llm.Client, error) { return nil, errors.New("load client") }
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)
-		runnerLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-			return fakeClient, fakeCfg, true, nil
-		}
+		runnerLoadClient = func(string) (*llm.Client, error) { return fakeClient, nil }
 		badLogRes := probeResult{StateDir: filepath.Join(tmpFile, "child"), WorkDir: t.TempDir()}
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{}, &badLogRes, &liveOut, &liveErr)
 		_ = runLiveProbe(context.Background(), runConfig{model: "missing/m", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)

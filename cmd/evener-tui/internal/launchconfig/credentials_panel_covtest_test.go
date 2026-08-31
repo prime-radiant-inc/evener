@@ -53,7 +53,7 @@ func TestCovSelectedInstanceOutOfRange(t *testing.T) {
 }
 
 func TestCovSelectedInstanceHeaderRow(t *testing.T) {
-	p := CredentialsPanel{cursor: 0, rows: []panelRow{{header: true, typeName: "type"}}}
+	p := CredentialsPanel{cursor: 0, rows: []panelRow{{header: true, groupName: "type"}}}
 	if got := p.selectedInstance(); got != nil {
 		t.Fatal("selectedInstance on header row should return nil")
 	}
@@ -107,7 +107,7 @@ func TestCovCredentialsUpdateListError(t *testing.T) {
 // --- Update: AuthTestResultMsg generation mismatch ---
 
 func TestCovCredentialsAuthTestGenerationMismatch(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai"})
 	wantResult := appwire.AuthTestResponse{Provider: "existing", Status: appwire.AuthTestStatusSuccess, Message: "keep me"}
 	p.testResults = map[string]appwire.AuthTestResponse{"existing": wantResult}
 	p.testPending = map[string]bool{"x": true}
@@ -124,7 +124,7 @@ func TestCovCredentialsAuthTestGenerationMismatch(t *testing.T) {
 // --- Update: AuthTestResultMsg empty provider name ---
 
 func TestCovCredentialsAuthTestEmptyProvider(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai"})
 	wantResult := appwire.AuthTestResponse{Provider: "existing", Status: appwire.AuthTestStatusSuccess, Message: "keep me"}
 	p.testResults = map[string]appwire.AuthTestResponse{"existing": wantResult}
 	p.testPending = map[string]bool{"x": true}
@@ -142,7 +142,7 @@ func TestCovCredentialsAuthTestEmptyProvider(t *testing.T) {
 // --- Update: AuthTestResultMsg with error ---
 
 func TestCovCredentialsAuthTestWithError(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai"})
 	// Need to match generation; loadedCredentials increments to 1
 	updated, _ := p.Update(AuthTestResultMsg{
 		Generation: 1,
@@ -167,7 +167,7 @@ func TestCovCredentialsAuthTestWithError(t *testing.T) {
 // --- Update: AuthTestResultMsg success ---
 
 func TestCovCredentialsAuthTestSuccess(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai"})
 	updated, _ := p.Update(AuthTestResultMsg{
 		Generation: 1,
 		Provider:   "x",
@@ -189,7 +189,7 @@ func TestCovCredentialsAuthTestSuccess(t *testing.T) {
 // --- updateList: Enter on oauth-only instance ---
 
 func TestCovCredentialsEnterOAuthOnly(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai", AuthModes: []string{"oauth"}})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai", AuthModes: []string{"oauth"}})
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter on oauth instance should produce cmd")
@@ -203,7 +203,7 @@ func TestCovCredentialsEnterOAuthOnly(t *testing.T) {
 // --- updateList: Enter on no matching auth mode ---
 
 func TestCovCredentialsEnterNoAuthMode(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai", AuthModes: []string{}})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai", AuthModes: []string{}})
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("Enter on instance with no matching auth mode should return nil cmd")
@@ -223,7 +223,7 @@ func TestCovCredentialsEnterNilSelection(t *testing.T) {
 // --- updateList: 't' test when already pending ---
 
 func TestCovCredentialsTestAlreadyPending(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai", AuthModes: []string{"apiKey"}})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai", AuthModes: []string{"apiKey"}})
 	p.testPending = map[string]bool{"x": true}
 	_, cmd := p.Update(runeKey("t"))
 	if cmd != nil {
@@ -284,7 +284,7 @@ func TestCovCredentialsEditNilSelection(t *testing.T) {
 // --- updateList: 'n' opens create form ---
 
 func TestCovCredentialsNewOpensForm(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai"})
 	updated, _ := p.Update(runeKey("n"))
 	p2 := updated.(CredentialsPanel)
 	if !p2.formOpen {
@@ -298,7 +298,7 @@ func TestCovCredentialsNewOpensForm(t *testing.T) {
 // --- updateList: 'e' opens edit form ---
 
 func TestCovCredentialsEditOpensForm(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "x", Type: "openai", APIStyle: "responses", BaseURL: "http://x"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "x", ProviderID: "openai", Protocol: "responses", BaseURL: "http://x"})
 	updated, _ := p.Update(runeKey("e"))
 	p2 := updated.(CredentialsPanel)
 	if !p2.formOpen {
@@ -316,8 +316,8 @@ func TestCovCredentialsEditOpensForm(t *testing.T) {
 
 func TestCovCredentialsDown(t *testing.T) {
 	p := loadedCredentials(
-		appwire.InstanceEntry{Name: "a", Type: "openai"},
-		appwire.InstanceEntry{Name: "b", Type: "openai"},
+		appwire.InstanceEntry{Name: "a", ProviderID: "openai"},
+		appwire.InstanceEntry{Name: "b", ProviderID: "openai"},
 	)
 	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyDown})
 	p2 := updated.(CredentialsPanel)
@@ -329,7 +329,7 @@ func TestCovCredentialsDown(t *testing.T) {
 // --- updateList: Up at top is no-op ---
 
 func TestCovCredentialsUpAtTop(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "a", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "a", ProviderID: "openai"})
 	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyUp})
 	p2 := updated.(CredentialsPanel)
 	if p2.cursor != 1 {
@@ -340,7 +340,7 @@ func TestCovCredentialsUpAtTop(t *testing.T) {
 // --- updateList: CtrlC closes ---
 
 func TestCovCredentialsCtrlC(t *testing.T) {
-	p := loadedCredentials(appwire.InstanceEntry{Name: "a", Type: "openai"})
+	p := loadedCredentials(appwire.InstanceEntry{Name: "a", ProviderID: "openai"})
 	updated, _ := p.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	p2 := updated.(CredentialsPanel)
 	if !p2.done || !p2.cancelled {
@@ -373,14 +373,14 @@ func TestCovCredentialsFormEnterAdvanceCreate(t *testing.T) {
 // --- updateForm: Enter on last field submits create ---
 
 func TestCovCredentialsFormSubmitCreate(t *testing.T) {
-	p := CredentialsPanel{formOpen: true, formField: 3, formType: "openai", formName: "x", formAPIStyle: "responses"}
+	p := CredentialsPanel{formOpen: true, formField: 3, formBase: "openai", formName: "x", formProtocol: "openai-responses"}
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter on last field should submit")
 	}
 	msg := cmd().(InstanceCreateSubmitMsg)
-	want := appwire.InstanceCreateParams{Type: "openai", Name: "x", APIStyle: "responses"}
-	if msg.Params != want {
+	want := appwire.InstanceCreateParams{Base: "openai", Name: "x", Protocol: "openai-responses"}
+	if !reflect.DeepEqual(msg.Params, want) {
 		t.Fatalf("params = %+v, want %+v", msg.Params, want)
 	}
 }
@@ -388,14 +388,14 @@ func TestCovCredentialsFormSubmitCreate(t *testing.T) {
 // --- updateForm: Enter on last field submits edit ---
 
 func TestCovCredentialsFormSubmitEdit(t *testing.T) {
-	p := CredentialsPanel{formOpen: true, formEditing: true, formField: 1, formName: "x", formAPIStyle: "responses", formBaseURL: "http://x"}
+	p := CredentialsPanel{formOpen: true, formEditing: true, formField: 1, formName: "x", formProtocol: "openai-responses", formBaseURL: "http://x"}
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter on last edit field should submit")
 	}
 	msg := cmd().(InstanceEditSubmitMsg)
-	want := appwire.InstanceEditParams{Name: "x", APIStyle: "responses", BaseURL: "http://x"}
-	if msg.Params != want {
+	want := appwire.InstanceEditParams{Name: "x", Protocol: "openai-responses", BaseURL: "http://x"}
+	if !reflect.DeepEqual(msg.Params, want) {
 		t.Fatalf("params = %+v, want %+v", msg.Params, want)
 	}
 }
@@ -422,36 +422,30 @@ func TestCovCredentialsFormBackspace(t *testing.T) {
 	}
 }
 
-// --- updateForm: Runes on apiStyle field (edit mode) toggles ---
+// --- updateForm: Runes type into the protocol field ---
 
-func TestCovCredentialsFormEditAPIStyleToggle(t *testing.T) {
-	p := CredentialsPanel{formOpen: true, formEditing: true, formField: 0, formAPIStyle: ""}
-	updated, _ := p.Update(runeKey(" "))
-	p2 := updated.(CredentialsPanel)
-	if p2.formAPIStyle != "chat-completions" {
-		t.Fatalf("space on apiStyle should toggle to chat-completions, got %q", p2.formAPIStyle)
-	}
-}
-
-// --- updateForm: Runes on apiStyle field (create mode) toggles ---
-
-func TestCovCredentialsFormCreateAPIStyleToggle(t *testing.T) {
-	p := CredentialsPanel{formOpen: true, formField: 2, formAPIStyle: "chat-completions"}
-	updated, _ := p.Update(runeKey(" "))
-	p2 := updated.(CredentialsPanel)
-	if p2.formAPIStyle != "responses" {
-		t.Fatalf("space on apiStyle should toggle to responses, got %q", p2.formAPIStyle)
-	}
-}
-
-// --- updateForm: Runes on apiStyle field non-space is ignored ---
-
-func TestCovCredentialsFormAPIStyleNonSpaceIgnored(t *testing.T) {
-	p := CredentialsPanel{formOpen: true, formField: 2, formAPIStyle: "responses"}
-	updated, _ := p.Update(runeKey("x"))
-	p2 := updated.(CredentialsPanel)
-	if p2.formAPIStyle != "responses" {
-		t.Fatalf("non-space on apiStyle should be ignored, got %q", p2.formAPIStyle)
+// The protocol field takes one of the registry's protocol names, so it is a
+// text field like the others rather than a two-value toggle.
+func TestCovCredentialsFormProtocolTyped(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		panel    CredentialsPanel
+		typed    string
+		wantForm string
+	}{
+		{name: "edit mode", panel: CredentialsPanel{formOpen: true, formEditing: true, formField: 0}, typed: "anthropic", wantForm: "anthropic"},
+		{name: "create mode", panel: CredentialsPanel{formOpen: true, formField: 2, formProtocol: "openai-"}, typed: "chat", wantForm: "openai-chat"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := tt.panel
+			for _, ch := range tt.typed {
+				updated, _ := p.Update(runeKey(string(ch)))
+				p = updated.(CredentialsPanel)
+			}
+			if p.formProtocol != tt.wantForm {
+				t.Fatalf("formProtocol = %q, want %q", p.formProtocol, tt.wantForm)
+			}
+		})
 	}
 }
 
@@ -494,7 +488,7 @@ func TestCovSafeCredentialTestResultAllKnownStatuses(t *testing.T) {
 
 func TestCovCredentialsFormViewCreate(t *testing.T) {
 	withTestColorProfile(t)
-	p := CredentialsPanel{formOpen: true, formEditing: false, formType: "openai", formName: "x", formAPIStyle: "responses"}
+	p := CredentialsPanel{formOpen: true, formEditing: false, formBase: "openai", formName: "x", formProtocol: "responses"}
 	v := p.formView()
 	if !strings.Contains(v, "New instance") {
 		t.Fatalf("create formView should show 'New instance': %q", v)
@@ -503,7 +497,7 @@ func TestCovCredentialsFormViewCreate(t *testing.T) {
 
 func TestCovCredentialsFormViewEdit(t *testing.T) {
 	withTestColorProfile(t)
-	p := CredentialsPanel{formOpen: true, formEditing: true, formName: "x", formAPIStyle: "responses", formBaseURL: "http://x"}
+	p := CredentialsPanel{formOpen: true, formEditing: true, formName: "x", formProtocol: "responses", formBaseURL: "http://x"}
 	v := p.formView()
 	if !strings.Contains(v, "Edit instance: x") {
 		t.Fatalf("edit formView should show 'Edit instance: x': %q", v)
@@ -521,16 +515,16 @@ func TestCovCredentialsFormFieldLine(t *testing.T) {
 	}
 }
 
-// --- apiStyleDisplay ---
+// --- protocolDisplay ---
 
-func TestCovCredentialsAPIStyleDisplay(t *testing.T) {
-	p := CredentialsPanel{formAPIStyle: ""}
-	if got := p.apiStyleDisplay(); got != "(default)" {
-		t.Fatalf("empty apiStyle display = %q, want (default)", got)
+func TestCovCredentialsProtocolDisplay(t *testing.T) {
+	p := CredentialsPanel{formProtocol: ""}
+	if got := p.protocolDisplay(); got != "(default)" {
+		t.Fatalf("empty protocol display = %q, want (default)", got)
 	}
-	p2 := CredentialsPanel{formAPIStyle: "responses"}
-	if got := p2.apiStyleDisplay(); got != "responses" {
-		t.Fatalf("responses apiStyle display = %q, want responses", got)
+	p2 := CredentialsPanel{formProtocol: "responses"}
+	if got := p2.protocolDisplay(); got != "responses" {
+		t.Fatalf("responses protocol display = %q, want responses", got)
 	}
 }
 
@@ -571,7 +565,7 @@ func TestCovCredentialsViewForm(t *testing.T) {
 
 func TestCovCredentialsViewTestPending(t *testing.T) {
 	withTestColorProfile(t)
-	inst := appwire.InstanceEntry{Name: "x", Type: "openai", ActiveSource: "oauth"}
+	inst := appwire.InstanceEntry{Name: "x", ProviderID: "openai", ActiveSource: "oauth"}
 	p := CredentialsPanel{
 		rows:        buildPanelRows([]appwire.InstanceEntry{inst}),
 		cursor:      0,
@@ -585,7 +579,7 @@ func TestCovCredentialsViewTestPending(t *testing.T) {
 
 func TestCovCredentialsViewTestResult(t *testing.T) {
 	withTestColorProfile(t)
-	inst := appwire.InstanceEntry{Name: "x", Type: "openai", ActiveSource: "oauth"}
+	inst := appwire.InstanceEntry{Name: "x", ProviderID: "openai", ActiveSource: "oauth"}
 	p := CredentialsPanel{
 		rows:   buildPanelRows([]appwire.InstanceEntry{inst}),
 		cursor: 0,
@@ -603,7 +597,7 @@ func TestCovCredentialsViewTestResult(t *testing.T) {
 
 func TestCovCredentialsViewHint(t *testing.T) {
 	withTestColorProfile(t)
-	inst := appwire.InstanceEntry{Name: "x", Type: "openai", ActiveSource: "oauth", APIStyle: "responses", BaseURL: "http://x"}
+	inst := appwire.InstanceEntry{Name: "x", ProviderID: "openai", ActiveSource: "oauth", Protocol: "responses", BaseURL: "http://x"}
 	p := CredentialsPanel{rows: buildPanelRows([]appwire.InstanceEntry{inst}), cursor: 0}
 	v := p.View()
 	if !strings.Contains(v, "responses") || !strings.Contains(v, "http://x") {
@@ -631,7 +625,7 @@ func TestCovCredentialsUpdateUnknownMsg(t *testing.T) {
 func TestCovCredentialBadgeOptional(t *testing.T) {
 	withTestColorProfile(t)
 	p := CredentialsPanel{}
-	badge := p.credentialBadge(appwire.InstanceEntry{ActiveSource: "absent", CredentialRequired: false})
+	badge := p.credentialBadge(appwire.InstanceEntry{ActiveSource: "none", CredentialRequired: false})
 	if !strings.Contains(badge, "OPTIONAL") {
 		t.Fatalf("absent non-required credential should show optional: %q", badge)
 	}

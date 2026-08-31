@@ -11,8 +11,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 // TestRunMainHubLockDerivesFromConfiguredHubStateRoot guards against
@@ -46,8 +44,9 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 
 	var gotLockPath string
 	deps := mainDeps{
-		loadConfig: func(string) (Config, error) { return cfg, nil },
-		ensureDirs: func() error { return nil },
+		loadRegistry: hermeticRegistryLoader,
+		loadConfig:   func(string) (Config, error) { return cfg, nil },
+		ensureDirs:   func() error { return nil },
 		acquireLock: func(path string) (func(), error) {
 			gotLockPath = path
 			return func() {}, nil
@@ -55,12 +54,6 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		loadProviderConfig: func(string) (providercfg.Config, bool, error) {
-			return providercfg.Config{}, true, nil
-		},
-		materializeConfig: func(string, ...llm.EnvOption) (providercfg.Config, error) {
-			return providercfg.Config{}, nil
-		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},
@@ -110,18 +103,13 @@ func TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren(t *testing.T) 
 	cancel()
 	var webConfig hubcore.WebConfig
 	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
 		loadConfig:      func(string) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
-		loadProviderConfig: func(string) (providercfg.Config, bool, error) {
-			return providercfg.Config{}, true, nil
-		},
-		materializeConfig: func(string, ...llm.EnvOption) (providercfg.Config, error) {
-			return providercfg.Config{}, nil
-		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},

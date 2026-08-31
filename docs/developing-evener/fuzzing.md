@@ -401,7 +401,7 @@ Two corollaries:
 
 | Command | Summary |
 | --- | --- |
-| `make fuzz-goldens` | Regenerate the decode SNAPSHOT goldens from the current decoders. Run ONLY after an intended decoder change, then commit the diff. |
+| `make fuzz-goldens` | Regenerate the decode SNAPSHOT goldens from the current decoders, and the hub credential-wire fixtures its clients decode. Run ONLY after an intended change, then commit the diff. |
 | `make fuzz-nightly` | Run the unbounded coverage-guided search per target, bounded by a per-target time budget. Manual/nightly only — never in the gate. |
 | `make fuzz-triage` | The local, on-demand campaign + auto-triage tool: search each surface, flake-guard and dedup any crasher, and open one reviewable PR per distinct deterministic bug via the developer's local gh. |
 | `make fuzz-continuous` | The local, on-demand continuous loop: rotate over every native target with a bounded search turn per round, routing any new crasher through fuzz-triage. Runs until Ctrl-C or --total. |

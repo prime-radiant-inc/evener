@@ -85,9 +85,9 @@ func writeSection(t *testing.T, dir, name, content string) {
 func newTestResolver(t *testing.T, dir, provider, agent string) *sectionResolver {
 	t.Helper()
 	return &sectionResolver{
-		provider: provider,
-		agent:    agent,
-		sources:  []sectionSource{diskSource{dir: dir}},
+		surface: provider,
+		agent:   agent,
+		sources: []sectionSource{diskSource{dir: dir}},
 	}
 }
 
@@ -242,9 +242,9 @@ func TestSectionResolver_SourcePriority(t *testing.T) {
 	writeSection(t, dir2, "identity.md", "global identity")
 
 	r := &sectionResolver{
-		provider: "openai",
-		agent:    "",
-		sources:  []sectionSource{diskSource{dir: dir1}, diskSource{dir: dir2}},
+		surface: "openai",
+		agent:   "",
+		sources: []sectionSource{diskSource{dir: dir1}, diskSource{dir: dir2}},
 	}
 	got := r.Section("identity", promptData{})
 	if got != "project identity" {
@@ -359,10 +359,10 @@ func TestCollapseBlankLines(t *testing.T) {
 func TestSectionResolver_RoleSection(t *testing.T) {
 	t.Parallel()
 	r := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		sources:  nil,
-		agentFS:  bundled.Agents(),
+		surface: "openai",
+		agent:   "coordinator",
+		sources: nil,
+		agentFS: bundled.Agents(),
 	}
 	got := r.Section("role", promptData{
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
@@ -385,10 +385,10 @@ func TestSectionResolver_RoleDiskOverride(t *testing.T) {
 	writeSection(t, dir, "role.agent-coordinator.md", "Custom coordinator role")
 
 	r := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		sources:  []sectionSource{diskSource{dir: dir}},
-		agentFS:  bundled.Agents(),
+		surface: "openai",
+		agent:   "coordinator",
+		sources: []sectionSource{diskSource{dir: dir}},
+		agentFS: bundled.Agents(),
 	}
 	got := r.Section("role", promptData{})
 
@@ -442,10 +442,10 @@ func TestMasterTemplates_Parse(t *testing.T) {
 func TestSystemTemplate_StructuralRegression(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	data := promptData{
@@ -540,10 +540,10 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 func TestEnvironmentSection_SandboxLine(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	sandboxed := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", Sandbox: "restricted (network off) — fixed for this session"}
@@ -561,10 +561,10 @@ func TestEnvironmentSection_SandboxLine(t *testing.T) {
 func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	inRepo := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: true, GitBranch: "main"}
@@ -595,10 +595,10 @@ func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "implementer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "implementer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
 		Provider:           "openai",
@@ -624,10 +624,10 @@ func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
 func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "implementer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "implementer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	data := promptData{
@@ -685,10 +685,10 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
 		Provider: "openai", Agent: "coordinator",
@@ -726,10 +726,10 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 func TestTranscriptsSection_SilentWithoutTheTools(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "explorer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "explorer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	none := resolver.Section("transcripts", promptData{Provider: "openai", Agent: "explorer"})
@@ -756,10 +756,10 @@ func TestWorkflowSection_GatesItsToolMentions(t *testing.T) {
 	t.Parallel()
 	resolver := func() *sectionResolver {
 		return &sectionResolver{
-			provider: "openai",
-			agent:    "explorer",
-			agentFS:  bundled.Agents(),
-			sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+			surface: "openai",
+			agent:   "explorer",
+			agentFS: bundled.Agents(),
+			sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 		}
 	}
 
@@ -823,10 +823,10 @@ func TestWorkflowSectionDefinesRootCauseToActionTransition(t *testing.T) {
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "reviewer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "reviewer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	data := promptData{
@@ -867,10 +867,10 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "anthropic",
-		agent:    "coordinator",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "anthropic",
+		agent:   "coordinator",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
 	data := promptData{
@@ -907,9 +907,9 @@ func TestSectionResolver_DiskOverrideBeatsEmbeddedTemplate(t *testing.T) {
 	writeSection(t, dir, "transcripts.md", "project override")
 
 	r := &sectionResolver{
-		provider: "openai",
-		agent:    "explorer",
-		agentFS:  bundled.Agents(),
+		surface: "openai",
+		agent:   "explorer",
+		agentFS: bundled.Agents(),
 		sources: []sectionSource{
 			diskSource{dir: dir},
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
@@ -928,10 +928,10 @@ func TestSectionResolver_DiskOverrideBeatsEmbeddedTemplate(t *testing.T) {
 // posture sections, which carry no provider or agent variants.
 func postureSectionResolver(agent string) *sectionResolver {
 	return &sectionResolver{
-		provider: "openai",
-		agent:    agent,
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   agent,
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 }
 

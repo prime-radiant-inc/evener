@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.EventData, p *provenance.Causal) {
@@ -1065,6 +1066,17 @@ func (s *Session) currentEnv() execenv.ExecutionEnvironment {
 // Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
+// CostFor is the $/Mtok cost of the instance/model reference ref, resolved on
+// the session's own registry (spec §7.5). Nil when ref does not resolve or the
+// row carries no cost — the caller renders nothing rather than a zero.
+func (s *Session) CostFor(ref string) *registry.Cost {
+	res, err := s.client.Resolve(ref)
+	if err != nil {
+		return nil
+	}
+	return res.Caps.Cost
+}
+
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {
@@ -1108,14 +1120,19 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 
 // reapplyProviderSpecificTools updates the live tool registry when the session
 // switches between providers. Currently the only provider-specific function
-// tool is the Gemini web_search executor:
-//   - switching TO a google-tag profile: register the real web_search executor
-//   - switching AWAY from a google-tag profile: remove web_search from the
-//     registry so it doesn't collide with the adapter-injected server tool
-//     used by OpenAI/Anthropic native web search.
-func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
+// tool is the Gemini web_search executor, which exists because the google
+// builder cannot combine google_search with function declarations:
+//   - switching TO a google-protocol profile that serves web search: register
+//     the real web_search executor
+//   - switching AWAY from one: remove web_search from the registry so it
+//     doesn't collide with the adapter-injected server tool used by OpenAI's
+//     and Anthropic's native web search.
+func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.Profile) {
+	googleWebSearch := func(p *provider.Profile) bool {
+		return p.Protocol() == registry.ProtocolGoogle && p.SupportsWebSearch()
+	}
 	switch {
-	case newTag == "google" && oldTag != "google":
+	case googleWebSearch(newProfile) && !googleWebSearch(oldProfile):
 		// Switching to Gemini: wire the real web_search executor. It must apply
 		// the same net=off egress gate as the statically-registered web tools
 		// (registerWebTools) — a mid-session provider switch must not make web
@@ -1130,7 +1147,7 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 				return s.webSearch(ctx, query)
 			},
 		})
-	case oldTag == "google" && newTag != "google":
+	case googleWebSearch(oldProfile) && !googleWebSearch(newProfile):
 		// Switching away from Gemini: remove the function tool so non-Gemini
 		// providers can use their own native web-search mechanism.
 		s.reg.Remove("web_search")
@@ -1152,7 +1169,6 @@ func (s *Session) SetModel(model string) error {
 		return nil
 	}
 	oldProfile := s.profile
-	oldTag := s.profile.BehaviorTag()
 	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
@@ -1163,7 +1179,7 @@ func (s *Session) SetModel(model string) error {
 	}
 	// Unrepresentable-history preflight: reject before any state changes when
 	// the target can't faithfully carry content kinds already in history.
-	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.BehaviorTag()); len(kinds) > 0 {
+	if kinds := unrepresentableHistoryKinds(s.history, nextProfile.Protocol()); len(kinds) > 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("cannot switch to %s: history contains content unrepresentable by that target (%s)", nextProfile.ID(), formatContentKinds(kinds))
 	}
@@ -1184,7 +1200,6 @@ func (s *Session) SetModel(model string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
 	// The namer's spent-allowance latch was learned against the profile being
 	// replaced, so it does not survive the swap (see
@@ -1194,7 +1209,7 @@ func (s *Session) SetModel(model string) error {
 		s.contextMgr.SetProfile(s.profile)
 	}
 	if crossProvider && s.reg != nil {
-		s.reapplyProviderSpecificTools(oldTag, newTag)
+		s.reapplyProviderSpecificTools(oldProfile, nextProfile)
 	}
 	s.rebuildToolDefsCache()
 	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
@@ -1392,20 +1407,22 @@ func (s *Session) Rename(name string) {
 	s.maybeAutoSave()
 }
 
-func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.Request) {
+func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	if req == nil {
 		return
 	}
-	openAIPromptCacheSupported := profile.BehaviorTag() == "openai" && openAIModelSupports24hPromptCache(req.Model)
+	// The prompt-cache fields go on every request: llm.ShapeRequest drops the
+	// ones the resolved row cannot send (spec §7.5, two independent Fields
+	// gates), so nothing here has to know which endpoint accepts which.
 	if strings.TrimSpace(s.id) != "" {
 		req.SessionID = s.id
 		req.ThreadID = s.id
-		if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheKey) == "" {
+		if strings.TrimSpace(req.PromptCacheKey) == "" {
 			req.PromptCacheKey = "evener-session-" + s.id
 		}
-	}
-	if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheRetention) == "" {
-		req.PromptCacheRetention = "24h"
+		if strings.TrimSpace(req.PromptCacheRetention) == "" {
+			req.PromptCacheRetention = "24h"
+		}
 	}
 	if strings.TrimSpace(s.installID) != "" {
 		if req.ClientMetadata == nil {
@@ -1413,18 +1430,6 @@ func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.
 		}
 		req.ClientMetadata[installid.CodexInstallationIDMetadataKey] = s.installID
 	}
-}
-
-func openAIModelSupports24hPromptCache(model string) bool {
-	model = strings.TrimSpace(model)
-	return openAIModelFamilyMatch(model, "gpt-5") || openAIModelFamilyMatch(model, "gpt-4.1")
-}
-
-func openAIModelFamilyMatch(model, family string) bool {
-	if model == family {
-		return true
-	}
-	return strings.HasPrefix(model, family+"-") || strings.HasPrefix(model, family+".")
 }
 
 // Communicated reports whether communicate was called during the most recent
@@ -1746,6 +1751,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestModel:            finalAttempt.RequestModel,
 		AttemptGroupID:                  finalAttempt.AttemptGroupID,
 		ResponseEndpointFamily:          finalAttempt.EndpointFamily,
+		ResponseProtocol:                finalAttempt.Protocol,
 		ResponseEndpoint:                finalAttempt.EndpointURL,
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,

@@ -8,27 +8,22 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 )
 
 func testServeLLMClientErrors(t *testing.T) {
 	oldLoad, oldAttach := serveLoadClient, serveAttachAPILogger
 	t.Cleanup(func() { serveLoadClient, serveAttachAPILogger = oldLoad, oldAttach })
 
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-		return nil, providercfg.Config{}, false, errors.New("load")
-	}
-	if _, _, _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
+	serveLoadClient = func(string) (*llm.Client, error) { return nil, errors.New("load") }
+	if _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
 		t.Fatal("expected load error")
 	}
 
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-		return llm.NewClient(), providercfg.Config{}, false, nil
-	}
+	serveLoadClient = func(string) (*llm.Client, error) { return llm.NewClient(), nil }
 	serveAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) {
 		return nil, errors.New("attach")
 	}
-	if _, _, _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
+	if _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
 		t.Fatal("expected attach error")
 	}
 }
@@ -46,7 +41,7 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"profile config", TestBuildInitialProfile_ConfigPath},
 			{"profile schema", TestBuildInitialProfile_ConfigPathInvalidOutputSchema},
 			{"profile unknown", TestBuildInitialProfile_UnknownInstanceError},
-			{"profile materialized", TestBuildInitialProfile_MaterializedInstance},
+			{"profile curated instance", TestBuildInitialProfile_CuratedInstance},
 			{"bare model", TestRunServe_BareModelRejected},
 			{"missing model", TestRunServe_MissingModel},
 			{"env help", TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation},

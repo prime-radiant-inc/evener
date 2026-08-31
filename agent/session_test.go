@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // shellQuote wraps s in single quotes so a filesystem path can be embedded
@@ -40,6 +42,9 @@ func marshalToMap(t *testing.T, data events.EventData) map[string]any {
 
 type fakeAdapter struct {
 	name string
+	// liveModels, when set, scripts the adapter's llm.LiveModelLister
+	// listing; an unscripted fake cannot list models at all.
+	liveModels func(ctx context.Context) ([]registry.Model, error)
 
 	mu       sync.Mutex
 	requests []llm.Request
@@ -48,6 +53,14 @@ type fakeAdapter struct {
 }
 
 func (a *fakeAdapter) Name() string { return a.name }
+
+// LiveModels implements llm.LiveModelLister when a test scripts a listing.
+func (a *fakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	if a.liveModels == nil {
+		return nil, errors.New("fake adapter does not list models")
+	}
+	return a.liveModels(ctx)
+}
 
 func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx

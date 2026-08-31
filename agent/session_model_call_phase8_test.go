@@ -55,7 +55,7 @@ func TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallbac
 	drainSessionEvents(sess)
 
 	req := phase8DeltaRequest()
-	_, usedReq, attempt, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), req, "", 1)
+	_, usedReq, attempt, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), req, phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestFallbackChain_ContinuationRecoveryFailureThenModelFallback(t *testing.T
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	_, usedReq, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), "", 1)
+	_, usedReq, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry(t *testing.T) {
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	_, _, _, err = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), "", 1)
+	_, _, _, err = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -224,10 +224,15 @@ func phase8DeltaRequest() llm.Request {
 		Messages: []llm.Message{
 			llm.User("PHASE8_DELTA_ONLY_MARKER"),
 		},
-		FullHistoryFallbackMessages: []llm.Message{
-			llm.User("PHASE8_FULL_HISTORY_MARKER"),
-			llm.Assistant("prior assistant"),
-		},
+	}
+}
+
+// phase8FullHistory is the message list the round kept when it cut the delta:
+// callModelWithFallback's own parameter now, never a request field.
+func phase8FullHistory() []llm.Message {
+	return []llm.Message{
+		llm.User("PHASE8_FULL_HISTORY_MARKER"),
+		llm.Assistant("prior assistant"),
 	}
 }
 

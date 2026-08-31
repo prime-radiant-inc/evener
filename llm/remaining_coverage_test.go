@@ -64,15 +64,6 @@ func TestBeginProviderOperationNilContext(t *testing.T) {
 	}
 }
 
-// TestValidateModelCompatibilityNilClient covers the nil client path (lines 405-406).
-func TestValidateModelCompatibilityNilClient(t *testing.T) {
-	var c *Client
-	if err := c.ValidateModelCompatibility("test", "model"); err != nil {
-		t.Fatalf("nil client: %v", err)
-	}
-}
-
-// TestUsagelimitMessageEmpty covers the empty message fallback (line 135).
 func TestUsagelimitMessageEmpty(t *testing.T) {
 	limit := usageLimit{
 		message:  "",

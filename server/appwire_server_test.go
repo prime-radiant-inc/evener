@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
@@ -1725,16 +1726,25 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 }
 
 // TestServerAppWireThreadReadIncludesCostTotal verifies the live producer
-// stamps EvenerThread.Cost from the pulled cumulative usage at the session
-// model's price — the session-level dollar total kept current across
-// snapshots exactly as WorkMillis/Usage are — and omits it when the model is
-// uncataloged (absent-vs-zero honesty).
+// stamps EvenerThread.Cost from the pulled cumulative usage at the cost the
+// session's registry resolves for its instance/model (spec §7.5) — the
+// session-level dollar total kept current across snapshots exactly as
+// WorkMillis/Usage are — and omits it when the row carries no cost
+// (absent-vs-zero honesty).
 func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
-	readEvener := func(model string) appwire.EvenerThread {
+	var lookedUp []string
+	readEvener := func(profile, model string) appwire.EvenerThread {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
+		srv.SetCostLookupFunc(func(ref string) *registry.Cost {
+			lookedUp = append(lookedUp, ref)
+			if ref != "anthropic/claude-opus-4-5" {
+				return nil
+			}
+			return &registry.Cost{Input: 5, Output: 25}
+		})
 		srv.SetAppIdentity("local", "th_1")
-		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model})
+		srv.SetStatus(StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
 			e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1750,16 +1760,39 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 		return data.Thread.Evener
 	}
 
-	priced := readEvener("claude-opus-4-5")
-	if want := appwire.EstimateCost("claude-opus-4-5", priced.Usage); priced.Cost != want || want == "" {
-		t.Fatalf("cost=%q, want non-empty %q", priced.Cost, want)
+	// 100_000/1e6*5 + 20_000/1e6*25 = 0.50 + 0.50 = 1.00
+	priced := readEvener("anthropic", "claude-opus-4-5")
+	if priced.Cost != "~$1.00" {
+		t.Fatalf("cost=%q, want ~$1.00", priced.Cost)
 	}
-	if !strings.HasPrefix(priced.Cost, "~$") {
-		t.Fatalf("cost=%q, want ~$ prefix", priced.Cost)
+	if len(lookedUp) == 0 || lookedUp[0] != "anthropic/claude-opus-4-5" {
+		t.Fatalf("cost lookup refs=%v, want the instance/model reference first", lookedUp)
 	}
 
-	if uncataloged := readEvener("totally-unknown-model-xyz"); uncataloged.Cost != "" {
-		t.Fatalf("uncataloged cost=%q, want \"\" (absent, not ~$0.00)", uncataloged.Cost)
+	if priceless := readEvener("mycompany", "totally-unknown-model-xyz"); priceless.Cost != "" {
+		t.Fatalf("priceless cost=%q, want \"\" (absent, not ~$0.00)", priceless.Cost)
+	}
+}
+
+// TestServerAppWireThreadReadOmitsCostWithoutLookup pins the flag-day rule
+// (spec §14.1): a daemon with no cost source reports usage and no cost at all
+// rather than falling back to a bundled pricing table.
+func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
+	})
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if evener := data.Thread.Evener; evener.Usage == nil || evener.Cost != "" {
+		t.Fatalf("evener usage=%+v cost=%q, want usage present and cost absent", evener.Usage, evener.Cost)
 	}
 }
 

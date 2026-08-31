@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) string {
@@ -40,9 +41,9 @@ func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) str
 	}
 
 	resolver := &sectionResolver{
-		provider: p.ID(),
-		agent:    data.Agent,
-		agentFS:  bundled.Agents(),
+		surface: p.ID(),
+		agent:   data.Agent,
+		agentFS: bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
@@ -278,10 +279,10 @@ func TestBuildSystemPrompt_PinsAntiPollGuidance(t *testing.T) {
 func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
 	t.Parallel()
 	resolver := &sectionResolver{
-		provider: "openai",
-		agent:    "implementer",
-		agentFS:  bundled.Agents(),
-		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		surface: "openai",
+		agent:   "implementer",
+		agentFS: bundled.Agents(),
+		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
 		Provider:           "openai",
@@ -385,18 +386,20 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 	}
 }
 
-func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
+func TestProviderProfile_CheapModel(t *testing.T) {
 	t.Parallel()
-	profiles := []*provider.Profile{
-		NewOpenAIProfile("gpt-5.2"),
-		newAnthropicProfile("claude-opus-4-6"),
-		newGeminiProfile("gemini-3-pro"),
+	cases := []struct {
+		profile *provider.Profile
+		want    string
+	}{
+		{NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano"},
+		{newAnthropicProfile("claude-opus-4-6"), "claude-haiku-4-5"},
+		{newGeminiProfile("gemini-3-pro"), "gemini-2.5-flash-lite"},
 	}
-	for _, profile := range profiles {
-		providerName, model := profile.CheapModelRef()
-		if providerName != profile.ID() || model != profile.Model() {
-			t.Fatalf("profile %q CheapModelRef = (%q, %q), want (%q, %q)",
-				profile.ID(), providerName, model, profile.ID(), profile.Model())
+	for _, tc := range cases {
+		got := tc.profile.CheapModel()
+		if got != tc.want {
+			t.Fatalf("profile %q CheapModel: got %q want %q", tc.profile.ID(), got, tc.want)
 		}
 	}
 }
@@ -452,91 +455,12 @@ func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
 // WithModel tests have been moved to session_resolve_profile_test.go.
 // Cross-provider switching is now the responsibility of the Session resolver.
 
-func TestNewOpenAIProfile_UnknownModelUsesModernContextFallback(t *testing.T) {
-	t.Parallel()
-	p := NewOpenAIProfile("gpt-6-preview")
-	if got := p.ContextWindowSize(); got == 128_000 {
-		t.Fatalf("ContextWindowSize() = %d, want modern fallback larger than 128000", got)
-	}
-	if got := p.ContextWindowSize(); got < 400_000 {
-		t.Fatalf("ContextWindowSize() = %d, want at least 400000", got)
-	}
-}
-
-// TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata verifies that
-// constructing an Ollama profile with a model that exists in the catalog
-// under a provider-prefixed key picks up the catalog's context window
-// instead of falling back to the 128K generic default. ollama/llama3.1
-// has max_input_tokens=8192 in the embedded litellm catalog.
-func TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata(t *testing.T) {
-	t.Parallel()
-	p := newOpenAICompatProfile("ollama", "llama3.1", 0)
-	if got := p.ContextWindowSize(); got != 8192 {
-		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 catalog entry)", got)
-	}
-	if p.Model() != "llama3.1" {
-		t.Fatalf("Model() = %q, want %q (bare name preserved on the wire)", p.Model(), "llama3.1")
-	}
-}
-
-// TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack verifies that an
-// Ollama model with no catalog entry (under either bare or prefixed key,
-// including the tag-stripped form) falls back to the 128K generic default
-// rather than failing.
-func TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack(t *testing.T) {
-	t.Parallel()
-	p := newOpenAICompatProfile("ollama", "definitely-not-a-real-model:9999b", 0)
-	if got := p.ContextWindowSize(); got != 128_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 128000 fallback", got)
-	}
-}
-
-// TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase verifies that
-// tagged Ollama model names like "llama3.1:8b" — the form documented in
-// docs/ollama.md and produced by `ollama pull llama3.1:8b` — still pick up
-// catalog metadata via tag-stripped lookup. The catalog stores
-// "ollama/llama3.1" (no tag), so without this fallback every typical
-// tagged Ollama model would silently miss its catalog entry.
-func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
-	t.Parallel()
-	p := newOpenAICompatProfile("ollama", "llama3.1:8b", 0)
-	if got := p.ContextWindowSize(); got != 8192 {
-		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 via tag-stripped lookup)", got)
-	}
-	if p.Model() != "llama3.1:8b" {
-		t.Fatalf("Model() = %q, want llama3.1:8b — wire model must keep the tag", p.Model())
-	}
-}
-
-// TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog is the
-// integration-level version of the bare-key skip: the embedded catalog
-// has Anthropic models like "claude-3-haiku-20240307" with 200K windows.
-// Without the skip, asking ollama for that name would silently inherit
-// Anthropic's window. Asserts the catalog miss falls back to 128K.
-func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T) {
-	t.Parallel()
-	p := newOpenAICompatProfile("ollama", "claude-3-haiku-20240307", 0)
-	if got := p.ContextWindowSize(); got != 128_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 128000 generic fallback — bare-key lookup leaked anthropic catalog metadata into ollama", got)
-	}
-}
-
-// TestBaseProfile_WithModel_PreservesSlashOnMetaProviders verifies that
-// for meta-providers whose model IDs legitimately contain slashes
-// (openrouter, openrouter-anthropic, minimax), WithModel does NOT
-// reinterpret the slash as a provider-switch prefix. The model string
-// must be passed through verbatim and the profile id must not change.
-//
-// Specific failure modes this guards against, all reachable via
-// runtime paths like Session.SetModel and subagent model overrides:
-//   - openrouter profile + WithModel("minimax/minimax-m2.7") would have
-//     switched to the standalone minimax adapter and dropped the
-//     OpenRouter routing, mangling tool calls
-//   - minimax profile + WithModel("minimax/minimax-m2.7") would have
-//     stripped the model to "minimax-m2.7", which is not a valid model
-//     name on that adapter
-//   - openrouter-anthropic profile + WithModel(prefixed) similarly
-//     loses the OpenRouter-Anthropic routing
+// TestBaseProfile_WithModel_PreservesSlashOnMetaProviders verifies that a
+// namespaced model id the instance itself serves ("minimax/minimax-m2.7" on
+// OpenRouter) is passed through verbatim: the slash is part of the id, not an
+// instance switch, so the profile keeps its instance and its routing. The
+// failure mode this guards is a SetModel or subagent override silently
+// switching off the OpenRouter routing and mangling tool calls.
 func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -544,8 +468,6 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 		startID      string
 		input        string
 	}{
-		{func() *provider.Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.7"},
-		{func() *provider.Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.1"},
 		{func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "openrouter", "minimax/minimax-m2.7"},
@@ -555,8 +477,8 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 		{func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "openrouter", "deepseek/deepseek-r1"},
-		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
-		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "orclaude", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "orclaude", "anthropic/claude-3-5-sonnet"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -589,7 +511,7 @@ func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testi
 	}{
 		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/anthropic/claude-3-haiku-20240307", "anthropic/claude-3-haiku-20240307"},
 		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/minimax/minimax-m2.7", "minimax/minimax-m2.7"},
-		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "openrouter-anthropic/anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "orclaude", "orclaude/anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-sonnet"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -604,13 +526,10 @@ func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testi
 	}
 }
 
-// TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders
-// verifies that when WithModel preserves a meta-provider but changes
-// the model, model-derived state (notably ContextWindowSize) is
-// recomputed via the appropriate constructor — not stale from the
-// originally-constructed profile. This guards against silent context
-// truncation when SetModel switches between OpenRouter-routed models
-// with different real context windows.
+// TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders verifies
+// that a same-instance model switch re-resolves every fact, notably the
+// context window — stale state here is silent context truncation when
+// SetModel moves between OpenRouter-routed models of different sizes.
 func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.T) {
 	t.Parallel()
 	// Start with a known small-context model under openrouter
@@ -630,61 +549,8 @@ func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.
 	if cloned.Model() != "minimax/minimax-m2.7" {
 		t.Fatalf("Model() = %q, want minimax/minimax-m2.7", cloned.Model())
 	}
-	if got := cloned.ContextWindowSize(); got != 204_800 {
-		t.Fatalf("ContextWindowSize() = %d, want 204800 from minimax catalog entry — same-provider WithModel did not recompute model-derived state", got)
-	}
-}
-
-// TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog
-// verifies that newOpenRouterAnthropicProfile picks up catalog metadata
-// for OpenRouter-prefixed Anthropic models. The OpenRouter catalog
-// stores these as "openrouter/anthropic/claude-3-haiku-20240307" with
-// a 200K context window, but the profile id is "openrouter-anthropic"
-// (with a hyphen) and the bare lookup misses, so without an OpenRouter
-// fallback the profile falls back to 128K.
-//
-// This matters because Profile.WithModel now rebuilds the
-// openrouter-anthropic profile via newOpenRouterAnthropicProfile when
-// the model changes within the same provider — the constructor must
-// re-derive metadata for the new model, not just inherit defaults.
-func TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog(t *testing.T) {
-	t.Parallel()
-	p := newOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307")
-	if got := p.ContextWindowSize(); got != 200_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 200000 from openrouter/anthropic/claude-3-haiku-20240307 catalog entry — bare lookup missed and OpenRouter prefix was not tried", got)
-	}
-}
-
-// TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault verifies
-// that constructing an openrouter-anthropic profile with a model whose
-// OpenRouter catalog entry doesn't carry supports_web_search (the
-// common case — only some prefixed entries advertise it) leaves the
-// constructor's default of `true` intact. Previously the code did
-// `ws = mi.SupportsWebSearch` unconditionally, which silently flipped
-// web search off for matched OpenRouter Anthropic models.
-func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
-	t.Parallel()
-	// claude-3-haiku-20240307 is in the catalog as
-	// "openrouter/anthropic/claude-3-haiku-20240307" with NO
-	// supports_web_search field. Constructor default should win.
-	p := newOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307")
-	if !p.SupportsWebSearch() {
-		t.Fatal("SupportsWebSearch() = false, want true (constructor default must win when prefixed catalog entry omits supports_web_search)")
-	}
-}
-
-// TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback verifies
-// that the catalog context-window resolution falls through to the
-// bare-upstream-stripped lookup when neither the openrouter-prefixed
-// nor the bare-direct entries supply one. Concrete case:
-// "anthropic/claude-sonnet-4-5" — no openrouter/anthropic/... or
-// anthropic/claude-sonnet-4-5 entry, but bare "claude-sonnet-4-5" has
-// max_input_tokens=200000.
-func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.T) {
-	t.Parallel()
-	p := newOpenRouterAnthropicProfile("anthropic/claude-sonnet-4-5")
-	if got := p.ContextWindowSize(); got != 200_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 200000 from bare upstream catalog entry — step 3 ctx fallback missing", got)
+	if got, want := cloned.ContextWindowSize(), newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0).ContextWindowSize(); got != want {
+		t.Fatalf("ContextWindowSize() = %d, want the registry's %d — same-instance WithModel did not re-resolve", got, want)
 	}
 }
 
@@ -709,8 +575,8 @@ func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "google/gemini-3"},
 		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "minimax/minimax-m2.7"},
 		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "deepseek/deepseek-r1"},
-		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
-		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "orclaude", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "orclaude", "minimax/minimax-m2.7"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -723,60 +589,6 @@ func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse verifies
-// that when a bare-direct catalog match (no openrouter prefix) explicitly
-// sets supports_web_search to false, that signal is respected. This is
-// the documented MiniMax-over-OpenRouter-Anthropic path: the model
-// "minimax/minimax-m2.7" has no openrouter-prefixed catalog entry, so
-// the resolver falls back to the bare entry whose evener override
-// explicitly disables web search.
-//
-// The fix from the previous round ("only override when explicitly true")
-// over-corrected: it correctly preserved the constructor default for
-// sparse OpenRouter prefixed entries, but it also ignored explicit
-// false on bare-direct matches, falsely advertising web search support
-// for models that don't have it.
-func TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse(t *testing.T) {
-	t.Parallel()
-	p := newOpenRouterAnthropicProfile("minimax/minimax-m2.7")
-	if p.SupportsWebSearch() {
-		t.Fatal("SupportsWebSearch() = true, want false — bare entry's explicit supports_web_search:false must be respected on the MiniMax-via-OpenRouter-Anthropic path")
-	}
-}
-
-// TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides
-// verifies that effort levels resolve to the bare upstream override
-// when the prefixed catalog entry doesn't carry them. The evener
-// override file keys overrides under bare upstream IDs (e.g.
-// "claude-sonnet-4-5" → ["low","medium","high"], no "max"). Without
-// bare-fallback resolution, openrouter-anthropic falls back to the
-// constructor's MiniMax-style default ["low","medium","high","max"]
-// — incorrectly advertising a "max" tier these models don't support.
-func TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides(t *testing.T) {
-	t.Parallel()
-	// "anthropic/claude-sonnet-4-5" — the openrouter prefix in the
-	// catalog has no reasoning_effort_levels; the bare "claude-sonnet-4-5"
-	// override entry sets ["low","medium","high"].
-	p := newOpenRouterAnthropicProfile("anthropic/claude-sonnet-4-5")
-	got := p.ReasoningEffortLevels()
-	want := []string{"low", "medium", "high"}
-	if !equalStringSlices(got, want) {
-		t.Fatalf("ReasoningEffortLevels() = %v, want %v (bare upstream override should be picked up)", got, want)
-	}
-}
-
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch
@@ -900,52 +712,21 @@ func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
 }
 
 // TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog is the
-// integration check on the WithModel rebuild path. Starting from an
-// openrouter-anthropic profile constructed with one Anthropic model,
-// switching to a different one via WithModel must surface the new
-// model's OpenRouter-prefixed catalog metadata, not stale state.
+// integration check on the WithModel re-resolve for the §14.1 recipe:
+// switching between two Anthropic models on the OpenRouter-over-Anthropic
+// instance must surface the new model's facts, not stale state.
 func TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog(t *testing.T) {
 	t.Parallel()
 	orig := newOpenRouterAnthropicProfile("anthropic/claude-3-5-sonnet")
 	cloned := orig.WithModel("anthropic/claude-3-haiku-20240307")
-	if cloned.ID() != "openrouter-anthropic" {
-		t.Fatalf("ID() = %q, want openrouter-anthropic", cloned.ID())
+	if cloned.ID() != "orclaude" {
+		t.Fatalf("ID() = %q, want orclaude", cloned.ID())
 	}
 	if cloned.Model() != "anthropic/claude-3-haiku-20240307" {
 		t.Fatalf("Model() = %q, want anthropic/claude-3-haiku-20240307", cloned.Model())
 	}
-	if got := cloned.ContextWindowSize(); got != 200_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 200000 — same-provider WithModel did not pick up the new model's openrouter-prefixed catalog metadata", got)
-	}
-}
-
-// TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders is
-// the providerOpts companion to the catalog test: switching from a
-// non-minimax openrouter model to a minimax/* one must inject the
-// OpenRouter-MiniMax reasoning_details provider option, and switching
-// the other way must drop it. A shallow clone would leave whichever
-// option was set at original-profile construction time.
-func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.T) {
-	t.Parallel()
-	// Start without minimax/* — providerOpts should be nil.
-	orig := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-	if orig.ProviderOptions() != nil {
-		t.Fatalf("setup: orig providerOpts = %+v, want nil", orig.ProviderOptions())
-	}
-
-	// Switch to minimax/* — should inject the reasoning option.
-	cloned := orig.WithModel("minimax/minimax-m2.7")
-	if cloned.ProviderOptions() == nil {
-		t.Fatal("after switch to minimax/*, providerOpts is nil — same-provider WithModel did not recompute providerOpts")
-	}
-	if _, ok := cloned.ProviderOptions()["openai-compatible"]; !ok {
-		t.Fatalf("providerOpts = %+v, want openai-compatible.reasoning", cloned.ProviderOptions())
-	}
-
-	// Switch back to non-minimax — option should be dropped.
-	dropped := cloned.WithModel("anthropic/claude-3-haiku-20240307")
-	if dropped.ProviderOptions() != nil {
-		t.Fatalf("after switch back to non-minimax, providerOpts = %+v, want nil", dropped.ProviderOptions())
+	if got, want := cloned.ContextWindowSize(), newOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307").ContextWindowSize(); got != want {
+		t.Fatalf("ContextWindowSize() = %d, want the registry's %d — same-instance WithModel did not re-resolve", got, want)
 	}
 }
 
@@ -982,12 +763,9 @@ func TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm(t *testing.
 	}
 }
 
-// TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry verifies the
-// OpenRouter side of the bare-key contract: openrouter routes to
-// upstreams whose models often appear only under bare keys
-// (e.g. "minimax/minimax-m2.7" with no openrouter/* equivalent), and
-// those metadata must still be inherited. Otherwise OpenRouter would
-// regress to the 128K generic fallback for many real models.
+// TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry verifies that a
+// namespaced upstream id OpenRouter serves carries that row's facts rather
+// than an instance-level default.
 func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
 	t.Parallel()
 	p := newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
@@ -996,52 +774,12 @@ func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
 	}
 }
 
-// TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter verifies that
-// the OpenRouter-specific reasoning_details provider option is gated on
-// id=="openrouter" and is NOT injected for other providers (e.g. ollama)
-// even when the model name starts with "minimax/". A user could
-// legitimately have a custom Ollama model named under that namespace.
-func TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter(t *testing.T) {
-	t.Parallel()
-	openrouter := newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
-	if openrouter.ProviderOptions() == nil {
-		t.Fatal("openrouter+minimax/* profile is missing the reasoning provider option")
-	}
-	if _, ok := openrouter.ProviderOptions()["openai-compatible"]; !ok {
-		t.Fatalf("openrouter providerOpts = %+v, want openai-compatible.reasoning", openrouter.ProviderOptions())
-	}
-
-	ollama := newOpenAICompatProfile("ollama", "minimax/whatever", 0)
-	if ollama.ProviderOptions() != nil {
-		t.Fatalf("ollama+minimax/* profile got OpenRouter-specific providerOpts = %+v, want nil", ollama.ProviderOptions())
-	}
-}
-
-// TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd is a thin
-// integration check that the helper is wired into newOpenAICompatProfile.
-// It uses a real catalog model and asserts a non-default context window
-// comes back. Detailed precedence is covered by
-// TestResolveOpenAICompatCatalogModel against a fake catalog.
-func TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd(t *testing.T) {
-	t.Parallel()
-	p := newOpenAICompatProfile("ollama", "llama3:8b", 0)
-	if got := p.ContextWindowSize(); got == 128_000 {
-		t.Fatalf("ContextWindowSize() = 128000 (generic fallback) — helper not wired into newOpenAICompatProfile")
-	}
-	if p.Model() != "llama3:8b" {
-		t.Fatalf("Model() = %q, want llama3:8b — wire model must keep the tag", p.Model())
-	}
-}
-
 // TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata has been
 // moved to session_resolve_profile_test.go (session-level cross-provider test).
 
-// TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata covers the
-// other half of the prefixed-key fallback in newOpenAICompatProfile:
-// openrouter catalog entries are stored under "openrouter/<provider>/<model>"
-// keys (e.g. "openrouter/anthropic/claude-3-haiku-20240307"). A future
-// refactor that broke the prefixed-key fallback for the non-Ollama path
-// would otherwise go unnoticed.
+// TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata is the same
+// check for an Anthropic-namespaced OpenRouter id: the row's window is the
+// upstream model's, and the wire model keeps its namespace.
 func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) {
 	t.Parallel()
 	p := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
@@ -1196,12 +934,12 @@ func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
 	assertMissingTool(t, newAnthropicProfile("claude-test"), "web_search")
 }
 
+// The Anthropic protocol needs no request extras from the profile: max
+// tokens, betas, and thinking shape are all registry capabilities now.
 func TestProviderProfile_ProviderOptions(t *testing.T) {
 	t.Parallel()
-	p := newAnthropicProfile("claude-opus-4-6")
-	opts := p.ProviderOptions()
-	if opts == nil {
-		t.Fatal("expected non-nil ProviderOptions for Anthropic")
+	if opts := newAnthropicProfile("claude-opus-4-6").ProviderOptions(); opts != nil {
+		t.Fatalf("ProviderOptions() = %+v, want nil for the anthropic protocol", opts)
 	}
 }
 
@@ -1212,9 +950,9 @@ func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
 	if opts == nil {
 		t.Fatal("expected non-nil ProviderOptions for OpenAI")
 	}
-	oai, ok := opts["openai"].(map[string]any)
+	oai, ok := opts[registry.ProtocolOpenAIResponses].(map[string]any)
 	if !ok {
-		t.Fatal("missing openai key in provider options")
+		t.Fatalf("missing %s key in provider options", registry.ProtocolOpenAIResponses)
 	}
 	ptc, ok := oai["parallel_tool_calls"]
 	if !ok {
@@ -1225,34 +963,24 @@ func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_ProviderOptions_MaxTokens(t *testing.T) {
+// The output cap is the row's max_output_tokens, not an injected option.
+func TestAnthropicProfile_MaxOutputTokens(t *testing.T) {
 	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6")
-	opts := p.ProviderOptions()
-	anth, ok := opts["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatal("missing anthropic key in provider options")
+	if p.Resolved().Caps.MaxOutputTokens == nil {
+		t.Fatal("the catalog carries an output cap for claude-opus-4-6")
 	}
-	mt, ok := anth["max_tokens"]
-	if !ok {
-		t.Fatal("missing max_tokens in anthropic provider options")
-	}
-	if mt != 16384 {
-		t.Fatalf("max_tokens = %v, want 16384", mt)
+	if got, want := p.MaxOutputTokens(), *p.Resolved().Caps.MaxOutputTokens; got != want {
+		t.Fatalf("MaxOutputTokens() = %d, want the row's %d", got, want)
 	}
 }
 
-func TestAnthropicProfile_ProviderOptions_NoBetaHeadersByDefault(t *testing.T) {
+// A model without the 1M beta row carries no anthropic-beta header.
+func TestAnthropicProfile_NoBetaHeaderByDefault(t *testing.T) {
 	t.Parallel()
-	p := newAnthropicProfile("test-model")
-	opts := p.ProviderOptions()
-	anth, ok := opts["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatal("missing anthropic key in provider options")
-	}
-	// Default (non-1M) profile should not have beta_headers — caching is GA.
-	if bh, ok := anth["beta_headers"]; ok {
-		t.Fatalf("default profile should not have beta_headers, got %v", bh)
+	p := newAnthropicProfile("claude-sonnet-4-5")
+	if bh := p.Resolved().Headers["anthropic-beta"]; bh != "" {
+		t.Fatalf("default profile carries anthropic-beta %q", bh)
 	}
 }
 
@@ -1291,17 +1019,20 @@ func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 	tests := []struct {
 		name string
 		p    *provider.Profile
-		want string
 	}{
-		{"openai", NewOpenAIProfile("gpt-5.2"), "2025-06-01"},
-		{"anthropic", newAnthropicProfile("claude-opus-4-6"), "2025-04-01"},
-		{"gemini", newGeminiProfile("gemini-2.5-pro"), "2025-03-01"},
+		{"openai", NewOpenAIProfile("gpt-5.2")},
+		{"anthropic", newAnthropicProfile("claude-opus-4-6")},
+		{"gemini", newGeminiProfile("gemini-2.5-pro")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.p.KnowledgeCutoff()
-			if got != tt.want {
-				t.Fatalf("KnowledgeCutoff() = %q, want %q", got, tt.want)
+			want := registry.StringValue(tt.p.Resolved().Caps.KnowledgeCutoff)
+			if want == "" {
+				t.Fatalf("the catalog carries no knowledge cutoff for %s/%s", tt.p.ID(), tt.p.Model())
+			}
+			if got != want {
+				t.Fatalf("KnowledgeCutoff() = %q, want the row's %q", got, want)
 			}
 		})
 	}
@@ -1460,9 +1191,9 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 	if opts == nil {
 		t.Fatal("expected non-nil ProviderOptions for Gemini")
 	}
-	gemini, ok := opts["gemini"].(map[string]any)
+	gemini, ok := opts[registry.ProtocolGoogle].(map[string]any)
 	if !ok {
-		t.Fatal("expected opts[\"gemini\"] to be map[string]any")
+		t.Fatalf("expected opts[%q] to be map[string]any", registry.ProtocolGoogle)
 	}
 	ss, ok := gemini["safetySettings"]
 	if !ok || ss == nil {
@@ -1494,34 +1225,38 @@ func TestAnthropicProfile_ContextWindow_Default200K(t *testing.T) {
 
 func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
 	t.Parallel()
-	p := newAnthropicProfile("claude-opus-4-6[1m]")
+	p := newAnthropicProfile("claude-sonnet-4-5[1m]")
 	if p.ContextWindowSize() != 1_000_000 {
 		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
 	}
 	// Model string should retain the suffix for downstream use.
-	if p.Model() != "claude-opus-4-6[1m]" {
-		t.Errorf("model: got %q, want %q", p.Model(), "claude-opus-4-6[1m]")
+	if p.Model() != "claude-sonnet-4-5[1m]" {
+		t.Errorf("model: got %q, want %q", p.Model(), "claude-sonnet-4-5[1m]")
+	}
+	// The alias row is what makes the 1M window legal on the wire.
+	if bh := p.Resolved().Headers["anthropic-beta"]; bh != "context-1m-2025-08-07" {
+		t.Errorf("anthropic-beta = %q, want context-1m-2025-08-07", bh)
 	}
 }
 
 func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
 	t.Parallel()
 	// Start at 200K, switch to 1M model.
-	orig := newAnthropicProfile("claude-opus-4-6")
+	orig := newAnthropicProfile("claude-sonnet-4-5")
 	if orig.ContextWindowSize() != 200_000 {
 		t.Fatalf("orig context: got %d, want 200000", orig.ContextWindowSize())
 	}
 
-	upgraded := orig.WithModel("claude-opus-4-6[1m]")
+	upgraded := orig.WithModel("claude-sonnet-4-5[1m]")
 	if upgraded.ContextWindowSize() != 1_000_000 {
 		t.Fatalf("upgraded context: got %d, want 1000000", upgraded.ContextWindowSize())
 	}
-	if upgraded.Model() != "claude-opus-4-6[1m]" {
+	if upgraded.Model() != "claude-sonnet-4-5[1m]" {
 		t.Fatalf("upgraded model: got %q", upgraded.Model())
 	}
 
 	// Switch back to 200K.
-	downgraded := upgraded.WithModel("claude-opus-4-6")
+	downgraded := upgraded.WithModel("claude-sonnet-4-5")
 	if downgraded.ContextWindowSize() != 200_000 {
 		t.Fatalf("downgraded context: got %d, want 200000", downgraded.ContextWindowSize())
 	}
@@ -1532,41 +1267,28 @@ func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_WithModel_NoProviderOptsAliasing(t *testing.T) {
+// ProviderOptions builds a fresh map on every call, so a caller that layers
+// its own keys onto the result cannot leak them into the profile.
+func TestProfile_ProviderOptionsAreNotAliased(t *testing.T) {
 	t.Parallel()
-	orig := newAnthropicProfile("claude-opus-4-6")
-	cloned := orig.WithModel("claude-opus-4-6[1m]")
-
-	// Mutating the clone's providerOpts must not affect the original.
-	clonedOpts := cloned.ProviderOptions()
-	if clonedOpts == nil {
-		t.Fatal("cloned providerOpts nil")
-	}
-	anthClone, ok := clonedOpts["anthropic"].(map[string]any)
+	p := newGeminiProfile("gemini-2.5-pro")
+	opts := p.ProviderOptions()
+	google, ok := opts[registry.ProtocolGoogle].(map[string]any)
 	if !ok {
-		t.Fatal("cloned missing anthropic key")
+		t.Fatalf("missing %s key", registry.ProtocolGoogle)
 	}
-	anthClone["injected"] = "bad"
+	google["injected"] = "bad"
 
-	origOpts := orig.ProviderOptions()
-	anthOrig, ok := origOpts["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatal("orig missing anthropic key")
-	}
-	if _, found := anthOrig["injected"]; found {
-		t.Fatal("mutating cloned providerOpts affected original — aliasing bug")
+	fresh, _ := p.ProviderOptions()[registry.ProtocolGoogle].(map[string]any)
+	if _, found := fresh["injected"]; found {
+		t.Fatal("mutating a returned provider-options map affected the profile — aliasing bug")
 	}
 }
 
 func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
 	t.Parallel()
-	p := newAnthropicProfile("claude-opus-4-6[1m]")
-	opts := p.ProviderOptions()
-	anth, ok := opts["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatal("missing anthropic key")
-	}
-	bh, _ := anth["beta_headers"].(string)
+	p := newAnthropicProfile("claude-sonnet-4-5[1m]")
+	bh := p.Resolved().Headers["anthropic-beta"]
 	if !strings.Contains(bh, "context-1m-2025-08-07") {
 		t.Fatalf("expected 1M beta header, got %q", bh)
 	}
@@ -1576,25 +1298,11 @@ func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
-	t.Parallel()
-	p := newAnthropicProfile("claude-opus-4-6")
-	opts := p.ProviderOptions()
-	anth, ok := opts["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatal("missing anthropic key")
-	}
-	bh, _ := anth["beta_headers"].(string)
-	if strings.Contains(bh, "context-1m-2025-08-07") {
-		t.Fatalf("default model should not have 1M beta header, got %q", bh)
-	}
-}
-
-func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
+func TestGeminiProfile_ContextWindow_IsAtLeast1M(t *testing.T) {
 	t.Parallel()
 	p := newGeminiProfile("gemini-2.5-flash")
-	if p.ContextWindowSize() != 1_000_000 {
-		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
+	if got := p.ContextWindowSize(); got < 1_000_000 {
+		t.Errorf("expected at least 1000000, got %d", got)
 	}
 }
 
@@ -1906,78 +1614,53 @@ func TestMiniMaxProfile_ToolListExact(t *testing.T) {
 // have been moved to session_resolve_profile_test.go. Cross-provider switching
 // is now handled by the Session resolver.
 
-func TestResolveEffortLevels_CatalogHit(t *testing.T) {
+// The effort ladder is the row's, and only the row's (spec §7.4).
+func TestEffortLevels_ComeFromTheRow(t *testing.T) {
 	t.Parallel()
-	// claude-opus-4-6 is in the catalog with [low, medium, high, max]
 	p := newAnthropicProfile("claude-opus-4-6")
 	levels := p.ReasoningEffortLevels()
-	if len(levels) != 4 || levels[3] != "max" {
-		t.Fatalf("claude-opus-4-6 effort levels: got %v, want [low medium high max]", levels)
+	if len(levels) == 0 || !stringSliceEqual(levels, p.Resolved().Caps.EffortValues) {
+		t.Fatalf("claude-opus-4-6 effort levels: got %v, want the row's %v", levels, p.Resolved().Caps.EffortValues)
 	}
 }
 
-func TestResolveEffortLevels_CatalogMiss(t *testing.T) {
+// A model the catalog does not carry advertises no ladder at all: the request
+// builder passes any requested effort through unchanged rather than clamping
+// against a made-up default (spec §7.3, §7.4).
+func TestEffortLevels_UncataloguedModelHasNoLadder(t *testing.T) {
 	t.Parallel()
-	// A model not in the catalog should fall back to provider defaults.
 	p := newAnthropicProfile("claude-unknown-model")
-	levels := p.ReasoningEffortLevels()
-	// Anthropic default is [low, medium, high, max]
-	if len(levels) != 4 {
-		t.Fatalf("unknown anthropic model effort levels: got %v, want provider default", levels)
+	if levels := p.ReasoningEffortLevels(); len(levels) != 0 {
+		t.Fatalf("unknown anthropic model effort levels: got %v, want none", levels)
+	}
+	if !p.SupportsReasoning() {
+		t.Fatal("unknown is not disabled: an uncatalogued model still supports reasoning")
 	}
 }
 
-func TestResolveEffortLevels_MiniMaxCatalog(t *testing.T) {
+// The task_list reasoning_effort enum is the row's ladder plus the "inherit"
+// sentinel, whichever instance serves the model.
+func TestTaskListSchema_EffortEnum_MatchesTheRowsLadder(t *testing.T) {
 	t.Parallel()
-	// minimax/minimax-m2.7 is in the catalog with [low, medium, high] (no max)
-	p := newMiniMaxProfile("minimax/minimax-m2.7")
-	levels := p.ReasoningEffortLevels()
-	if len(levels) != 3 || levels[2] != "high" {
-		t.Fatalf("minimax effort levels: got %v, want [low medium high]", levels)
-	}
-}
-
-func TestTaskListSchema_EffortEnum_MatchesCatalog(t *testing.T) {
-	t.Parallel()
-	// Verify that the task_list tool's reasoning_effort enum matches the
-	// catalog entry across different profile paths.
-	model := "minimax/minimax-m2.7"
-
-	// Get expected effort levels from the catalog.
-	var expectedLevels []string
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(model); mi != nil {
-			expectedLevels = mi.ReasoningEffortLevels
-		}
-	}
-	if len(expectedLevels) == 0 {
-		t.Fatalf("minimax/minimax-m2.7 not in catalog or has no effort levels")
-	}
-	// The schema enum additionally carries the "inherit" sentinel so
-	// strict-mode providers (which force-require the property) let the model
-	// decline to override the session's effort.
-	expectedEnum := append(append([]string(nil), expectedLevels...), "inherit")
-
-	// Test openrouter-anthropic profile path.
-	orAnthro := newOpenRouterAnthropicProfile(model)
-	effortEnumORAnthro := extractTaskListEffortEnum(t, orAnthro)
-	if !stringSliceEqual(effortEnumORAnthro, expectedEnum) {
-		t.Fatalf("openrouter-anthropic task_list effort enum mismatch:\n  got:  %v\n  want: %v",
-			effortEnumORAnthro, expectedEnum)
-	}
-
-	// Test minimax direct profile path.
-	minimax := newMiniMaxProfile(model)
-	effortEnumMinimax := extractTaskListEffortEnum(t, minimax)
-	if !stringSliceEqual(effortEnumMinimax, expectedEnum) {
-		t.Fatalf("minimax task_list effort enum mismatch:\n  got:  %v\n  want: %v",
-			effortEnumMinimax, expectedEnum)
-	}
-
-	// Both paths should produce the same enum.
-	if !stringSliceEqual(effortEnumORAnthro, effortEnumMinimax) {
-		t.Fatalf("effort enum differs between profiles:\n  openrouter-anthropic: %v\n  minimax: %v",
-			effortEnumORAnthro, effortEnumMinimax)
+	// Google models steer thinking by budget rather than an effort ladder, so
+	// the enum-bearing surfaces are the two that advertise one.
+	for _, p := range []*provider.Profile{
+		newAnthropicProfile("claude-opus-4-6"),
+		NewOpenAIProfile("gpt-5.2"),
+	} {
+		t.Run(p.ID(), func(t *testing.T) {
+			levels := p.ReasoningEffortLevels()
+			if len(levels) == 0 {
+				t.Fatalf("%s/%s advertises no effort ladder; pick a model the catalog covers", p.ID(), p.Model())
+			}
+			// The enum additionally carries the "inherit" sentinel so
+			// strict-mode providers (which force-require the property) let the
+			// model decline to override the session's effort.
+			want := append(append([]string(nil), levels...), "inherit")
+			if got := extractTaskListEffortEnum(t, p); !stringSliceEqual(got, want) {
+				t.Fatalf("task_list effort enum = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -2032,149 +1715,114 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
-// TestProviderProfile_BehaviorTag verifies that each constructor stamps the
-// correct behavior tag on the profile.
-func TestProviderProfile_BehaviorTag(t *testing.T) {
+// TestProviderProfileRegistryKeys verifies each fixture resolves to the
+// surface/protocol/provider-id triple the agent branches on (spec §7.5).
+func TestProviderProfileRegistryKeys(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name    string
-		profile *provider.Profile
-		want    string
+		name                                string
+		profile                             *provider.Profile
+		surface, protocol, providerID, inst string
 	}{
-		{"openai", NewOpenAIProfile("gpt-5.2"), "openai"},
-		{"anthropic", newAnthropicProfile("claude-test"), "anthropic"},
-		{"gemini", newGeminiProfile("gemini-test"), "google"},
-		{"minimax", newMiniMaxProfile("MiniMax-M2.7"), "minimax"},
-		{"openrouter-anthropic", newOpenRouterAnthropicProfile("anthropic/claude-test"), "openrouter-anthropic"},
-		{"openrouter (compat)", newOpenAICompatProfile("openrouter", "openai/gpt-test", 0), "openrouter"},
-		{"kimi (compat)", newOpenAICompatProfile("kimi", "kimi-test", 0), "kimi"},
-		{"glm (compat)", newOpenAICompatProfile("glm", "glm-test", 0), "glm"},
-		{"ollama (compat)", newOpenAICompatProfile("ollama", "llama3", 0), "ollama"},
+		{"openai", NewOpenAIProfile("gpt-5.2"), registry.SurfaceOpenAI, registry.ProtocolOpenAIResponses, "openai", "openai"},
+		{"anthropic", newAnthropicProfile("claude-test"), registry.SurfaceAnthropic, registry.ProtocolAnthropic, "anthropic", "anthropic"},
+		{"gemini", newGeminiProfile("gemini-test"), registry.SurfaceGoogle, registry.ProtocolGoogle, "google", "google"},
+		{"minimax", newMiniMaxProfile("MiniMax-M2.7"), registry.SurfaceAnthropic, registry.ProtocolAnthropic, "minimax", "minimax"},
+		{"openrouter over anthropic", newOpenRouterAnthropicProfile("anthropic/claude-test"), registry.SurfaceAnthropic, registry.ProtocolAnthropic, "openrouter", "orclaude"},
+		{"kimi for coding", newKimiAnthropicProfile("k3"), registry.SurfaceAnthropic, registry.ProtocolAnthropic, "kimi-for-coding", "kimi-for-coding"},
+		{"openrouter", newOpenAICompatProfile("openrouter", "openai/gpt-test", 0), registry.SurfaceGeneric, registry.ProtocolOpenAIChat, "openrouter", "openrouter"},
+		{"kimi", newOpenAICompatProfile("kimi", "kimi-test", 0), registry.SurfaceGeneric, registry.ProtocolOpenAIChat, "moonshotai", "kimi"},
+		{"glm", newOpenAICompatProfile("glm", "glm-test", 0), registry.SurfaceGeneric, registry.ProtocolOpenAIChat, "zai", "glm"},
+		{"ollama", newOpenAICompatProfile("ollama", "llama3", 0), registry.SurfaceGeneric, registry.ProtocolOpenAIChat, "ollama", "ollama"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.profile.BehaviorTag()
-			if got != tc.want {
-				t.Fatalf("BehaviorTag() = %q, want %q", got, tc.want)
+			p := tc.profile
+			if p.Surface() != tc.surface || p.Protocol() != tc.protocol || p.ProviderID() != tc.providerID || p.ID() != tc.inst {
+				t.Fatalf("keys = %s/%s/%s on %s, want %s/%s/%s on %s",
+					p.Surface(), p.Protocol(), p.ProviderID(), p.ID(), tc.surface, tc.protocol, tc.providerID, tc.inst)
 			}
 		})
 	}
 }
 
-// TestWithProviderID verifies that WithProviderID overrides the id but preserves
-// the behavior tag and all other profile state.
-func TestWithProviderID(t *testing.T) {
+// TestNamedInstanceKeepsItsIdentity pins what the deleted WithProviderID used
+// to fake: an instance carries a user-assigned name and inherits its base's
+// facts, and both survive a model switch.
+func TestNamedInstanceKeepsItsIdentity(t *testing.T) {
 	t.Parallel()
-	orig := NewOpenAIProfile("gpt-5.2")
-	renamed := WithProviderID(orig, "work")
-	if renamed.ID() != "work" {
-		t.Fatalf("ID() = %q, want %q", renamed.ID(), "work")
+	work := namedInstanceProfile("work-kimi", "moonshotai", "kimi-k2.5")
+	if work.ID() != "work-kimi" || work.ProviderID() != "moonshotai" {
+		t.Fatalf("named instance = %s/%s, want work-kimi/moonshotai", work.ID(), work.ProviderID())
 	}
-	if renamed.BehaviorTag() != "openai" {
-		t.Fatalf("BehaviorTag() = %q, want %q", renamed.BehaviorTag(), "openai")
+	rebuilt := work.WithModel("kimi-k3")
+	if rebuilt.ID() != "work-kimi" || rebuilt.ProviderID() != "moonshotai" || rebuilt.Model() != "kimi-k3" {
+		t.Fatalf("after WithModel = %s/%s/%s", rebuilt.ID(), rebuilt.ProviderID(), rebuilt.Model())
 	}
-	// Original must be unchanged.
-	if orig.ID() != "openai" {
-		t.Fatalf("original ID mutated: got %q", orig.ID())
+	// The base's curated cheap_model rides along with the name.
+	if got := work.CheapModel(); got != "kimi-k2.5" {
+		t.Fatalf("CheapModel() = %q, want moonshotai's kimi-k2.5", got)
+	}
+	gemini := namedInstanceProfile("work-google", "google", "gemini-2.5-pro")
+	if got := gemini.CheapModel(); got != "gemini-2.5-flash-lite" {
+		t.Fatalf("CheapModel() = %q, want gemini-2.5-flash-lite", got)
+	}
+	anthropic := namedInstanceProfile("work-anthropic", "anthropic", "claude-opus-4-6")
+	if got := anthropic.CheapModel(); got != "claude-haiku-4-5" {
+		t.Fatalf("CheapModel() = %q, want claude-haiku-4-5", got)
 	}
 }
 
-// TestRenamedInstance_CheapModelRefUsesPrimary verifies that an unconfigured
-// auxiliary route uses the renamed provider instance and its active model.
-func TestRenamedInstance_CheapModelRefUsesPrimary(t *testing.T) {
+// TestNamedInstanceInheritsBaseFacts verifies a renamed instance resolves its
+// base's rows: the window comes from the ollama record, not from the name.
+func TestNamedInstanceInheritsBaseFacts(t *testing.T) {
 	t.Parallel()
-	profiles := []*provider.Profile{
-		WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work"),
-		WithProviderID(newGeminiProfile("gemini-2.5-pro"), "work"),
-		WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work"),
+	direct := newOpenAICompatProfile("ollama", "llama3.1", 0)
+	renamed := namedInstanceProfile("work-ollama", "ollama", "llama3.1")
+	if direct.ContextWindowSize() == 0 || renamed.ContextWindowSize() != direct.ContextWindowSize() {
+		t.Fatalf("window = %d, want ollama's %d", renamed.ContextWindowSize(), direct.ContextWindowSize())
 	}
-	for _, profile := range profiles {
-		providerName, model := profile.CheapModelRef()
-		if providerName != "work" || model != profile.Model() {
-			t.Fatalf("CheapModelRef() = (%q, %q), want (work, %q)", providerName, model, profile.Model())
-		}
+	if rebuilt := renamed.WithModel("llama3.2"); rebuilt.ID() != "work-ollama" || rebuilt.ProviderID() != "ollama" {
+		t.Fatalf("after WithModel = %s/%s", rebuilt.ID(), rebuilt.ProviderID())
 	}
 }
 
-// TestRenamedInstance_RebuildPreservesTag verifies that WithModel on a renamed
-// instance (where id != behaviorTag) selects the constructor by behaviorTag,
-// AND re-stamps the tag on the rebuilt profile so it doesn't derive a wrong
-// tag from the renamed id. Regression guard: the rebuild once keyed on p.id,
-// so a renamed "work" instance skipped the catalog-aware rebuild and would
-// have derived its tag from "work" instead of "kimi".
-func TestRenamedInstance_RebuildPreservesTag(t *testing.T) {
+// TestNamedOpenRouterInstanceKeepsUpstreamNamespace verifies a renamed
+// OpenRouter instance keeps a namespaced upstream id verbatim: the slash is
+// part of the model id, not an instance switch.
+func TestNamedOpenRouterInstanceKeepsUpstreamNamespace(t *testing.T) {
 	t.Parallel()
-	kimiWork := WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work")
-	if kimiWork.BehaviorTag() != "kimi" {
-		t.Fatalf("pre-condition: BehaviorTag() = %q, want kimi", kimiWork.BehaviorTag())
-	}
-	// WithModel must select the constructor by behaviorTag=="kimi" and
-	// re-stamp the tag on the rebuilt profile.
-	rebuilt := kimiWork.WithModel("kimi-k2.5")
-	if rebuilt.BehaviorTag() != "kimi" {
-		t.Fatalf("BehaviorTag() after WithModel = %q, want kimi — rebuild must preserve behaviorTag", rebuilt.BehaviorTag())
-	}
-	if rebuilt.ID() != "work" {
-		t.Fatalf("ID() after WithModel = %q, want work — rebuild must preserve renamed id", rebuilt.ID())
-	}
-	// Verify that catalog state (context window) is recomputed via the rebuild.
-	// This distinguishes a proper rebuild from a shallow clone (which would also
-	// preserve the tag but would not recompute model-derived state).
-	// We can't easily verify context window changes here without a catalog entry,
-	// but the BehaviorTag check is the primary regression guard per the task spec.
-	// The full semantic test is TestRenamedInstance_OpenRouterMetaNamespace which
-	// exercises the providerOpts rebuild path.
-}
-
-// TestRenamedInstance_CatalogLookup verifies that the catalog/bare-suppression
-// logic keys on behaviorTag, not id. An instance with id=="work" but
-// behaviorTag=="ollama" must suppress bare catalog lookups.
-func TestRenamedInstance_CatalogLookup(t *testing.T) {
-	t.Parallel()
-	// An ollama instance renamed to "work" must still get catalog metadata
-	// resolved under the "ollama/..." prefixed key (not "work/...").
-	// If the catalog key is prefixed with id ("work/llama3.1") we get
-	// no match → 128K fallback. But with behaviorTag ("ollama/llama3.1")
-	// we get the 8192 context window from the embedded catalog.
-	ollamaWork := WithProviderID(newOpenAICompatProfile("ollama", "llama3.1", 0), "work")
-	// The profile was already resolved at construction time, so context window
-	// should be 8192 (from "ollama/llama3.1" in the catalog). But the id=="work"
-	// means WithModel on this profile must also use behaviorTag for catalog lookups.
-	if got := ollamaWork.ContextWindowSize(); got != 8192 {
-		t.Fatalf("ContextWindowSize() = %d, want 8192 — catalog resolved at construction", got)
-	}
-	// Now verify that WithModel("llama3.2") also resolves catalog correctly.
-	rebuilt := ollamaWork.WithModel("llama3.1")
-	if rebuilt.BehaviorTag() != "ollama" {
-		t.Fatalf("BehaviorTag() after WithModel = %q, want ollama", rebuilt.BehaviorTag())
-	}
-}
-
-// TestRenamedInstance_OpenRouterMetaNamespace verifies that an openrouter instance
-// renamed to "work" still keeps upstream namespaces (prefixActionKeep) and that
-// the minimax/ providerOpts gate uses behaviorTag.
-func TestRenamedInstance_OpenRouterMetaNamespace(t *testing.T) {
-	t.Parallel()
-	// openrouter renamed to "work"
-	orWork := WithProviderID(newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0), "work")
-	if orWork.BehaviorTag() != "openrouter" {
-		t.Fatalf("pre-condition: BehaviorTag() = %q, want openrouter", orWork.BehaviorTag())
-	}
-	// WithModel("minimax/minimax-m2.7") must keep the model verbatim (prefixActionKeep
-	// because behaviorTag=="openrouter") and inject reasoning providerOpts.
+	orWork := namedInstanceProfile("work-router", "openrouter", "anthropic/claude-3-haiku-20240307")
 	cloned := orWork.WithModel("minimax/minimax-m2.7")
-	if cloned.ID() != "work" {
-		t.Fatalf("ID() = %q, want work — renamed id must be preserved", cloned.ID())
+	if cloned.ID() != "work-router" {
+		t.Fatalf("ID() = %q, want work-router", cloned.ID())
 	}
 	if cloned.Model() != "minimax/minimax-m2.7" {
-		t.Fatalf("Model() = %q, want minimax/minimax-m2.7 — upstream namespace must be kept", cloned.Model())
+		t.Fatalf("Model() = %q, want minimax/minimax-m2.7 — the upstream namespace must be kept", cloned.Model())
 	}
-	// The minimax/ reasoning providerOpts must be injected because behaviorTag=="openrouter".
-	openaiCompat, ok := cloned.ProviderOptions()["openai-compatible"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing openai-compatible providerOpts — minimax reasoning gate must key on behaviorTag")
+	// The MiniMax-over-OpenRouter reasoning arrangement is a registry cap now,
+	// not an injected provider option.
+	if cloned.ProviderOptions() != nil {
+		t.Fatalf("chat-completions sends no extras: %+v", cloned.ProviderOptions())
 	}
-	if _, ok := openaiCompat["reasoning"]; !ok {
-		t.Fatalf("missing reasoning in openai-compatible providerOpts")
+	if got := registry.StringValue(cloned.Resolved().Caps.ReasoningField); got != "reasoning_details" {
+		t.Fatalf("reasoning_field = %q, want reasoning_details from the openrouter minimax glob", got)
+	}
+}
+
+// TestProviderProfile_CheapModelRefDefaultsToPrimary ports main's
+// aux-route rule (6b5af0acb): an instance with no cheap_model anywhere —
+// configured, instance row, or curated base — routes auxiliary work to the
+// active instance and model rather than to nothing.
+func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
+	t.Parallel()
+	p := resolveTestProfile("plaingw", openAICompatInstance("plaingw"), "some-model")
+	if got := p.ConfiguredCheapModel(); got != "" {
+		t.Fatalf("fixture has a configured cheap model %q; the test needs none", got)
+	}
+	providerName, model := p.CheapModelRef()
+	if providerName != p.ID() || model != p.Model() {
+		t.Fatalf("CheapModelRef = (%q, %q), want the primary (%q, %q)",
+			providerName, model, p.ID(), p.Model())
 	}
 }

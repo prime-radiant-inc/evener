@@ -3,11 +3,16 @@ package tui
 import (
 	"testing"
 
-	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/envvars"
 )
 
-// ---- formatAuthStatusSummary: openai env source ------------------------------
+// ---- formatAuthStatusSummary: the cases the hub corpus cannot produce -------
+//
+// Every real credential source is pinned against the hub's own recorded
+// answers in hub_auth_wire_test.go. What is left here is the handful of
+// shapes no live hub sends: a status with no instance at all, an activeSource
+// this build has no words for, and the wire's Error field, which the hub
+// reserves but does not currently set.
 
 func TestCovFormatAuthStatusSummary(t *testing.T) {
 	tests := []struct {
@@ -15,20 +20,23 @@ func TestCovFormatAuthStatusSummary(t *testing.T) {
 		status authStatus
 		want   string
 	}{
-		{"environment", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceEnv}, "OpenAI auth: env"},
-		{"environment and stored OAuth", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceEnv, HasStoredOAuth: true}, "OpenAI auth: env+oauth"},
-		{"OAuth", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth}, "OpenAI auth: oauth"},
-		{"expired OAuth", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, NeedsLogin: true}, "OpenAI auth: oauth expired"},
-		{"refreshable OAuth", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, NeedsRefresh: true}, "OpenAI auth: oauth refreshable"},
-		{"signed out", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceSignedOut}, "OpenAI auth: signed out"},
-		{"stored OAuth needs login", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceSignedOut, HasStoredOAuth: true, Error: "token expired"}, "OpenAI auth: login required: token expired"},
-		{"account email", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, Email: "user@example.com"}, "OpenAI auth: oauth (user@example.com)"},
-		{"stored email fallback", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, StoredEmail: "stored@example.com"}, "OpenAI auth: oauth (stored@example.com)"},
-		{"email and error", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, Email: "user@example.com", Error: "something broke"}, "OpenAI auth: oauth (user@example.com): something broke"},
-		{"error without email", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceOAuth, Error: "something broke"}, "OpenAI auth: oauth: something broke"},
-		{"signed-out error suppresses email", authStatus{Provider: "openai", ActiveSource: authopenai.AuthSourceSignedOut, StoredEmail: "stored@example.com", Error: "no token"}, "OpenAI auth: signed out: no token"},
-		{"no provider", authStatus{}, "Auth is not available until a provider is selected."},
-		{"unsupported provider", authStatus{Provider: "anthropic"}, `Auth is not supported for provider "anthropic".`},
+		{"no instance", authStatus{}, "Auth is not available until an instance is selected."},
+		{"unsupported instance", authStatus{Provider: "anthropic"}, `Auth is not supported for instance "anthropic".`},
+		{
+			"unknown source falls through to the wire value",
+			authStatus{Provider: "work", Supported: true, ActiveSource: "something-new"},
+			"work auth: something-new",
+		},
+		{
+			"error detail is appended",
+			authStatus{Provider: "openai-codex", Supported: true, ActiveSource: "oauth", Email: "user@example.com", Error: "something broke"},
+			"openai-codex auth: OAuth (user@example.com): something broke",
+		},
+		{
+			"error without an account",
+			authStatus{Provider: "openai-codex", Supported: true, ActiveSource: "oauth", Error: "something broke"},
+			"openai-codex auth: OAuth: something broke",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

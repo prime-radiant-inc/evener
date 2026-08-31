@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"strings"
-	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,13 +35,10 @@ func FuzzRootTUIMain(f *testing.F) {
 		if selector%10 == 8 {
 			// Construction does not start terminal I/O; Run remains fully faked.
 			_ = processArgs()
-			warmModelCatalog()
 			_ = newTUIProgram(hubModel{})
 		}
 		var stderr, stdout bytes.Buffer
 		var reset, applied, probed, initialized, altScreen, sent bool
-		var warm sync.WaitGroup
-		warm.Add(1)
 		parseErr := error(nil)
 		dirsErr := error(nil)
 		hubErr := error(nil)
@@ -63,12 +59,12 @@ func FuzzRootTUIMain(f *testing.F) {
 
 		oldExit, oldArgs, oldExe, oldGetenv := exitProcess, processArgs, processExecutable, processGetenv
 		oldErr, oldOut := standardError, standardOutput
-		oldParse, oldDirs, oldWarm, oldStart := parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient
+		oldParse, oldDirs, oldStart := parseStartupOptions, ensureUserConfigDirs, startHubClient
 		oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
 		t.Cleanup(func() {
 			exitProcess, processArgs, processExecutable, processGetenv = oldExit, oldArgs, oldExe, oldGetenv
 			standardError, standardOutput = oldErr, oldOut
-			parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient = oldParse, oldDirs, oldWarm, oldStart
+			parseStartupOptions, ensureUserConfigDirs, startHubClient = oldParse, oldDirs, oldStart
 			probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 		})
 		processArgs = func() []string { return []string{"evener-tui", "--fixture"} }
@@ -81,7 +77,6 @@ func FuzzRootTUIMain(f *testing.F) {
 			return opts, parseErr
 		}
 		ensureUserConfigDirs = func() error { return dirsErr }
-		warmModelCatalog = func() { warm.Done() }
 		startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 			return hubstart.HubRuntime{Address: hubstart.HubAddress{BaseURL: "http://fixture"}}, hubErr
 		}
@@ -110,9 +105,6 @@ func FuzzRootTUIMain(f *testing.F) {
 		}
 		if got != want {
 			t.Fatalf("run()=%d want %d", got, want)
-		}
-		if selector%9 >= 4 {
-			warm.Wait()
 		}
 		if selector%9 >= 4 && (!probed || !initialized || !applied || !reset) {
 			t.Fatal("theme lifecycle incomplete")

@@ -51,25 +51,43 @@ func TestClassify403CyberPolicyIsRetryable(t *testing.T) {
 
 func TestClassify404IsPermanent(t *testing.T) {
 	// 404 model-not-found / endpoint-not-found is permanent for the retry
-	// budget. The Responses->ChatCompletions fallback path classifies via
-	// ErrorClassFallback (covered separately).
+	// budget.
 	err := ErrorFromHTTPStatus("openai", 404, "model not found", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(404) = %v, want Permanent", got)
 	}
 }
 
-func TestClassifyOpenAIResponses404IsFallback(t *testing.T) {
+// TestClassifyOpenAIResponses404IsPermanent pins the flag day: a 404 naming the
+// Responses endpoint is an ordinary permanent error now that the
+// Responses->ChatCompletions handoff is gone, so it short-circuits the retry
+// chain and feeds the model-fallback chain like any other permanent failure.
+func TestClassifyOpenAIResponses404IsPermanent(t *testing.T) {
 	err := ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
-	if got := Classify(err); got != ErrorClassFallback {
-		t.Fatalf("Classify(openai responses 404) = %v, want Fallback", got)
+	if got := Classify(err); got != ErrorClassPermanent {
+		t.Fatalf("Classify(openai responses 404) = %v, want Permanent", got)
 	}
 }
 
-func TestClassifyOpenAIResponsesEmptyStreamIsFallback(t *testing.T) {
-	err := NewStreamError("openai", "/v1/responses: empty stream (model not supported)", nil)
-	if got := Classify(err); got != ErrorClassFallback {
-		t.Fatalf("Classify(openai responses empty stream) = %v, want Fallback", got)
+// TestClassifyOpenAIResponsesEmptyStreamIsPermanent pins the other half: a
+// Responses stream that closes 200 OK without a single recognized event says
+// the model does not speak this protocol. Retrying cannot help, so the retry
+// chain must short-circuit and the caller's model-fallback chain must run —
+// which needs both a permanent class and a kind the fallback routes act on.
+func TestClassifyOpenAIResponsesEmptyStreamIsPermanent(t *testing.T) {
+	err := NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
+	if got := Classify(err); got != ErrorClassPermanent {
+		t.Fatalf("Classify(openai responses empty stream) = %v, want Permanent", got)
+	}
+	if got := Kind(err); got != KindNotFound {
+		t.Fatalf("Kind(openai responses empty stream) = %v, want KindNotFound", got)
+	}
+	var le Error
+	if !errors.As(err, &le) {
+		t.Fatalf("empty-stream sentinel %T does not implement llm.Error", err)
+	}
+	if le.Retryable() {
+		t.Fatal("empty-stream sentinel reports itself retryable")
 	}
 }
 
@@ -125,56 +143,22 @@ func TestClassifyAbortErrorIsPermanent(t *testing.T) {
 	}
 }
 
-// --- BehaviorTag-based fallback tests (PRI-1880) ---
-
-// TestClassify_BehaviorTagOpenAI_Fallback verifies that an error from an
-// instance named "work" with behavior tag "openai" still classifies as
-// ErrorClassFallback when it carries the Responses-endpoint signal.
-// This is the core of PRI-1880 task 3: classify.go must key on BehaviorTag,
-// not Provider(), so renaming the instance doesn't break the fallback path.
-func TestClassify_BehaviorTagOpenAI_Fallback(t *testing.T) {
-	// Build a 404 from a "work" instance that has behavior tag "openai".
-	err := ErrorFromHTTPStatus("work", 404, "responses.create(stream) failed: model not found", nil, nil)
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		t.Fatalf("expected behaviorTagSetter, got %T", err)
-	}
-	bs.setBehaviorTag("openai")
-
-	if got := Classify(err); got != ErrorClassFallback {
-		t.Fatalf("Classify(work/tag=openai responses 404) = %v, want Fallback", got)
-	}
-}
-
-// TestClassify_ProviderNameOpenAI_NoTagFallback verifies the default identity
-// case: when BehaviorTag() is empty, isEndpointFallbackSignal should still
-// work if Provider()=="openai" (backwards compat / tag==name case).
-func TestClassify_ProviderNameOpenAI_NoTag_Fallback(t *testing.T) {
-	err := ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
-	// No behavior tag set — tag defaults to provider name via the lookup helper.
-	if got := Classify(err); got != ErrorClassFallback {
-		t.Fatalf("Classify(provider=openai, no tag, responses 404) = %v, want Fallback", got)
-	}
-}
-
-// TestClassify_NonOpenAI_BehaviorTag_NotFallback verifies that an instance
-// with tag "anthropic" does NOT produce ErrorClassFallback for a 404.
-func TestClassify_NonOpenAI_BehaviorTag_NotFallback(t *testing.T) {
-	err := ErrorFromHTTPStatus("work", 404, "responses.create failed", nil, nil)
-	var bs behaviorTagSetter
-	if !errors.As(err, &bs) {
-		t.Fatalf("expected behaviorTagSetter, got %T", err)
-	}
-	bs.setBehaviorTag("anthropic")
-	if got := Classify(err); got != ErrorClassPermanent {
-		t.Fatalf("Classify(work/tag=anthropic 404) = %v, want Permanent", got)
+// TestClassify_ProviderIdentityNeverChangesTheClass pins that the classifier
+// does not key on provider identity at all: with the endpoint handoff
+// deleted, a Responses 404 is Permanent whichever instance it arrives from.
+func TestClassify_ProviderIdentityNeverChangesTheClass(t *testing.T) {
+	for _, instance := range []string{"work", "openai", "anthropic"} {
+		err := ErrorFromHTTPStatus(instance, 404, "responses.create(stream) failed: model not found", nil, nil)
+		if got := Classify(err); got != ErrorClassPermanent {
+			t.Fatalf("Classify(%s responses 404) = %v, want Permanent", instance, got)
+		}
 	}
 }
 
 func TestClassifyStringerHasName(t *testing.T) {
 	// ErrorClass should stringify legibly for logs.
-	got := fmt.Sprintf("%s/%s/%s", ErrorClassRetryable, ErrorClassPermanent, ErrorClassFallback)
-	want := "retryable/permanent/fallback"
+	got := fmt.Sprintf("%s/%s", ErrorClassRetryable, ErrorClassPermanent)
+	want := "retryable/permanent"
 	if got != want {
 		t.Fatalf("ErrorClass strings = %q, want %q", got, want)
 	}

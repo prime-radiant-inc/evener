@@ -30,8 +30,6 @@ import (
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -105,31 +103,29 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
-	loadConfig         func(string) (Config, error)
-	ensureDirs         func() error
-	acquireLock        func(string) (func(), error)
-	newToken           func() (string, error)
-	loadAuthToken      func(string) (string, error)
-	loadCredentials    func(string) (*credentials.Store, error)
-	loadProviderConfig func(string) (providercfg.Config, bool, error)
-	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
-	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
-	listen             func(context.Context, string, string) (net.Listener, error)
-	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
-	afterWeb           func(*WebServer)
+	loadConfig      func(string) (Config, error)
+	ensureDirs      func() error
+	acquireLock     func(string) (func(), error)
+	newToken        func() (string, error)
+	loadAuthToken   func(string) (string, error)
+	loadCredentials func(string) (*credentials.Store, error)
+	loadRegistry    hubcore.RegistryLoader
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen          func(context.Context, string, string) (net.Listener, error)
+	serve           func(context.Context, hubHTTPServer, hubShutdowner) error
+	afterWeb        func(*WebServer)
 }
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:         LoadConfig,
-		ensureDirs:         cmdutil.EnsureUserConfigDirs,
-		acquireLock:        hostlock.AcquireLock,
-		newToken:           newHubToken,
-		loadAuthToken:      hubedge.LoadOrCreateAuthToken,
-		loadCredentials:    credentials.LoadStore,
-		loadProviderConfig: providercfg.LoadFile,
-		materializeConfig:  cmdutil.MaterializeProvidersConfig,
-		notifyContext:      signal.NotifyContext,
+		loadConfig:      LoadConfig,
+		ensureDirs:      cmdutil.EnsureUserConfigDirs,
+		acquireLock:     hostlock.AcquireLock,
+		newToken:        newHubToken,
+		loadAuthToken:   hubedge.LoadOrCreateAuthToken,
+		loadCredentials: credentials.LoadStore,
+		loadRegistry:    cmdutil.LoadRegistry,
+		notifyContext:   signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
@@ -229,35 +225,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
-	providersConfigPath := envvars.EVENERProvidersConfig.Getenv()
-	if providersConfigPath == "" {
-		providersConfigPath = filepath.Join(cmdutil.DefaultConfigRoot(), "providers.toml")
-	}
-	// credentials.toml is always a sibling of providers.toml, wherever
-	// EVENER_PROVIDERS_CONFIG points it — matching cmdutil.LoadProviderConfigAt's
-	// resolution so the hub and a plain `evener` client agree on the store.
-	credsStore, err := deps.loadCredentials(filepath.Join(filepath.Dir(providersConfigPath), "credentials.toml"))
+	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
+	credentialsPath := cmdutil.CredentialsPath()
+	credsStore, err := deps.loadCredentials(credentialsPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] credentials store: %v\n", err)
 		return err
 	}
-	var loadedProviderConfig *providercfg.Config
-	if pcfg, exists, pcfgErr := deps.loadProviderConfig(providersConfigPath); pcfgErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v\n", pcfgErr)
-		return pcfgErr
-	} else if exists {
-		loadedProviderConfig = &pcfg
-	} else {
-		// File absent — materialize a descriptors-only providers.toml from the
-		// environment so the hub has a single source of truth and spawned
-		// children load the same file via EVENER_PROVIDERS_CONFIG.
-		materialized, matErr := deps.materializeConfig(providersConfigPath)
-		if matErr != nil {
-			_, _ = fmt.Fprintf(stderr, "[hub] materialize providers config: %v\n", matErr)
-			return matErr
-		}
-		loadedProviderConfig = &materialized
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
+	// A providers.toml the registry cannot read is a diagnostic, not a
+	// startup failure: the hub keeps an implicit-only registry, every child
+	// it spawns resolves the same set, and instance writes stay refused
+	// until the user fixes the file by hand (spec §10, §14.1).
+	hubReg := hubcore.NewProviderRegistry(deps.loadRegistry)
+	if err := hubReg.Reload(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
@@ -268,9 +249,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		EvenerBinary:        resolvedEvenerBinary,
 		RunDir:              runDir,
 		HubToken:            hubToken,
-		Creds:               credsStore,
+		Registry:            hubReg,
 		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
+		CredentialsPath:     credentialsPath,
+		NoUserLayer:         noUserLayer,
 	}
 	var codexLauncher *codexlaunch.CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {
@@ -382,8 +365,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PastPerPage:               cfg.PastResultsPerPage,
 		StateDir:                  stateDir,
 		CredsStore:                credsStore,
-		ProviderConfig:            loadedProviderConfig,
+		Registry:                  hubReg,
 		ProvidersConfigPath:       providersConfigPath,
+		CredentialsPath:           credentialsPath,
+		NoUserLayer:               noUserLayer,
 		CodexSources:              cfg.CodexSources,
 		CodexLaunches:             cfg.CodexLaunches,
 		CodexLauncher:             codexLauncher,
@@ -602,6 +587,9 @@ func printHubEnvVars(w io.Writer) {
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
+	// Every implicit provider the registry knows reads its own key and base
+	// URL; naming them all here would be a second, drifting roster.
+	_, _ = fmt.Fprintf(tw, "  %s\t%s\n", "<ID>_API_KEY / <ID>_BASE_URL", "any implicit provider's key or base URL (evener providers list)")
 	_ = tw.Flush()
 }
 

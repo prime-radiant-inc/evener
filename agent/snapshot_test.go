@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,17 +13,29 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // snapshotFakeAdapter is a minimal adapter for session restore and auto-save tests.
 type snapshotFakeAdapter struct {
 	name string
+	// liveModels, when set, scripts the adapter's llm.LiveModelLister
+	// listing; an unscripted fake cannot list models at all.
+	liveModels func(ctx context.Context) ([]registry.Model, error)
 
 	mu       sync.Mutex
 	requests []llm.Request
 }
 
 func (a *snapshotFakeAdapter) Name() string { return a.name }
+
+// LiveModels implements llm.LiveModelLister when a test scripts a listing.
+func (a *snapshotFakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	if a.liveModels == nil {
+		return nil, errors.New("snapshot fake adapter does not list models")
+	}
+	return a.liveModels(ctx)
+}
 func (a *snapshotFakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
 	a.mu.Lock()

@@ -18,13 +18,11 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
-	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -35,13 +33,12 @@ const evenerLaunchCheckTimeout = 30 * time.Second
 const daemonLaunchOutputLimit = 64 * 1024
 
 var (
-	spawnMkdirAll                    = os.MkdirAll
-	spawnMkdirTemp                   = os.MkdirTemp
-	spawnWriteFile                   = os.WriteFile
-	spawnRemoveAll                   = os.RemoveAll
-	listEvenerLaunchModelContractFn  = listEvenerLaunchModelContract
-	openAIStoredOAuthUsableForLaunch = openAIStoredOAuthUsable
-	listRendezvousForWait            = rendezvous.List
+	spawnMkdirAll                   = os.MkdirAll
+	spawnMkdirTemp                  = os.MkdirTemp
+	spawnWriteFile                  = os.WriteFile
+	spawnRemoveAll                  = os.RemoveAll
+	listEvenerLaunchModelContractFn = listEvenerLaunchModelContract
+	listRendezvousForWait           = rendezvous.List
 )
 
 // HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
@@ -50,9 +47,21 @@ type HubSpawner struct {
 	EvenerBinary        string // path to the evener binary; "" → "evener" on PATH
 	RunDir              string
 	HubToken            string
-	Creds               *credentials.Store // credentials store for provider key injection
-	StateRoot           string             // hub-level state root; used for resolving
-	ProvidersConfigPath string             // path of the providers.toml the hub loaded
+	Registry            *hubcore.ProviderRegistry // live registry the credential gate reads
+	StateRoot           string                    // hub-level state root; used for resolving
+	ProvidersConfigPath string                    // providers.toml the child reads as its user layer
+	CredentialsPath     string                    // credentials.toml the child resolves keys from
+	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
+}
+
+// childNoUserLayer is spec §10's third state as a child must see it: the hub's
+// own tri-state, or a providers.toml the registry cannot read right now. It is
+// asked per call rather than frozen at startup, because every credential
+// action reloads the registry and can change the answer in either direction —
+// and a child pointed at a file the hub is not reading (or denied one it is)
+// fails at launch with none of the hub's diagnostics attached.
+func childNoUserLayer(configured bool, reg *hubcore.ProviderRegistry) bool {
+	return configured || (reg != nil && reg.WritesRefused())
 }
 
 type EvenerLaunchModelLister interface {
@@ -85,9 +94,10 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		Creds:               h.Creds,
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -117,9 +127,10 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 		RunDir:              h.RunDir,
 		StateDir:            stateDir,
 		HubToken:            h.HubToken,
-		Creds:               h.Creds,
 		ParentEnv:           os.Environ(),
 		ProvidersConfigPath: h.ProvidersConfigPath,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
@@ -152,15 +163,15 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		Provider:            req.Provider,
-		Creds:               h.Creds,
 		ParentEnv:           os.Environ(),
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: h.ProvidersConfigPath,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		CredentialsPath:     h.CredentialsPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
+	if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -197,16 +208,16 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:            req.Resolved,
-		Provider:            req.Provider,
-		Creds:               h.Creds,
 		ParentEnv:           os.Environ(),
 		RunDir:              h.RunDir,
 		StateDir:            req.StateDir,
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: h.ProvidersConfigPath,
+		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
+		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
+		if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -615,172 +626,44 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 	return project, stateDir, nil
 }
 
-// validateProviderCredentials checks that the credentials store has a value
-// for the given provider. Providers listed with auth mode "none" (e.g. ollama)
-// are always accepted. A configured provider with no resolvable credential
-// returns a structured launch error.
+// validateProviderCredentials refuses a launch whose instance has no
+// credential the child could resolve, so the failure is a launch error the
+// user can read rather than a 401 mid-session. The registry answers every
+// part of it (spec §11.3): auth = none and optional-bearer need nothing,
+// oauth-openai-codex is satisfied by the instance's OAuth record, gcp-adc by
+// the ADC variable or file, and everything else by a resolved key or
+// credential header — with the endpoint stop of §10 already applied, so a
+// gateway that inherits no vendor key is refused here.
 //
-// If store is nil, credential validation is skipped (the spawned process
-// inherits env credentials or will fail at the LLM provider level instead).
-//
-// When providersConfigPath is non-empty, the file is loaded fresh from disk
-// and the check is instance-aware: inline api_key on the instance counts as a
-// credential, and for openai-type instances the per-instance OAuth file
-// (auth/<name>.json) is checked using the instance name, not "openai".
-// When the file cannot be loaded or the path is empty, the original type-map
-// behavior is used unchanged.
-func validateProviderCredentials(provider string, store *credentials.Store, env []string, providersConfigPath string) error {
-	if provider == "" || store == nil {
+// A nil registry or an empty provider name means there is nothing to check.
+func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry) error {
+	name := strings.ToLower(strings.TrimSpace(provider))
+	if name == "" || reg == nil || reg.Get() == nil {
 		return nil
 	}
-
-	// Config-path: instance-aware credential check.
-	if providersConfigPath != "" {
-		pcfg, exists, err := providercfg.LoadFile(providersConfigPath)
-		if err != nil || !exists {
-			// Fall through to the no-config path below.
-			goto noConfig
-		}
-		cfg := &pcfg
-		for _, inst := range cfg.Instances {
-			if inst.Name != strings.ToLower(strings.TrimSpace(provider)) {
-				continue
-			}
-			tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
-			// Which key authenticates this instance is a question about the
-			// endpoint its adapter contacts, not about the dialect it speaks
-			// there, so it keys on the credential tag while every behavior
-			// question below keys on the behavior tag.
-			credTag := providercfg.CredentialTag(string(inst.Type), string(inst.APIStyle), inst.BaseURL)
-			// A provider that authenticates nothing (ollama) has no credential
-			// to look for, so there is nothing to gate on. The auth mode is a
-			// property of the instance's type, not of the name it was given.
-			if envvars.RequiresNoCredential(tag) {
-				return nil
-			}
-			// Inline api_key on the instance is always sufficient.
-			if strings.TrimSpace(inst.APIKey) != "" {
-				return nil
-			}
-			if hasFile, _ := store.InstanceLayers(inst.Name, credTag); hasFile {
-				return nil
-			}
-			for _, value := range inst.CredentialHeaders {
-				if strings.TrimSpace(value) != "" {
-					return nil
-				}
-			}
-			// Per-instance OAuth at auth/<name>.json, for instances that behave
-			// as OpenAI proper. The behavior tag rather than the declared type:
-			// an openai instance routed through chat-completions is served by
-			// the openaicompat adapter, which sends a bearer API key and cannot
-			// use an OAuth record at all, so accepting one here would only move
-			// the failure to a 401 mid-session.
-			if tag == "openai" {
-				stateDir := openAIStateDirFromLaunchEnv(env)
-				if openAIInstanceOAuthUsable(stateDir, inst.Name) {
-					return nil
-				}
-			}
-			// Fall through to env-var check using the instance's behavior tag.
-			if tag == "openai-compatible" {
-				// A base_url set in providers.toml is sufficient: the openaicompat
-				// adapter reads it from config and does not require
-				// OPENAI_COMPATIBLE_BASE_URL in the environment.
-				if strings.TrimSpace(inst.BaseURL) != "" {
-					return nil
-				}
-				if openAICompatibleBaseURLInEnv(env) {
-					return nil
-				}
-			}
-			// ResolveKey's layer order, asked of the launch environment rather
-			// than the hub's: the instance name's variables first, then the
-			// credential row's. Asking only the row would refuse an instance
-			// whose client cmdutil builds from the name-scoped key.
-			if providerCredentialInEnv(inst.Name, env) || providerCredentialInEnv(credTag, env) {
-				return nil
-			}
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via evener/auth/apiKey/set or set the matching env var", provider))
-		}
-		// Instance name not found in config — don't block launch.
-		return nil
-	}
-
-noConfig:
-	// No-config path: original type-map behavior, unchanged.
-	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsableForLaunch(env) {
-		return nil
-	}
-	if strings.EqualFold(strings.TrimSpace(provider), "openai-compatible") && openAICompatibleBaseURLInEnv(env) {
-		return nil
-	}
-	// Use List() so providers that need no credentials (e.g. ollama) are
-	// correctly identified via their SourceNone status.
-	for _, p := range store.List() {
-		if !strings.EqualFold(p.Name, provider) {
-			continue
-		}
-		if p.Source == credentials.SourceNone {
+	r := reg.Get()
+	if inst, ok := r.Instance(name); ok {
+		switch inst.Auth {
+		case registry.AuthNone, registry.AuthOptionalBearer:
 			return nil
 		}
-		if providerCredentialInEnv(provider, env) {
+		if inst.CredentialSource != "none" {
 			return nil
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via evener/auth/apiKey/set or set the matching env var", provider))
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", name, strings.Join(inst.Warnings, "; ")))
 	}
-	// Unknown provider — don't block launch.
-	return nil
-}
-
-// openAIInstanceOAuthUsable reports whether a usable OAuth record exists for
-// the given instance name in stateDir (at auth/<instanceName>.json).
-func openAIInstanceOAuthUsable(stateDir, instanceName string) bool {
-	record, err := authopenai.LoadAuth(stateDir, instanceName)
-	if err != nil {
-		return false
-	}
-	if record.Source != authopenai.AuthSourceOAuth {
-		return false
-	}
-	if record.Expiry.IsZero() || record.Expiry.After(time.Now()) {
-		return true
-	}
-	return strings.TrimSpace(record.RefreshToken) != ""
-}
-
-func providerCredentialInEnv(provider string, env []string) bool {
-	for _, key := range credentials.EnvVars(provider) {
-		value, ok := envLookup(env, key)
-		if env == nil {
-			if v, found := envvars.Find(key); found {
-				value, ok = v.LookupEnv()
-			}
+	// Not an instance: a curated implicit provider whose credential does not
+	// resolve in this environment (spec §5.1), or a name nothing declares.
+	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		// The Codex transport reads no key at all (spec §5.1), so its
+		// api_key_env list is empty and the key advice below would name
+		// nothing. Point at the flow that does configure it.
+		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
-		if ok && strings.TrimSpace(value) != "" {
-			return true
-		}
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}
-	return false
-}
-
-func openAICompatibleBaseURLInEnv(env []string) bool {
-	value, ok := envLookup(env, envvars.OpenAICompatibleBaseURL.Name)
-	if env == nil {
-		value, ok = envvars.OpenAICompatibleBaseURL.LookupEnv()
-	}
-	return ok && strings.TrimSpace(value) != ""
-}
-
-func openAIStoredOAuthUsable(env []string) bool {
-	return openAIInstanceOAuthUsable(openAIStateDirFromLaunchEnv(env), "openai")
-}
-
-func openAIStateDirFromLaunchEnv(env []string) string {
-	if env == nil {
-		return authopenai.DefaultStateDirWithStateHome("")
-	}
-	return openAIStateDirFromEnvList(env)
+	return appwire.HubLaunchError(fmt.Sprintf("unknown instance %q: add a [providers.%s] entry to providers.toml", name, name))
 }
 
 func envLookup(env []string, key string) (string, bool) {

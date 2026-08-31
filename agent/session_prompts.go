@@ -318,10 +318,10 @@ func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, 
 	sectionSources = append(sectionSources, embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"})
 
 	resolver := &sectionResolver{
-		provider: s.profile.BehaviorTag(),
-		agent:    s.cfg.AgentName,
-		agentFS:  bundled.Agents(),
-		sources:  sectionSources,
+		surface: s.profile.Surface(),
+		agent:   s.cfg.AgentName,
+		agentFS: bundled.Agents(),
+		sources: sectionSources,
 	}
 	if resolver.agent == "" {
 		resolver.agent = defaultAgentName

@@ -30,7 +30,7 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
-	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -257,35 +257,39 @@ func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T)
 	}
 }
 
+// serveTestClient is a client on a hermetic registry carrying one custom
+// instance, "work", behind openai.
+func serveTestClient(t *testing.T) *llm.Client {
+	t.Helper()
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"work": {Base: "openai", APIKey: "test"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return llm.NewClient(llm.WithRegistry(r))
+}
+
 // TestBuildInitialProfile_ConfigPath verifies that buildInitialProfile resolves
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
-// whose ID matches the instance name, not the provider type.
+// whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
-	if profile.ID() != "work" {
-		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "work")
+	if profile.ID() != "work" || profile.ProviderID() != "openai" {
+		t.Fatalf("profile = %s/%s, want work/openai", profile.ID(), profile.ProviderID())
 	}
 }
 
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -297,13 +301,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	cfg := providercfg.Config{
-		Default: "work",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "work", Type: "openai"},
-		},
-	}
-	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -312,19 +310,10 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 	}
 }
 
-// TestBuildInitialProfile_MaterializedInstance verifies that buildInitialProfile
-// resolves a type-named instance (e.g. "openai/gpt-5") through the config path,
-// matching the contract that LoadClient materializes a config before callers see it.
-func TestBuildInitialProfile_MaterializedInstance(t *testing.T) {
-	// Simulate a materialized config where the instance name equals the type name,
-	// which is what materializeProvidersConfig produces.
-	cfg := providercfg.Config{
-		Default: "openai",
-		Instances: []providercfg.InstanceConfig{
-			{Name: "openai", Type: "openai"},
-		},
-	}
-	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+// TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
+// resolves the same way a configured instance does.
+func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
+	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -448,16 +437,10 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 
 func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -538,16 +521,10 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	t.Cleanup(releaseAdapter)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
@@ -693,16 +670,16 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	called := make(chan struct{}, 1)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{called: called})
-		return client, providercfg.Config{}, false, nil
+		return client, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
 	})
 
-	client, _, _, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
 	if err != nil {
 		t.Fatalf("newServeLLMClient: %v", err)
 	}
@@ -1022,16 +999,10 @@ func TestEvenerUsageFromLLM_NonZeroCacheReadOnlyStillReturns(t *testing.T) {
 
 func TestRunServe_ResumeNonexistent(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providercfg.Config{
-			Default: "openai",
-			Instances: []providercfg.InstanceConfig{
-				{Name: "openai", Type: "openai"},
-			},
-		}
-		return client, cfg, true, nil
+		return client, nil
 	}
 	t.Cleanup(func() { serveLoadClient = oldLoadClient })
 

@@ -1,0 +1,91 @@
+{
+  "instance": "orclaude",
+  "provider_id": "openrouter",
+  "protocol": "anthropic",
+  "surface": "anthropic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://openrouter.ai/api/v1",
+    "endpoint": "/messages",
+    "stream_endpoint": "/messages",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "/messages/count_tokens",
+    "vars": {
+      "BASE_URL": "https://openrouter.ai/api/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "OPENROUTER_BASE_URL"
+    }
+  },
+  "model_id": "minimax/minimax-m2.7",
+  "wire_id": "minimax/minimax-m2.7",
+  "model": {
+    "id": "minimax/minimax-m2.7",
+    "wire_id": "minimax/minimax-m2.7",
+    "family": "minimax",
+    "surface": "anthropic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 204800,
+    "max_output_tokens": 131072,
+    "tools": true,
+    "structured_output": true,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle"
+    ],
+    "input_modalities": [
+      "text"
+    ],
+    "cost": {
+      "input": 0.3,
+      "output": 1.2,
+      "cache_read": 0.06
+    },
+    "fields": {
+      "container": false,
+      "fallbacks": false,
+      "max_tokens": true,
+      "metadata": false,
+      "service_tier": false,
+      "stop_sequences": true,
+      "temperature": true,
+      "top_p": true
+    },
+    "thinking_format": "openrouter",
+    "thinking_shape": "budget",
+    "thinking_always_on": true,
+    "reasoning_field": "reasoning_details",
+    "tool_choice_forcing": false,
+    "session_affinity_headers": true
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "InputModalities": "snapshot/row",
+    "MaxOutputTokens": "snapshot/row",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "overlay/glob:minimax/*",
+    "ReasoningField": "overlay/glob:minimax/*",
+    "SessionAffinityHeaders": "overlay/provider",
+    "StructuredOutput": "snapshot/row",
+    "Surface": "config/glob:minimax/*",
+    "ThinkingAlwaysOn": "overlay/glob:minimax/*",
+    "ThinkingFormat": "overlay/provider",
+    "ThinkingShape": "derived",
+    "ToolChoiceForcing": "overlay/provider",
+    "Tools": "snapshot/row",
+    "model": "row:minimax/minimax-m2.7"
+  },
+  "default_model": "anthropic/claude-opus-5",
+  "cheap_model": "google/gemini-2.5-flash-lite",
+  "credential_source": "env:OPENROUTER_API_KEY",
+  "pruned_fields": [
+    "container",
+    "fallbacks",
+    "metadata",
+    "service_tier"
+  ]
+}

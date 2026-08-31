@@ -1,0 +1,113 @@
+{
+  "instance": "moonshotai",
+  "provider_id": "moonshotai",
+  "protocol": "openai-chat",
+  "surface": "generic",
+  "transport": {
+    "auth": "bearer",
+    "base_url": "https://api.moonshot.ai/v1",
+    "endpoint": "/chat/completions",
+    "stream_endpoint": "/chat/completions",
+    "models_endpoint": "/models",
+    "count_tokens_endpoint": "-",
+    "vars": {
+      "BASE_URL": "https://api.moonshot.ai/v1"
+    },
+    "vars_env": {
+      "BASE_URL": "MOONSHOTAI_BASE_URL"
+    }
+  },
+  "model_id": "kimi-k2.5",
+  "wire_id": "kimi-k2.5",
+  "model": {
+    "id": "kimi-k2.5",
+    "wire_id": "kimi-k2.5",
+    "family": "kimi-k2",
+    "surface": "generic",
+    "caps": {}
+  },
+  "caps": {
+    "context_window": 262144,
+    "tools": true,
+    "structured_output": false,
+    "sampling": false,
+    "reasoning": true,
+    "reasoning_controls": [
+      "toggle"
+    ],
+    "input_modalities": [
+      "text",
+      "image",
+      "video"
+    ],
+    "knowledge_cutoff": "2025-01",
+    "cost": {
+      "input": 0.6,
+      "output": 3,
+      "cache_read": 0.1
+    },
+    "fields": {
+      "developer_role": false,
+      "frequency_penalty": false,
+      "logprobs": false,
+      "max_tokens": true,
+      "metadata": false,
+      "n": false,
+      "parallel_tool_calls": false,
+      "presence_penalty": false,
+      "prompt_cache_key": false,
+      "prompt_cache_retention": false,
+      "seed": false,
+      "service_tier": false,
+      "stop": true,
+      "store": false,
+      "stream_options": true,
+      "temperature": false,
+      "top_p": false,
+      "user": false
+    },
+    "reasoning_field": "reasoning_content",
+    "tool_choice_forcing": false
+  },
+  "provenance": {
+    "ContextWindow": "snapshot/row",
+    "Cost": "snapshot/row",
+    "Family": "snapshot/row",
+    "Fields.frequency_penalty": "overlay/provider",
+    "Fields.presence_penalty": "overlay/provider",
+    "Fields.temperature": "overlay/provider",
+    "Fields.top_p": "overlay/provider",
+    "InputModalities": "snapshot/row",
+    "KnowledgeCutoff": "snapshot/row",
+    "MaxOutputTokens": "derived",
+    "Reasoning": "snapshot/row",
+    "ReasoningControls": "snapshot/row",
+    "ReasoningField": "snapshot/row",
+    "Sampling": "snapshot/row",
+    "StructuredOutput": "overlay/provider",
+    "Surface": "snapshot/row",
+    "ToolChoiceForcing": "overlay/provider",
+    "Tools": "snapshot/row",
+    "model": "row:kimi-k2.5"
+  },
+  "default_model": "kimi-k3",
+  "cheap_model": "kimi-k2.5",
+  "credential_source": "env:MOONSHOT_API_KEY",
+  "pruned_fields": [
+    "developer_role",
+    "frequency_penalty",
+    "logprobs",
+    "metadata",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "seed",
+    "service_tier",
+    "store",
+    "temperature",
+    "top_p",
+    "user"
+  ]
+}

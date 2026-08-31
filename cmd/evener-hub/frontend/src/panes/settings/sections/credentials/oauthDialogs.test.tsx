@@ -73,7 +73,7 @@ describe("OAuthRedirectDialog", () => {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
     });
-    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     const onSuccess = vi.fn();
     render(
       <>
@@ -182,7 +182,7 @@ describe("DeviceCodeDialog", () => {
       expect(params).toEqual({ provider: "work", flowId: "flow-2" });
       return { state: "authorized" };
     });
-    fake.on("evener/instance/list", () => ({ instances: [], availableTypes: [] }));
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
     const onSuccess = vi.fn();
     render(
       <>

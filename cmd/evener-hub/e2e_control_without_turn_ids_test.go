@@ -517,11 +517,11 @@ func TestE2E_LiveModelStopAndSteerNeedNoTurnID(t *testing.T) {
 		t.Skip("no LLM API key in env")
 	}
 
-	stack := startHubStackOnProvider(t, fmt.Sprintf(`schema = 1
+	stack := startHubStackOnProvider(t, fmt.Sprintf(`
 default = %q
 
-[instances.%s]
-type = %q
+[providers.%s]
+base = %q
 `, instance, instance, instance), instance+"/"+model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
