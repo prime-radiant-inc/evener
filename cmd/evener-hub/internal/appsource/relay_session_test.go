@@ -3,6 +3,7 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -452,7 +453,7 @@ func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t 
 		t.Fatal(err)
 	}
 	type routePublishingLease interface {
-		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(appwire.Thread)) (RelayReadResult, error)
+		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
 	}
 	publishingLease, ok := lease.(routePublishingLease)
 	if !ok {
@@ -461,8 +462,9 @@ func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t 
 	routesPublished := make(chan appwire.Thread, 1)
 	result := make(chan relayReadOutcome, 1)
 	go func() {
-		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, func(thread appwire.Thread) {
+		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, func(_ context.Context, thread appwire.Thread) error {
 			routesPublished <- thread
+			return nil
 		})
 		result <- relayReadOutcome{result: read, err: err}
 	}()
@@ -491,6 +493,86 @@ func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t 
 		t.Fatal(outcome.err)
 	}
 	outcome.result.Handoff.Abort()
+}
+
+func TestRelaySessionRoutePublicationPanicReleasesCapture(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-panic")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-panic", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer func() {
+		lease.session.cancel()
+		lease.Close()
+	}()
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		_, _ = lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+			panic("route callback panic")
+		})
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-panic", "snapshot"))
+	if got := <-recovered; got == nil {
+		t.Fatal("route publication callback did not panic as arranged")
+	}
+	lease.session.mu.Lock()
+	owners := lease.session.commandOwners
+	captureLive := lease.session.capture != nil
+	lease.session.mu.Unlock()
+	if owners != 0 || captureLive {
+		t.Fatalf("route callback panic leaked session command/capture state: commandOwners=%d captureLive=%v", owners, captureLive)
+	}
+	second := readRelayAsync(t.Context(), lease, params)
+	secondCall := <-daemon.reads
+	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-route-panic", "second"))
+	secondResult := <-second
+	if secondResult.err != nil {
+		t.Fatalf("command gate remained stranded after callback panic: %v", secondResult.err)
+	}
+	secondResult.result.Handoff.Abort()
+}
+
+func TestRelaySessionRoutePublicationErrorReleasesCapture(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-error")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-error", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	publicationErr := errors.New("route publication canceled")
+	result := make(chan error, 1)
+	go func() {
+		_, err := lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+			return publicationErr
+		})
+		result <- err
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-error", "snapshot"))
+	if err := <-result; !errors.Is(err, publicationErr) {
+		t.Fatalf("route publication error = %v, want %v", err, publicationErr)
+	}
+	lease.session.mu.Lock()
+	owners := lease.session.commandOwners
+	captureLive := lease.session.capture != nil
+	lease.session.mu.Unlock()
+	if owners != 0 || captureLive {
+		t.Fatalf("route callback error leaked session command/capture state: commandOwners=%d captureLive=%v", owners, captureLive)
+	}
+	second := readRelayAsync(t.Context(), lease, params)
+	secondCall := <-daemon.reads
+	secondCall.transport.recv <- appwire.ResponseMessage(secondCall.request.ID, relaySnapshot("thread-route-error", "second"))
+	secondResult := <-second
+	if secondResult.err != nil {
+		t.Fatalf("command gate remained stranded after callback error: %v", secondResult.err)
+	}
+	secondResult.result.Handoff.Abort()
 }
 
 func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {

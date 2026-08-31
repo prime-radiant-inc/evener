@@ -418,7 +418,7 @@ func (s *aliasRelaySource) ResolveRelaySession(params appwire.ThreadReadParams) 
 	return ref, nil
 }
 
-func (s *aliasRelaySource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
+func (s *aliasRelaySource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 	s.mu.Lock()
 	s.acquireCalls++
 	s.mu.Unlock()
@@ -471,6 +471,20 @@ func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParam
 		Response: appwire.ThreadReadResponse{Thread: thread},
 		Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
 	}, nil
+}
+
+func (l *aliasRelayLease) ReadWithRoutePublication(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	publish func(context.Context, appwire.Thread) error,
+) (appsource.RelayReadResult, error) {
+	result, err := l.Read(ctx, params)
+	if err == nil && publish != nil {
+		if err := publish(ctx, result.Response.Thread); err != nil {
+			return appsource.RelayReadResult{}, err
+		}
+	}
+	return result, err
 }
 
 func (l *aliasRelayLease) Listen(context.Context) (<-chan appsource.RelayDelivery, error) {

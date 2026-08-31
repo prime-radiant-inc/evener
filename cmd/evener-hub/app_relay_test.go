@@ -1028,11 +1028,11 @@ func TestHubRelayStaleRelayKeyReleaseDoesNotAffectReplacement(t *testing.T) {
 		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
 			return canonicalRef, nil
 		},
-		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 			if ref.ThreadID == "canonical-old" {
-				return oldLease, nil
+				return routeAwareTestLease(oldLease), nil
 			}
-			return replacementLease, nil
+			return routeAwareTestLease(replacementLease), nil
 		},
 	}
 	relays := newHubRelayFunctions(
@@ -1130,11 +1130,11 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 			defer resolveMu.Unlock()
 			return resolved, nil
 		},
-		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 			if ref == canonicalOld {
-				return oldLease, nil
+				return routeAwareTestLease(oldLease), nil
 			}
-			return replacementLease, nil
+			return routeAwareTestLease(replacementLease), nil
 		},
 	}
 	oldFanoutLookedUp := make(chan struct{})
@@ -1225,6 +1225,117 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 		t.Fatal("replacement publication did not reach the downstream subscriber")
 	}
 	<-liveAcknowledged
+}
+
+func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
+	const (
+		relayKey  = "local:publication-drain-cancel"
+		oldTarget = "local:publication-drain-cancel-old"
+		newTarget = "local:publication-drain-cancel-new"
+	)
+	canonicalOld := appwire.Ref{SourceID: "local", ThreadID: "publication-drain-owner-old"}
+	canonicalNew := appwire.Ref{SourceID: "local", ThreadID: "publication-drain-owner-new"}
+	resultFor := func(target string) appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "publication-drain-cancel", Source: "local", Evener: appwire.EvenerThread{Ref: target},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldLease := &scriptedRelaySessionLease{readResult: resultFor(oldTarget), deliveries: make(chan appsource.RelayDelivery)}
+	newLease := &scriptedRelaySessionLease{readResult: resultFor(newTarget), deliveries: make(chan appsource.RelayDelivery)}
+	var resolveMu sync.Mutex
+	resolved := canonicalOld
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalOld {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(newLease), nil
+		},
+	}
+	publicationEntered := make(chan struct{})
+	releasePublication := make(chan struct{})
+	var entryOnce sync.Once
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.AfterCanonicalPublishEntry = func(_ string, notification appwire.Notification) {
+		var params appwire.AgentMessageDeltaParams
+		if json.Unmarshal(notification.Params, &params) != nil || params.Delta != "hold old publication" {
+			return
+		}
+		entryOnce.Do(func() {
+			close(publicationEntered)
+			<-releasePublication
+		})
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "publication-drain-cancel", SourceID: "local"}),
+		cfg, appsource.NewRegistry(),
+	)
+	initial, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.finish(false)
+	oldAcknowledged := make(chan struct{})
+	go func() {
+		oldLease.deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyAgentMessageDelta,
+				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: oldTarget, Delta: "hold old publication"}),
+			},
+			Acknowledge: func() { close(oldAcknowledged) },
+		}
+	}()
+	<-publicationEntered
+	resolveMu.Lock()
+	resolved = canonicalNew
+	resolveMu.Unlock()
+	drainWait := make(chan struct{})
+	var drainOnce sync.Once
+	previousWait := observeHubRelayWait
+	observeHubRelayWait = func() { drainOnce.Do(func() { close(drainWait) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousWait })
+	readCtx, cancelRead := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		read, err := relays.readThread(readCtx, source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		if read != nil {
+			read.finish(false)
+		}
+		result <- err
+	}()
+	<-drainWait
+	cancelRead()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			close(releasePublication)
+			t.Fatalf("canceled remap error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(releasePublication)
+		<-result
+		t.Fatal("canceled remap remained blocked on displaced publication drain")
+	}
+	if got := newLease.closeCallCount(); got != 1 {
+		close(releasePublication)
+		t.Fatalf("canceled unpublished replacement lease closes = %d, want 1", got)
+	}
+	close(releasePublication)
+	<-oldAcknowledged
+	if !relays.relayPublished(relayKey) {
+		t.Fatal("canceled replacement retired the still-current displaced generation")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 0 {
+		t.Fatalf("commands after canceled publication drain = %d, want 0", got)
+	}
 }
 
 func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) {
@@ -1549,11 +1660,11 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 			defer resolveMu.Unlock()
 			return resolved, nil
 		},
-		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 			if ref == canonicalOld {
-				return oldLease, nil
+				return routeAwareTestLease(oldLease), nil
 			}
-			return replacementLease, nil
+			return routeAwareTestLease(replacementLease), nil
 		},
 	}
 	sources := appsource.NewRegistry()
@@ -1677,11 +1788,11 @@ func TestHubRelayRemapDoesNotStealSiblingRouteCollision(t *testing.T) {
 			defer resolveMu.Unlock()
 			return remapCanonical, nil
 		},
-		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 			if ref == canonicalA {
-				return leaseA, nil
+				return routeAwareTestLease(leaseA), nil
 			}
-			return leaseB, nil
+			return routeAwareTestLease(leaseB), nil
 		},
 	}
 	sources := appsource.NewRegistry()
@@ -1795,11 +1906,11 @@ func TestHubRelayRemapMovesDownstreamAndTargetRouteOwnership(t *testing.T) {
 			defer resolveMu.Unlock()
 			return resolved, nil
 		},
-		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 			if ref == canonicalOld {
-				return oldLease, nil
+				return routeAwareTestLease(oldLease), nil
 			}
-			return newLeaseValue, nil
+			return routeAwareTestLease(newLeaseValue), nil
 		},
 	}
 	sources := appsource.NewRegistry()
@@ -2093,7 +2204,27 @@ type relaySessionTestSource struct {
 	legacySubCalls  int
 	startTurnCalls  int
 	resolveRelay    func(appwire.ThreadReadParams) (appwire.Ref, error)
-	acquireRelay    func(appwire.Ref) (appsource.RelaySessionLease, error)
+	acquireRelay    func(appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error)
+}
+
+type baseOnlyCanonicalRelaySource struct {
+	relayLifecycleSource
+	lease appsource.RelaySessionLease
+}
+
+func (*baseOnlyCanonicalRelaySource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	return appwire.ParseRef(params.Ref)
+}
+
+func (s *baseOnlyCanonicalRelaySource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
+	return s.lease, nil
+}
+
+func TestHubRelayCanonicalSourceCannotAcquireBaseOnlyLease(t *testing.T) {
+	source := any(&baseOnlyCanonicalRelaySource{lease: &scriptedRelaySessionLease{}})
+	if _, valid := source.(appsource.RelaySessionSource); valid {
+		t.Fatal("base-only RelaySessionLease still satisfies canonical RelaySessionSource acquisition")
+	}
 }
 
 func (s *relaySessionTestSource) ID() string {
@@ -2137,14 +2268,17 @@ func (s *relaySessionTestSource) ResolveRelaySession(params appwire.ThreadReadPa
 	return appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}, nil
 }
 
-func (s *relaySessionTestSource) AcquireRelaySession(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+func (s *relaySessionTestSource) AcquireRelaySession(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
 	s.mu.Lock()
 	s.acquireCalls++
 	s.mu.Unlock()
 	if s.acquireRelay != nil {
 		return s.acquireRelay(ref)
 	}
-	return s.lease, nil
+	if s.lease == nil {
+		return nil, nil
+	}
+	return routeAwareTestLease(s.lease), nil
 }
 
 func (s *relaySessionTestSource) acquireCallCount() int {
@@ -2200,14 +2334,24 @@ func (l *scriptedRelaySessionLease) Read(_ context.Context, params appwire.Threa
 	return result, err
 }
 
-func (l *scriptedRelaySessionLease) ReadWithRoutePublication(
+type routePublishingTestLease struct {
+	appsource.RelaySessionLease
+}
+
+func routeAwareTestLease(lease appsource.RelaySessionLease) appsource.RelaySessionRoutePublicationLease {
+	return &routePublishingTestLease{RelaySessionLease: lease}
+}
+
+func (l *routePublishingTestLease) ReadWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publish func(appwire.Thread),
+	publish func(context.Context, appwire.Thread) error,
 ) (appsource.RelayReadResult, error) {
-	result, err := l.Read(ctx, params)
+	result, err := l.RelaySessionLease.Read(ctx, params)
 	if err == nil && publish != nil {
-		publish(result.Response.Thread)
+		if err := publish(ctx, result.Response.Thread); err != nil {
+			return appsource.RelayReadResult{}, err
+		}
 	}
 	return result, err
 }

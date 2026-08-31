@@ -30,6 +30,7 @@ type RelayLifecycleHooks struct {
 	BeforeSupervisor           func(threadID string)
 	BeforeLaunchCommit         func(threadID string)
 	BeforeCanonicalPublish     func(relayKey string, notification appwire.Notification)
+	AfterCanonicalPublishEntry func(relayKey string, notification appwire.Notification)
 }
 
 // WebConfig is everything the web server needs.
