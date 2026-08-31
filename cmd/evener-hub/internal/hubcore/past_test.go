@@ -766,7 +766,7 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 	// must not fire onChange — nothing on disk is changing.
 	fired := 0
 	idx.SetOnChange(func() { fired++ })
-	for round := 0; round < 3; round++ {
+	for range 3 {
 		idx.UpdateMeta(dupID, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
 		if _, err := idx.Rebuild(); err != nil {
 			t.Fatal(err)

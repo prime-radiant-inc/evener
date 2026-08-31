@@ -98,6 +98,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_Find,
 		fuzzScenarioPastIndex_FindEmptySessionIDSkipsRebuild,
 		fuzzScenarioPastIndex_FindEmptyStateGlob,
+		fuzzScenarioPastIndex_FailedPublishMarksFTSStale,
 		fuzzScenarioPastIndex_FindFoldsProbedEntry,
 		fuzzScenarioPastIndex_FindFoldWritesFTS,
 		fuzzScenarioPastIndex_FindMissDoesNotRebuild,
