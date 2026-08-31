@@ -43,7 +43,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
@@ -106,7 +106,7 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
@@ -152,7 +152,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{

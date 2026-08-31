@@ -24,6 +24,7 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 	}
 	childClient := llm.NewClient()
 	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
 	s := newSession(t,
 		withClient(parentClient),
 		withDir(lane),

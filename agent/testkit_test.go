@@ -36,8 +36,8 @@ type sessionOpts struct {
 
 type sessionOpt func(*sessionOpts)
 
-// withClient supplies a fully configured client; the builder registers no
-// adapters of its own when a client is given.
+// withClient supplies a client whose main provider adapters are already
+// configured. The builder may still add its dedicated session-namer adapter.
 func withClient(c *llm.Client) sessionOpt { return func(o *sessionOpts) { o.client = c } }
 
 // withSteps drives the default "openai" fake adapter's scripted responses.
@@ -60,9 +60,10 @@ func withConfig(cfg SessionConfig) sessionOpt {
 func withoutGitSnapshot() sessionOpt { return func(o *sessionOpts) { o.skipGitSnapshot = true } }
 
 // newSession builds a *Session for tests. The zero-option form yields the
-// canonical default: a single scripted "openai" fake adapter, a gpt-5.2 profile,
-// a fresh temp workspace, and SessionConfig{MaxSubagentDepth: 1}. Close is
-// registered with t.Cleanup.
+// canonical default: scripted "openai" and dedicated session-namer adapters, a
+// gpt-5.2 profile explicitly routed to the latter for fast-cheap calls, a fresh
+// temp workspace, and SessionConfig{MaxSubagentDepth: 1}. Close is registered
+// with t.Cleanup.
 func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	t.Helper()
 	var o sessionOpts
@@ -87,6 +88,9 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	profile := o.profile
 	if profile == nil {
 		profile = NewOpenAIProfile("gpt-5.2")
+	}
+	if profile.ConfiguredCheapModel() == "" {
+		profile = withTestSessionNamer(o.client, profile)
 	}
 	cfg := o.cfg
 	if !o.cfgSet {

@@ -892,7 +892,7 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 	adapter := newTask6FrozenDescriptorAdapter()
 	client.Register(adapter)
 	t.Cleanup(adapter.releaseRun)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	seed, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
@@ -1367,7 +1367,8 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	t.Cleanup(adapter.releaseRun)
 	client := llm.NewClient()
 	client.Register(adapter)
-	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	root, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,

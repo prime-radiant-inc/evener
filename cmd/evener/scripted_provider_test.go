@@ -37,6 +37,9 @@ func (p *scriptedProvider) Name() string { return p.name }
 
 func (p *scriptedProvider) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
+	if response, ok := scriptedSessionNamerResponse(p.name, req); ok {
+		return response, nil
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -76,6 +79,23 @@ func (p *scriptedProvider) Complete(ctx context.Context, req llm.Request) (llm.R
 		resp.Finish = llm.FinishReason{Reason: llm.FinishReasonStop}
 	}
 	return resp, nil
+}
+
+func scriptedSessionNamerResponse(providerName string, req llm.Request) (llm.Response, bool) {
+	if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_schema" || len(req.Tools) != 0 {
+		return llm.Response{}, false
+	}
+	properties, propertiesOK := req.ResponseFormat.JSONSchema["properties"].(map[string]any)
+	required, requiredOK := req.ResponseFormat.JSONSchema["required"].([]string)
+	if !propertiesOK || len(properties) != 1 || properties["name"] == nil || !requiredOK || len(required) != 1 || required[0] != "name" {
+		return llm.Response{}, false
+	}
+	return llm.Response{
+		Provider: providerName,
+		Model:    req.Model,
+		Message:  llm.Assistant(`{"name":"CLI Test"}`),
+		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
+	}, true
 }
 
 func (p *scriptedProvider) Stream(context.Context, llm.Request) (llm.Stream, error) {

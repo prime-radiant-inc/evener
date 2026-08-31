@@ -1251,10 +1251,12 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	if appended, err := sub.sess.appendDelegateNotificationDurably("attention-before-stop", "stop must discard this pending attention"); err != nil || !appended {
 		t.Fatalf("append pending stop attention: appended=%t err=%v", appended, err)
 	}
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
 	go func() {
@@ -1399,10 +1401,12 @@ func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification
 		_ = controller.AbortShellWork(work)
 		releaseFinalizationNow()
 	})
-	sub.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		close(finalStatePublished)
-		<-releaseFinalization
-	}
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			close(finalStatePublished)
+			<-releaseFinalization
+		}
+	})
 
 	first, err := jobStopTool(context.Background(), harness.root, map[string]any{
 		"target": harness.fixture.delegateID,

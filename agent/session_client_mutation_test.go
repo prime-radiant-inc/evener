@@ -999,7 +999,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	})
 	sess, err := NewSession(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{StateDir: dir, testOnly: testConfig{metaFS: afero.NewMemMapFs()}},
 	)

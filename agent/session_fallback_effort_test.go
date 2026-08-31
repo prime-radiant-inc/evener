@@ -92,7 +92,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 			c.Register(f)
 
 			policy := llm.RetryPolicy{MaxRetries: 0}
-			sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			sess, err := NewSession(c, withTestSessionNamer(c, newAnthropicProfile("claude-opus-4-6")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 				StateDir:        dir,
 				LLMRetryPolicy:  &policy,
 				ModelFallbacks:  []string{tc.fallback},
@@ -153,7 +153,7 @@ func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) 
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, newOpenRouterAnthropicProfile("anthropic/claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, newOpenRouterAnthropicProfile("anthropic/claude-opus-4-6")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"anthropic/claude-opus-4-5-20251101[1m]"},

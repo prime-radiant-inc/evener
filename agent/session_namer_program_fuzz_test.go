@@ -87,8 +87,8 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		if sessionNamerEnabled(nil) || sessionNamerModel(nil) != "" || configuredSessionNamerModel(nil) != "" {
 			t.Fatal("nil profile unexpectedly enabled the namer")
 		}
-		if sessionNamerEnabled(NewOpenAIProfile("gpt-main")) {
-			t.Fatal("active model unexpectedly enabled automatic naming")
+		if !sessionNamerEnabled(NewOpenAIProfile("gpt-main")) {
+			t.Fatal("active model did not enable automatic naming")
 		}
 		if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-main"), "gpt-cheap")) {
 			t.Fatal("configured cheap model did not enable automatic naming")

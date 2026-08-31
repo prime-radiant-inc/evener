@@ -125,10 +125,13 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	}
 }
 
-func TestSessionNamerEnabledRequiresConfiguredCheapModel(t *testing.T) {
+func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 	t.Parallel()
-	if sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
-		t.Fatal("session namer should not auto-enable from active model")
+	if !sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
+		t.Fatal("session namer should enable from active model")
+	}
+	if sessionNamerEnabled(NewOpenAIProfile("")) {
+		t.Fatal("session namer should remain disabled without a model")
 	}
 	if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")) {
 		t.Fatal("session namer should enable when cheap model is configured")

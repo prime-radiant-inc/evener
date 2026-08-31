@@ -188,6 +188,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// metaSaveMu serializes each metadata snapshot with its write. It is acquired
+	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
+	// and then overwriting a newer save from another goroutine.
+	metaSaveMu sync.Mutex
 	// goalUpdateMu serializes each goal-store mutation with the GOAL_UPDATED event
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
@@ -1764,13 +1768,15 @@ func (s *Session) maybeAutoSave() {
 	if s.stateDir == "" {
 		return
 	}
-	meta := s.Meta()
-	var err error
-	if fs := s.cfg.testOnly.metaFS; fs != nil {
-		err = schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-	} else {
-		err = schema.SaveSessionMeta(s.stateDir, meta)
-	}
+	err := func() error {
+		s.metaSaveMu.Lock()
+		defer s.metaSaveMu.Unlock()
+		meta := s.Meta()
+		if fs := s.cfg.testOnly.metaFS; fs != nil {
+			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+		}
+		return schema.SaveSessionMeta(s.stateDir, meta)
+	}()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
