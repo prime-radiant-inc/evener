@@ -307,7 +307,7 @@ similar). Leave them off for a bare model server that would reject the fields.
 |---|---|
 | `context_window` | overlays the catalog's context window for this model (must be ≥0) |
 | `max_output_tokens` | sent as the output cap when a request doesn't set one (`ModelCompat.DefaultMaxTokens`, `compat.go:20`) |
-| `reasoning` | `true`/`false` — declares whether the model accepts a reasoning-effort control at all; `false` clears the profile's effort levels entirely (`agent/provider/profile.go:1130-1135`) |
+| `reasoning` | `true`/`false` — the authoritative answer, in either direction, to whether the model accepts a reasoning-effort control, overriding the catalog's model facts; with `false`, `Profile.ReasoningEffortLevels()` reads as empty and no effort ever reaches the wire (`agent/provider/profile.go`) |
 | `thinking_levels` | map of evener effort level → wire string (see below) |
 | `compat` | per-model `CompatConfig`, overlays the instance's |
 
@@ -321,11 +321,11 @@ similar). Leave them off for a bare model server that would reject the fields.
   unsupported and gets clamped away by `llm.ClampReasoningEffort`
   (`llm/types.go:587`) before it ever reaches the adapter.
 - **Keys** are evener's canonical levels — `minimal`, `low`, `medium`, `high`,
-  `xhigh` — normalized lowercase at load; `max` is accepted as an input alias
-  and folded into `xhigh` (evener's rank table treats them as one tier).
-  `"off"` is rejected at load — evener's `none` effort clears the setting to the
-  provider default rather than forcing an explicit disable, so there's no slot
-  for an explicit "off" wire value (`llm/providercfg/load.go:149-152`).
+  `xhigh`, `max` — normalized lowercase at load; `xhigh` and `max` are
+  distinct ascending tiers (`max` ranks above `xhigh`).
+  `"off"` is rejected at load — an explicit `none` effort reaches the wire only
+  on models whose ladder lists a `none` level and omits the field otherwise, so
+  there's no slot for an "off" wire spelling (`llm/providercfg/load.go`).
 - **Values** are the literal wire strings sent to the provider — they need not
   match evener's vocabulary (the lunaroute example below maps every level to
   `"high"` except the top tier).
@@ -339,9 +339,14 @@ similar). Leave them off for a bare model server that would reject the fields.
 
 `applyThinkingFormat` (`llm/providers/openaicompat/request.go:141-179`) runs
 after the session's clamp and the `thinking_levels` translation. **When no
-reasoning effort is set on the request, nothing is emitted for any format** —
-evener's `none` clears the setting to the provider default rather than forcing
-an explicit disable (`request.go:147-149`). The table below is what's sent
+reasoning effort is set on the request, nothing is emitted for any format**
+(`request.go:147-149`). The session leaves the effort unset only for a model
+that does not reason (catalog, live `/models`, or `reasoning = false`) or when
+the user set `none` and the model has no `none` level; for every other model
+it sends the configured effort, else the model's stated default
+(`default_reasoning_effort` in the catalog overrides), else `medium`, all
+clamped to the model's levels (`resolveRequestEffort` in
+`agent/session_model_call.go`). The table below is what's sent
 once an effort **is** set (`wire` = the post-clamp, post-`thinking_levels`
 value):
 
@@ -365,9 +370,10 @@ reasoning server-side; evener manages thinking replay itself.
 `strict: false` and its `qwen-chat-template` always sends `enable_thinking`
 (`false` when reasoning is off). evener deliberately does neither by default —
 `supports_strict_mode` is opt-in (flipping the wire shape of every existing evener
-request is not worth the risk), and evener's `none`-clears convention means the
-`qwen-chat-template`/`chat-template` bodies are emitted **only** when an effort
-is set (nothing otherwise). evener also skips Pi's per-value `$var` indirection in
+request is not worth the risk), and the `qwen-chat-template`/`chat-template`
+bodies are emitted only when the request carries an effort — which, since the
+session fills in a default for every reasoning model, means always unless the
+user set `none` or the model does not reason. evener also skips Pi's per-value `$var` indirection in
 `chat_template_kwargs` (YAGNI) — the table is sent verbatim.
 
 The built-in `glm` type's `QuirksPreset("glm-5")`
@@ -415,7 +421,9 @@ separate per-model thinking-map field is needed — the levels list suffices.
 
 Models with "no" effort param keep the profile's default effort ladder; the
 `zai` thinking format only toggles thinking on/off for them (no
-`reasoning_effort` field on the wire). An explicit `[instances.X.models."<id>"]`
+`reasoning_effort` field on the wire), and since the session sends a default
+effort for every reasoning model, thinking is on unless the user set `none`.
+An explicit `[instances.X.models."<id>"]`
 entry always wins over these catalog defaults.
 
 ### Reasoning replay: same field it arrived on
@@ -733,9 +741,12 @@ original problem stopped mattering.
 
 ## Reasoning effort
 
-One per-session knob ordered `minimal < low < medium < high < xhigh == max`
-(`xhigh` and `max` are aliases for the top tier — OpenRouter/OpenAI advertise
-`xhigh`, Anthropic and the evener catalog say `max`; `none` clears it). The
+One per-session knob ordered `minimal < low < medium < high < xhigh < max`
+(distinct ascending tiers — the per-model clamp resolves either top tier to
+the nearest level the model advertises; `none` turns thinking off
+where the model lists a `none` level and omits the field otherwise). With
+nothing configured, a reasoning model runs at its catalog-stated default or
+`medium`; see "`thinking_format`" above for the exact rule. The
 vocabulary and its helpers — `ClampReasoningEffort`, `NormalizeReasoningEffort`,
 `ReasoningEffortRank`, `ReasoningBudget` — live in `llm/types.go`.
 

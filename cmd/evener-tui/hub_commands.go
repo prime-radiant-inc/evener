@@ -672,12 +672,41 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expec
 	}
 }
 
-// reasoningEffortLevelKnown reports whether level (case-insensitively)
-// appears in the session's snapshot-cached reasoning-effort levels, so
-// /effort <level> can be rejected client-side without a wire round trip.
-func reasoningEffortLevelKnown(levels []string, level string) bool {
+// effortChoices lists what /effort accepts for a reasoning session: the
+// model's ladder plus the always-settable explicit off. The session stores
+// "none" and the request builder sends it only where the model's ladder
+// lists an off level, omitting the field otherwise.
+func effortChoices(levels []string) []string {
 	for _, l := range levels {
-		if strings.EqualFold(l, level) {
+		if strings.EqualFold(l, string(llm.ReasoningEffortNone)) {
+			return append([]string(nil), levels...)
+		}
+	}
+	return append(append([]string(nil), levels...), llm.ReasoningEffortNone)
+}
+
+// effortDisplay labels a picker choice the way the hub surfaces do: an off
+// level says "off" only where the model's ladder can express one, and
+// "provider default" where an explicit none merely omits the field.
+func effortDisplay(level string, levels []string) string {
+	if llm.NormalizeReasoningEffort(level) != llm.ReasoningEffortNone {
+		return level
+	}
+	for _, l := range levels {
+		if strings.EqualFold(l, llm.ReasoningEffortNone) {
+			return "none (off)"
+		}
+	}
+	return "none (provider default)"
+}
+
+// reasoningEffortLevelSettable reports whether level (case-insensitively,
+// with disable aliases normalized) is one of effortChoices, so
+// /effort <level> can be rejected client-side without a wire round trip.
+func reasoningEffortLevelSettable(levels []string, level string) bool {
+	normalized := llm.NormalizeReasoningEffort(level)
+	for _, l := range effortChoices(levels) {
+		if strings.EqualFold(l, normalized) {
 			return true
 		}
 	}

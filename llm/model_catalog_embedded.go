@@ -66,6 +66,11 @@ func claudeCatalogFamilyID(modelID string) (string, bool) {
 	if !strings.HasPrefix(id, "claude-") {
 		return "", false
 	}
+	// OpenRouter and some mirrors spell versions with dots
+	// (claude-opus-4.6); the overrides file keys on the dashed convention.
+	// LookupModelInfo applies the same claude-scoped bridge at runtime; keep
+	// the two in step.
+	id = strings.ReplaceAll(id, ".", "-")
 	return familyModelID(id), true
 }
 
@@ -218,6 +223,9 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {
 	if v, ok := ov["thinking_always_on"].(bool); ok {
 		m.ThinkingAlwaysOn = v
 	}
+	if v, ok := ov["default_reasoning_effort"].(string); ok {
+		m.DefaultReasoningEffort = NormalizeReasoningEffort(v)
+	}
 	if v, ok := ov["claude5_request_shape"].(bool); ok {
 		m.Claude5RequestShape = v
 	}
@@ -226,6 +234,7 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any, includeAliases bool) {
 	}
 	if v, ok := ov["supports_reasoning"].(bool); ok {
 		m.SupportsReasoning = v
+		m.ReasoningAuthoritative = true
 	}
 	if v, ok := ov["supports_tools"].(bool); ok {
 		m.SupportsTools = v

@@ -140,6 +140,21 @@ type ModelConfig struct {
 	Compat         *CompatConfig     `toml:"compat"`
 }
 
+// ReasoningIntent is providers.toml's answer to whether the model takes a
+// reasoning-effort control: the explicit reasoning flag when set, else true
+// when a thinking_levels map is configured (the map is complete authority on
+// the ladder, which entails an effort control), else nil for "unset".
+func (m ModelConfig) ReasoningIntent() *bool {
+	if m.Reasoning != nil {
+		return m.Reasoning
+	}
+	if len(m.ThinkingLevels) > 0 {
+		on := true
+		return &on
+	}
+	return nil
+}
+
 type Config struct {
 	Default   string
 	Instances []InstanceConfig

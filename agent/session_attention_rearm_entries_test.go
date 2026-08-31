@@ -112,11 +112,10 @@ func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T)
 
 // TestRestoreSession_RestoredTranscriptOKBoundary pins the ok flag's
 // boundary: a session restored with NO transcript on disk reports ok=false,
-// and one restored over a transcript with at least one entry reports ok=true
-// with that entry. (A header-only transcript currently lands on the ok=false
-// side of the line: resumeWriter returns a nil entry slice when no entry
-// line follows the header, and RestoredTranscript keys ok on entries != nil.
-// That is the pre-existing resumeWriter behavior, not a restore decision.)
+// one restored over a transcript with at least one entry reports ok=true
+// with that entry, and one restored over a header-only transcript reports
+// ok=true with a non-nil empty slice: ok means "a transcript was opened and
+// validated," not "entries exist."
 func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 	t.Run("no transcript on disk", func(t *testing.T) {
 		stateDir := t.TempDir()
@@ -143,6 +142,33 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 		_, entries, ok := restored.RestoredTranscript()
 		if !ok || len(entries) == 0 {
 			t.Fatalf("RestoredTranscript = ok:%t entries:%d, want ok:true with the fixture's entries", ok, len(entries))
+		}
+	})
+	t.Run("header-only transcript", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := identifier.MustNewSessionID()
+		meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatalf("save root metadata: %v", err)
+		}
+		writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
+		if err != nil {
+			t.Fatalf("write header-only transcript: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close writer: %v", err)
+		}
+		restored, err := RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+		if err != nil {
+			t.Fatalf("restore over header-only transcript: %v", err)
+		}
+		defer restored.Close()
+		_, entries, ok := restored.RestoredTranscript()
+		if !ok {
+			t.Fatal("a session restored over a header-only transcript reported no restored transcript; ok must mean 'a transcript was opened'")
+		}
+		if entries == nil || len(entries) != 0 {
+			t.Fatalf("entries = %#v, want a non-nil empty slice over a header-only transcript", entries)
 		}
 	})
 }

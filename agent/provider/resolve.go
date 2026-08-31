@@ -51,28 +51,12 @@ func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (*Profile, err
 
 	var raw *Profile
 	switch typ {
-	case "openai":
-		if style == string(providercfg.StyleChatCompletions) {
-			// Pass "openai-compatible" as the id so BehaviorTag("openai-compatible","")
-			// produces the correct tag, then rename to the instance name.
-			raw = newOpenAICompatProfile("openai-compatible", model, 0, inst.Models)
-		} else {
-			// responses or empty style → full OpenAI profile
-			raw = NewOpenAIProfile(model)
-		}
-	case "anthropic":
-		raw = newAnthropicProfile(model)
-	case "google":
-		raw = newGeminiProfile(model)
-	case "minimax":
-		raw = newMiniMaxProfile(model)
-	case "kimi-anthropic":
-		raw = newKimiAnthropicProfile(model)
-	case "openrouter-anthropic":
-		raw = newOpenRouterAnthropicProfile(model)
-	case "kimi", "glm", "openrouter", "ollama":
-		// Pass the type as the constructor id so the behavior tag is the type.
-		raw = newOpenAICompatProfile(typ, model, 0, inst.Models)
+	case "openai", "anthropic", "google", "minimax", "kimi-anthropic", "openrouter-anthropic",
+		"kimi", "glm", "openrouter", "ollama":
+		// BehaviorTag folds (type, style) into the constructor key: an
+		// openai instance in chat-completions style becomes
+		// "openai-compatible", every other type keys on itself.
+		raw = newProfileForBehaviorTag(providercfg.BehaviorTag(typ, style), model, inst.Models)
 	default:
 		return nil, fmt.Errorf("unknown provider type %q for instance %q", typ, instName)
 	}

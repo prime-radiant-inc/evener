@@ -563,16 +563,37 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 // TestCovReasoningEffortLevelKnown exercises the level check.
 func TestCovReasoningEffortLevelKnown(t *testing.T) {
 	levels := []string{"low", "medium", "high"}
-	if !reasoningEffortLevelKnown(levels, "high") {
+	if !reasoningEffortLevelSettable(levels, "high") {
 		t.Fatal("should find 'high'")
 	}
-	if !reasoningEffortLevelKnown(levels, "HIGH") {
+	if !reasoningEffortLevelSettable(levels, "HIGH") {
 		t.Fatal("should find 'HIGH' (case-insensitive)")
 	}
-	if reasoningEffortLevelKnown(levels, "xhigh") {
+	if !reasoningEffortLevelSettable(levels, "none") {
+		t.Error("reasoningEffortLevelSettable(none) = false, want true (explicit off is always settable; it omits the field where the model has no off level)")
+	}
+	if !reasoningEffortLevelSettable(levels, "off") {
+		t.Error("reasoningEffortLevelSettable(off) = false, want true (disable alias)")
+	}
+	if got := effortChoices(levels); len(got) != len(levels)+1 || got[len(got)-1] != "none" {
+		t.Errorf("effortChoices(%v) = %v, want the ladder plus a trailing none", levels, got)
+	}
+	if got := effortChoices([]string{"none", "low"}); len(got) != 2 {
+		t.Errorf("effortChoices with a ladder-listed none = %v, want no duplicate", got)
+	}
+	if got := effortDisplay("none", levels); got != "none (provider default)" {
+		t.Errorf("effortDisplay(none, %v) = %q, want the provider-default label where the ladder has no off level", levels, got)
+	}
+	if got := effortDisplay("none", []string{"none", "low"}); got != "none (off)" {
+		t.Errorf("effortDisplay(none, [none low]) = %q, want the off label where the ladder lists it", got)
+	}
+	if got := effortDisplay("high", levels); got != "high" {
+		t.Errorf("effortDisplay(high) = %q, want the level itself", got)
+	}
+	if reasoningEffortLevelSettable(levels, "xhigh") {
 		t.Fatal("should not find 'xhigh'")
 	}
-	if reasoningEffortLevelKnown(nil, "high") {
+	if reasoningEffortLevelSettable(nil, "high") {
 		t.Fatal("should not find in nil levels")
 	}
 }

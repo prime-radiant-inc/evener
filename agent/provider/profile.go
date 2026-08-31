@@ -9,19 +9,57 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
+// catalogModelFor returns the catalog entry for model, or nil when the
+// catalog has never heard of it. LookupModelInfo canonicalizes the "[1m]"
+// suffix, provider-qualified refs, and dated snapshots.
+func catalogModelFor(model string) *llm.ModelInfo {
+	cat := llm.EmbeddedModelCatalog()
+	if cat == nil {
+		return nil
+	}
+	return cat.LookupModelInfo(model)
+}
+
+// reasoningFacts composes the model-level reasoning facts: whether the model
+// reasons (a providers.toml override first, then the catalog entry where its
+// answer is knowledge rather than sparse mirror data, then permitted), the
+// effort it runs at when the session configures none, and its effort ladder
+// (configured levels win, then the catalog's, then the provider's
+// vocabulary). The ladder always holds the vocabulary; ReasoningEffortLevels
+// gates the read for a non-reasoning model.
+func reasoningFacts(mi *llm.ModelInfo, override *bool, configuredLevels, providerLevels []string) (reasoning bool, defaultEffort string, levels []string) {
+	reasoning = true
+	if mi != nil {
+		if mi.ReasoningAuthoritative {
+			reasoning = mi.SupportsReasoning
+		}
+		defaultEffort = llm.NormalizeReasoningEffort(mi.DefaultReasoningEffort)
+	}
+	if override != nil {
+		reasoning = *override
+	}
+	levels = configuredLevels
+	if levels == nil {
+		levels = effortLevelsFor(mi, providerLevels)
+	}
+	return reasoning, defaultEffort, levels
+}
+
+// effortLevelsFor returns the catalog entry's effort ladder, or the provider
+// default when the catalog has none for the model.
+func effortLevelsFor(mi *llm.ModelInfo, providerDefault []string) []string {
+	if mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+		return append([]string(nil), mi.ReasoningEffortLevels...)
+	}
+	return providerDefault
+}
+
 // resolveEffortLevels returns reasoning effort levels for the given model.
 // It first checks the embedded model catalog for model-specific levels, then
 // falls back to the provider default. This allows per-model effort vocabularies
 // while maintaining backward compatibility.
 func resolveEffortLevels(model string, providerDefault []string) []string {
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		// LookupModelInfo canonicalizes the "[1m]" suffix and dated snapshots so a
-		// 1M-context or dated model still resolves its family's real levels.
-		if mi := cat.LookupModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-			return append([]string(nil), mi.ReasoningEffortLevels...)
-		}
-	}
-	return providerDefault
+	return effortLevelsFor(catalogModelFor(model), providerDefault)
 }
 
 // resolveWebSearch reports whether the model's endpoint serves provider-native
@@ -29,10 +67,8 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 // the catalog being silent is not the same as it saying false, so an
 // uncatalogued model keeps the provider default.
 func resolveWebSearch(model string, providerDefault bool) bool {
-	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.LookupModelInfo(model); mi != nil && mi.SupportsWebSearch != nil {
-			return *mi.SupportsWebSearch
-		}
+	if mi := catalogModelFor(model); mi != nil && mi.SupportsWebSearch != nil {
+		return *mi.SupportsWebSearch
 	}
 	return providerDefault
 }
@@ -56,13 +92,11 @@ type Profile struct {
 	knowledgeCutoff string
 	providerOpts    map[string]any
 	effortLevels    []string
-	webSearch       bool
-	// thinkingAlwaysOn marks a model whose thinking cannot be disabled
-	// (OpenRouter reasoning.mandatory=true). When set, the session emits a
-	// default reasoning effort even when none is configured so a
-	// mandatory-reasoning model never gets a reasoning-less request.
-	thinkingAlwaysOn bool
-	cheapModel       string
+	// defaultEffort is the effort the model runs at when the session has none
+	// configured, where the catalog or a live /models entry states one.
+	defaultEffort string
+	webSearch     bool
+	cheapModel    string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different provider instance than the main model. Empty
 	// means same provider as the main model. Set via WithCheapModel("provider/model").
@@ -94,7 +128,6 @@ type profileSpec struct {
 	parallel        bool
 	contextWindow   int
 	docFiles        []string
-	reasoning       bool
 	streaming       bool
 	webSearch       bool
 	defaultTimeout  int
@@ -105,6 +138,15 @@ type profileSpec struct {
 	toolNameMap     map[string]string
 	capabilities    []toolCapability
 	cheapModel      string
+	// catalogModel is the catalog entry for spec.model, nil when the model is
+	// unknown or the constructor suppresses catalog lookups. It is the source
+	// of the model-level reasoning facts (support, levels, default effort); a
+	// constructor that omits it silently treats every model as an unknown,
+	// permitted-to-reason one.
+	catalogModel *llm.ModelInfo
+	// reasoningOverride is providers.toml's explicit answer to whether the
+	// model reasons; nil leaves the question to the catalog.
+	reasoningOverride *bool
 }
 
 // Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
@@ -255,9 +297,13 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 
 func buildBaseProfile(spec profileSpec) Profile {
 	model := strings.TrimSpace(spec.model)
-	efforts := spec.resolvedEfforts
-	if efforts == nil {
-		efforts = resolveEffortLevels(model, spec.defaultEfforts)
+	reasoning, defaultEffort, efforts := reasoningFacts(spec.catalogModel, spec.reasoningOverride, spec.resolvedEfforts, spec.defaultEfforts)
+	// The ladder stays stored for a non-reasoning model (a later model switch
+	// or live reasoning-on returns to it); the read is gated, so the task_list
+	// schema gets the gated view.
+	enumEfforts := efforts
+	if !reasoning {
+		enumEfforts = nil
 	}
 
 	defaultTimeout := spec.defaultTimeout
@@ -272,7 +318,8 @@ func buildBaseProfile(spec profileSpec) Profile {
 		parallel:        spec.parallel,
 		contextWindow:   spec.contextWindow,
 		docFiles:        cloneStringSlice(spec.docFiles),
-		reasoning:       spec.reasoning,
+		reasoning:       reasoning,
+		defaultEffort:   defaultEffort,
 		streaming:       spec.streaming,
 		webSearch:       spec.webSearch,
 		defaultTimeout:  defaultTimeout,
@@ -280,7 +327,7 @@ func buildBaseProfile(spec profileSpec) Profile {
 		effortLevels:    cloneStringSlice(efforts),
 		providerOpts:    cloneAnyMap(spec.providerOpts),
 		toolNameMap:     cloneStringMap(spec.toolNameMap),
-		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, efforts),
+		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, enumEfforts),
 		cheapModel:      spec.cheapModel,
 	}
 }
@@ -350,16 +397,21 @@ func (p *Profile) ProviderOptions() map[string]any { return p.providerOpts }
 // control.
 func (p *Profile) SupportsReasoning() bool { return p.reasoning }
 
-// ThinkingAlwaysOn reports whether the model's thinking cannot be disabled
-// (OpenRouter reasoning.mandatory=true). When true, the session must emit a
-// default reasoning effort even when none is configured — omitting the
-// reasoning field is an API error for these models.
-func (p *Profile) ThinkingAlwaysOn() bool { return p.thinkingAlwaysOn }
+// DefaultReasoningEffort returns the effort the model runs at when the
+// session has none configured, or "" when no source states one and the
+// session should apply its own default.
+func (p *Profile) DefaultReasoningEffort() string { return p.defaultEffort }
 
 // ReasoningEffortLevels returns the valid effort strings this provider
 // accepts, in ascending order. Returns an empty slice when the provider
 // does not support reasoning control.
 func (p *Profile) ReasoningEffortLevels() []string {
+	if !p.reasoning {
+		// The vocabulary stays stored so a model switch or live reasoning-on
+		// has a ladder to return to; the read is what a non-reasoning model
+		// gates off.
+		return nil
+	}
 	return append([]string(nil), p.effortLevels...)
 }
 
@@ -462,39 +514,54 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	// /models enrichment for the fields they set.
 	instEntry, hasInstEntry := p.instModels[p.model]
 	configuredWindow := hasInstEntry && instEntry.ContextWindow > 0
-	// An explicit reasoning=false in providers.toml is authoritative user
-	// intent and must survive live /models enrichment: a non-reasoning model
-	// declares no ThinkingLevels (there's nothing to configure), so treat
-	// reasoningOff as "levels are configured" too — otherwise live
-	// SupportsReasoning/ReasoningEffortLevels would re-enable reasoning on a
-	// model the user explicitly turned off.
-	reasoningOff := hasInstEntry && instEntry.Reasoning != nil && !*instEntry.Reasoning
-	configuredLevels := hasInstEntry && (len(instEntry.ThinkingLevels) > 0 || reasoningOff)
+	// Configured reasoning intent (an explicit flag, or a thinking_levels
+	// map) is authoritative user intent and must survive live /models
+	// enrichment. reasoning = true is a permission statement, not a level
+	// configuration, so only an explicit off freezes the ladder (a
+	// non-reasoning model has nothing to configure; adopting live levels
+	// would re-enable it).
+	reasoningConfigured := instEntry.ReasoningIntent() != nil
+	configuredLevels := len(instEntry.ThinkingLevels) > 0 || (instEntry.Reasoning != nil && !*instEntry.Reasoning)
 	if info.ContextWindow > 0 && !configuredWindow {
 		clone.contextWindow = info.ContextWindow
 	}
 	if len(info.ReasoningEffortLevels) > 0 && !configuredLevels {
-		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
-		// Keep the effort-enum tool schema (task_list) in sync with the live
-		// levels, or the model sees the constructor enum instead.
-		defs := append([]llm.ToolDefinition(nil), clone.toolDefs...)
-		for i := range defs {
-			if defs[i].Name == "task_list" {
-				defs[i] = tool.DefTaskList(clone.effortLevels)
-			}
+		clone.setEffortLevels(info.ReasoningEffortLevels)
+	}
+	if !reasoningConfigured {
+		if info.CapabilitiesAdvertised {
+			// The endpoint states capabilities explicitly, so false is
+			// knowledge, not silence.
+			clone.reasoning = info.SupportsReasoning
+		} else if info.SupportsReasoning {
+			clone.reasoning = true
 		}
-		clone.toolDefs = defs
+		if clone.reasoning != p.reasoning {
+			// The task_list effort enum follows the gated ladder.
+			clone.setEffortLevels(clone.effortLevels)
+		}
 	}
-	if info.SupportsReasoning && !reasoningOff {
-		clone.reasoning = true
-	}
-	if info.ThinkingAlwaysOn && !reasoningOff {
-		clone.thinkingAlwaysOn = true
+	if d := llm.NormalizeReasoningEffort(info.DefaultReasoningEffort); d != "" {
+		clone.defaultEffort = d
 	}
 	if info.SupportsWebSearch != nil {
 		clone.webSearch = *info.SupportsWebSearch
 	}
 	return &clone
+}
+
+// setEffortLevels replaces the profile's effort ladder and keeps the
+// effort-enum tool schema (task_list) in sync with it, or the model would
+// see the constructor's enum instead.
+func (p *Profile) setEffortLevels(levels []string) {
+	p.effortLevels = append([]string(nil), levels...)
+	defs := append([]llm.ToolDefinition(nil), p.toolDefs...)
+	for i := range defs {
+		if defs[i].Name == "task_list" {
+			defs[i] = tool.DefTaskList(p.ReasoningEffortLevels())
+		}
+	}
+	p.toolDefs = defs
 }
 
 // materializeInstanceModelConfig resolves explicit providers.toml model
@@ -729,57 +796,22 @@ func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
 	return p
 }
 
-// rebuildOnSameProviderChange reports whether a same-provider WithModel
-// override needs to rebuild the profile via its constructor (rather than
-// shallow-cloning) so that model-derived state — context window from
-// catalog, providerOpts that depend on the model — is recomputed.
-//
-// True for providers whose constructors look up per-model state (every
-// openai-compat provider; openrouter-anthropic; openai, whose web-search
-// capability and effort ladder both come from the catalog). False for
-// providers whose model-derived state is fixed at construction (minimax)
-// or handled by the dedicated anthropic branch of WithModel.
-func rebuildOnSameProviderChange(behaviorTag string) bool {
-	switch behaviorTag {
-	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic", "openai-compatible", "openai":
-		return true
-	}
-	return false
-}
-
-// WithModel returns a copy of this profile that drives a different model.
+// WithModel returns a copy of this profile that drives a different model,
+// rebuilt via the provider's constructor so model-derived state (context
+// window, reasoning facts, effort ladder, tool schemas that embed the effort
+// enum) is recomputed for the new model.
 func (p *Profile) WithModel(model string) *Profile {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = p.model
 	}
 
-	// Anthropic re-derives all model-dependent state from the model string (the
-	// [1m] suffix selects the 1M-context beta; effort levels and the tool schemas
-	// that embed the effort enum vary per model). It rebuilds via the constructor
-	// rather than shallow-cloning, so a model switch can't leave a stale
-	// max-capable effort set or task_list enum on a model capped at high.
-	if p.behaviorTag == "anthropic" {
-		// Strip the redundant instance self-prefix. Config-backed Anthropic
-		// profiles may be renamed, so this must use p.id rather than only the
-		// built-in "anthropic" name. Cross-provider refs remain for the Session
-		// resolver.
-		if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
-			provider := strings.ToLower(parts[0])
-			if decidePrefixAction(p.behaviorTag, p.id, provider) == prefixActionStrip {
-				model = parts[1]
-			}
-		}
-		rebuilt := restampInstanceIdentity(newAnthropicProfile(model), p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
-	}
-
 	// Parse "provider/model" strings. decidePrefixAction classifies each
 	// slashed ref as strip (redundant self-prefix), keep (model namespace
 	// slash on meta-providers), or switch (cross-provider, now handled by
 	// the Session resolver). WithModel handles strip/keep; cross-provider
-	// refs that are NOT handled by a resolver fall through to a shallow
-	// clone with the model string unchanged rather than silently stripping.
+	// refs that are NOT handled by a resolver fall through with the model
+	// string unchanged rather than silently stripping.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
@@ -794,37 +826,42 @@ func (p *Profile) WithModel(model string) *Profile {
 			// Leave model unchanged.
 		}
 	}
-	// Same-provider override: rebuild via constructor for providers
-	// whose model-derived state needs recomputation, otherwise shallow
-	// clone (existing behavior for openai, anthropic-via-Profile,
-	// google, minimax — their model-derived state is fixed).
+	// Same-provider override: every provider rebuilds via its constructor so
+	// the model-derived facts (reasoning support, effort ladder, task_list
+	// enum, web search) re-derive for the new model.
 	//
-	// The rebuild path must preserve any tool-schema overrides applied
-	// via WithCommunicateOutputSchema / WithAllowedDecisions on the
-	// existing profile. Without this carry-over, Session.SetModel and
-	// subagent model overrides would silently revert the communicate
-	// schema to its constructor default. We also preserve any
-	// providerOpts the caller has layered on, since those can also be
-	// override-driven (e.g. test harnesses).
-	if rebuildOnSameProviderChange(p.behaviorTag) {
-		var rebuilt *Profile
-		switch p.behaviorTag {
-		case "openrouter-anthropic":
-			rebuilt = newOpenRouterAnthropicProfile(model)
-		case "openai":
-			rebuilt = NewOpenAIProfile(model)
-		default:
-			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0, p.instModels)
-		}
-		// Re-stamp the instance identity onto the rebuilt profile so that a
-		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
-		// id and correctly-derived tag across model changes.
-		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
+	// The rebuild must preserve any tool-schema overrides applied via
+	// WithCommunicateOutputSchema / WithAllowedDecisions on the existing
+	// profile. Without this carry-over, Session.SetModel and subagent model
+	// overrides would silently revert the communicate schema to its
+	// constructor default. restampInstanceIdentity keeps a renamed
+	// instance's id and correctly-derived tag across model changes.
+	rebuilt := restampInstanceIdentity(newProfileForBehaviorTag(p.behaviorTag, model, p.instModels), p.behaviorTag, p.id)
+	return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
+}
+
+// newProfileForBehaviorTag is the one behavior-tag → constructor table,
+// shared by ResolveProfileFromConfig and WithModel so a provider added to one
+// dispatch cannot be missed by the other.
+func newProfileForBehaviorTag(behaviorTag, model string, instModels map[string]providercfg.ModelConfig) *Profile {
+	switch behaviorTag {
+	case "anthropic":
+		return newAnthropicProfile(model)
+	case "openai":
+		return NewOpenAIProfile(model)
+	case "google":
+		return newGeminiProfile(model)
+	case "minimax":
+		return newMiniMaxProfile(model)
+	case "kimi-anthropic":
+		return newKimiAnthropicProfile(model)
+	case "openrouter-anthropic":
+		return newOpenRouterAnthropicProfile(model)
+	default:
+		// openai-compatible, kimi, glm, openrouter, ollama: the compat
+		// constructor keys its behavior on the tag itself.
+		return newOpenAICompatProfile(behaviorTag, model, 0, instModels)
 	}
-	clone := *p
-	clone.model = model
-	return &clone
 }
 
 // NewOpenAIProfile returns a *Profile for OpenAI using the given model.
@@ -836,7 +873,7 @@ func NewOpenAIProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   400_000,
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       resolveWebSearch(model, true),
 		defaultTimeout:  120_000,
@@ -897,7 +934,7 @@ func newAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   ctxWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       true,
 		defaultTimeout:  120_000,
@@ -919,7 +956,7 @@ func newGeminiProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   1_000_000,
 		docFiles:        []string{"GEMINI.md", "AGENTS.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       true,
 		defaultTimeout:  120_000,
@@ -954,7 +991,7 @@ func newMiniMaxProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   204_800,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
@@ -981,7 +1018,7 @@ func newKimiAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   contextWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
@@ -1161,7 +1198,7 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 		parallel:        true,
 		contextWindow:   contextWindow,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-		reasoning:       true,
+		catalogModel:    catalogModelFor(model),
 		streaming:       true,
 		webSearch:       ws,
 		defaultTimeout:  120_000,
@@ -1257,14 +1294,8 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		contextWindow = 128_000
 	}
 	defaultEfforts := []string{"low", "medium", "high"}
-	reasoning := true
 	var efforts []string
 	switch {
-	case hasEntry && entry.Reasoning != nil && !*entry.Reasoning:
-		// A declared non-reasoning model advertises no effort levels at all.
-		// Non-nil empty keeps buildBaseProfile from re-deriving defaults.
-		reasoning = false
-		efforts = []string{}
 	case hasEntry && len(entry.ThinkingLevels) > 0:
 		efforts = llm.OrderedEffortLevels(entry.ThinkingLevels)
 	case catModel != nil && len(catModel.ReasoningEffortLevels) > 0:
@@ -1293,49 +1324,34 @@ func newOpenAICompatProfile(id, model string, contextWindow int, instModels map[
 		}
 	}
 	bp := buildBaseProfile(profileSpec{
-		id:              id,
-		behaviorTag:     providercfg.BehaviorTag(id, ""),
-		model:           model,
-		parallel:        true,
-		contextWindow:   contextWindow,
-		docFiles:        []string{"AGENTS.md"},
-		reasoning:       reasoning,
-		streaming:       true,
-		webSearch:       false,
-		defaultTimeout:  120_000,
-		knowledgeCutoff: "2025-06-01",
-		defaultEfforts:  defaultEfforts,
-		resolvedEfforts: efforts,
-		providerOpts:    providerOpts,
-		toolNameMap:     nil,
-		capabilities:    openAICodexCapabilities,
+		id:            id,
+		behaviorTag:   providercfg.BehaviorTag(id, ""),
+		model:         model,
+		parallel:      true,
+		contextWindow: contextWindow,
+		docFiles:      []string{"AGENTS.md"},
+		// providers.toml's answer (an explicit reasoning flag, or a
+		// thinking_levels map implying an effort control) wins either way;
+		// the catalog only speaks for models it left unset.
+		reasoningOverride: entry.ReasoningIntent(),
+		catalogModel:      catModel,
+		streaming:         true,
+		webSearch:         false,
+		defaultTimeout:    120_000,
+		knowledgeCutoff:   "2025-06-01",
+		defaultEfforts:    defaultEfforts,
+		resolvedEfforts:   efforts,
+		providerOpts:      providerOpts,
+		toolNameMap:       nil,
+		capabilities:      openAICodexCapabilities,
 	})
 	bp.instModels = instModels
 	return &bp
 }
 
-// CatalogEffortFallbackEligible reports whether the model-fallback clamp may
-// re-derive this profile's effort levels from the embedded catalog. False
-// when the levels are explicitly configured (authoritative), and false for
-// ollama — a local model name is unrelated to a same-named upstream catalog
-// entry, the same suppression newOpenAICompatProfile and the adapter's
-// catalog-fill apply.
-func (p *Profile) CatalogEffortFallbackEligible() bool {
-	if p.EffortLevelsConfigured() {
-		return false
-	}
-	return !suppressBareCatalogLookup(p.behaviorTag)
-}
-
 // EffortLevelsConfigured reports whether this profile's effort ladder comes
 // from explicit providers.toml model configuration (a thinking_levels map or
 // an explicit reasoning flag) rather than catalog or default derivation.
-// Callers that re-derive levels from the embedded catalog (the model-fallback
-// clamp) must not second-guess configured levels with catalog data.
 func (p *Profile) EffortLevelsConfigured() bool {
-	entry, ok := p.instModels[p.model]
-	if !ok {
-		return false
-	}
-	return len(entry.ThinkingLevels) > 0 || entry.Reasoning != nil
+	return p.instModels[p.model].ReasoningIntent() != nil
 }

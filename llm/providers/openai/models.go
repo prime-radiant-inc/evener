@@ -126,14 +126,15 @@ type codexModelListEntry struct {
 func (m codexModelListEntry) modelInfo() llm.ModelInfo {
 	id := envvars.FirstNonEmpty(m.Slug, m.Model, m.ID)
 	info := llm.ModelInfo{
-		ID:                    id,
-		Provider:              "openai",
-		DisplayName:           envvars.FirstNonEmpty(m.DisplayName, id),
-		ContextWindow:         firstPositiveInt(m.MaxContextWindow, m.ContextWindow, m.MaxInputTokens, m.InputTokenLimit),
-		SupportsReasoning:     m.DefaultReasoningLevel != "" || len(m.SupportedReasoningLevels) > 0,
-		ReasoningEffortLevels: codexReasoningEfforts(m.SupportedReasoningLevels),
-		SupportsTools:         m.SupportsParallelTools || len(m.ExperimentalTools) > 0,
-		SupportsVision:        codexSupportsVision(m.InputModalities),
+		ID:                     id,
+		Provider:               "openai",
+		DisplayName:            envvars.FirstNonEmpty(m.DisplayName, id),
+		ContextWindow:          firstPositiveInt(m.MaxContextWindow, m.ContextWindow, m.MaxInputTokens, m.InputTokenLimit),
+		SupportsReasoning:      m.DefaultReasoningLevel != "" || len(m.SupportedReasoningLevels) > 0,
+		ReasoningEffortLevels:  codexReasoningEfforts(m.SupportedReasoningLevels),
+		DefaultReasoningEffort: llm.NormalizeReasoningEffort(m.DefaultReasoningLevel),
+		SupportsTools:          m.SupportsParallelTools || len(m.ExperimentalTools) > 0,
+		SupportsVision:         codexSupportsVision(m.InputModalities),
 	}
 	if maxOut := firstPositiveInt(m.MaxOutputTokens, m.OutputTokenLimit); maxOut > 0 {
 		info.MaxOutputTokens = &maxOut

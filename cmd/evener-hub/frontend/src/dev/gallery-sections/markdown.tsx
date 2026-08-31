@@ -16,6 +16,12 @@ full change.
 
 > One test still flakes under load; tracked separately.
 
+| Step | Command | Result |
+| :--- | :--- | :---: |
+| build | \`make build\` | ok |
+| test | \`make test\` | ok |
+| lint | \`make lint\` | ok |
+
 \`\`\`go
 func main() {
 	fmt.Println("hello, evener")

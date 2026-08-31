@@ -121,3 +121,71 @@
   color: var(--ink-hi);
   border-bottom: 1px solid var(--edge);
 }
+
+/* GFM pipe tables. marked (gfm: true) tokenizes them into a bare
+ * <table>/<thead>/<tbody>/<tr>/<th>/<td> with no class attributes, so - like
+ * the headings/paragraphs above - these are styled by plain-tag descendant
+ * selectors scoped under .root (CSS Modules only renames `.class`/`#id`
+ * selectors, leaving a bare `table`/`th` inside `.root table { }` untouched).
+ * The chrome reuses the same tokens the standalone Table/DiffTable widgets
+ * use (border-collapse, --edge hairlines, --surface-inset header band,
+ * --hover-1 row hover) but at PROSE scale: font-size inherits from .root
+ * (so a table inside agent prose at --font-size-pane-title sizes with it),
+ * and padding is tight so a dense table reads as a paragraph of cells, not a
+ * chrome-heavy data grid. Overflow-wrap on .root already lets long cell
+ * tokens wrap; a wide table itself is contained by the host bubble/pane, and
+ * overflow-x here lets it scroll horizontally rather than forcing the pane
+ * wider. */
+.root :where(table) {
+  margin: 0 0 var(--space-3);
+  border-collapse: collapse;
+  width: 100%;
+  font-size: inherit;
+}
+
+.root :where(thead th) {
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-low);
+  font-weight: var(--font-weight-semibold);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.root :where(tbody td) {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-hi);
+  text-align: left;
+  vertical-align: top;
+}
+
+.root :where(tbody tr) {
+  border-bottom: 1px solid var(--edge);
+}
+
+.root :where(tbody tr:last-child) {
+  border-bottom: none;
+}
+
+.root :where(tbody tr:hover) {
+  background: var(--hover-1);
+}
+
+/* GFM column alignment: marked emits the legacy align="left|center|right"
+ * attribute on each <th>/<td> for the :---/:---:/---: delimiter syntax. It's
+ * allowlisted through DOMPurify (not a style attribute) and carries no script
+ * surface, so these attribute selectors honor author alignment without
+ * widening the allowlist to `style`. The bare th/td text-align above is the
+ * default; an explicit align attribute wins by specificity. */
+.root :where(th[align="center"], td[align="center"]) {
+  text-align: center;
+}
+
+.root :where(th[align="right"], td[align="right"]) {
+  text-align: right;
+}
+
+.root :where(th[align="left"], td[align="left"]) {
+  text-align: left;
+}

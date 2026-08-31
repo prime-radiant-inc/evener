@@ -261,36 +261,8 @@ func TestCrossProviderRef(t *testing.T) {
 	}
 }
 
-func TestRebuildOnSameProviderChange(t *testing.T) {
-	tests := []struct {
-		tag  string
-		want bool
-	}{
-		{"kimi", true},
-		{"glm", true},
-		{"openrouter", true},
-		{"ollama", true},
-		{"openrouter-anthropic", true},
-		// openai's constructor resolves per-model state from the catalog —
-		// the effort ladder via resolveEffortLevels and, since Bedrock, the
-		// web-search capability — so a model change has to rebuild or both
-		// go stale.
-		{"openai", true},
-		{"anthropic", false},
-		{"minimax", false},
-		{"google", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.tag, func(t *testing.T) {
-			if got := rebuildOnSameProviderChange(tt.tag); got != tt.want {
-				t.Errorf("rebuildOnSameProviderChange(%q) = %v, want %v", tt.tag, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestProfileGetters(t *testing.T) {
-	p := NewOpenAIProfile("gpt-4")
+	p := NewOpenAIProfile("gpt-5.5")
 	if p.ToolNameMap() == nil {
 		t.Error("ToolNameMap should not be nil for openai")
 	}

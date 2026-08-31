@@ -579,6 +579,11 @@ func responsesInbandError(data []byte) error {
 	return inbandStreamError("responses.create(stream)", inband, raw)
 }
 
+// reasoningPartSeparator joins consecutive reasoning parts, both as they
+// stream and in the settled thinking text, so the transcript reads like the
+// live view (the contract Response.ReasoningText documents).
+const reasoningPartSeparator = "\n\n"
+
 // responsesAPIEventTypes are the event types this decoder recognizes as the
 // Responses API's own: the ones the decode switch below handles, plus the
 // lifecycle events OpenAI documents ahead of the first delta. An endpoint that
@@ -599,6 +604,8 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.output_text.delta":             {},
 	"response.reasoning_summary_part.added":  {},
 	"response.reasoning_summary_text.delta":  {},
+	"response.reasoning_part.added":          {},
+	"response.reasoning_text.delta":          {},
 	"response.function_call_arguments.delta": {},
 	"response.function_call_arguments.done":  {},
 	"response.completed":                     {},
@@ -668,17 +675,20 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
 			}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-		case "response.reasoning_summary_text.delta":
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			// OpenAI streams reasoning as summaries; some gateways (lunaroute
+			// fronting GLM) stream the raw reasoning text instead. Both are
+			// the model thinking, so both render as reasoning.
 			delta, _ := payload["delta"].(string)
 			if delta == "" {
 				return nil
 			}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
-		case "response.reasoning_summary_part.added":
+		case "response.reasoning_summary_part.added", "response.reasoning_part.added":
 			// Detailed reasoning arrives as multiple summary parts; separate
 			// them with a blank line so the rendered thought stays readable.
 			if reasoningStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
+				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: reasoningPartSeparator})
 			}
 			reasoningStarted = true
 		case "response.function_call_arguments.delta":
@@ -1405,11 +1415,19 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 		case "reasoning":
 			id, _ := item["id"].(string)
 			encryptedContent, _ := item["encrypted_content"].(string)
-			if encryptedContent != "" {
+			// OpenAI returns reasoning as encrypted_content plus summaries;
+			// gateways that expose the raw thinking put reasoning_text parts
+			// in content instead. On this path the raw text feeds display and
+			// the transcript; toResponsesInput replays a reasoning item only
+			// when it has encrypted_content, so the text never returns to
+			// this API.
+			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
+			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
 						ID:               id,
+						Text:             text,
 						EncryptedContent: encryptedContent,
 						Summary:          parseReasoningSummary(item["summary"]),
 					},

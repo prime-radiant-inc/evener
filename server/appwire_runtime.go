@@ -1762,11 +1762,11 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("reasoning effort change not available")
 	}
-	// Normalize disable-aliases to "" and reject unknown vocabulary, so a typo or
-	// direct API call can't persist a provider-rejected effort that breaks later
-	// requests.
+	// Normalize disable-aliases to "none" and reject unknown vocabulary, so a
+	// typo or direct API call can't persist a provider-rejected effort that
+	// breaks later requests.
 	effort := llm.NormalizeReasoningEffort(params.ReasoningEffort)
-	if effort != "" && llm.ReasoningEffortRank(effort) == 0 {
+	if err := llm.ValidateReasoningEffort(effort); err != nil {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("invalid reasoning effort: " + params.ReasoningEffort)
 	}
 	fn(effort)

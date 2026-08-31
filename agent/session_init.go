@@ -162,6 +162,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	// Normalize before validating so a mixed-case level or disable alias is
+	// stored canonically rather than reaching a provider verbatim.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}
@@ -624,6 +627,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	// A pre-normalization meta.json may carry a mixed-case level or disable
+	// alias; canonicalize so the loop detector's and request builder's
+	// comparisons hold on restored sessions too. A value outside the
+	// vocabulary (a hand-edited file, a level a future release retired)
+	// falls back to unset — resuming with the default beats bricking the
+	// session or letting garbage reach a provider.
+	cfg.ReasoningEffort = llm.NormalizeReasoningEffort(cfg.ReasoningEffort)
+	if llm.ValidateReasoningEffort(cfg.ReasoningEffort) != nil {
+		cfg.ReasoningEffort = ""
+	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
@@ -675,6 +688,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
+	// ok flag for RestoredTranscript; captured at the open so the refresh
+	// below can't flip it.
+	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
@@ -685,6 +701,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
 		}
+		restoredTranscriptOpened = openErr == nil
 	}
 	defer func() {
 		if !restoreComplete && resumeTranscript != nil {
@@ -1058,7 +1075,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// setRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
 	// final entry list the file holds.
-	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries)
+	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}

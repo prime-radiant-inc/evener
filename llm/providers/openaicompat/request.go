@@ -211,10 +211,17 @@ func promptCacheKey(req llm.Request) string {
 	return ""
 }
 
+// formatsWithOffLevel are the thinking dialects with a real off level an
+// explicit "none" can ride (openai's reasoning_effort: none on gpt-5.1+,
+// OpenRouter's unified vocabulary). Every other format's wire shapes switch
+// thinking ON, which would invert the user's intent, so applyThinkingFormat
+// emits nothing for them and the provider default applies.
+var formatsWithOffLevel = map[string]bool{"": true, "openai": true, "openrouter": true}
+
 // applyThinkingFormat emits the reasoning controls in the wire dialect the
 // provider speaks. No effort on the request means "send nothing" for every
-// format — evener's "none" clears the setting to the provider default rather
-// than forcing an explicit disable. A model declared reasoning=false
+// format, and an explicit "none" reaches the wire only for the dialects with
+// a real off level (formatsWithOffLevel). A model declared reasoning=false
 // (mc.ReasoningOff) emits nothing regardless of the request's effort: the
 // adapter enforces its own declared non-reasoning models rather than relying
 // on the caller (e.g. the session-side profile clamp) to have done so.
@@ -231,9 +238,19 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		return
 	}
 	quirks := mc.Quirks
-	wire := ""
+	configured := ""
 	if req.ReasoningEffort != nil {
-		wire = mc.wireEffort(*req.ReasoningEffort)
+		configured = *req.ReasoningEffort
+	}
+	// Keyed on the configured effort, not the post-translation wire string:
+	// a thinking_levels entry may legitimately spell a real thinking-on tier
+	// as the provider's literal "none".
+	if configured == llm.ReasoningEffortNone && !formatsWithOffLevel[quirks.ThinkingFormat] {
+		return
+	}
+	wire := ""
+	if configured != "" {
+		wire = mc.wireEffort(configured)
 	}
 	if wire == "" {
 		if !mc.ThinkingAlwaysOn {
@@ -273,8 +290,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 		body["enable_thinking"] = true
 	case "qwen-chat-template":
 		// Divergence from Pi: Pi always emits enable_thinking (false when off).
-		// evener's none-clears convention means we only reach here with an effort
-		// set (wire != "" above), so enable_thinking is always true.
+		// evener reaches here only with a real thinking-on effort (empty and
+		// "none" returned above), so enable_thinking is always true.
 		body["chat_template_kwargs"] = map[string]any{
 			"enable_thinking":   true,
 			"preserve_thinking": true,

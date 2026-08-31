@@ -37,17 +37,17 @@ func TestHandleAppThreadReasoningEffortSet_RejectsUnknownEffort(t *testing.T) {
 	}
 }
 
-func TestHandleAppThreadReasoningEffortSet_NoneNormalizesToEmpty(t *testing.T) {
+func TestHandleAppThreadReasoningEffortSet_NoneStaysNone(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
 	called := false
 	s.SetReasoningEffortFunc(func(e string) { got = e; called = true })
 
-	if _, err := s.handleAppThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "none"}); err != nil {
+	if _, err := s.handleAppThreadReasoningEffortSet(context.Background(), appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "off"}); err != nil {
 		t.Fatalf("handleAppThreadReasoningEffortSet: %v", err)
 	}
-	if !called || got != "" {
-		t.Fatalf("none should normalize to empty (clear); called=%v got=%q", called, got)
+	if !called || got != "none" {
+		t.Fatalf("off should normalize to the explicit \"none\"; called=%v got=%q", called, got)
 	}
 }
 

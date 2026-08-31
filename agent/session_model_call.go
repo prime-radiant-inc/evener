@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -797,30 +798,59 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	if mt := profile.MaxOutputTokens(); mt > 0 {
 		req.MaxTokens = &mt
 	}
-	if reasoningEffort != "" && profile.SupportsReasoning() {
-		// Clamp to what the active model supports so loop-detector escalation,
-		// the --reasoning-effort flag, and the UI selector never send a level the
-		// provider rejects (e.g. "xhigh" to a model that tops out at "high").
-		// Gated on SupportsReasoning so a model explicitly declared non-reasoning
-		// (providers.toml reasoning=false) never gets reasoning_effort on the
-		// wire — ClampReasoningEffort passes the value through unchanged when
-		// the supported list is empty, which would otherwise leak the session
-		// effort straight through and 400.
-		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
-		req.ReasoningEffort = &v
-	} else if profile.ThinkingAlwaysOn() {
-		// A mandatory-reasoning model (OpenRouter reasoning.mandatory=true)
-		// rejects a reasoning-less request. When the session has no
-		// --reasoning-effort configured, emit a default ("medium", clamped to
-		// the model's supported levels) so the adapter always has an effort to
-		// put on the wire. Without this, mandatory-reasoning models like
-		// stealth/ox-alpha get a request with no reasoning field and the
-		// provider 400s or produces no output.
-		v := llm.ClampReasoningEffort("medium", profile.ReasoningEffortLevels())
-		req.ReasoningEffort = &v
-	}
+	req.ReasoningEffort = resolveRequestEffort(reasoningEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
 	s.applyModelRequestMetadata(profile, &req)
 	return req
+}
+
+// defaultReasoningEffort is what a reasoning model runs at when nothing
+// configured it and no model data states a better default.
+const defaultReasoningEffort = "medium"
+
+// resolveRequestEffort is the one rule for the effort a request carries, shared
+// by the primary and fallback paths:
+//
+//   - A model that does not reason (catalog, live /models, or providers.toml
+//     reasoning=false) never gets an effort, even if one is configured;
+//     ClampReasoningEffort would pass it through an empty level list and the
+//     provider would 400.
+//   - An explicit off ("none") is sent only when the model lists it as a
+//     level (gpt-5.1+, GLM behind lunaroute); otherwise the field is omitted.
+//   - A configured effort is clamped to the model's levels so loop-detector
+//     escalation, the --reasoning-effort flag, and the UI selector never send
+//     a tier the model rejects.
+//   - Nothing configured: the model's own stated default (adaptive Claude runs
+//     at high), else medium, clamped. Leaving the field out lets the provider
+//     pick, and a gateway-fronted glm-5.3 spent 25k reasoning tokens on one
+//     turn that way; mandatory-thinking models reject a reasoning-less
+//     request outright.
+func resolveRequestEffort(configured string, supportsReasoning bool, levels []string, modelDefault string) *string {
+	if !supportsReasoning {
+		return nil
+	}
+	// Normalize here too: config entry points normalize on the way in, but a
+	// value that slipped past them ("None", a stored alias) must still be an
+	// off, not an unknown level a provider 400s on.
+	effort := llm.NormalizeReasoningEffort(configured)
+	if effort == "" {
+		effort = modelDefault
+	}
+	if effort == "" {
+		effort = defaultReasoningEffort
+	}
+	if effort == llm.ReasoningEffortNone {
+		// Off, whether the user or the model's data said so: sent (as the
+		// canonical lowercase "none") only where the model's ladder lists an
+		// off level in any case, otherwise the field stays out.
+		if slices.ContainsFunc(levels, func(l string) bool {
+			return strings.EqualFold(l, llm.ReasoningEffortNone)
+		}) {
+			return &effort
+		}
+		return nil
+	}
+	v := llm.ClampReasoningEffort(effort, levels)
+	return &v
 }
 
 // callModelWithFallback issues the model call for one round and, on a
@@ -905,7 +935,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// than re-reading live session config) keeps a concurrent runtime effort
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
-		origEffort := requestedEffort
 		for _, fbModel := range s.cfg.ModelFallbacks {
 			// validateModelFallbacks already rejected cross-provider fallbacks,
 			// so resolveProfileForRef is guaranteed to return the WithModel path
@@ -915,50 +944,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := responsesContinuationModelFallbackRequest(req)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			if origEffort != "" && fbProfile.SupportsReasoning() {
-				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
-				// profile's effort levels for some providers (openai/anthropic), so
-				// consult the catalog for the fallback model rather than trusting
-				// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
-				// "[1m]" suffix, a provider namespace ("anthropic/…" from
-				// openrouter-anthropic), and dated snapshots, so a qualified or
-				// dated fallback still resolves real levels.
-				//
-				// Gated on SupportsReasoning so a fallback explicitly declared
-				// non-reasoning never gets reasoning_effort on the wire (see the
-				// same guard on the primary path above).
-				fbLevels := fbProfile.ReasoningEffortLevels()
-				// Explicit providers.toml thinking_levels / reasoning config is
-				// authoritative, and ollama's local model names never resolve
-				// against the upstream catalog — only consult it when the
-				// profile's levels were derived (and might be stale
-				// primary-model state).
-				if fbProfile.CatalogEffortFallbackEligible() {
-					if cat := llm.EmbeddedModelCatalog(); cat != nil {
-						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-							fbLevels = mi.ReasoningEffortLevels
-						}
-					}
-				}
-				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
-				fbReq.ReasoningEffort = &clamped
-			} else if fbProfile.ThinkingAlwaysOn() {
-				// A mandatory-reasoning fallback model needs a default effort
-				// even when the session has no --reasoning-effort configured.
-				// Mirrors the primary path's ThinkingAlwaysOn handling.
-				fbLevels := fbProfile.ReasoningEffortLevels()
-				if fbProfile.CatalogEffortFallbackEligible() {
-					if cat := llm.EmbeddedModelCatalog(); cat != nil {
-						if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
-							fbLevels = mi.ReasoningEffortLevels
-						}
-					}
-				}
-				clamped := llm.ClampReasoningEffort("medium", fbLevels)
-				fbReq.ReasoningEffort = &clamped
-			} else {
-				fbReq.ReasoningEffort = nil
-			}
+			// The fallback profile carries the fallback model's own facts:
+			// WithModel re-derives reasoning support and levels from the
+			// catalog (canonicalizing "[1m]", provider namespaces, and dated
+			// snapshots), so the same rule as the primary path applies.
+			fbReq.ReasoningEffort = resolveRequestEffort(requestedEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""

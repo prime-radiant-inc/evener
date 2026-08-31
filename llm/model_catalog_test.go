@@ -519,7 +519,7 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 	if cat == nil {
 		t.Fatal("embedded catalog nil")
 	}
-	wantLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	wantLevels := []string{"none", "low", "medium", "high", "xhigh", "max"}
 	pricing := map[string][3]float64{ // in, out, cache-read $/MTok
 		"gpt-5.6-sol":   {5, 30, 0.5},
 		"gpt-5.6-terra": {2, 12, 0.2},
@@ -919,9 +919,12 @@ func TestParseLiteLLMCatalog_SynthesizesXHighEffortLevelFromFlags(t *testing.T) 
 	if mi == nil {
 		t.Fatal("gpt-5.5 not found")
 	}
-	want := []string{"low", "medium", "high", "xhigh"}
+	// none is a real wire level on these models (an explicit off the session
+	// sends only when listed), so it leads the ladder; UIs that pick a
+	// thinking tier filter it out.
+	want := []string{"none", "low", "medium", "high", "xhigh"}
 	if !reflect.DeepEqual(mi.ReasoningEffortLevels, want) {
-		t.Fatalf("ReasoningEffortLevels = %v, want %v (supports_xhigh_reasoning_effort should reach the launch picker)", mi.ReasoningEffortLevels, want)
+		t.Fatalf("ReasoningEffortLevels = %v, want %v (supports_none/xhigh_reasoning_effort should reach the ladder)", mi.ReasoningEffortLevels, want)
 	}
 }
 
@@ -1153,6 +1156,27 @@ func TestApplyOverrides_ThinkingAlwaysOn(t *testing.T) {
 	}
 	if cat.GetModelInfo("claude-sonnet-5").ThinkingAlwaysOn {
 		t.Error("claude-sonnet-5 ThinkingAlwaysOn = true, want false (no override)")
+	}
+}
+
+// default_reasoning_effort records what a model runs at when the session has
+// no effort configured; the overrides layer carries it for models whose
+// provider default is a known tier (adaptive Claude runs at high).
+func TestApplyOverrides_DefaultReasoningEffort(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-6": {"litellm_provider": "anthropic"},
+        "claude-sonnet-5": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{"claude-opus-4-6": {"default_reasoning_effort": "High"}}`))
+
+	if got := cat.GetModelInfo("claude-opus-4-6").DefaultReasoningEffort; got != "high" {
+		t.Errorf("claude-opus-4-6 DefaultReasoningEffort = %q, want high (normalized) from override", got)
+	}
+	if got := cat.GetModelInfo("claude-sonnet-5").DefaultReasoningEffort; got != "" {
+		t.Errorf("claude-sonnet-5 DefaultReasoningEffort = %q, want empty (no override)", got)
 	}
 }
 

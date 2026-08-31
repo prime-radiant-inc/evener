@@ -15,17 +15,31 @@ import (
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
 // in evener. This is metadata-only and is not used as a provider call path.
 type ModelInfo struct {
-	ID                       string   `json:"id"`
-	Provider                 string   `json:"provider"`
-	DisplayName              string   `json:"display_name"`
-	ContextWindow            int      `json:"context_window"`
-	MaxOutputTokens          *int     `json:"max_output_tokens,omitempty"`
-	SupportsTools            bool     `json:"supports_tools"`
-	SupportsVision           bool     `json:"supports_vision"`
-	SupportsReasoning        bool     `json:"supports_reasoning"`
-	ReasoningEffortLevels    []string `json:"reasoning_effort_levels,omitempty"`
-	SupportsAdaptiveThinking bool     `json:"supports_adaptive_thinking,omitempty"`
-	SupportsEffortParameter  bool     `json:"supports_effort_parameter,omitempty"`
+	ID                string `json:"id"`
+	Provider          string `json:"provider"`
+	DisplayName       string `json:"display_name"`
+	ContextWindow     int    `json:"context_window"`
+	MaxOutputTokens   *int   `json:"max_output_tokens,omitempty"`
+	SupportsTools     bool   `json:"supports_tools"`
+	SupportsVision    bool   `json:"supports_vision"`
+	SupportsReasoning bool   `json:"supports_reasoning"`
+	// ReasoningAuthoritative marks that SupportsReasoning is knowledge rather
+	// than sparse data: the source stated it explicitly, the entry carries an
+	// effort ladder (which implies a reasoning model unless explicitly
+	// denied), or the entry is a bare curated key (litellm's silence there
+	// means the model does not reason). Provider-prefixed mirror keys
+	// (openrouter/*, ollama/*) that are silent leave the model's reasoning
+	// support unknown, and consumers treat it as permitted.
+	ReasoningAuthoritative bool     `json:"reasoning_authoritative,omitempty"`
+	ReasoningEffortLevels  []string `json:"reasoning_effort_levels,omitempty"`
+	// DefaultReasoningEffort is the effort a model runs at when the session
+	// has none configured, where a source states it: the overrides layer
+	// (adaptive Claude runs at high server-side) or a live /models entry
+	// (the codex backend's default_reasoning_level). Empty means unknown, and
+	// the session falls back to its own default.
+	DefaultReasoningEffort   string `json:"default_reasoning_effort,omitempty"`
+	SupportsAdaptiveThinking bool   `json:"supports_adaptive_thinking,omitempty"`
+	SupportsEffortParameter  bool   `json:"supports_effort_parameter,omitempty"`
 	// ThinkingAlwaysOn marks models whose thinking cannot be disabled: sending
 	// an explicit thinking-disabled request is an API error (e.g.
 	// claude-fable-5 returns 400). Request builders must never emit a
@@ -168,6 +182,16 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 			mi = c.GetModelInfo(id)
 		}
 	}
+	if mi == nil && strings.HasPrefix(id, "claude-") && strings.Contains(id, ".") {
+		// OpenRouter spells Anthropic versions with dots (claude-opus-4.6);
+		// the catalog keys on the dashed convention. Claude-scoped so dots in
+		// other families (gpt-4.1) stay meaningful. claudeCatalogFamilyID
+		// applies the same bridge at overlay-load time; keep the two in step.
+		if dashed := strings.ReplaceAll(id, ".", "-"); dashed != id {
+			id = dashed
+			mi = c.GetModelInfo(id)
+		}
+	}
 	if mi == nil {
 		// A dated snapshot newer than the bundled catalog has no entry of its
 		// own; fall back to its family (claude-opus-4-5-YYYYMMDD → claude-opus-4-5).
@@ -266,10 +290,12 @@ func IsChatModelID(modelID string) bool {
 //     "openrouter/<model>") still resolve.
 //
 // The OpenRouter case is the motivating bug: OpenRouter's /v1/models endpoint
-// returns bare IDs like "anthropic/claude-sonnet-4.5", but the embedded LiteLLM
-// catalog keys those models as "openrouter/anthropic/claude-sonnet-4.5". An exact
+// returns bare IDs like "anthropic/claude-3.7-sonnet", but the embedded LiteLLM
+// catalog keys those models as "openrouter/anthropic/claude-3.7-sonnet". An exact
 // GetModelInfo(bareID) returns nil, so a tools-capability filter dropped nearly
-// every OpenRouter model. The tag-qualified fallback resolves them.
+// every OpenRouter model. The tag-qualified fallback resolves them. (Newer
+// dotted Claude refs resolve through LookupModelInfo's dash bridge to their
+// direct dashed entries first; the fallback covers everything mirror-only.)
 //
 // Returns nil when the catalog is nil or nothing matches.
 func (c *ModelCatalog) ResolveLiveModelInfo(behaviorTag, modelID string) *ModelInfo {
@@ -472,6 +498,17 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		if len(effortLevels) == 0 {
 			effortLevels = synthesizeReasoningEffortLevels(v)
 		}
+		// An entry that enumerates per-level effort flags is not silent about
+		// reasoning: an effort ladder implies a reasoning model unless the
+		// source states supports_reasoning: false explicitly (perplexity
+		// mirrors do). gpt-5-search-api carries effort flags with no
+		// supports_reasoning key.
+		reasoningDeclared := parseBoolPtr(v["supports_reasoning"])
+		hasLadder := len(effortLevels) > 0
+		supportsReasoning := reasoningDeclared != nil && *reasoningDeclared
+		if reasoningDeclared == nil && hasLadder {
+			supportsReasoning = true
+		}
 
 		models = append(models, ModelInfo{
 			ID:                            id,
@@ -481,7 +518,8 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 			MaxOutputTokens:               maxOutPtr,
 			SupportsTools:                 parseBool(v["supports_function_calling"]),
 			SupportsVision:                parseBool(v["supports_vision"]),
-			SupportsReasoning:             parseBool(v["supports_reasoning"]),
+			SupportsReasoning:             supportsReasoning,
+			ReasoningAuthoritative:        reasoningDeclared != nil || hasLadder || !strings.Contains(id, "/"),
 			ReasoningEffortLevels:         effortLevels,
 			SupportsAdaptiveThinking:      parseBool(v["supports_adaptive_thinking"]),
 			SupportsEffortParameter:       parseBool(v["supports_effort_parameter"]),
@@ -524,17 +562,24 @@ func synthesizeReasoningEffortLevels(v map[string]any) []string {
 		}
 	}
 
+	none, hasNone := flag("supports_none_reasoning_effort")
 	_, hasMinimal := flag("supports_minimal_reasoning_effort")
 	_, hasLow := flag("supports_low_reasoning_effort")
 	_, hasMedium := flag("supports_medium_reasoning_effort")
 	_, hasHigh := flag("supports_high_reasoning_effort")
 	xhigh, hasXHigh := flag("supports_xhigh_reasoning_effort")
 	maxEffort, hasMax := flag("supports_max_reasoning_effort")
-	if !hasMinimal && !hasLow && !hasMedium && !hasHigh && !hasXHigh && !hasMax {
+	if !hasNone && !hasMinimal && !hasLow && !hasMedium && !hasHigh && !hasXHigh && !hasMax {
 		return nil
 	}
 
-	levels := make([]string, 0, 5)
+	levels := make([]string, 0, 6)
+	if none {
+		// A real wire level on these models: the session sends an explicit
+		// off only where it is listed. It has no rank, so the clamp ignores
+		// it and tier pickers filter it out.
+		levels = append(levels, ReasoningEffortNone)
+	}
 	if minimal, ok := flag("supports_minimal_reasoning_effort"); ok && minimal {
 		levels = append(levels, "minimal")
 	}
