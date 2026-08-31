@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
@@ -475,10 +476,11 @@ func fuzzScenarioPastIndex_FindMissDoesNotRebuild(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 
-	// A valid-shaped id that is absent everywhere: an INVALID id would
-	// return at the ValidateSessionID guard and never reach the miss path,
-	// making this scenario vacuous.
-	if _, ok := idx.Find("034GVn7HewXzI8xWeLBkCA"); ok {
+	// A valid-shaped id, absent everywhere — minted rather than hand-typed
+	// so it cannot silently regress to an INVALID id (which returns at
+	// Find's ValidateSessionID guard and makes this scenario vacuous).
+	absent := hubtest.SessionID(t)
+	if _, ok := idx.Find(absent); ok {
 		t.Fatal("expected miss for a session that does not exist")
 	}
 	if _, ok := idx.findCached("02wMz5Txv2enqVTitaig6F"); ok {
@@ -617,14 +619,14 @@ func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
 	}
 }
 
-// fuzzScenarioPastIndex_FindRepairsStaleFTS pins the repair path for a FTS
+// fuzzScenarioPastIndex_SearchRepairsStaleFTS pins the repair path for a FTS
 // lost-update: when the FTS mirror is stale (a fold's or rebuild's rebuildFTS
 // lost its SQLITE_BUSY race, or the db was briefly unwritable), the in-memory
 // index still serves Find from cache — but search would miss the session. A
-// cache-hit Find must notice i.fts is false and re-publish, so searchFTS
-// serves every indexed id again. Without the repair, staleness persisted
-// until the next full Rebuild (which itself could lose the same race).
-func fuzzScenarioPastIndex_FindRepairsStaleFTS(t *testing.T) {
+// Search must notice i.fts is false and re-publish, so searchFTS serves every
+// indexed id again. Without the repair, staleness persisted until the next
+// full Rebuild (which itself could lose the same race).
+func fuzzScenarioPastIndex_SearchRepairsStaleFTS(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
@@ -650,13 +652,15 @@ func fuzzScenarioPastIndex_FindRepairsStaleFTS(t *testing.T) {
 		t.Fatalf("FTS unexpectedly served the session while stale (results: %d)", len(results))
 	}
 
-	// A cache-hit Find must repair the mirror.
-	if _, ok := idx.Find(sessionID); !ok {
-		t.Fatal("expected the indexed session to be found")
+	// A Search must repair the mirror (and still serve the session from
+	// the in-memory scan while it does).
+	results := idx.Search("fts-repair-needle", 10, 0)
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
+		t.Fatalf("Search did not serve the session while the mirror was stale (results: %d entries)", len(results))
 	}
 	results, ok := idx.searchFTS("fts-repair-needle")
 	if !ok {
-		t.Fatal("FTS index still unavailable after the repair; cache-hit Find must re-publish a stale mirror")
+		t.Fatal("FTS index still unavailable after the repair; Search must re-publish a stale mirror")
 	}
 	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
 		t.Fatalf("FTS did not surface the repaired session %s (results: %d entries)", sessionID, len(results))
