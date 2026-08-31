@@ -254,6 +254,14 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	if !reflect.DeepEqual(statuses, wantStatuses) {
 		t.Fatalf("all statuses = %v, want %v", statuses, wantStatuses)
 	}
+
+	// Wrong-typed element — named error, not fmt.Sprint noise.
+	for _, bad := range []any{float64(1), true, nil, map[string]any{"status": "running"}} {
+		_, err = jobStatusArrayArg(map[string]any{"status": []any{bad}}, "status")
+		if err == nil || !strings.Contains(err.Error(), "status values must be strings") {
+			t.Fatalf("wrong-typed element %#v: err = %v", bad, err)
+		}
+	}
 }
 
 // TestCovJobTypeArrayArg covers jobTypeArrayArg
@@ -284,6 +292,14 @@ func TestCovJobTypeArrayArg2(t *testing.T) {
 	_, err = jobTypeArrayArg(map[string]any{"type": []any{"invalid_type"}}, "type")
 	if err == nil || !strings.Contains(err.Error(), "invalid job type") {
 		t.Fatalf("invalid type: %v", err)
+	}
+
+	// Wrong-typed element — named error, not fmt.Sprint noise.
+	for _, bad := range []any{float64(1), true, nil, map[string]any{"type": "shell"}} {
+		_, err = jobTypeArrayArg(map[string]any{"type": []any{bad}}, "type")
+		if err == nil || !strings.Contains(err.Error(), "type values must be strings") {
+			t.Fatalf("wrong-typed element %#v: err = %v", bad, err)
+		}
 	}
 }
 
