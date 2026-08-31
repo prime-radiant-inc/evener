@@ -102,41 +102,45 @@ func collectFrames(transport *appwire.WSTransport) <-chan appwire.Message {
 	return frames
 }
 
+// waitUntil polls cond until it holds or the test deadline passes — the
+// condition-shaped sibling of waitFor, for state without a channel to block
+// on; what names the condition being waited for.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting until %s", what)
+}
+
 // registeredConnection returns the server's single registered connection,
 // waiting for it to appear.
 func registeredConnection(t *testing.T, server *Server) *Connection {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	var conn *Connection
+	waitUntil(t, "a connection registers", func() bool {
 		server.mu.RLock()
-		var conn *Connection
+		defer server.mu.RUnlock()
 		for _, c := range server.conns {
 			conn = c
 		}
-		server.mu.RUnlock()
-		if conn != nil {
-			return conn
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("no connection registered")
-	return nil
+		return conn != nil
+	})
+	return conn
 }
 
 // waitUnregistered waits until the server has no registered connections.
 func waitUnregistered(t *testing.T, server *Server) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	waitUntil(t, "the connection unregisters", func() bool {
 		server.mu.RLock()
-		n := len(server.conns)
-		server.mu.RUnlock()
-		if n == 0 {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("connection was not unregistered")
+		defer server.mu.RUnlock()
+		return len(server.conns) == 0
+	})
 }
 
 // TestServeWebSocketSlowReadWaitsForEarlierSerialRequest pins the
@@ -452,10 +456,9 @@ func TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory(t *testing.T
 
 	// The queue empties before the advisory line is written; wait for the
 	// line rather than racing it.
-	logDeadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged(), "discarded") && time.Now().Before(logDeadline) {
-		time.Sleep(2 * time.Millisecond)
-	}
+	waitUntil(t, "the purge advisory reaches Logf", func() bool {
+		return strings.Contains(logged(), "discarded")
+	})
 	logs := logged()
 	advisories := 0
 	var advisory string
@@ -491,14 +494,9 @@ func TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory(t *testing.T
 // waitForQueueDepth polls the connection's request queue length.
 func waitForQueueDepth(t *testing.T, conn *Connection, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(conn.requests) == want {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("request queue depth = %d, want %d", len(conn.requests), want)
+	waitUntil(t, fmt.Sprintf("request queue depth reaches %d", want), func() bool {
+		return len(conn.requests) == want
+	})
 }
 
 // TestServeWebSocketWorkerObservesCancellationAtDequeue pins the post-dequeue
@@ -584,12 +582,7 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 		}
 	}
 
-	lines := 0
-	for line := range strings.SplitSeq(logged(), "\n") {
-		if strings.Contains(line, conn.id) {
-			lines++
-		}
-	}
+	lines := strings.Count(logged(), conn.id)
 	if lines != 1 {
 		t.Fatalf("saturation advisory lines for %s = %d, want exactly 1 in:\n%s", conn.id, lines, logged())
 	}
@@ -682,6 +675,23 @@ func (t *gatedSendTransport) Send(ctx context.Context, msg appwire.Message) erro
 	}
 }
 
+// parkSendLoopWithFullBuffer engages the gate, parks the send loop on one
+// notification, and fills the outbound buffer — the shared setup for both
+// full-outbound-buffer tests. Call after the connection initialized (the
+// gate must not block the initialize response).
+func parkSendLoopWithFullBuffer(t *testing.T, server *Server, gate *gatedSendTransport) *Connection {
+	t.Helper()
+	conn := registeredConnection(t, server)
+	gate.gated.Store(true)
+	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+		t.Fatal("could not enqueue the first fill notification")
+	}
+	waitFor(t, "send loop to park in the gated Send", gate.blocked)
+	for conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+	}
+	return conn
+}
+
 // TestServeWebSocketPingParksOnFullOutboundBufferUntilSendDrains pins the
 // stated precondition on ping liveness: with the write side parked and the
 // outbound channel full, the inline ping response parks in enqueueResponse —
@@ -696,16 +706,7 @@ func TestServeWebSocketPingParksOnFullOutboundBufferUntilSendDrains(t *testing.T
 	httpServer := serveWebSocketHTTP(t, server)
 	transport := dialRawAppWire(t, httpServer)
 	initializeRaw(t, transport)
-	conn := registeredConnection(t, server)
-
-	gate.gated.Store(true)
-	// Park the send loop on one notification, then fill the outbound buffer.
-	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
-		t.Fatal("could not enqueue the first fill notification")
-	}
-	waitFor(t, "send loop to park in the gated Send", gate.blocked)
-	for conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
-	}
+	parkSendLoopWithFullBuffer(t, server, gate)
 
 	frames := collectFrames(transport)
 	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodPing, appwire.EmptyParams{}))
@@ -744,15 +745,7 @@ func TestServeWebSocketWriteTimeoutTearsDownConnectionWithPingParked(t *testing.
 	httpServer := serveWebSocketHTTP(t, server)
 	transport := dialRawAppWire(t, httpServer)
 	initializeRaw(t, transport)
-	conn := registeredConnection(t, server)
-
-	gate.gated.Store(true)
-	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
-		t.Fatal("could not enqueue the first fill notification")
-	}
-	waitFor(t, "send loop to park in the gated Send", gate.blocked)
-	for conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
-	}
+	conn := parkSendLoopWithFullBuffer(t, server, gate)
 	sendRaw(t, transport, rawRequest(t, 2, appwire.MethodPing, appwire.EmptyParams{}))
 	// Keep draining the client side: the receive loop's error-path Close
 	// performs a close handshake, and a peer that never reads would stall it

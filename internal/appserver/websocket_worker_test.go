@@ -3,20 +3,19 @@ package appserver
 import (
 	"context"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 )
 
-// dispatchSlowSerialServer builds a server whose thread/list handler — a
-// serial method that rides the request queue — blocks until released, plus an
-// http server speaking AppWire over WebSocket. The returned release is
-// idempotent and also runs at test cleanup, so a parked handler can never
-// outlive the test.
-func dispatchSlowSerialServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+// parkThreadList registers a thread/list handler — a serial method that
+// rides the request queue — that blocks until released, reporting its first
+// start. The returned release is idempotent and also runs at test cleanup,
+// so a parked handler can never outlive the test.
+func parkThreadList(t *testing.T, server *Server) (chan struct{}, func()) {
 	t.Helper()
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -28,15 +27,18 @@ func dispatchSlowSerialServer(t *testing.T) (*Server, *httptest.Server, chan str
 		<-releaseHandler
 		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_serial_held"}}}, nil
 	})
-	httpServer := serveWebSocketHTTP(t, server)
-	release := func() {
-		select {
-		case <-releaseHandler:
-		default:
-			close(releaseHandler)
-		}
-	}
+	release := sync.OnceFunc(func() { close(releaseHandler) })
 	t.Cleanup(release)
+	return handlerStarted, release
+}
+
+// dispatchSlowSerialServer is parkThreadList plus an http server speaking
+// AppWire over WebSocket — the serial twin of dispatchSlowFastServer.
+func dispatchSlowSerialServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+	t.Helper()
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	handlerStarted, release := parkThreadList(t, server)
+	httpServer := serveWebSocketHTTP(t, server)
 	return server, httpServer, handlerStarted, release
 }
 
@@ -93,21 +95,7 @@ func TestServeWebSocketKeepaliveStaysLiveDuringSlowSerialMutation(t *testing.T) 
 	server.keepaliveTickerFactory = func(time.Duration) webSocketKeepaliveTicker { return ticker }
 	server.keepaliveDecision = func(ok bool) { decision <- ok }
 
-	handlerStarted := make(chan struct{})
-	releaseHandler := make(chan struct{})
-	release := func() {
-		select {
-		case <-releaseHandler:
-		default:
-			close(releaseHandler)
-		}
-	}
-	t.Cleanup(release)
-	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		close(handlerStarted)
-		<-releaseHandler
-		return appwire.ThreadListResponse{}, nil
-	})
+	handlerStarted, release := parkThreadList(t, server)
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()

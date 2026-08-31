@@ -69,9 +69,8 @@ type Server struct {
 	subs                   *Subscriptions
 	keepaliveTickerFactory func(time.Duration) webSocketKeepaliveTicker
 	keepaliveDecision      func(bool)
-	// requestQueueCapacity overrides requestQueueCap for tests that need to
-	// saturate the queue without pipelining 65 real frames. Zero means the
-	// production capacity.
+	// requestQueueCapacity is requestQueueCap, overridable by tests that
+	// need to saturate the queue without pipelining 65 real frames.
 	requestQueueCapacity int
 	// blockedEnqueue runs when the receive loop is about to park on a full
 	// request queue, so a saturation test can wait for the loop to actually
@@ -86,17 +85,15 @@ type Server struct {
 	// re-check, so a test can pin that re-check deterministically.
 	// Production leaves it nil.
 	afterSlowReadAcquire func()
-	// slowReadStallThreshold overrides slowReadCapStallAdvisory for tests
-	// that drive the stall advisory without waiting 30 seconds. Zero means
-	// the production threshold.
+	// slowReadStallThreshold is slowReadCapStallAdvisory, overridable by
+	// tests that drive the stall advisory without waiting 30 seconds.
 	slowReadStallThreshold time.Duration
 	// wrapWebSocketTransport lets a test interpose on the transport
 	// ServeWebSocket builds — e.g. a blocking Send — before the loops start.
 	// Production leaves it nil.
 	wrapWebSocketTransport func(webSocketTransport) webSocketTransport
-	// sendWriteTimeout overrides webSocketWriteTimeout for tests that drive
-	// the write-timeout cascade without waiting 30 seconds. Zero means the
-	// production timeout.
+	// sendWriteTimeout is webSocketWriteTimeout, overridable by tests that
+	// drive the write-timeout cascade without waiting 30 seconds.
 	sendWriteTimeout               time.Duration
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
@@ -116,6 +113,9 @@ func NewServer(cfg ServerConfig) *Server {
 		subs:                   NewSubscriptions(),
 		conns:                  map[string]*Connection{},
 		keepaliveTickerFactory: newRealWebSocketKeepaliveTicker,
+		requestQueueCapacity:   requestQueueCap,
+		slowReadStallThreshold: slowReadCapStallAdvisory,
+		sendWriteTimeout:       webSocketWriteTimeout,
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
 	return s
@@ -152,17 +152,14 @@ func (s *Server) NewConnection(id string) *Connection {
 	// share one constant so neither peer can quietly become the smaller pipe
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
-	capacity := s.requestQueueCapacity
-	if capacity == 0 {
-		capacity = requestQueueCap
-	}
 	return &Connection{
-		id:            id,
-		server:        s,
-		send:          make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:      make(chan appwire.Message, capacity),
-		slowReadSlots: make(chan struct{}, slowReadDispatchCap),
-		workerExited:  make(chan struct{}),
+		id:               id,
+		server:           s,
+		send:             make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:         make(chan appwire.Message, s.requestQueueCapacity),
+		slowReadSlots:    make(chan struct{}, slowReadDispatchCap),
+		slowReadInflight: map[string]int{},
+		workerExited:     make(chan struct{}),
 	}
 }
 
@@ -917,6 +914,28 @@ func concurrentDispatchMethod(method string) bool {
 	return false
 }
 
+// receiveInbound applies the connection's inbound policy to one frame on
+// behalf of the transport's receive loop, which holds only transport
+// concerns: a ping request is answered inline through the shared
+// handleAndEnqueue barrier, bypassing the request queue — one ping
+// implementation, one panic barrier, no hand-built response beside the real
+// path that could drift from it — and every other frame is enqueued for the
+// serial worker. False means the connection died while blocked on a full
+// queue and the loop should return. A second transport inherits the whole
+// policy by driving this same entry point.
+//
+// The inline ping response enqueues through enqueueResponse, which parks on
+// a full outbound channel until the send loop drains it or the write-timeout
+// cascade cancels the connection: ping liveness is guaranteed against
+// handler behavior, not against a peer that stopped draining its own socket.
+func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bool {
+	if msg.Request != nil && msg.Request.Method == appwire.MethodPing {
+		c.handleAndEnqueue(ctx, msg)
+		return true
+	}
+	return c.enqueueRequest(ctx, msg)
+}
+
 // enqueueRequest pushes one inbound frame onto the connection's bounded
 // request queue on behalf of the transport's receive loop, which is the only
 // producer. A full queue blocks until the worker frees a slot or the
@@ -996,31 +1015,6 @@ func (c *Connection) runWorker(ctx context.Context) {
 	}
 }
 
-// wireCatalogName reports whether a method name appears in the appwire
-// catalog (requests, notifications, or the initialized handshake
-// notification). The teardown purge tallies only cataloged names verbatim:
-// the method field is client-controlled and the transport read limit admits
-// very large strings, so an uncataloged value could carry arbitrary size or
-// control characters into the log.
-func wireCatalogName(method string) bool {
-	wireCatalogNamesOnce.Do(func() {
-		wireCatalogNames = make(map[string]bool, len(appwire.Methods)+len(appwire.Notifications)+1)
-		for _, m := range appwire.Methods {
-			wireCatalogNames[m.Name] = true
-		}
-		for _, n := range appwire.Notifications {
-			wireCatalogNames[n.Name] = true
-		}
-		wireCatalogNames[appwire.MethodInitialized] = true
-	})
-	return wireCatalogNames[method]
-}
-
-var (
-	wireCatalogNamesOnce sync.Once
-	wireCatalogNames     map[string]bool
-)
-
 // purgeRequestQueue discards every frame still buffered in the request queue
 // at teardown. The transport calls it after its receive loop — the queue's
 // only producer — has returned and the connection context is canceled; that
@@ -1040,23 +1034,33 @@ var (
 func (c *Connection) purgeRequestQueue() {
 	discarded := 0
 	tally := map[string]int{}
+drain:
 	for {
 		select {
 		case msg := <-c.requests:
 			discarded++
+			// Tally only cataloged names verbatim: the method field is
+			// client-controlled and the transport read limit admits very
+			// large strings, so an uncataloged value could carry arbitrary
+			// size or control characters into the log.
 			name := methodOf(msg)
-			if !wireCatalogName(name) {
+			if !appwire.KnownWireName(name) {
 				name = "unknown"
 			}
 			tally[name]++
-			continue
 		default:
+			break drain
 		}
-		break
 	}
 	if discarded == 0 {
 		return
 	}
+	c.server.logf("appserver: connection %s discarded %d undispatched queued frames at teardown (%s)", c.id, discarded, formatTally(tally))
+}
+
+// formatTally renders a per-method tally as a deterministic "name=count"
+// list, shared by the teardown purge and the stall advisory.
+func formatTally(tally map[string]int) string {
 	names := make([]string, 0, len(tally))
 	for name := range tally {
 		names = append(names, name)
@@ -1066,7 +1070,7 @@ func (c *Connection) purgeRequestQueue() {
 	for _, name := range names {
 		parts = append(parts, fmt.Sprintf("%s=%d", name, tally[name]))
 	}
-	c.server.logf("appserver: connection %s discarded %d undispatched queued frames at teardown (%s)", c.id, discarded, strings.Join(parts, " "))
+	return strings.Join(parts, " ")
 }
 
 // executeOrdered applies the dispatch policy to one dequeued frame: the
@@ -1144,12 +1148,8 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 			c.capSaturationAdvised = true
 			c.server.logf("appserver: connection %s slow-read dispatch cap is full (%d in flight); holding the next slow read until one finishes", c.id, cap(c.slowReadSlots))
 		}
-		threshold := c.server.slowReadStallThreshold
-		if threshold == 0 {
-			threshold = slowReadCapStallAdvisory
-		}
 		start := time.Now()
-		stall := time.NewTimer(threshold)
+		stall := time.NewTimer(c.server.slowReadStallThreshold)
 		defer stall.Stop()
 		for !acquired {
 			select {
@@ -1170,9 +1170,6 @@ func (c *Connection) acquireSlowReadSlot(ctx context.Context, method string) boo
 		return false
 	}
 	c.slowReadMu.Lock()
-	if c.slowReadInflight == nil {
-		c.slowReadInflight = map[string]int{}
-	}
 	c.slowReadInflight[method]++
 	c.slowReadMu.Unlock()
 	return true
@@ -1196,16 +1193,7 @@ func (c *Connection) releaseSlowReadSlot(method string) {
 func (c *Connection) inflightSlowReads() string {
 	c.slowReadMu.Lock()
 	defer c.slowReadMu.Unlock()
-	names := make([]string, 0, len(c.slowReadInflight))
-	for name := range c.slowReadInflight {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("%s=%d", name, c.slowReadInflight[name]))
-	}
-	return strings.Join(parts, " ")
+	return formatTally(c.slowReadInflight)
 }
 
 // handleAndEnqueue runs one request through HandleMessage and enqueues its
