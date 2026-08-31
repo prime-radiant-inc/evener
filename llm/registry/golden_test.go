@@ -115,16 +115,7 @@ func prunedFields(c Caps) []string {
 			out = append(out, k)
 		}
 	}
-	return sortedStrings(out)
-}
-
-func sortedStrings(s []string) []string {
-	out := append([]string(nil), s...)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1] > out[j]; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
-		}
-	}
+	slices.Sort(out)
 	return out
 }
 
@@ -328,12 +319,12 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"openrouter-deepseek-r1", "openrouter/deepseek/deepseek-r1", nil, func(t *testing.T, res Resolved) {
-			if !contains(res.Caps.ReasoningControls, "effort") {
+			if !slices.Contains(res.Caps.ReasoningControls, "effort") {
 				t.Errorf("effort must pass through: %v", res.Caps.ReasoningControls)
 			}
 		}},
 		{"kimi-for-coding", "kimi-for-coding/kimi-for-coding", nil, func(t *testing.T, res Resolved) {
-			if sp(res.Caps.ThinkingShape) != "budget" || res.Surface != SurfaceAnthropic || !contains(res.Caps.ReasoningControls, "effort") {
+			if sp(res.Caps.ThinkingShape) != "budget" || res.Surface != SurfaceAnthropic || !slices.Contains(res.Caps.ReasoningControls, "effort") {
 				t.Errorf("%+v", res)
 			}
 		}},
@@ -358,7 +349,7 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"work-glm", "work/glm-5.2-nvfp4", nil, func(t *testing.T, res Resolved) {
-			if !contains(res.Caps.ReasoningControls, "effort") || res.Surface != SurfaceGeneric || res.Caps.Fields["stream_options"] || res.Credential.Source != "credential_headers" || sp(res.Caps.ThinkingFormat) != "zai" {
+			if !slices.Contains(res.Caps.ReasoningControls, "effort") || res.Surface != SurfaceGeneric || res.Caps.Fields["stream_options"] || res.Credential.Source != "credential_headers" || sp(res.Caps.ThinkingFormat) != "zai" {
 				t.Errorf("%+v", res)
 			}
 		}},
@@ -429,8 +420,4 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		})
 	}
-}
-
-func contains(list []string, v string) bool {
-	return slices.Contains(list, v)
 }
