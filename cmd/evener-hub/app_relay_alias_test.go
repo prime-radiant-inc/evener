@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -105,6 +107,82 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 	if got := aliasDeltaCountUntilBarrier(t, fresh, "one child delta"); got != 0 {
 		t.Fatalf("fresh root-only client received child delta %d times, want none", got)
+	}
+}
+
+func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) {
+	const (
+		rootRef  = "local:root-image"
+		childRef = "local:child-image"
+	)
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pool := &aliasRelayPool{}
+	source := &aliasRelaySource{
+		pool: pool,
+		cwd:  cwd,
+		canonicalRefs: map[string]appwire.Ref{
+			"root-image":  {SourceID: "local", ThreadID: "root-image"},
+			"child-image": {SourceID: "local", ThreadID: "root-image"},
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize client: %v", err)
+	}
+	for _, ref := range []string{rootRef, childRef} {
+		if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+			t.Fatalf("subscribe client to %s: %v", ref, err)
+		}
+	}
+
+	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"turnId": "turn-image",
+		"item": appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            "item-image",
+			ToolName:      "write_file",
+			CallID:        "call-image",
+			ArgumentsJSON: `{"file_path":"plot.png"}`,
+			Status:        appwire.TurnStatusInProgress,
+		},
+	}).Notification
+	pool.emit(t, *started)
+	completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn-image",
+		"item": appwire.ThreadItem{
+			Type:     "commandExecution",
+			ID:       "item-image",
+			ToolName: "write_file",
+			CallID:   "call-image",
+			Output:   "wrote",
+			Status:   appwire.TurnStatusCompleted,
+		},
+	}).Notification
+	pool.emit(t, *completed)
+	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+
+	items := aliasCompletedItemsUntilBarrier(t, client, "item-image")
+	if len(items) != 2 {
+		t.Fatalf("completed item broadcasts = %d, want one enriched broadcast per alias", len(items))
+	}
+	for i, item := range items {
+		if len(item.OutputImages) != 1 || item.OutputImages[0].Source != "written-file" || item.OutputImages[0].Path != "plot.png" {
+			t.Fatalf("completed item %d OutputImages = %+v, want written-file plot.png descriptor", i, item.OutputImages)
+		}
 	}
 }
 
@@ -241,6 +319,7 @@ func TestRelayNotificationTargetsPreservesRoutingPrecedenceAndUnknownPayloads(t 
 type aliasRelaySource struct {
 	relayLifecycleSource
 	pool              *aliasRelayPool
+	cwd               string
 	authoritativeRefs map[string]string
 	canonicalRefs     map[string]appwire.Ref
 
@@ -320,6 +399,7 @@ func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParam
 			ID:        threadID,
 			SessionID: threadID,
 			Source:    "local",
+			CWD:       l.source.cwd,
 			Evener:    appwire.EvenerThread{Ref: authoritativeRef},
 		}},
 		Handoff: &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
@@ -394,6 +474,34 @@ func aliasDeltaCountUntilBarrier(t *testing.T, client *appwire.Client, delta str
 				var params appwire.ReasoningSummaryDeltaParams
 				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == delta {
 					count++
+				}
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for alias delivery barrier")
+		}
+	}
+}
+
+func aliasCompletedItemsUntilBarrier(t *testing.T, client *appwire.Client, itemID string) []appwire.ThreadItem {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	var items []appwire.ThreadItem
+	for {
+		select {
+		case notification, ok := <-client.Notifications():
+			if !ok {
+				t.Fatal("client notification stream closed before barrier")
+			}
+			if notification.Method == "test/alias-barrier" {
+				return items
+			}
+			if notification.Method == appwire.NotifyItemCompleted {
+				var params struct {
+					Item appwire.ThreadItem `json:"item"`
+				}
+				if json.Unmarshal(notification.Params, &params) == nil && params.Item.ID == itemID {
+					items = append(items, params.Item)
 				}
 			}
 		case <-timer.C:
