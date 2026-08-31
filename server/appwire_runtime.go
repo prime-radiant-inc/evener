@@ -16,10 +16,12 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -61,6 +63,11 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 type prepareAppIdentitySource struct {
 	turns            []appwire.Turn
 	persistedEntries int
+	// prefixTurnCount is the number of turn positions below turns that a
+	// windowed projection did not hold. Zero for the full projections; set
+	// by the windowed entries form so the snapshot pages in the full
+	// position space.
+	prefixTurnCount int
 }
 
 // fromTranscriptFile is the file-reading source. A missing transcript is not
@@ -148,12 +155,58 @@ func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transc
 	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, prepareAppIdentitySource{turns: turns, persistedEntries: persisted})
 }
 
+// PrepareAppIdentityFromEntriesWindowed is PrepareAppIdentityFromEntries for
+// a windowed resume: entries are the SUFFIX a validated sidecar allowed the
+// restore to decode, and prefixEntryCount is the entry count before them.
+// Turn ids are minted with GLOBAL entry positions (prefixEntryCount + i + 1)
+// so they match the hub's file-backed paging of the same transcript
+// exactly, the persisted-entry fence covers the whole file, and the
+// installed snapshot pages in the full position space — older pages below
+// the window return no turns and the hub serves them from the transcript.
+//
+// The header rules are the entries form's: the restore pass already
+// validated it against threadID.
+func PrepareAppIdentityFromEntriesWindowed(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount int) (PreparedAppIdentity, error) {
+	if sourceID == "" {
+		sourceID = "local"
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return PreparedAppIdentity{}, errors.New("thread id is required")
+	}
+	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	if err != nil {
+		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
+	}
+	if parsedRef.SourceID != sourceID {
+		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+	}
+	if header.SessionID != "" && header.SessionID != threadID {
+		return PreparedAppIdentity{}, fmt.Errorf("transcript header belongs to session %s, not %s", header.SessionID, threadID)
+	}
+	if prefixEntryCount < 0 {
+		return PreparedAppIdentity{}, errors.New("windowed identity prefix entry count is negative")
+	}
+	toolNames := map[string]string{}
+	turns, prefixTurnCount := apptranscript.TurnsFromEntriesWindowed(header, entries, prefixEntryCount, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+	})
+	highest := prefixEntryCount
+	if n := len(entries); n > 0 {
+		highest = prefixEntryCount + n
+	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, prepareAppIdentitySource{
+		turns:            turns,
+		persistedEntries: highest,
+		prefixTurnCount:  prefixTurnCount,
+	})
+}
+
 // finishPreparedAppIdentity validates the identity triple and installs the
 // projected source into a PreparedAppIdentity. It is the shared tail of
 // PrepareAppIdentityForRef and PrepareAppIdentityFromEntries.
 func finishPreparedAppIdentity(sourceID, threadID string, parsedRef appwire.Ref, source prepareAppIdentitySource) (PreparedAppIdentity, error) {
 	snapshot := &appTurnSnapshot{threadID: threadID}
-	snapshot.Seed(source.turns)
+	snapshot.SeedWindowed(source.turns, source.prefixTurnCount)
 	// Fence the live turn ids above the seeded ones HERE, where the seed count
 	// is known, rather than waiting for the session's own SessionStart to carry
 	// it: nothing orders that event ahead of the first turn-starting request,

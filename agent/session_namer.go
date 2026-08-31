@@ -336,6 +336,14 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.reportCompactionTranscriptAppend(s.writeTranscript(t))
 	if isSessionNameCompactionTurn(t) {
+		// Compaction anchor: the checkpoint just appended is the natural
+		// boundary — the next resume's live history starts at this entry, so
+		// a sidecar anchored here makes that resume O(suffix). The anchor is
+		// written AFTER the append so its offset covers the checkpoint; a
+		// failure is reported but never fails compaction.
+		if err := s.writeCompactionSidecarAnchor(); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("resume sidecar anchor after compaction: %v", err)})
+		}
 		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
 		// folded away with it are gone from what the model sees, so the
 		// environment-context tracker must forget what it last reported (see

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -77,6 +78,13 @@ type appTurnSnapshot struct {
 	threadID  string
 	turns     []appwire.Turn
 	turnIndex map[string]int
+	// prefixTurnCount is the number of turn positions a windowed seed holds
+	// BELOW s.turns (zero for a full seed). Cursors Latest and Page hand out
+	// are expressed in the FULL projection's position space — the same
+	// space the hub's file-backed paging uses — so a client can page across
+	// the seam. Pages that fall entirely below the window return no turns;
+	// the hub serves them from the transcript. Guarded by mu.
+	prefixTurnCount int
 	// activeTurnID names the turn steering ITEMS attach to. Steering is the one
 	// notification that does not carry its own turn ID, so the reducer has to
 	// remember which turn is in flight.
@@ -98,9 +106,21 @@ type appTurnSnapshot struct {
 // nested item is deep-cloned, so later mutation of the argument cannot reach
 // installed state.
 func (s *appTurnSnapshot) Seed(turns []appwire.Turn) {
+	s.SeedWindowed(turns, 0)
+}
+
+// SeedWindowed is Seed for a suffix projection: prefixTurnCount is the number
+// of turn positions the full projection holds BELOW these turns. Turn ids are
+// global either way (the caller minted them with global entry positions), so
+// only paging is affected: Latest and Page express their cursors in the
+// full-projection position space, and pages below the window return no turns
+// — the hub serves those from its own file-backed paging of the same
+// transcript.
+func (s *appTurnSnapshot) SeedWindowed(turns []appwire.Turn, prefixTurnCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.prefixTurnCount = prefixTurnCount
 	s.turns = make([]appwire.Turn, len(turns))
 	s.turnIndex = make(map[string]int, len(turns))
 	s.activeTurnID = ""
@@ -147,6 +167,15 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			return &s.turns[idx]
 		}
 		if id == appwire.SystemPreludeTurnID {
+			// A windowed seed's prefix is unseen turn positions served by
+			// the hub from the transcript: the prelude already lives there
+			// (its position is the oldest by definition), so inserting a
+			// fresh copy here would double it and shift the window's
+			// positions into the prefix's cursor space. Report nothing; the
+			// client reads the prelude from the prefix pages.
+			if s.prefixTurnCount > 0 {
+				return nil
+			}
 			// The prelude turn is the one turn whose id fixes its position:
 			// it holds content from before the session's first real turn by
 			// definition (apptranscript.PreludeTurn, appprojector's bundled
@@ -376,6 +405,18 @@ func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
 func (s *appTurnSnapshot) Latest(limit int) ([]appwire.Turn, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.prefixTurnCount > 0 {
+		// Windowed seed: page in the full-projection position space. A
+		// window smaller than the limit extends below the window; the
+		// cursor then points at the prefix boundary and the hub serves the
+		// older turns from its file-backed paging.
+		total := s.prefixTurnCount + len(s.turns)
+		if limit <= 0 || total <= limit {
+			return cloneAppTurns(s.turns), strconv.Itoa(s.prefixTurnCount)
+		}
+		lo := len(s.turns) - limit
+		return cloneAppTurns(s.turns[lo:]), strconv.Itoa(total - limit)
+	}
 	turns, cursor := appwire.WindowTurns(s.turns, limit)
 	return cloneAppTurns(turns), cursor
 }
@@ -383,6 +424,40 @@ func (s *appTurnSnapshot) Latest(limit int) ([]appwire.Turn, string) {
 func (s *appTurnSnapshot) Page(cursor string, limit int) appwire.ThreadTurnsListResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.prefixTurnCount > 0 {
+		// Cursor is an exclusive upper bound in the full position space.
+		// Pages above the prefix boundary serve from the window; pages at or
+		// below it return empty data (NextCursor preserves the client's
+		// position) — the hub's fallback answers those from the transcript.
+		hi := s.prefixTurnCount + len(s.turns)
+		if cursor != "" {
+			if c, err := strconv.Atoi(cursor); err == nil {
+				hi = c
+			}
+		}
+		if hi > s.prefixTurnCount+len(s.turns) {
+			hi = s.prefixTurnCount + len(s.turns)
+		}
+		if hi <= s.prefixTurnCount {
+			return appwire.ThreadTurnsListResponse{Data: nil, NextCursor: cursor}
+		}
+		// Window-local bounds: the window's turns occupy global positions
+		// [prefixTurnCount, prefixTurnCount+len(turns)). The page's lower
+		// bound never reaches below the prefix boundary: the turns there
+		// belong to the hub's file-backed pages, and the next cursor hands
+		// the client off at exactly that boundary — the position the full
+		// projection would point to when its own page runs out of window
+		// turns.
+		localHi := hi - s.prefixTurnCount
+		localLo := max(localHi-limit, 0)
+		next := ""
+		if s.prefixTurnCount > 0 {
+			next = strconv.Itoa(s.prefixTurnCount)
+		} else if localLo > 0 {
+			next = strconv.Itoa(localLo)
+		}
+		return appwire.ThreadTurnsListResponse{Data: cloneAppTurns(s.turns[localLo:localHi]), NextCursor: next}
+	}
 	page := appwire.PageTurns(s.turns, cursor, limit)
 	page.Data = cloneAppTurns(page.Data)
 	return page

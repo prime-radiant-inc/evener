@@ -697,6 +697,33 @@ func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, proj
 	return turns, nil
 }
 
+// TurnsFromEntriesWindowed projects a resume's SUFFIX entries into AppWire
+// turns with the global entry positions a full projection would assign:
+// suffix entry i has 1-based position prefixEntryCount + i + 1, so every
+// persisted turn id ("turn_<entryIndex>") matches the id the hub's
+// file-backed paging mints for the same entry. The prelude is emitted only
+// when the prefix is empty — with a non-empty prefix the prelude's position
+// belongs to prefix turns this projection does not hold.
+//
+// It returns the projected turns and the count of prefix TURN POSITIONS the
+// full projection would hold below them (for a zero prefix: 1 when a prelude
+// was emitted, else 0). The caller uses that count to offset paging cursors
+// into the same space.
+func TurnsFromEntriesWindowed(header transcript.Header, entries []transcript.Entry, prefixEntryCount int, project EntryProjector) ([]appwire.Turn, int) {
+	var turns []appwire.Turn
+	for i := range entries {
+		projectEntryIntoTurns(&turns, project, nil, entries[i].Turn, prefixEntryCount+i+1)
+	}
+	if prefixEntryCount > 0 {
+		return turns, 0 // prelude position belongs to the unseen prefix
+	}
+	if prelude := PreludeTurn(header); prelude != nil {
+		turns = append([]appwire.Turn{*prelude}, turns...)
+		return turns, 1
+	}
+	return turns, 0
+}
+
 // projectEntryIntoTurns is the per-entry step both forms share: turn id,
 // items, failure stamp, timestamp, and usage. TurnsFromFile's scan passes
 // each raw entry, which this helper decodes; TurnsFromEntries passes the

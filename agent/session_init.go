@@ -687,6 +687,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// every other open or parse error fails the resume closed.
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
+	// resumeView carries what a windowed resume learned about the prefix it
+	// did not decode (entry count, fold snapshot, failure floor). It is the
+	// zero value whenever the full scan ran — which keeps every consumer
+	// below on one code path regardless of which read happened.
+	var resumeView transcript.ResumeView
 	var restoredTranscriptHeader transcript.Header
 	// ok flag for RestoredTranscript; captured at the open so the refresh
 	// below can't flip it.
@@ -694,10 +699,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
-		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
+		resumeTranscript, resumeView, openErr = transcript.OpenWriterForResume(tpath, meta.ID)
 		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
 		}
+		transcriptEntries = resumeView.Entries
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
 		}
@@ -755,6 +761,20 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				items.Failure = true
 			}
 			restoredClientMutationItems[entry.Turn.ClientMutationID] = items
+		}
+	}
+	// A windowed resume skipped the prefix entries; the sidecar's
+	// client-mutation map covers them, so a pending mutation whose turns
+	// predate the offset still reads as incorporated instead of being
+	// re-executed. The map's values are identity-only (no User/Failure
+	// items): the durable queue's own records carry the execution state, and
+	// the items flags only matter for mutations whose turns the suffix (and
+	// therefore the fold above) actually saw.
+	if resumeView.SidecarUsed && resumeView.Sidecar.SnapshotsComplete {
+		for mutationID, stableTurnID := range resumeView.Sidecar.ClientMutationTurns {
+			if _, inSuffix := restoredClientMutationTurns[mutationID]; !inSuffix {
+				restoredClientMutationTurns[mutationID] = stableTurnID
+			}
 		}
 	}
 
@@ -1013,11 +1033,25 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
 			// Seed the running failure count from the transcript this resume
-			// just read, bounded to the session's OWN span (a fork child's
+			// read, bounded to the session's OWN span (a fork child's
 			// inherited prefix carries the parent's failures). Without the seed
 			// the live figure would restart at zero every daemon restart and
 			// report a session-scale "clean" for a run that was not.
-			tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
+			if resumeView.SidecarUsed {
+				// Windowed read: the sidecar's floor carries the prefix
+				// failures the scan did not decode. An absent floor means
+				// the anchor could not vouch for it — re-derive from the
+				// full file rather than silently counting from zero.
+				if err := tw.TrackFailuresSeeded(transcriptEntries, resumeView.Sidecar.FailureFloor, resumeView.PrefixEntryCount, meta.DivergenceTurn); err != nil {
+					if refreshed, refreshErr := readTranscriptFull(transcriptPath(s.stateDir, s.id)); refreshErr == nil {
+						tw.TrackFailures(refreshed.Entries, meta.DivergenceTurn)
+					} else {
+						return nil, fmt.Errorf("seed failure count after windowed resume: %w", err)
+					}
+				}
+			} else {
+				tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
+			}
 		}
 	}
 	s.attachTranscript(tw)
@@ -1037,6 +1071,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		transcriptEntries = refreshed.Entries
 		restoredTranscriptHeader = refreshed.Header
+		// The refresh re-reads the WHOLE file; the windowed prefix view is
+		// superseded (its snapshots described a prefix the full read has
+		// already folded into the fresh entry list).
+		resumeView = transcript.ResumeView{Entries: refreshed.Entries}
 		return nil
 	}
 	s.delegateDeliveryMu.Lock()
@@ -1074,9 +1112,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	// setRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
-	// final entry list the file holds.
-	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
-	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
+	// final entry list the file holds. A windowed resume folds the suffix
+	// over the sidecar's prefix snapshot; if the snapshot cannot seed the
+	// fold (incomplete, or the refresh above replaced it) the rearm falls
+	// back to its own full file read.
+	s.setRestoredTranscriptWindowed(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened, resumeView.SidecarUsed, resumeView.PrefixEntryCount)
+	if resumeView.SidecarUsed && resumeView.Entries != nil {
+		if err := s.rearmRootDelegateAttentionSeeded(resumeView); err != nil {
+			return nil, fmt.Errorf("rearm root delegate attention: %w", err)
+		}
+	} else if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
 

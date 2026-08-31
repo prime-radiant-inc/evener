@@ -156,8 +156,15 @@ type serveDeps struct {
 	// the resume branch below bypasses prepareAppIdentity, so without this
 	// seam no test can observe which form ran.
 	prepareAppIdentityFromEntries func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
-	updateSessionID               func(*rvreg.Registration, string) error
-	observeCallbacks              func(serveCallbackObserver)
+	// prepareAppIdentityFromEntriesWindowed is the windowed-resume form of
+	// prepareAppIdentityFromEntries: the entries are the suffix a validated
+	// sidecar let restore decode, and prefixEntryCount is what the read
+	// skipped. Same injectability rationale — the windowed branch is the
+	// one this daemon actually takes on a large resumed session, so tests
+	// must be able to observe and fault it.
+	prepareAppIdentityFromEntriesWindowed func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount int) (server.PreparedAppIdentity, error)
+	updateSessionID                       func(*rvreg.Registration, string) error
+	observeCallbacks                      func(serveCallbackObserver)
 }
 
 type serveCallbackObserver struct {
@@ -195,13 +202,14 @@ func defaultServeDeps() serveDeps {
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
-		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
-		provisionSandbox:              provisionSandbox,
-		newClearSession:               agent.NewSession,
-		prepareAppIdentity:            server.PrepareAppIdentityForRef,
-		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntries,
-		updateSessionID:               func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
+		register:                              func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
+		serveHTTP:                             func(s *http.Server, l net.Listener) error { return s.Serve(l) },
+		provisionSandbox:                      provisionSandbox,
+		newClearSession:                       agent.NewSession,
+		prepareAppIdentity:                    server.PrepareAppIdentityForRef,
+		prepareAppIdentityFromEntries:         server.PrepareAppIdentityFromEntries,
+		prepareAppIdentityFromEntriesWindowed: server.PrepareAppIdentityFromEntriesWindowed,
+		updateSessionID:                       func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
 
@@ -548,7 +556,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+		if windowed, prefixEntries, _ := sess.RestoredTranscriptWindowed(); windowed {
+			// The windowed read decoded only a suffix: project it with the
+			// global entry positions so turn ids match the file-backed paging,
+			// and page the snapshot in the full position space (older pages
+			// fall through to the hub's transcript paging).
+			prepared, err = deps.prepareAppIdentityFromEntriesWindowed("local", sess.ID(), workspaceRef, header, entries, prefixEntries)
+		} else {
+			prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+		}
 	} else {
 		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	}

@@ -980,6 +980,47 @@ func (s *Session) foldDelegateAttentionEntries(entries []transcript.Entry) (dele
 	return foldDelegateAttention(entries)
 }
 
+// rearmRootDelegateAttentionSeeded is rearmRootDelegateAttentionFromTranscript
+// for a windowed resume: the suffix entries fold over the sidecar's prefix
+// snapshot, so an attention opened before the validated offset still rearms
+// the wake cache. The pre-seeded fold's per-entry rules are identical to the
+// file fold's; an unseedable snapshot falls back to the full file read.
+func (s *Session) rearmRootDelegateAttentionSeeded(view transcript.ResumeView) error {
+	if !s.isRootDelegateAttentionReceiver() {
+		return nil
+	}
+	fold, err := s.foldDelegateAttentionSeeded(view)
+	if err != nil {
+		// Incomplete snapshot: the full file read is the only state that
+		// can answer the rearm correctly.
+		return s.rearmRootDelegateAttentionFromTranscript(nil)
+	}
+	s.attentionMu.Lock()
+	s.rootAttentionWakeIDs = make(map[string]struct{}, len(fold.order))
+	for _, id := range fold.pendingIDs() {
+		s.rootAttentionWakeIDs[id] = struct{}{}
+	}
+	shouldWake := len(fold.order) != 0 && !s.rootAttentionWake
+	if shouldWake {
+		s.rootAttentionWake = true
+	}
+	s.attentionMu.Unlock()
+	if shouldWake {
+		s.notify()
+	}
+	return nil
+}
+
+// foldDelegateAttentionSeeded folds a windowed resume's suffix over its
+// sidecar snapshot, with the full-file-read fallback when the snapshot
+// cannot seed the fold.
+func (s *Session) foldDelegateAttentionSeeded(view transcript.ResumeView) (delegateAttentionFold, error) {
+	if foldEntries := s.cfg.testOnly.delegateAttentionFoldEntries; foldEntries != nil {
+		return foldEntries(view.Entries)
+	}
+	return foldDelegateAttentionSeeded(view.Sidecar, view.Entries)
+}
+
 func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 	if turn.Kind != schema.TurnSteering || turn.AttentionID == "" {
 		return errors.New("durable delegate attention turn is invalid")

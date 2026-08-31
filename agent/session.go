@@ -734,6 +734,14 @@ type Session struct {
 	// refresh cannot flip it. Guarded by s.mu.
 	restoredTranscriptOpened bool
 
+	// restoredTranscriptWindowed and restoredTranscriptPrefixEntries carry
+	// the windowed-resume facts to RestoredTranscriptWindowed: whether a
+	// validated sidecar let restore decode only a suffix, and how many
+	// prefix entries that read skipped. A refresh from disk (which re-reads
+	// the whole file) resets windowed to false. Guarded by s.mu.
+	restoredTranscriptWindowed      bool
+	restoredTranscriptPrefixEntries int
+
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
 
@@ -1656,6 +1664,12 @@ func (s *Session) attachedTranscript() *transcript.Writer {
 }
 
 func (s *Session) closeAttachedTranscript() error {
+	// No sidecar anchor here: shutdown cannot know where the last checkpoint
+	// sits without re-reading the transcript, and an end-of-file offset would
+	// skip live history on the next resume (the failure the restore tests
+	// caught in the first draft of this feature). The opportunistic
+	// post-full-scan anchor — written by the resume that just decoded the
+	// whole file — is what covers the shutdown case.
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	return s.attachedTranscript().Close()
@@ -1805,10 +1819,19 @@ func (s *Session) TranscriptPath() string {
 // whether restore opened a transcript at all, independent of the entry
 // slice's emptiness.
 func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
+	s.setRestoredTranscriptWindowed(header, entries, opened, false, 0)
+}
+
+// setRestoredTranscriptWindowed is setRestoredTranscript with the windowed
+// facts: windowed reports a sidecar-validated suffix read, prefixEntryCount
+// the entries it skipped.
+func (s *Session) setRestoredTranscriptWindowed(header transcript.Header, entries []transcript.Entry, opened bool, windowed bool, prefixEntryCount int) {
 	s.mu.Lock()
 	s.restoredTranscriptHeader = header
 	s.restoredTranscript = entries
 	s.restoredTranscriptOpened = opened
+	s.restoredTranscriptWindowed = windowed
+	s.restoredTranscriptPrefixEntries = prefixEntryCount
 	s.mu.Unlock()
 }
 
@@ -1823,4 +1846,18 @@ func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, b
 	opened := s.restoredTranscriptOpened
 	s.mu.Unlock()
 	return header, entries, opened
+}
+
+// RestoredTranscriptWindowed reports whether the resume read was windowed
+// (a validated sidecar let restore decode only a suffix) and, when it was,
+// the prefix entry count below the entries RestoredTranscript returns.
+// ok mirrors RestoredTranscript's: true exactly when a transcript was
+// opened. A full-scan resume reports ok with windowed=false.
+func (s *Session) RestoredTranscriptWindowed() (windowed bool, prefixEntryCount int, ok bool) {
+	s.mu.Lock()
+	windowed = s.restoredTranscriptWindowed
+	prefixEntryCount = s.restoredTranscriptPrefixEntries
+	ok = s.restoredTranscriptOpened
+	s.mu.Unlock()
+	return windowed, prefixEntryCount, ok
 }

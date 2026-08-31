@@ -235,6 +235,11 @@ type Writer struct {
 	dirty    bool
 	lastSync time.Time
 
+	// sidecarEntryCount counts entries appended so far, seeded by
+	// TrackSidecarEntryCount at resume (prefix + suffix) or zero for a fresh
+	// writer, and advanced by every append. Guarded by mu.
+	sidecarEntryCount int
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -270,6 +275,30 @@ func (w *Writer) TrackFailures(seed []Entry, fromEntryOrdinal int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.failures = counter
+}
+
+// TrackFailuresSeeded is TrackFailures for a windowed resume: the counter
+// starts at the sidecar's prefix floor (positioned at prefixEntryCount so
+// suffix ordinals continue the sequence) and then observes the suffix
+// entries the full seed would have counted. A floor below zero — the
+// sidecar's "not computed" sentinel — is an error the caller must answer by
+// falling back to the full scan; a silent zero would report a session-wide
+// clean the transcript cannot vouch for.
+func (w *Writer) TrackFailuresSeeded(suffix []Entry, floor, prefixEntryCount, fromEntryOrdinal int) error {
+	if w == nil {
+		return nil
+	}
+	counter, err := NewFailureCounterSeeded(floor, prefixEntryCount, fromEntryOrdinal)
+	if err != nil {
+		return err
+	}
+	for _, entry := range suffix {
+		counter.Observe(entry.Turn)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.failures = counter
+	return nil
 }
 
 // FailedToolCalls is how many of the session's tool calls have failed so far,
@@ -407,6 +436,84 @@ func (w *Writer) EstablishDurability() error {
 	return nil
 }
 
+// WriteSidecarFromWriter writes the resume sidecar for this writer's file at
+// its CURRENT append position: the prefix is everything durably appended so
+// far. It is the compaction and clean-shutdown anchor. floor facts (entry
+// count, max seq, failure floor) come from the writer's own running state;
+// the caller supplies the fold snapshots it can vouch for, with complete
+// reporting whether they cover every prefix entry. Best-effort: a failure is
+// returned but must never block the calling session operation.
+func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string, complete bool) error {
+	if w == nil || w.file == nil {
+		return errors.New("transcript writer is nil")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return errors.New("transcript writer is closed")
+	}
+	info, err := w.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat transcript for sidecar: %w", err)
+	}
+	// Seek-end reports the append position; a dirty tail is not yet durable,
+	// so establish the barrier first — the sidecar must never vouch for
+	// bytes the file may still lose.
+	if w.dirty {
+		if err := w.file.Sync(); err != nil {
+			return fmt.Errorf("sync transcript for sidecar: %w", err)
+		}
+		w.dirty = false
+		w.lastSync = time.Now()
+	}
+	offset, err := w.file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("seek transcript end for sidecar: %w", err)
+	}
+	if offset <= 0 {
+		return errors.New("transcript has no prefix to anchor")
+	}
+	floor := -1
+	if w.failures != nil {
+		floor = w.failures.Count()
+	}
+	sidecar := ResumeSidecar{
+		Version:                 resumeSidecarVersion,
+		TranscriptFormatVersion: FormatVersion,
+		SessionID:               w.header.SessionID,
+		TranscriptSize:          offset,
+		ValidBytes:              offset,
+		Offset:                  offset,
+		MaxSeq:                  w.seq - 1,
+		EntryCount:              w.sidecarEntryCount,
+		FailureFloor:            floor,
+		FileIdentity:            sidecarFileIdentity(info),
+		ModTimeUnixNS:           info.ModTime().UnixNano(),
+		BoundarySeq:             w.seq - 1,
+		SnapshotsComplete:       complete,
+		PendingAttention:        pending,
+		DeliveryCommits:         commits,
+		ClientMutationTurns:     mutations,
+	}
+	if sidecar.EntryCount < 0 || sidecar.MaxSeq < 0 {
+		// The writer never learned its starting count (a plain OpenWriter
+		// that only counted seqs); it cannot vouch for the entry count the
+		// turn-id projection needs.
+		return errors.New("transcript writer cannot vouch for prefix entry count")
+	}
+	sidecar.FirstAnchor, sidecar.TailAnchor = sidecarAnchors(w.file, offset)
+	if sidecar.FirstAnchor.Length <= 0 || sidecar.TailAnchor.Length <= 0 {
+		return errors.New("transcript anchors are empty")
+	}
+	return WriteSidecar(path, sidecar)
+}
+
+// sidecarEntryCount is the writer's count of entries appended so far: seeded
+// by the resume constructors (prefix + suffix for a windowed read, the whole
+// list for a full scan, zero for a fresh writer) and advanced by append.
+// WriteSidecarFromWriter reports it as the sidecar's EntryCount. Guarded by
+// mu.
+
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
 		return nil
@@ -466,6 +573,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	}
 
 	w.seq++
+	w.sidecarEntryCount++
 	// Counted only once the entry is on its way to the file and no rollback can
 	// take it back: the figure is a statement about the transcript, so it moves
 	// for exactly the entries a later reader of that transcript would see.
@@ -575,6 +683,400 @@ func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
 	return resumeWriter(afero.NewOsFs(), f, expectedSessionID)
 }
 
+// ResumeView is what a windowed resume learned about the transcript prefix it
+// did not decode. It is populated only by OpenWriterForResume; the full-scan
+// fallback also fills it (with PrefixEntryCount covering the whole file and
+// empty snapshots), so the restore path has one shape regardless of which
+// read actually ran.
+type ResumeView struct {
+	// Entries are the decoded entries of the suffix. When a sidecar was
+	// used this is only the entries after the validated offset; otherwise it
+	// is every entry in the file (identical to the legacy
+	// OpenWriterForSession return).
+	Entries []Entry
+	// PrefixEntryCount is the number of entries before the first entry of
+	// Entries. Entry i of Entries has global 1-based position
+	// PrefixEntryCount + i + 1 — the position its turn id is minted from.
+	PrefixEntryCount int
+	// SidecarUsed reports whether the windowed read validated a sidecar.
+	// False means the full scan ran (including the fallback paths).
+	SidecarUsed bool
+	// Sidecar carries the validated prefix snapshot. It is the zero value
+	// when SidecarUsed is false; restore consults its fold snapshots only
+	// when it needs them, and falls back to a full scan when a needed
+	// snapshot is incomplete.
+	Sidecar ResumeSidecar
+}
+
+// OpenWriterForResume opens a transcript for resume the way
+// OpenWriterForSession does, but windowed: when a validated sidecar exists,
+// only the entries after its offset are decoded. Every mismatch — missing,
+// corrupt, stale, truncated, or boundary-violating sidecar — falls back to
+// the same full scan OpenWriterForSession performs, never an error.
+//
+// expectedSessionID is validated against the transcript header on BOTH
+// paths: the windowed read still decodes the header line itself.
+func OpenWriterForResume(path, expectedSessionID string) (*Writer, ResumeView, error) {
+	f, err := openTranscriptAppendFile(path)
+	if err != nil {
+		return nil, ResumeView{}, fmt.Errorf("open transcript for resume: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, ResumeView{}, fmt.Errorf("stat transcript for resume: %w", err)
+	}
+	if sidecar, ok := ReadSidecar(path); ok {
+		if view, writer, ok := resumeWindowed(f, info, sidecar, expectedSessionID); ok {
+			return writer, view, nil
+		}
+		// Validation failed after the file was read past its header; reopen
+		// for the full scan so the shared reader starts at byte zero.
+		_ = f.Close()
+		f, err = openTranscriptAppendFile(path)
+		if err != nil {
+			return nil, ResumeView{}, fmt.Errorf("open transcript for resume: %w", err)
+		}
+	}
+	writer, entries, err := resumeWriter(afero.NewOsFs(), f, expectedSessionID)
+	if err != nil {
+		return nil, ResumeView{}, err
+	}
+	// Opportunistic anchor (the third anchor point): the full scan decoded
+	// every entry, so the sidecar it writes carries complete snapshots and
+	// the NEXT resume of this session can be windowed. The offset choice is
+	// the whole-file boundary: the next resume decodes only turns appended
+	// after this one. A write failure is non-fatal — this resume already
+	// succeeded, and the next one simply falls back to another full scan.
+	writeSidecarAfterFullScan(path, f, info, entries, expectedSessionID)
+	return writer, ResumeView{Entries: entries, PrefixEntryCount: 0, SidecarUsed: false}, nil
+}
+
+// writeSidecarAfterFullScan writes the opportunistic resume sidecar from a
+// completed full scan. It is best-effort: every failure is swallowed because
+// the sidecar is an optimization, never a correctness dependency.
+//
+// The offset is CHECKPOINT-RELATIVE: it points at the start of the last
+// checkpoint entry (TurnCheckpoint/TurnSummary), so the suffix a windowed
+// resume decodes is exactly ResumeHistory's window ([last checkpoint,
+// ...rest]) — the live history every resume consumer derives from. A
+// transcript with no checkpoint gets NO sidecar: all of its entries are live
+// history, so a windowed read would skip exactly the entries restore needs.
+//
+// The snapshots ARE complete for this anchor — the full scan decoded every
+// entry — so they are computed here: the attention fold, delivery commits,
+// client-mutation turns, and the divergence-bounded failure floor. fromEntry
+// ordinal is 0 (the anchor is written by the transcript package, which has
+// no fork knowledge; a fork child's file never validates this sidecar
+// anyway, because its file identity differs from the parent's).
+func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, entries []Entry, expectedSessionID string) {
+	// The sidecar must only be written over a file whose current state this
+	// scan vouches for. A partial tail was truncated by resumeWriter; stat
+	// again so TranscriptSize reflects the post-truncation size.
+	current, err := f.Stat()
+	if err != nil {
+		return
+	}
+	// Find the last checkpoint entry and the byte offset where it starts.
+	// entries holds every decoded entry in order; the byte offsets are
+	// re-derived by re-scanning line lengths (the full scan did not retain
+	// them), which is a second pass over an already-decoded list — cheap
+	// compared to the decode itself.
+	checkpointIdx := lastCheckpointEntry(entries)
+	if checkpointIdx < 0 {
+		// No checkpoint: every entry is live history. No sidecar.
+		return
+	}
+	offset, err := byteOffsetOfEntry(f, checkpointIdx)
+	if err != nil {
+		return
+	}
+	if offset <= 0 {
+		return
+	}
+	prefix := entries[:checkpointIdx]
+	sidecar := ResumeSidecar{
+		Version:                 resumeSidecarVersion,
+		TranscriptFormatVersion: FormatVersion,
+		SessionID:               expectedSessionID,
+		TranscriptSize:          current.Size(),
+		ValidBytes:              current.Size(),
+		Offset:                  offset,
+		MaxSeq:                  -1,
+		EntryCount:              len(prefix),
+		FailureFloor:            -1,
+		FileIdentity:            sidecarFileIdentity(info),
+		ModTimeUnixNS:           current.ModTime().UnixNano(),
+		BoundarySeq:             0,
+		SnapshotsComplete:       true,
+	}
+	if n := len(prefix); n > 0 {
+		sidecar.MaxSeq = prefix[n-1].Seq
+		sidecar.BoundarySeq = prefix[n-1].Seq
+	}
+	if sidecar.EntryCount == 0 || sidecar.MaxSeq < 0 {
+		// A checkpoint-first transcript (nothing before the checkpoint)
+		// has no prefix to skip either.
+		return
+	}
+	// The failure floor is computed exactly the way a TrackFailures seed
+	// would count the PREFIX entries — same counter, same rule — so the
+	// windowed resume that draws from it reports the figure the full scan
+	// would have seeded.
+	counter := NewFailureCounter(0)
+	for _, entry := range prefix {
+		counter.Observe(entry.Turn)
+	}
+	sidecar.FailureFloor = counter.Count()
+	// Fold snapshots over the WHOLE entry list (the fold is a file-wide
+	// invariant; the boundary only decides which entries the next resume
+	// re-decodes): pending attentions with content, delivery commits, and
+	// the client-mutation identity index.
+	sidecar.PendingAttention, sidecar.DeliveryCommits, sidecar.ClientMutationTurns = foldSnapshotForSidecar(entries)
+	sidecar.FirstAnchor, sidecar.TailAnchor = sidecarAnchors(f, offset)
+	if sidecar.FirstAnchor.Length <= 0 || sidecar.TailAnchor.Length <= 0 {
+		return
+	}
+	_ = WriteSidecar(path, sidecar)
+}
+
+// lastCheckpointEntry returns the index of the first entry of the last
+// TurnCheckpoint/TUMMARY turn, or -1 when none exists. The FIRST entry of
+// the checkpoint matters because the offset must point AT it: ResumeHistory
+// returns [checkpoint, ...subsequent], so the suffix must include the
+// checkpoint entry itself.
+func lastCheckpointEntry(entries []Entry) int {
+	last := -1
+	for i := range entries {
+		if kind := entries[i].Turn.Kind; kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
+			last = i
+		}
+	}
+	return last
+}
+
+// byteOffsetOfEntry returns the byte offset where the entry at index starts.
+// It re-walks the file's lines counting entry records (skipping the header
+// and blank lines), matching the full scan's ordering exactly.
+func byteOffsetOfEntry(f *os.File, entryIndex int) (int64, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var offset int64
+	seen := 0
+	headerRead := false
+	for {
+		line, complete, bytesRead, err := ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if err != nil || !complete {
+			return 0, fmt.Errorf("rescan transcript for sidecar offset: %v", err)
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			offset += bytesRead
+			continue
+		}
+		if !headerRead {
+			headerRead = true
+			offset += bytesRead
+			continue
+		}
+		if seen == entryIndex {
+			// Seek back to the start so the writer's later SeekEnd (and any
+			// caller holding read position expectations) is unaffected.
+			_, _ = f.Seek(0, io.SeekEnd)
+			return offset, nil
+		}
+		seen++
+		offset += bytesRead
+	}
+}
+
+// foldSnapshotForSidecar computes the fold snapshots a full-scan anchor can
+// vouch for: the delegate-attention fold over every entry, projected into
+// the sidecar's snapshot types. A fold failure means the transcript's
+// attention records are inconsistent — the sidecar then reports NO pending
+// attentions and NO commits (nil), which the seeded fold treats as
+// "nothing straddling"; that under-reports only transient wake behavior,
+// and the resume's own full read (the fallback the seeded fold's caller
+// holds) remains the authority for anything the fold would have caught.
+func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string) {
+	// The message content lives on the attention's steering turn; the sidecar
+	// re-marshals it from the decoded entry.
+	byAttention := map[string]Entry{}
+	for i := range entries {
+		if id := entries[i].Turn.AttentionID; id != "" {
+			byAttention[id] = entries[i]
+		}
+	}
+	pending = nil
+	commits = nil
+	mutations = map[string]string{}
+	for i := range entries {
+		turn := entries[i].Turn
+		if turn.ClientMutationID != "" {
+			mutations[turn.ClientMutationID] = turn.StableTurnID
+		}
+		for _, commit := range turn.DelegateDeliveryCommits {
+			commits = append(commits, SidecarDeliveryCommit{DeliveryID: commit.DeliveryID, ToolCallID: commit.ToolCallID})
+		}
+		if turn.AttentionID == "" {
+			continue
+		}
+		// A pending attention is one whose steering turn exists with no
+		// resolution anywhere in the file.
+	}
+	// Resolution pass: an attention is pending only if unresolved.
+	resolved := map[string]bool{}
+	for i := range entries {
+		if r := entries[i].Turn.AttentionResolution; r != nil {
+			resolved[r.AttentionID] = true
+		}
+	}
+	for i := range entries {
+		turn := entries[i].Turn
+		if turn.AttentionID == "" || resolved[turn.AttentionID] {
+			continue
+		}
+		message, err := json.Marshal(turn.Message)
+		if err != nil {
+			continue
+		}
+		pending = append(pending, SidecarPendingAttention{
+			AttentionID: turn.AttentionID,
+			Message:     JSONMessage(message),
+		})
+	}
+	return pending, commits, mutations
+}
+
+// resumeWindowed validates a sidecar against the opened file and, on
+// success, decodes the header line plus the suffix after the offset. It
+// reports ok=false (with the file closed) on any mismatch; the caller falls
+// back to the full scan.
+func resumeWindowed(f *os.File, info os.FileInfo, sidecar ResumeSidecar, expectedSessionID string) (ResumeView, *Writer, bool) {
+	// Structural bounds first: the sidecar must describe this session, a
+	// prefix inside the valid bytes of a file at least as large.
+	if sidecar.SessionID != "" && sidecar.SessionID != expectedSessionID {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	if sidecar.Offset <= 0 || sidecar.Offset > sidecar.ValidBytes || sidecar.ValidBytes > sidecar.TranscriptSize || sidecar.TranscriptSize > info.Size() {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	// Append-only identity: the same file incarnation (fork children and
+	// replaced files fail here), grown or equal. This mirrors
+	// usableTurnIndex's sameFile/appendOnly gate.
+	sameFile := sidecar.FileIdentity != "" && sidecar.FileIdentity == sidecarFileIdentity(info)
+	if !sameFile {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	// Anchors bind the prefix bytes: first window of the file, and the
+	// window ending at the offset.
+	if !sidecarAnchorsMatch(f, sidecar.FirstAnchor, sidecar.TailAnchor) {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+
+	// Decode the header line: identity validation must still run on the
+	// windowed path.
+	header, err := readHeaderAt(f)
+	if err != nil {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	if expectedSessionID != "" && header.SessionID != expectedSessionID {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+
+	// Read the suffix from the offset. validSuffixEnd bounds the crash tail:
+	// bytes beyond the last complete line are drained and truncated, exactly
+	// like the full scan.
+	reader := io.NewSectionReader(f, sidecar.Offset, info.Size()-sidecar.Offset)
+	buffered := bufio.NewReaderSize(reader, 64*1024)
+	entries := make([]Entry, 0)
+	maxSeq := sidecar.MaxSeq
+	var validLen int64
+	hasPartialTail := false
+	for {
+		line, complete, bytesRead, readErr := ReadLine(buffered, transcriptJSONLMaxLineBytes)
+		if readErr != nil {
+			_ = f.Close()
+			return ResumeView{}, nil, false
+		}
+		if !complete {
+			hasPartialTail = bytesRead > 0
+			break
+		}
+		validLen += bytesRead
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		entry, err := DecodeEntry(line)
+		if err != nil {
+			// A corrupt suffix entry is a transcript the full scan must
+			// judge (its wf7e posture is the full reader's decision, not the
+			// windowed reader's).
+			_ = f.Close()
+			return ResumeView{}, nil, false
+		}
+		entries = append(entries, entry)
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
+	// Boundary cross-check: the suffix's first entry must follow the
+	// sidecar's boundary seq. A lower seq means the offset is not where the
+	// sidecar says the prefix ends.
+	if len(entries) > 0 && entries[0].Seq <= sidecar.BoundarySeq {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	if hasPartialTail {
+		if err := f.Truncate(sidecar.Offset + validLen); err != nil {
+			_ = f.Close()
+			return ResumeView{}, nil, false
+		}
+	}
+	nextSeq := 0
+	if maxSeq >= 0 {
+		nextSeq = maxSeq + 1
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		_ = f.Close()
+		return ResumeView{}, nil, false
+	}
+	writer := &Writer{fs: afero.NewOsFs(), file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: sidecar.EntryCount + len(entries)}
+	view := ResumeView{
+		Entries:          entries,
+		PrefixEntryCount: sidecar.EntryCount,
+		SidecarUsed:      true,
+		Sidecar:          sidecar,
+	}
+	return view, writer, true
+}
+
+// readHeaderAt decodes the first line of the file without disturbing the
+// caller's read position for the suffix (it reads through a section reader).
+func readHeaderAt(f *os.File) (Header, error) {
+	reader := bufio.NewReaderSize(io.NewSectionReader(f, 0, defaultHeaderReadBytes), 64*1024)
+	line, complete, _, err := ReadLine(reader, transcriptJSONLMaxLineBytes)
+	if err != nil || !complete {
+		return Header{}, fmt.Errorf("read transcript header: %v", err)
+	}
+	line = bytes.TrimSpace(line)
+	return DecodeHeader(line)
+}
+
+// defaultHeaderReadBytes bounds the section the header is read from. The
+// header must be a single complete line; transcripts with larger headers
+// fail the line-size contract in ReadLine anyway.
+const defaultHeaderReadBytes = 1 << 20
+
 // openWriterFS is the filesystem-injecting seam used by tests and the
 // persistence fuzzer. Production uses openWriter so it can refuse symlinks at
 // the operating-system open boundary.
@@ -668,5 +1170,5 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		return nil, nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header}, entries, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: len(entries)}, entries, nil
 }

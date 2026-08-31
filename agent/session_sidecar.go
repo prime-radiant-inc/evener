@@ -1,0 +1,168 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
+)
+
+// foldDelegateAttentionSeeded folds a resume's suffix entries over the
+// prefix snapshot a validated sidecar carried. It reconstructs exactly the
+// state foldDelegateAttention would have produced over the full entry list:
+// the seed installs each pending attention's content and resolution before
+// the suffix entries fold over them, so an attention opened before the
+// boundary and resolved after it resolves correctly instead of tripping the
+// fold's "resolved before appended" guard.
+func foldDelegateAttentionSeeded(sidecar transcript.ResumeSidecar, suffix []transcript.Entry) (delegateAttentionFold, error) {
+	if !sidecar.SnapshotsComplete {
+		// An incomplete snapshot cannot seed the fold; the caller must fall
+		// back to the full file read.
+		return delegateAttentionFold{}, fmt.Errorf("resume sidecar fold snapshot is incomplete")
+	}
+	fold := newDelegateAttentionFold()
+	for _, pending := range sidecar.PendingAttention {
+		var message llm.Message
+		if err := json.Unmarshal(pending.Message, &message); err != nil {
+			return delegateAttentionFold{}, fmt.Errorf("sidecar attention %q message: %w", pending.AttentionID, err)
+		}
+		if message.Role == "" {
+			return delegateAttentionFold{}, fmt.Errorf("sidecar attention %q message is empty", pending.AttentionID)
+		}
+		fold.content[pending.AttentionID] = message
+		turn := schema.NewTurn(schema.TurnSteering, message)
+		turn.AttentionID = pending.AttentionID
+		fold.turns[pending.AttentionID] = turn
+		fold.order = append(fold.order, pending.AttentionID)
+		if resolution := pending.Resolution; resolution != "" {
+			fold.resolutions[pending.AttentionID] = delegateAttentionResolution(resolution)
+			fold.resumeGenerations[pending.AttentionID] = pending.ResumeGeneration
+		}
+	}
+	for _, commit := range sidecar.DeliveryCommits {
+		fold.deliveryCommits[commit.DeliveryID] = commit.ToolCallID
+	}
+	return foldDelegateAttentionSuffix(fold, suffix)
+}
+
+// foldDelegateAttentionSuffix folds suffix entries onto an existing fold
+// state. It shares foldDelegateAttention's per-entry rules by construction:
+// the loop body is the same sequence, applied to the pre-seeded state.
+func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcript.Entry) (delegateAttentionFold, error) {
+	for _, entry := range entries {
+		turn := entry.Turn
+		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
+			return delegateAttentionFold{}, err
+		}
+		if turn.AttentionID != "" {
+			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
+				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
+			}
+			if previous, exists := fold.content[turn.AttentionID]; exists {
+				if !deepEqualMessages(previous, turn.Message) {
+					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
+				}
+			} else {
+				fold.content[turn.AttentionID] = turn.Message
+				fold.turns[turn.AttentionID] = turn
+				fold.order = append(fold.order, turn.AttentionID)
+			}
+		}
+		resolution := turn.AttentionResolution
+		if resolution == nil {
+			if turn.Kind == schema.TurnAttentionResolution {
+				return delegateAttentionFold{}, fmt.Errorf("attention resolution turn has no resolution")
+			}
+			continue
+		}
+		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || resolution.AttentionID == "" {
+			return delegateAttentionFold{}, fmt.Errorf("invalid attention resolution turn")
+		}
+		disposition := delegateAttentionResolution(resolution.Disposition)
+		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q has invalid resolution %q", resolution.AttentionID, resolution.Disposition)
+		}
+		if disposition == delegateAttentionDiscarded && resolution.ResumeGeneration != 0 {
+			return delegateAttentionFold{}, fmt.Errorf("discarded attention %q has resume generation %d", resolution.AttentionID, resolution.ResumeGeneration)
+		}
+		if _, exists := fold.content[resolution.AttentionID]; !exists {
+			return delegateAttentionFold{}, fmt.Errorf("attention %q resolved before it was appended", resolution.AttentionID)
+		}
+		if previous, exists := fold.resolutions[resolution.AttentionID]; exists {
+			if previous != disposition || fold.resumeGenerations[resolution.AttentionID] != resolution.ResumeGeneration {
+				return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
+			}
+			continue
+		}
+		if resolution.ResumeGeneration != 0 {
+			for previousID, generation := range fold.resumeGenerations {
+				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
+					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
+				}
+			}
+		}
+		fold.resolutions[resolution.AttentionID] = disposition
+		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
+	}
+	return fold, nil
+}
+
+// deepEqualMessages is reflect.DeepEqual specialized to the fold's one use,
+// kept so the seeded fold and the file fold compare identically.
+func deepEqualMessages(a, b llm.Message) bool {
+	return reflect.DeepEqual(a, b)
+}
+
+// writeCompactionSidecarAnchor writes the resume sidecar from the session's
+// attached writer at the boundary the just-appended compaction turn defines.
+// It is one of the two anchors: compaction knows the exact byte offset where
+// live history now begins (the checkpoint entry it just appended), so its
+// sidecar windows the next resume to exactly ResumeHistory's window.
+//
+// The offset here is the CURRENT append position — the writer has just
+// appended the checkpoint and nothing else — so the suffix a windowed resume
+// decodes is [checkpoint, ...subsequent], matching ResumeHistory over the
+// same file.
+//
+// Best-effort by contract: the error is reported to the caller, which must
+// not fail compaction on it. The caller must NOT hold attentionMu (the wake
+// count read below takes it; the lock order matches every other transcript
+// operation in the package).
+//
+// The clean-shutdown path deliberately writes NO anchor: shutdown cannot know
+// where the last checkpoint sits without re-reading the transcript, and a
+// wrong offset would skip live history (the exact failure the restore tests
+// caught in the first draft). The opportunistic post-full-scan anchor covers
+// the shutdown case instead — the resume itself just decoded the whole file
+// and knows the true boundary.
+func (s *Session) writeCompactionSidecarAnchor() error {
+	s.attentionMu.Lock()
+	wakeCount := len(s.rootAttentionWakeIDs)
+	s.attentionMu.Unlock()
+	s.mu.Lock()
+	writer := s.transcript
+	ready := s.transcriptReady
+	s.mu.Unlock()
+	if !ready || writer == nil {
+		return nil
+	}
+	pending, commits, mutations, complete := liveDelegateAttentionSnapshot(wakeCount)
+	return writer.WriteSidecarFromWriter(s.TranscriptPath(), pending, commits, mutations, complete)
+}
+
+// liveDelegateAttentionSnapshot derives the fold-snapshot completeness from
+// the session's live wake count. The wake cache holds pending IDs but not
+// content, so the snapshot is complete only when the session holds no live
+// attention state at all (the common case): an empty live state is
+// trivially complete, and any live attention forces the conservative
+// incomplete marker — the resume that needs the fold then falls back to its
+// own full read.
+func liveDelegateAttentionSnapshot(wakeCount int) (pending []transcript.SidecarPendingAttention, commits []transcript.SidecarDeliveryCommit, mutations map[string]string, complete bool) {
+	if wakeCount != 0 {
+		return nil, nil, nil, false
+	}
+	return nil, nil, nil, true
+}

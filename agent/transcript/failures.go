@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"primeradiant.com/evener/agent/schema"
@@ -105,6 +106,28 @@ type FailureCounter struct {
 // bound exists to prevent. Pass 0 (or 1) for a session that inherited nothing.
 func NewFailureCounter(fromEntryOrdinal int) *FailureCounter {
 	return &FailureCounter{toolNames: map[string]string{}, from: fromEntryOrdinal}
+}
+
+// NewFailureCounterSeeded returns a counter pre-set to floor failures over
+// prefix entries this process did not decode, positioned so the entries it
+// observes from here on continue the 1-based ordinal sequence from
+// prefixEntryCount. It is the windowed-resume form of NewFailureCounter: the
+// floor is what a full scan's TrackFailures seed would have counted over the
+// prefix, bounded by the same divergence rule.
+//
+// A floor below zero (the sidecar's "not computed" sentinel) is refused: an
+// absent floor must fall back to the full scan, not silently count from
+// zero — the false all-clean is what the count exists to prevent.
+func NewFailureCounterSeeded(floor, prefixEntryCount, fromEntryOrdinal int) (*FailureCounter, error) {
+	if floor < 0 || prefixEntryCount < 0 {
+		return nil, fmt.Errorf("failure floor %d over %d prefix entries is invalid", floor, prefixEntryCount)
+	}
+	return &FailureCounter{
+		toolNames: map[string]string{},
+		count:     floor,
+		ordinal:   prefixEntryCount,
+		from:      fromEntryOrdinal,
+	}, nil
 }
 
 // Observe records one transcript entry's turn: it learns the tool names the
