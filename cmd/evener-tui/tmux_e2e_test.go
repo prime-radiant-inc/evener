@@ -1035,7 +1035,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 // no breadcrumb, no composer — for longer than the poll interval. The fix is
 // to require completeness evidence (all anchors present, including the
 // last-written footer) before accepting stability, which is what
-// CaptureCompleteStable does.
+// CaptureStable's anchor arguments do.
 func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -1480,8 +1480,9 @@ func (a *tmuxTUI) CaptureHistory() string {
 	return normalizePane(string(out))
 }
 
-// CaptureStable returns Capture()'s output once two consecutive captures,
-// tuiE2EPollInterval apart, are byte-identical.
+// CaptureStable returns Capture()'s output once a frame that is BOTH complete
+// and stable is seen: it contains every want (completeness) and is
+// byte-identical to the capture one poll interval before it (stability).
 //
 // A single Capture() is a snapshot of tmux's OWN terminal-grid state, which
 // updates incrementally as bytes arrive from the pty — not a snapshot of what
@@ -1497,6 +1498,23 @@ func (a *tmuxTUI) CaptureHistory() string {
 // It self-heals on its own within milliseconds, which is exactly what makes
 // two matching captures a few ms apart trustworthy where one capture is not.
 //
+// NEITHER heuristic alone is sufficient — this is the lesson of the CI flake
+// that added the anchors:
+//   - Stability alone accepted a torn frame: during a continuous notification
+//     stream the pane never settles, and two consecutive captures agreed on a
+//     mid-write grid (all streamed text, no footer, no breadcrumb) for longer
+//     than the poll interval — a stall long enough to defeat the two-sample
+//     heuristic.
+//   - Anchors alone accept a partial repaint: tmux's grid is incremental, so a
+//     frame's extremes can still hold the PREVIOUS frame's content while the
+//     middle is being rewritten — both anchors present on a torn grid — and
+//     with no wants at all, completeness is vacuous.
+//
+// Pass wants drawn from the frame's extremes, including the composer's footer
+// hints (written last). The two conditions cover each other's failure modes;
+// a stalled mid-write carrying stale anchors for every want at once is the
+// one residual gap, and nothing short of synchronized-output mode closes it.
+//
 // Use this instead of a lone Capture() for any assertion that a substring is
 // ABSENT. WaitFor already retries until its wanted substrings appear, which
 // makes it self-correcting for POSITIVE assertions the same way — but its
@@ -1504,35 +1522,26 @@ func (a *tmuxTUI) CaptureHistory() string {
 // a complete frame, so a negative check (`strings.Contains(screen, unwanted)`
 // on that same screen) can still land mid-render and read an absence that
 // isn't real.
-//
-// Stability alone is NOT completeness evidence. Under CI load this test
-// flaked as a "stable" torn frame: during a continuous notification stream
-// the pane never settles, and two consecutive captures agreed on a mid-write
-// grid (all streamed text, no footer, no breadcrumb) for longer than the poll
-// interval — a stall long enough to defeat the two-sample heuristic. So the
-// completeness anchors are part of the contract: pass wants drawn from the
-// frame's extremes, including the composer's footer hints (written last), so
-// that accepting a frame as complete requires evidence that the frame write
-// finished, not just that it paused.
 func (a *tmuxTUI) CaptureStable(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	prev := a.Capture()
 	for time.Now().Before(deadline) {
+		time.Sleep(tuiE2EPollInterval)
+		cur := a.Capture()
 		complete := true
 		for _, want := range wants {
-			if !strings.Contains(prev, want) {
+			if !strings.Contains(cur, want) {
 				complete = false
 				break
 			}
 		}
-		if complete {
-			return prev
+		if complete && cur == prev {
+			return cur
 		}
-		time.Sleep(tuiE2EPollInterval)
-		prev = a.Capture()
+		prev = cur
 	}
-	a.t.Fatalf("pane never rendered a complete frame (missing %q) within %s — either the pane is stuck mid-render, or the wanted anchors never rendered\nlast capture:\n%s", wants, tuiE2EWaitTimeout, prev)
+	a.t.Fatalf("pane never rendered a complete, stable frame (missing %q) within %s — either the pane is still changing every %s (a real, ongoing render), or the wanted anchors never rendered\nlast capture:\n%s", wants, tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
 	return ""
 }
 
