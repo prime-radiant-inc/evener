@@ -42,7 +42,7 @@ type Source interface {
 // interface because it converges through authoritative full-state replacement.
 type RelaySessionSource interface {
 	ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
-	AcquireRelaySession(appwire.Ref) (RelaySessionLease, error)
+	AcquireRelaySession(appwire.Ref) (RelaySessionRoutePublicationLease, error)
 }
 
 type RelaySessionLease interface {
@@ -57,7 +57,7 @@ type RelaySessionLease interface {
 // do not own a routing index.
 type RelaySessionRoutePublicationLease interface {
 	RelaySessionLease
-	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(appwire.Thread)) (RelayReadResult, error)
+	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
 }
 
 type RelayReadResult struct {

@@ -29,6 +29,9 @@ type LocalDaemonSource struct {
 	legacyRelays  map[string]legacyRelayRead
 }
 
+var _ RelaySessionSource = (*LocalDaemonSource)(nil)
+var _ RelaySessionRoutePublicationLease = (*relaySessionLease)(nil)
+
 type legacyRelayRead struct {
 	lease   RelaySessionLease
 	handoff RelayHandoff
@@ -109,7 +112,7 @@ func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams)
 	return ref, nil
 }
 
-func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionLease, error) {
+func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRoutePublicationLease, error) {
 	if ref.SourceID != s.sourceID || ref.String() == "" {
 		return nil, appwire.SessionUnavailable("invalid relay session ref")
 	}

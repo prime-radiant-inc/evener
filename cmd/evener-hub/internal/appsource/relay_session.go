@@ -133,7 +133,7 @@ func newRelaySession(connect relaySessionConnect, onIdle func(*relaySession)) *r
 	return session
 }
 
-func (s *relaySession) acquire() RelaySessionLease {
+func (s *relaySession) acquire() *relaySessionLease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -155,7 +155,7 @@ func (l *relaySessionLease) Read(ctx context.Context, params appwire.ThreadReadP
 func (l *relaySessionLease) ReadWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publish func(appwire.Thread),
+	publish func(context.Context, appwire.Thread) error,
 ) (RelayReadResult, error) {
 	if l == nil || l.session == nil {
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
@@ -241,7 +241,7 @@ func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams
 func (s *relaySession) readWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publishRoutes func(appwire.Thread),
+	publishRoutes func(context.Context, appwire.Thread) error,
 ) (RelayReadResult, error) {
 	select {
 	case <-ctx.Done():
@@ -307,7 +307,19 @@ func (s *relaySession) readWithRoutePublication(
 			s.cancelCapture(capture)
 			return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended before route publication")
 		}
-		publishRoutes(response.Thread)
+		publicationErr := func() (err error) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					s.cancelCapture(capture)
+					panic(recovered)
+				}
+			}()
+			return publishRoutes(ctx, response.Thread)
+		}()
+		if publicationErr != nil {
+			s.cancelCapture(capture)
+			return RelayReadResult{}, publicationErr
+		}
 	}
 
 	select {
