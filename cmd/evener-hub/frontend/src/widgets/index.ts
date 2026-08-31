@@ -57,7 +57,7 @@ export { Loader } from "./loader";
 export type { MarkdownProps } from "./markdown";
 export { Markdown } from "./markdown";
 export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
-export { isSeparator, Menu } from "./menu";
+export { isSeparator, Menu, menuTriggerClassName } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
 // ModelCatalog is both the component and the typed model/list catalog shape. The

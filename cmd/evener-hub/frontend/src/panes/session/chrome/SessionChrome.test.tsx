@@ -361,7 +361,9 @@ test("mobile Session actions opens the full Verbosity bottom Sheet", async () =>
     render(<SessionChrome ref="ref_verbosity_mobile" />);
     const actions = screen.getByRole("button", { name: "Session actions" });
     await user.click(actions);
-    await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+    // Mobile's SessionMenu is a bottom-Sheet drawer of plain buttons, not a
+    // role=menu popover (SessionMenu.tsx's isMobile branch).
+    await user.click(screen.getByRole("button", { name: "Verbosity…" }));
 
     const sheet = screen.getByRole("dialog", { name: "Verbosity" });
     expect(sheet.className).toContain("bottom");
@@ -518,7 +520,7 @@ test("the details panel reads the work time of the SAME ref passed to SessionChr
 
   render(<SessionChrome ref="ref_d" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Details" }));
+  await user.click(screen.getByRole("button", { name: "Details" }));
 
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
   restoreViewport();
@@ -563,7 +565,7 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
 
   render(<SessionChrome ref="ref_c" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Tasks" }));
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_c"));
   restoreViewport();
@@ -589,7 +591,7 @@ test("the activity panel fetches for the SAME ref passed to SessionChrome", asyn
 
   render(<SessionChrome ref="ref_e" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Activity" }));
+  await user.click(screen.getByRole("button", { name: "Activity" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_e"));
   restoreViewport();
@@ -654,7 +656,7 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
     render(<SessionChrome ref="ref_mobile" />);
     expect(workspaceStore.getState().panes).toEqual([]);
     await user.click(screen.getByRole("button", { name: /session actions/i }));
-    await user.click(screen.getByRole("menuitem", { name: "Details" }));
+    await user.click(screen.getByRole("button", { name: "Details" }));
     expect(await screen.findByRole("heading", { name: "Session details" })).toBeTruthy();
     expect(workspaceStore.getState().panes).toEqual([]);
   } finally {

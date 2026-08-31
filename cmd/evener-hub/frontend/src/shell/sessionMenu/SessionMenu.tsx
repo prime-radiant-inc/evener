@@ -12,9 +12,10 @@
 // deliberately NOT here - the command palette owns those.
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { Button, Dialog, Input, Menu, type MenuEntry } from "../../widgets";
+import { Button, Dialog, Input, isSeparator, Menu, type MenuEntry, menuTriggerClassName, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { useIsMobile } from "../useIsMobile";
 import styles from "./sessionmenu.module.css";
 
 export type PinTarget = { section_id: string } | { section_name: string };
@@ -64,6 +65,9 @@ const CLASS = {
   label: requireClass(styles.label, "sessionmenu.module.css", "label"),
   footer: requireClass(styles.footer, "sessionmenu.module.css", "footer"),
   body: requireClass(styles.body, "sessionmenu.module.css", "body"),
+  drawerBody: requireClass(styles.drawerBody, "sessionmenu.module.css", "drawerBody"),
+  drawerItem: requireClass(styles.drawerItem, "sessionmenu.module.css", "drawerItem"),
+  drawerSeparator: requireClass(styles.drawerSeparator, "sessionmenu.module.css", "drawerSeparator"),
 };
 
 const checked = (label: string, open: boolean) => (open ? `${label} ✓` : label);
@@ -89,6 +93,12 @@ export function SessionMenu({
   const [shutdownOpen, setShutdownOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  // Mobile swaps the anchored popover for a bottom Sheet (the design system's
+  // mobile choice-control pattern; ModelSwitchTrigger's "Choose model" Sheet
+  // is the reference). The trigger keeps Menu's quiet classes so its look and
+  // identity don't change across the breakpoint.
+  const isMobile = useIsMobile();
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // confirm runs a dialog-confirmed action: busy-lock the confirm button
   // against double-submit, close ONLY on success (a rejection was already
@@ -170,19 +180,56 @@ export function SessionMenu({
     ...destructiveItems,
   ];
 
+  const triggerContent = (
+    <>
+      <span aria-hidden="true">⋯</span>
+      <span className={CLASS.srOnly}>{triggerLabel}</span>
+    </>
+  );
+
   return (
     <>
-      <Menu
-        variant="quiet"
-        triggerTabIndex={triggerTabIndex}
-        trigger={
-          <>
-            <span aria-hidden="true">⋯</span>
-            <span className={CLASS.srOnly}>{triggerLabel}</span>
-          </>
-        }
-        items={items}
-      />
+      {isMobile ? (
+        <>
+          <button
+            type="button"
+            className={menuTriggerClassName("quiet")}
+            tabIndex={triggerTabIndex}
+            aria-haspopup="dialog"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((open) => !open)}
+          >
+            {triggerContent}
+          </button>
+          <Sheet open={drawerOpen} side="bottom" onClose={() => setDrawerOpen(false)} title={title}>
+            <div className={CLASS.drawerBody}>
+              {items.map((entry) =>
+                isSeparator(entry) ? (
+                  <hr key={entry.id} className={CLASS.drawerSeparator} />
+                ) : (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={CLASS.drawerItem}
+                    disabled={entry.disabled}
+                    onClick={() => {
+                      // Menu semantics: the overlay closes first, then the
+                      // action runs (a dialog-opening action like Rename
+                      // never stacks its dialog on top of the drawer).
+                      setDrawerOpen(false);
+                      entry.onSelect();
+                    }}
+                  >
+                    {entry.label}
+                  </button>
+                ),
+              )}
+            </div>
+          </Sheet>
+        </>
+      ) : (
+        <Menu variant="quiet" triggerTabIndex={triggerTabIndex} trigger={triggerContent} items={items} />
+      )}
 
       <Dialog
         open={renameOpen}

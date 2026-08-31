@@ -50,6 +50,14 @@ function isActionable(entry: MenuEntry): boolean {
 
 export type MenuVariant = "default" | "quiet";
 
+/** The trigger button's classes for a variant. Menu uses this for its own
+ * trigger; consumers that render a Menu-styled trigger OUTSIDE a Menu popover
+ * (SessionMenu's mobile bottom-Sheet drawer, which swaps the popover for a
+ * Sheet across the breakpoint) use it to keep the trigger's look identical. */
+export function menuTriggerClassName(variant: MenuVariant = "default"): string {
+  return variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
+}
+
 export interface MenuProps {
   /** Visible content of the trigger button Menu renders (its own aria and
    * open/close wiring - see this task's report for why the trigger isn't
@@ -344,7 +352,7 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     };
   }, [isOpen, closeMenu]);
 
-  const triggerClassName = variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
+  const triggerClassName = menuTriggerClassName(variant);
 
   return (
     <div ref={rootRef} className={CLASS.root}>

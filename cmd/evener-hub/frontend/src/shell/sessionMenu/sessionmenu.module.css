@@ -35,3 +35,60 @@
   font-size: var(--font-size-body);
   color: var(--ink-hi);
 }
+
+/* --- Mobile bottom-Sheet drawer (SessionMenu's isMobile branch) ----------
+ * The same MenuEntry list the desktop popover shows, rendered as full-width
+ * touch rows inside a bottom Sheet - the design system's mobile choice-control
+ * pattern (ModelSwitchTrigger's "Choose model" Sheet is the reference). */
+
+/* Same safe-area reservation as modelswitch.module.css's own .sheetBody, so a
+ * home-indicator never covers the last row. The Sheet's own .body padding
+ * carries the sides. */
+.drawerBody {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Full-width 44px row: --tap-min is the platform tap floor every mobile
+ * control in the app already grows to (button.module.css's mobile block). */
+.drawerItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: 0 var(--space-2);
+  border: none;
+  background: none;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  cursor: pointer;
+}
+
+.drawerItem:hover {
+  background: var(--hover-1);
+}
+
+.drawerItem:disabled {
+  color: var(--ink-low);
+  cursor: default;
+}
+
+.drawerItem:disabled:hover {
+  background: none;
+}
+
+.drawerItem:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Mirrors the desktop popover's group separators (menu.module.css's own
+ * separator hairline): same grouping, touch presentation. */
+.drawerSeparator {
+  border: none;
+  border-top: 1px solid var(--edge);
+  margin: var(--space-1) 0;
+}

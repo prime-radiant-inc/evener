@@ -1,9 +1,13 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
@@ -80,6 +84,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
+  // Drops any mobile matchMedia stub a drawer test installed.
+  vi.unstubAllGlobals();
+  resetMobileViewportForTests();
 });
 
 test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {
@@ -264,4 +271,97 @@ test("Delete… confirms before calling onDelete", async () => {
   await user.click(within(dialog).getByRole("button", { name: "Delete" }));
   await waitFor(() => expect(actions.onDelete).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+// --- mobile: the same entries render as a bottom Sheet drawer ---------------
+// Mirrors ModelSwitchTrigger's mobile Sheet (design-system §11: mobile choice
+// controls use the bottom Sheet). jsdom implements no matchMedia, so the
+// mobile query is stubbed the same way AppShell.test.tsx stubs it.
+
+function installMobileViewport(): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media: string) => ({
+      media,
+      matches: media === "(max-width: 899px)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
+  resetMobileViewportForTests();
+}
+
+test("mobile: the trigger opens a bottom Sheet named for the session, not a menu popover", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  renderMenu({ session: navigationSession() });
+  await openMenu(user);
+  expect(screen.getByRole("dialog", { name: "My session" })).toBeTruthy();
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("mobile: the drawer lists the same entries in the same groups as the desktop menu", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  renderMenu({ session: navigationSession() });
+  await openMenu(user);
+  const drawer = screen.getByRole("dialog", { name: "My session" });
+  const labels = within(drawer)
+    .getAllByRole("button")
+    .map((el) => el.textContent)
+    // The Sheet's own close button is chrome, not an entry (icon-only: no
+    // text content of its own).
+    .filter((label) => label !== "" && label !== "Close");
+  expect(labels).toEqual([
+    "Details",
+    "Tasks ✓",
+    "Activity",
+    "Rename",
+    "Pin this session…",
+    "Archive",
+    "Shut down",
+    "Delete…",
+  ]);
+  expect(within(drawer).getAllByRole("separator")).toHaveLength(2);
+});
+
+test("mobile: tapping an entry closes the drawer, then runs the action", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  const actions = renderMenu();
+  await openMenu(user);
+  await user.click(screen.getByRole("button", { name: "Tasks ✓" }));
+  expect(screen.queryByRole("dialog", { name: "My session" })).toBeNull();
+  expect(actions.onOpenPane).toHaveBeenCalledWith("tasks");
+});
+
+test("mobile: a dialog-opening entry stacks nothing on the drawer", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  renderMenu();
+  await openMenu(user);
+  await user.click(screen.getByRole("button", { name: "Rename" }));
+  // The drawer closed before the Rename dialog opened: exactly one dialog.
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(screen.getByRole("dialog", { name: "Rename session" })).toBeTruthy();
+});
+
+test("mobile: disabled entries stay disabled", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  renderMenu({ canRename: false });
+  await openMenu(user);
+  const rename = screen.getByRole("button", { name: "Rename" });
+  expect((rename as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("mobile: drawer rows meet the 44px --tap-min touch floor", () => {
+  // jsdom evaluates no cascade, so the row sizing is verified from the CSS
+  // source (the repo's stylesheet-assertion pattern). Comments are stripped
+  // first so a comment quoting the declaration cannot satisfy the match.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "sessionmenu.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = css.match(/\.drawerItem \{([\s\S]*?)\n\}/);
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
