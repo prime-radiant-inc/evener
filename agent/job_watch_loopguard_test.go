@@ -521,8 +521,11 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	if childInspect.Watching || childInspect.Source != "" {
 		t.Fatalf("child owner inspect = %+v, want not found", childInspect)
 	}
-	if _, err := jobWatchTool(child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, 20000); err != nil {
-		t.Fatalf("child jobWatchTool clear: %v", err)
+	// The child may NOT clear the root's ancestor-owned watch: the clear is
+	// refused with an explicit error (not a success-shaped no-op) and the
+	// watch stays armed for its owner.
+	if _, err := jobWatchTool(child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, 20000); err == nil || !strings.Contains(err.Error(), "may not clear") {
+		t.Fatalf("child jobWatchTool clear err = %v, want explicit refusal", err)
 	}
 	if childJM.watchCount() != 1 {
 		t.Fatalf("child watch count after owner clear = %d, want ancestor-owned watch intact", childJM.watchCount())

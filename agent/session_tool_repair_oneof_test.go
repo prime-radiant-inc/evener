@@ -20,9 +20,10 @@ import (
 // "off+nonet" (off applies no network confinement) with a clear error naming
 // the `sandbox` field.
 
-// Test: a delegate call with a legacy `sandbox_net` field should have that
-// field dropped by repair (additionalProperties: false), and the call should
-// NOT be rejected at prevalidation — the oneOf constraint no longer exists.
+// Test: a delegate call with a legacy `sandbox_net` field must NOT be silently
+// repaired away — the field no longer exists on the schema, and dropping it
+// would launch the delegate with the caller's network request ignored. The
+// prevalidation layer refuses it with guidance to use the sandbox enum.
 func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 	def := tool.DefDelegateWithSandbox([]string{"subagent"}, tool.DelegateSandboxSchema{
 		Available:   true,
@@ -42,20 +43,15 @@ func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 			`"sandbox":"off","sandbox_net":true,"reasoning_effort":"low","delegation_allowance":0}`),
 	}
 	res := prepareToolCall(call, rt, []string{"delegate"}, "delegate", "communicate", "")
-	// sandbox_net is no longer in the schema, so it must be dropped — not
-	// cause a prevalidation error. The oneOf constraint is gone.
-	if res.PrevalErr != "" {
-		t.Fatalf("expected no prevalidation failure (oneOf removed), got: %q (changes: %v)", res.PrevalErr, res.Changes)
+	// sandbox_net is not a parameter on this surface: it must be refused with
+	// enum guidance, not silently dropped by repair.
+	if res.PrevalErr == "" {
+		t.Fatal("expected sandbox_net to be refused at prevalidation, got none")
 	}
-	// Verify sandbox_net was dropped.
-	foundDrop := false
-	for _, ch := range res.Changes {
-		if strings.Contains(ch.Detail, "sandbox_net") && strings.Contains(ch.Detail, "dropped") {
-			foundDrop = true
+	for _, want := range []string{"sandbox_net is not a parameter", "sandbox=\"read-only+nonet\""} {
+		if !strings.Contains(res.PrevalErr, want) {
+			t.Fatalf("refusal must mention %q, got: %q", want, res.PrevalErr)
 		}
-	}
-	if !foundDrop {
-		t.Fatalf("expected sandbox_net to be dropped as unknown, changes: %v", res.Changes)
 	}
 }
 
