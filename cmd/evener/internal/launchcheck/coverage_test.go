@@ -16,12 +16,20 @@ import (
 
 // launchCheckClient builds a client on a hermetic registry carrying
 // instances, with the supplied adapters registered as overrides.
+// launchCheckEnv is the whole environment these fixtures resolve against —
+// WithEnv is the only source, so an ambient OLLAMA_HOST cannot reach them.
+// The curated ollama instance is implicit and needs no variable to resolve,
+// so an env-less fixture still probes whatever answers on localhost: green on
+// a developer machine running ollama, red on CI. Pinning the host to a dead
+// port makes the refusal the same everywhere.
+var launchCheckEnv = map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
+
 func launchCheckClient(t *testing.T, instances map[string]registry.Provider, adapters ...llm.ProviderAdapter) *llm.Client {
 	t.Helper()
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),
-		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithEnv(func(name string) (string, bool) { v, ok := launchCheckEnv[name]; return v, ok }),
 		registry.WithInstances(instances),
 	)
 	if err != nil {
@@ -111,10 +119,6 @@ func TestLaunchCheckModelsListsVisibleInstances(t *testing.T) {
 	client := launchCheckClient(t, map[string]registry.Provider{
 		"fake": {Base: "openai-compatible", APIKey: "k", Transport: registry.Transport{BaseURL: "http://fake.invalid/v1"}},
 		"bad":  {Base: "openai-compatible", APIKey: "k", Transport: registry.Transport{BaseURL: "http://bad.invalid/v1"}},
-		// The curated ollama instance is implicit with no environment at all
-		// and would probe the developer's real localhost daemon; hiding it
-		// keeps the visible set to this fixture's own instances on any host.
-		"ollama": {Hidden: true},
 	},
 		&launchCheckFakeAdapter{name: "fake", models: []registry.Model{{ID: "z-chat"}, {ID: "a-chat"}}},
 		&launchCheckFakeAdapter{name: "bad", err: errors.New("listing refused")},
@@ -125,8 +129,18 @@ func TestLaunchCheckModelsListsVisibleInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(diagnostics) != 1 || diagnostics[0].Provider != "bad" {
-		t.Fatalf("diagnostics=%+v, want one for the bad instance", diagnostics)
+	// Two diagnostics, one per instance that could not be listed: the fixture's
+	// own "bad", and the curated implicit ollama, which is visible here because
+	// its localhost default resolves without any variable and which
+	// launchCheckEnv pins to a dead port so the refusal is the same on every
+	// machine. Asserted by name rather than by index — launchCheckModels walks
+	// the registry's instances, whose order is not this test's to fix.
+	byProvider := map[string]bool{}
+	for _, d := range diagnostics {
+		byProvider[d.Provider] = true
+	}
+	if len(diagnostics) != 2 || !byProvider["bad"] || !byProvider["ollama"] {
+		t.Fatalf("diagnostics=%+v, want one each for bad and ollama", diagnostics)
 	}
 	got := map[string]bool{}
 	for _, m := range models {
