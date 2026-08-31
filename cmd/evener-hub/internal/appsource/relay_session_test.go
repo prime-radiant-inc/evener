@@ -1314,6 +1314,18 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 		t.Fatalf("recovered live delta = %q", got)
 	}
 	live.Acknowledge()
+	sessionLease := lease.(*relaySessionLease)
+	sessionLease.session.mu.Lock()
+	listenerCount := len(sessionLease.session.listeners)
+	listenerStarts := sessionLease.session.nextListener
+	recovering := sessionLease.session.recovering
+	sessionLease.session.mu.Unlock()
+	if listenerCount != 1 || listenerStarts != 1 {
+		t.Fatalf("listeners after reconnect: live=%d started=%d, want one resumed listener", listenerCount, listenerStarts)
+	}
+	if recovering {
+		t.Fatal("relay session still marked recovering after replacement feed resumed")
+	}
 	if got := daemon.dials.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want exactly one replacement connection", got)
 	}
