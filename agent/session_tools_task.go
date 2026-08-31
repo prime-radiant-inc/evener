@@ -114,6 +114,128 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 	return result, err
 }
 
+// decodeTaskArgs converts a presence-based task_list call into typed inputs:
+// whichever array is present is the operation, both can appear in one call.
+// Decoding is strict — a wrong-typed field is an error naming the entry, and
+// an update entry that sets none of status/notes/depends_on/reasoning_effort
+// is rejected rather than silently no-opping. No fmt.Sprint coercion: the
+// old handler's fmt.Sprint(m["status"]) turned a missing status into the
+// literal string "<nil>" and broke the schema-documented optional status.
+func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
+	rawAdds, _ := args["add"].([]any)
+	for i, r := range rawAdds {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("add entry %d must be an object with type, description, and prompt", i)
+		}
+		var input taskpkg.TaskInput
+		if t, ok := m["type"].(string); ok {
+			input.Type = taskpkg.TaskType(t)
+		}
+		description, ok := m["description"].(string)
+		if !ok {
+			return nil, nil, fmt.Errorf("add entry %d requires a string description", i)
+		}
+		input.Description = description
+		prompt, ok := m["prompt"].(string)
+		if !ok {
+			return nil, nil, fmt.Errorf("add entry %d requires a string prompt", i)
+		}
+		input.Prompt = prompt
+		if depsRaw, ok := m["depends_on"].([]any); ok {
+			depIDs, err := decodeIDList(depsRaw)
+			if err != nil {
+				return nil, nil, fmt.Errorf("add entry %d depends_on: %w", i, err)
+			}
+			input.DependsOn = depIDs
+		}
+		if re, ok := m["reasoning_effort"].(string); ok {
+			input.ReasoningEffort, err = validateTaskEffort(re)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		adds = append(adds, input)
+	}
+	rawUpdates, _ := args["update"].([]any)
+	for i, r := range rawUpdates {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("update entry %d must be an object with id", i)
+		}
+		idFloat, ok := m["id"].(float64)
+		if !ok {
+			return nil, nil, fmt.Errorf("update entry %d requires an integer id", i)
+		}
+		u := taskpkg.TaskUpdate{ID: int(idFloat)}
+		if s, ok := m["status"].(string); ok {
+			u.Status = taskpkg.TaskStatus(s)
+		}
+		if n, ok := m["notes"].(string); ok {
+			u.Notes = n
+		}
+		if depsRaw, has := m["depends_on"]; has {
+			arr, ok := depsRaw.([]any)
+			if !ok {
+				return nil, nil, fmt.Errorf("update entry %d depends_on must be an array of task IDs", i)
+			}
+			depIDs, err := decodeIDList(arr)
+			if err != nil {
+				return nil, nil, fmt.Errorf("update entry %d depends_on: %w", i, err)
+			}
+			u.DependsOn = &depIDs
+		}
+		if re, ok := m["reasoning_effort"].(string); ok {
+			u.ReasoningEffort, err = validateTaskEffort(re)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		if u.Status == "" && u.Notes == "" && u.DependsOn == nil && u.ReasoningEffort == "" {
+			return nil, nil, fmt.Errorf("update entry for task %d changes nothing; include status, notes, depends_on, or reasoning_effort", u.ID)
+		}
+		updates = append(updates, u)
+	}
+	return adds, updates, nil
+}
+
+// decodeIDList converts a JSON array of numbers into []int.
+func decodeIDList(raw []any) ([]int, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	ids := make([]int, 0, len(raw))
+	for _, d := range raw {
+		v, ok := d.(float64)
+		if !ok {
+			return nil, errors.New("each element must be an integer task ID")
+		}
+		ids = append(ids, int(v))
+	}
+	return ids, nil
+}
+
+// validateUpdateIDs rejects update entries whose target does not exist in
+// the pre-add store state. The model composed the call before any new IDs
+// existed, so an update can never legitimately target this call's adds; the
+// same error covers both "never existed" and "not yet created" (the model
+// cannot distinguish them and shouldn't need to).
+func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	known := make(map[int]struct{}, 8)
+	for _, t := range store.View() {
+		known[t.ID] = struct{}{}
+	}
+	for _, u := range updates {
+		if _, ok := known[u.ID]; !ok {
+			return fmt.Errorf("unknown task ID %d", u.ID)
+		}
+	}
+	return nil
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -122,59 +244,35 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()
 			store := deps.taskGuard.Store()
-			action := fmt.Sprint(args["action"])
-			switch action {
-			case "view":
+			adds, updates, err := decodeTaskArgs(args)
+			if err != nil {
+				return nil, err
+			}
+			if len(adds) == 0 && len(updates) == 0 {
+				// Bare or all-empty call: view. (Empty arrays decode to nil
+				// slices; a mutation with nothing to mutate is the view.)
 				return tool.StateResult{Output: formatTaskList(store.View()), State: store.View()}, nil
-			case "append":
-				raw, ok := args["tasks"].([]any)
-				if !ok || len(raw) == 0 {
-					return nil, errors.New("append requires a non-empty 'tasks' array")
+			}
+
+			return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
+				// Validate update IDs against the PRE-ADD state: the model
+				// composed this call before any new IDs existed, so an update
+				// can never legitimately target this call's adds.
+				if err := validateUpdateIDs(store, updates); err != nil {
+					return nil, err
 				}
-				var items []taskpkg.TaskInput
-				for _, r := range raw {
-					m, ok := r.(map[string]any)
-					if !ok {
-						return nil, errors.New("each task must be an object with description and prompt")
-					}
-					var depIDs []int
-					if depsRaw, ok := m["depends_on"].([]any); ok {
-						for _, d := range depsRaw {
-							if v, ok := d.(float64); ok {
-								depIDs = append(depIDs, int(v))
-							}
-						}
-					}
-					var taskType taskpkg.TaskType
-					if t, ok := m["type"].(string); ok {
-						taskType = taskpkg.TaskType(t)
-					}
-					reasoningEffort := ""
-					if re, ok := m["reasoning_effort"].(string); ok {
-						var err error
-						reasoningEffort, err = validateTaskEffort(re)
-						if err != nil {
-							return nil, err
-						}
-					}
-					items = append(items, taskpkg.TaskInput{
-						Type:            taskType,
-						Description:     fmt.Sprint(m["description"]),
-						Prompt:          fmt.Sprint(m["prompt"]),
-						DependsOn:       depIDs,
-						ReasoningEffort: reasoningEffort,
-					})
-				}
-				return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
-					added, err := store.Append(items)
+				var added []taskpkg.Task
+				if len(adds) > 0 {
+					added, err = store.Append(adds)
 					if err != nil {
 						return nil, err
 					}
-
-					// The tool response is a terse acknowledgement. The current
-					// task is announced via a separate SYSTEM-REMINDER steering
-					// message when the agent actually transitions one to
-					// in_progress, either manually or via auto-advance.
+				}
+				if len(updates) == 0 {
+					// Adds only: terse acknowledgement. The current task is
+					// announced via a separate SYSTEM-REMINDER steering message
+					// when the agent actually transitions one to in_progress,
+					// either manually or via auto-advance.
 					tasks := store.View()
 					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "", epoch, revision)
 					deps.emit(events.EventTaskUpdated, taskUpdate)
@@ -182,157 +280,122 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
 						State:  tasks,
 					}, nil
-				})
-			case "update":
-				raw, ok := args["updates"].([]any)
-				if !ok || len(raw) == 0 {
-					return nil, errors.New("update requires a non-empty 'updates' array")
 				}
-				var updates []taskpkg.TaskUpdate
-				for _, r := range raw {
-					m, ok := r.(map[string]any)
-					if !ok {
-						return nil, errors.New("each update must be an object with id and status")
-					}
-					id := 0
-					if v, ok := m["id"].(float64); ok {
-						id = int(v)
-					}
-					u := taskpkg.TaskUpdate{
-						ID:     id,
-						Status: taskpkg.TaskStatus(fmt.Sprint(m["status"])),
-					}
-					if n, ok := m["notes"].(string); ok {
-						u.Notes = n
-					}
-					if depsRaw, ok := m["depends_on"]; ok {
-						var depIDs []int
-						if arr, ok := depsRaw.([]any); ok {
-							for _, d := range arr {
-								if v, ok := d.(float64); ok {
-									depIDs = append(depIDs, int(v))
-								}
-							}
-						}
-						u.DependsOn = &depIDs
-					}
-					if re, ok := m["reasoning_effort"].(string); ok {
-						var err error
-						u.ReasoningEffort, err = validateTaskEffort(re)
-						if err != nil {
-							return nil, err
-						}
-					}
-					updates = append(updates, u)
+				mutation, err := store.UpdateWithSnapshot(updates)
+				if err != nil {
+					return nil, err
 				}
-				return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
-					mutation, err := store.UpdateWithSnapshot(updates)
-					if err != nil {
-						return nil, err
-					}
 
-					// Classify each ID from the final status the store applied, so
-					// duplicate entries cannot steer a task that ended completed or
-					// suppress auto-advance after the final state is known.
-					previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
-					for _, task := range mutation.Before {
-						previous[task.ID] = task.Status
+				// Classify each ID from the final status the store applied, so
+				// duplicate entries cannot steer a task that ended completed or
+				// suppress auto-advance after the final state is known.
+				previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
+				for _, task := range mutation.Before {
+					previous[task.ID] = task.Status
+				}
+				// Final statuses come from the snapshot, not the raw
+				// entries: an empty-status entry (no change) must classify
+				// by the task's resulting status.
+				finalStatus := make(map[int]taskpkg.TaskStatus, len(mutation.After))
+				for _, t := range mutation.After {
+					finalStatus[t.ID] = t.Status
+				}
+				inProgressUpdates := make(map[int]struct{}, len(updates))
+				started := make(map[int]bool)
+				var completedAny bool
+				var manuallyStartedID int
+				seenIDs := make(map[int]struct{}, len(updates))
+				for _, u := range updates {
+					if _, seen := seenIDs[u.ID]; seen {
+						continue
 					}
-					finalStatus := make(map[int]taskpkg.TaskStatus, len(updates))
-					for _, u := range updates {
-						finalStatus[u.ID] = u.Status
+					seenIDs[u.ID] = struct{}{}
+					status := finalStatus[u.ID]
+					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
+						completedAny = true
 					}
-					inProgressUpdates := make(map[int]struct{}, len(updates))
-					started := make(map[int]bool)
-					var completedAny bool
-					var manuallyStartedID int
-					seenIDs := make(map[int]struct{}, len(updates))
-					for _, u := range updates {
-						if _, seen := seenIDs[u.ID]; seen {
-							continue
-						}
-						seenIDs[u.ID] = struct{}{}
-						status := finalStatus[u.ID]
-						if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
-							completedAny = true
-						}
-						if status == taskpkg.TaskInProgress {
-							inProgressUpdates[u.ID] = struct{}{}
-							if previous[u.ID] != taskpkg.TaskInProgress {
-								started[u.ID] = true
-								manuallyStartedID = u.ID
-							}
+					if status == taskpkg.TaskInProgress {
+						inProgressUpdates[u.ID] = struct{}{}
+						if previous[u.ID] != taskpkg.TaskInProgress {
+							started[u.ID] = true
+							manuallyStartedID = u.ID
 						}
 					}
+				}
 
-					// If the agent explicitly started a task, fire its current-task
-					// steering so the SYSTEM-REMINDER for the new task shows up on
-					// the next turn.
-					if manuallyStartedID != 0 {
-						for _, t := range mutation.After {
-							if t.ID == manuallyStartedID {
-								// Inside the task_list handler: the tool is registered by
-								// construction, so the steering may name it.
-								deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
-								break
-							}
+				// If the agent explicitly started a task, fire its current-task
+				// steering so the SYSTEM-REMINDER for the new task shows up on
+				// the next turn.
+				if manuallyStartedID != 0 {
+					for _, t := range mutation.After {
+						if t.ID == manuallyStartedID {
+							// Inside the task_list handler: the tool is registered by
+							// construction, so the steering may name it.
+							deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
+							break
 						}
 					}
+				}
 
-					if !completedAny && manuallyStartedID == 0 {
-						deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
-						return tool.StateResult{
-							Output: "Updated " + formatTaskUpdates(updates) + ".",
-							State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
-						}, nil
+				if !completedAny && manuallyStartedID == 0 {
+					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
+					output := "Updated " + formatTaskUpdates(updates) + "."
+					if len(added) > 0 {
+						output = fmt.Sprintf("Added %d task(s); updated %s.", len(added), formatTaskUpdates(updates))
 					}
+					return tool.StateResult{
+						Output: output,
+						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
+					}, nil
+				}
 
-					var msg strings.Builder
+				var msg strings.Builder
+				if len(added) > 0 {
+					fmt.Fprintf(&msg, "Added %d task(s); updated ", len(added))
+				} else {
 					msg.WriteString("Updated ")
-					msg.WriteString(formatTaskUpdates(updates))
-					msg.WriteString(". ")
-					finalTasks := mutation.After
+				}
+				msg.WriteString(formatTaskUpdates(updates))
+				msg.WriteString(". ")
+				finalTasks := mutation.After
 
-					if completedAny {
-						// Auto-advance unless the agent already picked what to do next.
-						if manuallyStartedID == 0 {
-							eligible := store.NextEligible()
-							if len(eligible) > 0 {
-								next := eligible[0]
-								if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
-									finalTasks = auto.After
-									deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
+				if completedAny {
+					// Auto-advance unless the agent already picked what to do next.
+					if manuallyStartedID == 0 {
+						eligible := store.NextEligible()
+						if len(eligible) > 0 {
+							next := eligible[0]
+							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+								finalTasks = auto.After
+								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
+							}
+						} else {
+							// No eligible task. If nothing remains open or in_progress,
+							// signal the agent that the list is exhausted.
+							allDone := taskListAllDone(finalTasks)
+							if allDone && len(finalTasks) > 0 {
+								var blockingDelegateIDs []string
+								if deps.blockingDelegateIDs != nil {
+									blockingDelegateIDs = deps.blockingDelegateIDs()
 								}
-							} else {
-								// No eligible task. If nothing remains open or in_progress,
-								// signal the agent that the list is exhausted.
-								allDone := taskListAllDone(finalTasks)
-								if allDone && len(finalTasks) > 0 {
-									var blockingDelegateIDs []string
-									if deps.blockingDelegateIDs != nil {
-										blockingDelegateIDs = deps.blockingDelegateIDs()
-									}
-									deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
-									if len(blockingDelegateIDs) == 0 {
-										msg.WriteString("All tasks complete. ")
-									} else {
-										msg.WriteString("All tasks complete; waiting for delegate(s) ")
-										msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
-										msg.WriteString(". ")
-									}
+								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+								if len(blockingDelegateIDs) == 0 {
+									msg.WriteString("All tasks complete. ")
+								} else {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+									msg.WriteString(". ")
 								}
 							}
 						}
 					}
+				}
 
-					taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "", epoch, revision)
-					deps.emit(events.EventTaskUpdated, taskUpdate)
-					fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
-					return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
-				})
-			default:
-				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
-			}
+				taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "", epoch, revision)
+				deps.emit(events.EventTaskUpdated, taskUpdate)
+				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
+				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
+			})
 		},
 	})
 }

@@ -50,15 +50,24 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 	return h
 }
 
-func (h *taskToolHarness) update(t *testing.T, updates ...map[string]any) tool.ExecResult {
+// call executes a task_list call with the given raw arguments (nil = bare
+// view call). It replaces the old action-shaped update helper: presence of
+// the add/update arrays is the whole dispatch.
+func (h *taskToolHarness) call(t *testing.T, args map[string]any) tool.ExecResult {
 	t.Helper()
-	args, err := json.Marshal(map[string]any{"action": "update", "updates": updates})
+	raw, err := json.Marshal(args)
 	if err != nil {
-		t.Fatalf("marshal update: %v", err)
+		t.Fatalf("marshal task_list args: %v", err)
 	}
 	return h.reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
-		ID: "task-update", Name: "task_list", Arguments: args,
+		ID: "task-call", Name: "task_list", Arguments: raw,
 	})
+}
+
+// update is a convenience for update-only calls.
+func (h *taskToolHarness) update(t *testing.T, updates ...map[string]any) tool.ExecResult {
+	t.Helper()
+	return h.call(t, map[string]any{"update": updates})
 }
 
 func decodeTaskToolState(t *testing.T, result tool.ExecResult) []taskToolStateEntry {
@@ -243,5 +252,146 @@ func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
 	payload := parseTaskCompletionLLMPayload(t, llm.User(h.steers[0]))
 	if payload.CompletionState != "ready_for_final_output" || len(payload.BlockingDelegateIDs) != 0 {
 		t.Fatalf("legacy completion payload = %+v, want ready with no blocking delegates", payload)
+	}
+}
+
+// TestTaskTool_CombinedAddUpdate: both arrays in one call apply atomically
+// with one publication revision and one EventTaskUpdated.
+func TestTaskTool_CombinedAddUpdate(t *testing.T) {
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{map[string]any{
+			"type": "implement", "description": "first", "prompt": "do one",
+		}},
+		"update": []any{map[string]any{
+			"id": 1, "status": "in_progress",
+		}},
+	})
+	if res.IsError {
+		t.Fatalf("combined call: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "Added 1 task(s); updated 1→in_progress") {
+		t.Fatalf("output should combine add+update ack: %q", res.FullOutput)
+	}
+	view := h.store.View()
+	if len(view) != 1 || view[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("combined call should add and start: %+v", view)
+	}
+}
+
+// TestTaskTool_UpdateReferencesThisCallAddsRejected: the model cannot know
+// IDs this call's add would assign, so updates must validate against the
+// pre-add store state, and a failed combined call must apply nothing.
+func TestTaskTool_UpdateReferencesThisCallAddsRejected(t *testing.T) {
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{
+		"add": []any{map[string]any{
+			"type": "implement", "description": "first", "prompt": "do one",
+		}},
+		"update": []any{map[string]any{
+			"id": 5, "status": "in_progress",
+		}},
+	})
+	if !res.IsError {
+		t.Fatal("update targeting an ID this call's add would create must be rejected")
+	}
+	if !strings.Contains(res.FullOutput, "unknown task ID 5") {
+		t.Fatalf("error should name the unknown ID: %s", res.FullOutput)
+	}
+	if len(h.store.View()) != 0 {
+		t.Fatal("failed combined call must not apply its adds either (atomicity)")
+	}
+}
+
+// TestTaskTool_EmptyArraysAreNoOps: strict-mode models force-send both
+// arrays; empty ones must be no-ops. With no mutation, the response is
+// the view output (the list), same as a bare call.
+func TestTaskTool_EmptyArraysAreNoOps(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
+	res := h.call(t, map[string]any{"add": []any{}, "update": []any{}})
+	if res.IsError {
+		t.Fatalf("empty arrays must be no-ops: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "1. [open]") {
+		t.Fatalf("response must still return the list: %q", res.FullOutput)
+	}
+}
+
+// TestTaskTool_ViewIsBareCall: no arrays = view, returns the list.
+func TestTaskTool_ViewIsBareCall(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
+	res := h.call(t, map[string]any{})
+	if res.IsError {
+		t.Fatalf("bare call must be a view: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "1. [open]") {
+		t.Fatalf("bare call must return the list: %q", res.FullOutput)
+	}
+}
+
+// TestTaskTool_OldActionShapeRejectedHelpfully: back-compat — old
+// action-shaped calls fail at validation.
+func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
+	h := newTaskToolHarness(t, nil)
+	res := h.call(t, map[string]any{"action": "view"})
+	if !res.IsError {
+		t.Fatal("old action-shaped call must be rejected")
+	}
+}
+
+// TestTaskTool_NoOpUpdateEntryRejected: an update entry that changes
+// nothing is a model mistake, not a no-op.
+func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
+	res := h.call(t, map[string]any{
+		"update": []any{map[string]any{"id": 1}},
+	})
+	if !res.IsError {
+		t.Fatal("empty update entry must be rejected")
+	}
+	if !strings.Contains(res.FullOutput, "changes nothing") {
+		t.Fatalf("error should say the entry changes nothing: %s", res.FullOutput)
+	}
+}
+
+// TestTaskTool_AutoAdvanceCanPickSameCallAdd: completing a task in a call
+// that also adds an eligible replacement auto-starts the new task in the
+// same publication — "when you mark a task done, the next eligible task
+// auto-starts" applies to same-call adds too.
+func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "first", Prompt: "p1"}})
+	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res := h.call(t, map[string]any{
+		"update": []any{map[string]any{"id": 1, "status": "done"}},
+		"add":    []any{map[string]any{"type": "implement", "description": "second", "prompt": "p2"}},
+	})
+	if res.IsError {
+		t.Fatalf("combined completion+add: %s", res.FullOutput)
+	}
+	view := h.store.View()
+	if len(view) != 2 || view[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("auto-advance should start the same-call add: %+v", view)
+	}
+	if len(h.steers) == 0 {
+		t.Fatal("auto-advance steering should fire for the new task")
+	}
+}
+
+// TestTaskTool_NotesOnlyUpdateWorks: the end-to-end bug fix from the review.
+func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
+	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res := h.call(t, map[string]any{
+		"update": []any{map[string]any{"id": 1, "notes": "found the root cause"}},
+	})
+	if res.IsError {
+		t.Fatalf("notes-only update must succeed (was: invalid status \"<nil>\"): %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "Updated 1.") {
+		t.Fatalf("ack: %q", res.FullOutput)
 	}
 }
