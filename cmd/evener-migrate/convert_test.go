@@ -208,7 +208,7 @@ func TestExecuteConvertsOldProvidersConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("original must be backed up beside the file: %v", err)
 	}
-	if string(backup) != string(src) {
+	if !bytes.Equal(backup, src) {
 		t.Fatalf("backup must hold the original bytes")
 	}
 	if !strings.Contains(stdout.String(), "providers.toml") {
@@ -238,7 +238,7 @@ func TestExecuteDryRunLeavesOldProvidersConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(src) {
+	if !bytes.Equal(after, src) {
 		t.Fatal("dry-run must not touch the file")
 	}
 	if !strings.Contains(stdout.String(), "providers.toml") {
@@ -266,7 +266,7 @@ func TestExecuteSkipsNewSchemaProvidersConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(src) {
+	if !bytes.Equal(after, src) {
 		t.Fatal("a new-schema file is not to be rewritten")
 	}
 	if _, err := os.Stat(path + ".pre-registry"); !os.IsNotExist(err) {

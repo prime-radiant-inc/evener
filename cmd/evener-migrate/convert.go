@@ -164,7 +164,7 @@ func convertProvidersConfig(src []byte) ([]byte, []string, error) {
 				// "openai-compatible" family: it never inherited a vendor
 				// key, so none is invented for it here.
 				if inst.Type == "openai" && inst.APIStyle == "chat-completions" {
-					notes = append(notes, fmt.Sprintf("%s: no key carried over (the old schema inherited none here); set api_key_env or credential_headers if the gateway needs one", name))
+					notes = append(notes, name+": no key carried over (the old schema inherited none here); set api_key_env or credential_headers if the gateway needs one")
 				} else if env, ok := vendorKeyEnv[target.base]; ok {
 					// See vendorKeyEnv: base_url instances no longer inherit.
 					fmt.Fprintf(&b, "api_key_env = [%q]\n", env)
@@ -176,7 +176,7 @@ func convertProvidersConfig(src []byte) ([]byte, []string, error) {
 		case !strings.Contains(inst.APIKey, "$"):
 			fmt.Fprintf(&b, "api_key = %q\n", inst.APIKey)
 		default:
-			notes = append(notes, fmt.Sprintf("%s: api_key used $-expansion the new schema does not spell; set it with `evener providers add`", name))
+			notes = append(notes, name+": api_key used $-expansion the new schema does not spell; set it with `evener providers add`")
 			b.WriteString("# migrate: the old api_key mixed literal text with $VAR expansion; re-create the credential by hand\n")
 		}
 		writeStringTable(&b, name, "headers", inst.Headers)
