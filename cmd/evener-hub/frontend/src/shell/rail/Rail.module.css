@@ -130,6 +130,17 @@
   padding: var(--space-2) 0;
 }
 
+/* Mobile's Sheet body is the single scroll owner for the drawer. In that
+ * mode the rail must grow with its list instead of creating a nested scroll
+ * region; the default desktop rail keeps the rules above unchanged. */
+.parentScrollRail {
+  height: auto;
+}
+
+.parentScrollBody {
+  overflow: visible;
+}
+
 .section {
   padding: var(--space-2) 0;
 }

@@ -31,6 +31,7 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // the scripted tree (12 projects x 10 sessions) overflows it several times
 // over - the exact condition the bug needed.
 const VIEWPORT = { width: 1400, height: 900 };
+const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 async function measure(cdpEndpoint, vitePort) {
   const page = await connectPage(cdpEndpoint);
@@ -41,6 +42,21 @@ async function measure(cdpEndpoint, vitePort) {
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureShell())"));
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+async function measureMobileSidebar(cdpEndpoint, vitePort) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, MOBILE_VIEWPORT);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
+    await evaluate(send, "window.settledShell");
+    await waitForFonts(send);
+    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureMobileSidebar())"));
   } finally {
     await clearViewportOverride(send);
     page.close();
@@ -83,6 +99,54 @@ function assertResult(result) {
       `elements escape the viewport's bottom edge: ${result.leaks.map((l) => `${l.selector} bottom=${l.bottom.toFixed(1)}`).join("; ")}`,
     );
   }
+  return failures;
+}
+
+function assertMobileResult(result) {
+  const failures = [];
+  if (result.errors.length > 0) failures.push(`page errors: ${result.errors.join("; ")}`);
+  if (result.viewport.width !== MOBILE_VIEWPORT.width || result.viewport.height !== MOBILE_VIEWPORT.height) {
+    failures.push(
+      `mobile viewport is ${result.viewport.width}x${result.viewport.height}, expected ${MOBILE_VIEWPORT.width}x${MOBILE_VIEWPORT.height}`,
+    );
+  }
+  if (result.panel === null) {
+    failures.push("mobile Sheet panel is not rendered");
+  } else if (result.panel.overflowY !== "hidden") {
+    failures.push(`mobile Sheet panel overflow-y is ${result.panel.overflowY}, expected hidden`);
+  }
+  if (result.panelBody === null) {
+    failures.push("mobile Sheet body is not rendered");
+  } else {
+    if (result.panelBody.overflowY !== "auto") {
+      failures.push(`mobile Sheet body overflow-y is ${result.panelBody.overflowY}, expected auto`);
+    }
+    if (result.panelBody.scrollHeight <= result.panelBody.clientHeight + 1) {
+      failures.push(
+        `mobile Sheet body is not scrolling its content (scrollHeight ${result.panelBody.scrollHeight}, clientHeight ${result.panelBody.clientHeight})`,
+      );
+    }
+  }
+  if (result.panel !== null && result.panel.scrollHeight > result.panel.clientHeight + 1) {
+    failures.push(
+      `mobile Sheet panel itself scrolls (scrollHeight ${result.panel.scrollHeight}, clientHeight ${result.panel.clientHeight})`,
+    );
+  }
+  if (result.rail === null) failures.push("mobile rail is not rendered inside the Sheet");
+  else if (result.rail.overflowY !== "visible") failures.push(`mobile rail overflow-y is ${result.rail.overflowY}, expected visible`);
+  if (result.railBody === null) failures.push("mobile rail body is not rendered");
+  else if (result.railBody.overflowY !== "visible") {
+    failures.push(`mobile rail body overflow-y is ${result.railBody.overflowY}, expected visible`);
+  }
+  if (result.document.scrollHeight > MOBILE_VIEWPORT.height + 1) {
+    failures.push(
+      `mobile document is ${result.document.scrollHeight}px tall in a ${MOBILE_VIEWPORT.height}px viewport`,
+    );
+  }
+  if (result.searchBox) failures.push("mobile inline search box is still rendered");
+  if (result.resume) failures.push("mobile Jump back in action is still rendered");
+  if (result.hints) failures.push("mobile key-binding hints are still rendered");
+  if (!result.orientation) failures.push("mobile orientation text is missing");
   return failures;
 }
 
@@ -131,12 +195,13 @@ async function main() {
       startupDeadline.clear();
     }
     const result = await measure(cdpEndpoint, vitePort);
-    const failures = assertResult(result);
+    const mobileResult = await measureMobileSidebar(cdpEndpoint, vitePort);
+    const failures = [...assertResult(result), ...assertMobileResult(mobileResult)];
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
-          `${result.treeRows} tree rows`,
+          `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobileResult.panelBody.scrollHeight}px in ${mobileResult.panelBody.clientHeight}px)`,
       );
     } else {
       for (const failure of failures) console.error(`shellguard FAIL: ${failure}`);
@@ -147,6 +212,7 @@ async function main() {
         console.error(`  ${link.selector} height=${link.height.toFixed(1)} ${JSON.stringify(link.computed)}`);
       }
       console.error(`railBody: ${JSON.stringify(result.railBody)}`);
+      console.error(`mobile sidebar: ${JSON.stringify(mobileResult)}`);
       console.error(`experiments: ${JSON.stringify(result.experiments)}`);
       console.error("positioned elements under the rail:");
       for (const el of result.positioned ?? []) {

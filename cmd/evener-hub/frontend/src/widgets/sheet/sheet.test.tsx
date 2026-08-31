@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { Sheet } from "./index";
+import sheetStyles from "./sheet.module.css";
 
 afterEach(cleanup);
 
@@ -49,6 +50,38 @@ test("defaults to size=standard and wide adds a distinct sizing class while pres
   expect(standardClass).not.toBe("");
   expect(wideClass).not.toBe("");
   expect(wideClass).not.toBe(standardClass);
+});
+
+test("appends an optional panel class without replacing sheet geometry classes", () => {
+  render(
+    <Sheet open onClose={vi.fn()} title="t" panelClassName="single-scroll-panel">
+      Body
+    </Sheet>,
+  );
+
+  const panel = screen.getByRole("dialog");
+  expect(panel.className).toContain("single-scroll-panel");
+  expect(panel.className.split(/\s+/).length).toBeGreaterThan(1);
+});
+
+test("optional panel styling does not change expandable geometry classes", () => {
+  render(
+    <Sheet
+      open
+      side="bottom"
+      size="wide"
+      expandable={{ peekHeight: 200 }}
+      onClose={vi.fn()}
+      title="t"
+      panelClassName="single-scroll-panel"
+    >
+      Body
+    </Sheet>,
+  );
+
+  const panel = screen.getByRole("dialog");
+  expect(panel.className).toContain("single-scroll-panel");
+  expect(panel.className).not.toContain(sheetStyles.wide);
 });
 
 test("renders as a modal dialog when open, labelled by its title, same contract as Dialog", () => {

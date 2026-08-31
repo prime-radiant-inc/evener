@@ -108,6 +108,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
       onWidthChange={isMobile ? undefined : (width) => prefsStore.getState().setSidebarWidth(width)}
       revealTarget={revealTarget}
       onRevealConsumed={clearReveal}
+      scrollOwner={isMobile ? "parent" : "rail"}
     />
   );
 }
