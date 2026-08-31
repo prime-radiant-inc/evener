@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
 )
 
@@ -104,6 +107,63 @@ func TestWriteSidecarFromWriterWindowsAtCheckpointEntryStart(t *testing.T) {
 	}
 	if sidecar.SnapshotsComplete {
 		t.Fatalf("compaction anchor must not claim complete snapshots it did not compute")
+	}
+}
+
+// TestRollbackAfterCheckpointInvalidatesAnchor pins the crash-consistency
+// window: a durable append that fails and rolls back must not leave the
+// writer's checkpoint anchor (or its in-memory write position) claiming
+// bytes the file no longer holds. The next plain append after a rollback
+// uses writePos to place the next checkpoint anchor; a stale value would
+// window a future resume past bytes that are back in the file.
+func TestRollbackAfterCheckpointInvalidatesAnchor(t *testing.T) {
+	const sessionID = "s_rollback"
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionID+".transcript.jsonl")
+	// A fault fs that fails the 4th sync (the durable append's sync), with
+	// every other op succeeding: the durable append writes, its sync fails,
+	// and the rollback truncates the entry back out.
+	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(9)))
+	w, err := newWriterFS(fs, path, Header{SessionID: sessionID}, true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		// Plain appends: SyncInterval 0 syncs every write, so advance the
+		// fault plan past the header ops and these syncs first. faultPlan(k)
+		// trips exactly the k-th op; the writer's op order here is
+		// 0=MkdirAll 1=Create 2=header Write 3=header Sync, then each plain
+		// append is Write+Sync (ops 4,5 then 6,7) — so the durable
+		// checkpoint's Sync is op 9.
+		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("turn"))); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	// A checkpoint entry, appended durably — its sync is the faulted op, so
+	// the append rolls back.
+	err = w.AppendDurable(schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint that rolls back")))
+	if err == nil {
+		t.Fatal("expected the faulted durable append to fail")
+	}
+	w.mu.Lock()
+	ckptStart := w.lastCheckpointStart
+	writePos := w.writePos
+	w.mu.Unlock()
+	if ckptStart != -1 {
+		t.Fatalf("checkpoint anchor survived a rollback: start=%d, want -1", ckptStart)
+	}
+	// The rollback restored the position to the pre-append offset; the
+	// next append must place itself there, not past the rolled-back bytes.
+	info, statErr := fs.Stat(path)
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	if writePos != info.Size() {
+		t.Fatalf("writePos after rollback: got %d, want the file size %d", writePos, info.Size())
+	}
+	// The anchor the writer would write now must refuse (no checkpoint).
+	if anchorErr := w.WriteSidecarFromWriter(path, nil, nil, nil, false); anchorErr == nil {
+		t.Fatal("writer accepted a sidecar anchor with no surviving checkpoint")
 	}
 }
 

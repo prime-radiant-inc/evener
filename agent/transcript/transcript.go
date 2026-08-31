@@ -659,6 +659,16 @@ func (w *Writer) appendFailureLocked(operation string, err error, startOffset in
 }
 
 func (w *Writer) rollbackAppendLocked(startOffset int64) error {
+	// The in-memory position moves with the file: a rollback that truncates
+	// must not leave writePos (or a checkpoint anchor captured inside the
+	// rolled-back range) claiming bytes the file no longer holds.
+	if w.lastCheckpointStart >= startOffset {
+		w.lastCheckpointStart = -1
+		w.checkpointPrefixSeq = 0
+		w.checkpointPrefixCount = 0
+		w.checkpointFailureFloor = 0
+	}
+	w.writePos = startOffset
 	truncateErr := w.file.Truncate(startOffset)
 	_, seekErr := w.file.Seek(0, io.SeekEnd)
 	if truncateErr != nil && seekErr != nil {
