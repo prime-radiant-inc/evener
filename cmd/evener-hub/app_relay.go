@@ -30,11 +30,12 @@ type hubRelayHandle struct {
 }
 
 type relayKeyState struct {
-	commands     int
-	relayKey     string
-	thread       appwire.Thread
-	argsByCallID map[string]string
-	routingKeys  map[string]struct{}
+	commands      int
+	relayKey      string
+	thread        appwire.Thread
+	argsByCallID  map[string]string
+	routingKeys   map[string]struct{}
+	stopRequested bool
 }
 
 type hubThreadReadResult struct {
@@ -311,6 +312,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		handle.routes[routingKey] = state
 		state.routingKeys[routingKey] = struct{}{}
 	}
+	removeRelayKeyStateLocked := func(handle *hubRelayHandle, state *relayKeyState) bool {
+		if state == nil || relayedThreads[state.relayKey] != handle || handle.relayKeys[state.relayKey] != state {
+			return false
+		}
+		removeStateRoutesLocked(handle, state)
+		delete(handle.relayKeys, state.relayKey)
+		delete(relayedThreads, state.relayKey)
+		return true
+	}
 	finishHandleLocked := func(handle *hubRelayHandle, err error) {
 		select {
 		case <-handle.ready:
@@ -526,8 +536,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return nil, nil, nil, err
 		}
 		bindRelayKeyLocked := func(handle *hubRelayHandle) *relayKeyState {
+			var inheritedRoutes []string
 			if previous := relayedThreads[relayKey]; previous != nil && previous != handle {
 				previousState := previous.relayKeys[relayKey]
+				if previousState != nil {
+					inheritedRoutes = make([]string, 0, len(previousState.routingKeys))
+					for routingKey := range previousState.routingKeys {
+						inheritedRoutes = append(inheritedRoutes, routingKey)
+					}
+				}
 				removeStateRoutesLocked(previous, previousState)
 				delete(previous.relayKeys, relayKey)
 			}
@@ -542,21 +559,41 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					routingKeys:  make(map[string]struct{}),
 				}
 				handle.relayKeys[relayKey] = state
-				relayedThreads[relayKey] = handle
+			}
+			for _, routingKey := range inheritedRoutes {
+				bindStateRouteLocked(handle, routingKey, state)
 			}
 			bindStateRouteLocked(handle, relayKey, state)
+			// Publish downstream ownership only after the replacement state owns
+			// every route inherited from the displaced generation. Fanout takes
+			// this same mutex, so it observes the complete transition or neither.
+			relayedThreads[relayKey] = handle
 			state.commands++
 			handle.commandOwners++
 			return state
 		}
 		releaseRelayKey := func(handle *hubRelayHandle, state *relayKeyState) func() {
 			return func() {
+				var closeHandle *hubRelayHandle
 				relayMu.Lock()
 				if state.commands > 0 && handle.commandOwners > 0 {
 					state.commands--
 					handle.commandOwners--
 				}
+				if state.stopRequested && state.commands == 0 {
+					removeRelayKeyStateLocked(handle, state)
+				}
+				if handle.canonical != (appwire.Ref{}) &&
+					canonicalRelays[handle.canonical] == handle &&
+					len(handle.relayKeys) == 0 && handle.commandOwners == 0 {
+					removeRelayHandleLocked(handle)
+					finishHandleLocked(handle, context.Canceled)
+					closeHandle = handle
+				}
 				relayMu.Unlock()
+				if closeHandle != nil {
+					closeRelayHandle(closeHandle)
+				}
 			}
 		}
 		for {
@@ -1260,12 +1297,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			closeHandle = handle
 		} else if handle != nil {
 			state := handle.relayKeys[relayKey]
-			if state != nil && relayedThreads[relayKey] == handle {
-				removeStateRoutesLocked(handle, state)
-				delete(handle.relayKeys, relayKey)
-				delete(relayedThreads, relayKey)
+			if state != nil && state.commands != 0 {
+				state.stopRequested = true
+			} else {
+				removeRelayKeyStateLocked(handle, state)
 			}
-			if len(handle.relayKeys) == 0 {
+			if len(handle.relayKeys) == 0 && handle.commandOwners == 0 {
 				removeRelayHandleLocked(handle)
 				finishHandleLocked(handle, context.Canceled)
 				closeHandle = handle

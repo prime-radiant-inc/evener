@@ -3912,6 +3912,75 @@ func TestHubRelayKeyStopKeepsCanonicalSiblingAndListener(t *testing.T) {
 	relays.stopRelay(childRef)
 }
 
+func TestHubRelayKeyStopDefersFinalTeardownForInFlightCommand(t *testing.T) {
+	const relayKey = "local:stop-in-flight"
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	leaseClosed := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-in-flight", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		readHook: func() {
+			close(readEntered)
+			<-releaseRead
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(leaseClosed) },
+	}
+	source := &relaySessionTestSource{lease: lease}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	readResult := make(chan readOutcome, 1)
+	go func() {
+		read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		readResult <- readOutcome{read: read, err: err}
+	}()
+	<-readEntered
+
+	relays.stopRelay(relayKey)
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseRead)
+		t.Fatalf("command owners after deferred relay-key stop = %d, want 1", got)
+	}
+	if got := lease.closeCallCount(); got != 0 {
+		close(releaseRead)
+		t.Fatalf("lease closes while stopped key command is in flight = %d, want 0", got)
+	}
+	select {
+	case <-leaseClosed:
+		close(releaseRead)
+		t.Fatal("final canonical lease closed before the in-flight command released")
+	default:
+	}
+
+	close(releaseRead)
+	result := <-readResult
+	if result.err != nil {
+		t.Fatalf("readThread: %v", result.err)
+	}
+	result.read.finish(false)
+	select {
+	case <-leaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("deferred relay-key stop did not close the final lease after command release")
+	}
+	if got := lease.closeCallCount(); got != 1 {
+		t.Fatalf("final lease closes = %d, want 1", got)
+	}
+}
+
 func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
 	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-a"}
 	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-b"}
