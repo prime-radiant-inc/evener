@@ -2265,8 +2265,10 @@ files are renamed or deleted.
   survive as a feature with models.dev's URL convention.
 - Bedrock via Anthropic's Messages endpoint on `bedrock-mantle`, bearer
   token only. No SigV4, no event-stream framing, no AWS SDK dependency.
-  Global routing ships now, as `global.` inference-profile model ids on the
-  regional host (Jesse verified live, 2026-08-28).
+  Inference-profile ids (`global.`/`us.`/…) resolve for metadata but are
+  hidden from listings — the Mantle endpoint serves only unprefixed Claude ids
+  (§9.3, verified live 2026-08-31; the 2026-08-28 global verification predates
+  this and its path is an open question).
 - Surface is a model attribute derived from models.dev `family`; the
   provider fallback applies only to family-less and synthesized rows.
 - 413 stays a context-length error; the classifier's new work is the
