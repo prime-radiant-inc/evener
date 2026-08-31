@@ -108,6 +108,68 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	if got := aliasDeltaCountUntilBarrier(t, fresh, "one child delta"); got != 0 {
 		t.Fatalf("fresh root-only client received child delta %d times, want none", got)
 	}
+
+	for _, tc := range []struct {
+		name     string
+		method   string
+		params   string
+		wantBoth int
+		wantRoot int
+	}{
+		{
+			name:     "untargeted fans out under every current key",
+			method:   "test/alias-untargeted",
+			params:   `{"value":"untargeted"}`,
+			wantBoth: 2,
+			wantRoot: 1,
+		},
+		{
+			name:     "wrong-typed ref is malformed and fans out without thread fallback",
+			method:   "test/alias-malformed",
+			params:   `{"ref":1,"threadId":"child-thread"}`,
+			wantBoth: 2,
+			wantRoot: 1,
+		},
+		{
+			name:     "unknown valid ref is dropped",
+			method:   "test/alias-unknown",
+			params:   `{"ref":"local:not-current"}`,
+			wantBoth: 0,
+			wantRoot: 0,
+		},
+		{
+			name:     "foreign valid ref is dropped",
+			method:   "test/alias-foreign",
+			params:   `{"ref":"remote:root-thread"}`,
+			wantBoth: 0,
+			wantRoot: 0,
+		},
+		{
+			name:     "empty string ref remains authoritative and is dropped",
+			method:   "test/alias-empty-ref",
+			params:   `{"ref":"","threadId":"child-thread"}`,
+			wantBoth: 0,
+			wantRoot: 0,
+		},
+		{
+			name:     "empty string thread id remains targeted and is dropped",
+			method:   "test/alias-empty-thread",
+			params:   `{"threadId":""}`,
+			wantBoth: 0,
+			wantRoot: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool.emit(t, appwire.Notification{Method: tc.method, Params: json.RawMessage(tc.params)})
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			if got := aliasMethodCountUntilBarrier(t, longLived, tc.method); got != tc.wantBoth {
+				t.Fatalf("root+child client received %s %d times, want %d", tc.method, got, tc.wantBoth)
+			}
+			if got := aliasMethodCountUntilBarrier(t, fresh, tc.method); got != tc.wantRoot {
+				t.Fatalf("root-only client received %s %d times, want %d", tc.method, got, tc.wantRoot)
+			}
+		})
+	}
 }
 
 func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) {
@@ -291,26 +353,26 @@ func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
 	}
 }
 
-func TestRelayNotificationTargetsPreservesRoutingPrecedenceAndUnknownPayloads(t *testing.T) {
+func TestRelayNotificationRoutingKey(t *testing.T) {
 	tests := []struct {
-		name         string
-		params       string
-		threadID     string
-		ref          string
-		wantTargeted bool
+		name        string
+		params      string
+		wantKey     string
+		wantRouting relayNotificationRouting
 	}{
-		{name: "matching ref wins over conflicting thread", params: `{"ref":"local:target","threadId":"other"}`, threadID: "target", ref: "local:target", wantTargeted: true},
-		{name: "mismatched ref wins over matching thread", params: `{"ref":"local:other","threadId":"target"}`, threadID: "target", ref: "local:target", wantTargeted: false},
-		{name: "thread fallback matches", params: `{"threadId":"target"}`, threadID: "target", ref: "local:target", wantTargeted: true},
-		{name: "thread fallback rejects mismatch", params: `{"threadId":"other"}`, threadID: "target", ref: "local:target", wantTargeted: false},
-		{name: "untargeted payload preserves delivery", params: `{}`, threadID: "target", ref: "local:target", wantTargeted: true},
-		{name: "malformed payload preserves delivery", params: `{`, threadID: "target", ref: "local:target", wantTargeted: true},
+		{name: "string ref wins over thread id", params: `{"ref":"local:root","threadId":"child"}`, wantKey: "local:root", wantRouting: relayNotificationTargeted},
+		{name: "empty string ref wins without fallback", params: `{"ref":"","threadId":"child"}`, wantKey: "", wantRouting: relayNotificationTargeted},
+		{name: "wrong-typed ref is malformed without fallback", params: `{"ref":1,"threadId":"child"}`, wantRouting: relayNotificationMalformed},
+		{name: "string thread id falls back through source", params: `{"threadId":"child"}`, wantKey: "local:child", wantRouting: relayNotificationTargeted},
+		{name: "empty string thread id remains targeted", params: `{"threadId":""}`, wantKey: "local:", wantRouting: relayNotificationTargeted},
+		{name: "missing routing fields are untargeted", params: `{}`, wantRouting: relayNotificationUntargeted},
+		{name: "invalid json is malformed", params: `{`, wantRouting: relayNotificationMalformed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := relayNotificationTargets(appwire.Notification{Params: json.RawMessage(tc.params)}, tc.threadID, tc.ref)
-			if got != tc.wantTargeted {
-				t.Fatalf("relayNotificationTargets() = %v, want %v", got, tc.wantTargeted)
+			gotKey, gotRouting := relayNotificationRoutingKey(appwire.Notification{Params: json.RawMessage(tc.params)}, "local")
+			if gotKey != tc.wantKey || gotRouting != tc.wantRouting {
+				t.Fatalf("relayNotificationRoutingKey() = (%q, %v), want (%q, %v)", gotKey, gotRouting, tc.wantKey, tc.wantRouting)
 			}
 		})
 	}
@@ -320,6 +382,7 @@ type aliasRelaySource struct {
 	relayLifecycleSource
 	pool              *aliasRelayPool
 	cwd               string
+	threads           map[string]appwire.Thread
 	authoritativeRefs map[string]string
 	canonicalRefs     map[string]appwire.Ref
 
@@ -394,15 +457,19 @@ func (l *aliasRelayLease) Read(_ context.Context, params appwire.ThreadReadParam
 	if authoritativeRef == "" {
 		authoritativeRef = appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 	}
+	thread := appwire.Thread{
+		ID:        threadID,
+		SessionID: threadID,
+		Source:    "local",
+		CWD:       l.source.cwd,
+		Evener:    appwire.EvenerThread{Ref: authoritativeRef},
+	}
+	if configured, ok := l.source.threads[threadID]; ok {
+		thread = configured
+	}
 	return appsource.RelayReadResult{
-		Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        threadID,
-			SessionID: threadID,
-			Source:    "local",
-			CWD:       l.source.cwd,
-			Evener:    appwire.EvenerThread{Ref: authoritativeRef},
-		}},
-		Handoff: &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
+		Response: appwire.ThreadReadResponse{Thread: thread},
+		Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
 	}, nil
 }
 
@@ -475,6 +542,29 @@ func aliasDeltaCountUntilBarrier(t *testing.T, client *appwire.Client, delta str
 				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == delta {
 					count++
 				}
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for alias delivery barrier")
+		}
+	}
+}
+
+func aliasMethodCountUntilBarrier(t *testing.T, client *appwire.Client, method string) int {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	count := 0
+	for {
+		select {
+		case notification, ok := <-client.Notifications():
+			if !ok {
+				t.Fatal("client notification stream closed before barrier")
+			}
+			if notification.Method == "test/alias-barrier" {
+				return count
+			}
+			if notification.Method == method {
+				count++
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for alias delivery barrier")

@@ -23,12 +23,15 @@ type hubRelayHandle struct {
 	closeOnce   sync.Once
 	canonical   appwire.Ref
 	relayKeys   map[string]*relayKeyState
+	routes      map[string]*relayKeyState
 }
 
 type relayKeyState struct {
 	commands     int
+	relayKey     string
 	thread       appwire.Thread
 	argsByCallID map[string]string
+	routingKeys  map[string]struct{}
 }
 
 type hubThreadReadResult struct {
@@ -222,31 +225,46 @@ func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams)
 	return source.ID() + ":" + threadID, threadID, nil
 }
 
-// relayNotificationTargets reports whether one notification from a shared
-// local-daemon relay session belongs to this hub relay handle. Root sessions
-// and their in-process descendants share one upstream RelaySession, so every
-// handle's listener observes every subscribed alias unless the hub filters at
-// this boundary. Ref has the same precedence the browser reducer uses.
-func relayNotificationTargets(notification appwire.Notification, threadID, ref string) bool {
+type relayNotificationRouting int
+
+const (
+	relayNotificationUntargeted relayNotificationRouting = iota
+	relayNotificationMalformed
+	relayNotificationTargeted
+)
+
+// relayNotificationRoutingKey normalizes the authoritative identity carried
+// by a relay frame. String ref has the same precedence as the browser reducer,
+// including empty and syntactically invalid strings. Wrong-typed present
+// fields are malformed rather than absent, so they cannot fall through.
+func relayNotificationRoutingKey(notification appwire.Notification, sourceID string) (string, relayNotificationRouting) {
 	var params map[string]json.RawMessage
 	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
-		return true
+		return "", relayNotificationMalformed
 	}
-	var targetRef string
-	if raw := params["ref"]; len(raw) > 0 && json.Unmarshal(raw, &targetRef) != nil {
-		return true
+	if raw, ok := params["ref"]; ok {
+		var value any
+		if json.Unmarshal(raw, &value) != nil {
+			return "", relayNotificationMalformed
+		}
+		ref, ok := value.(string)
+		if !ok {
+			return "", relayNotificationMalformed
+		}
+		return ref, relayNotificationTargeted
 	}
-	if targetRef != "" {
-		return targetRef == ref
+	if raw, ok := params["threadId"]; ok {
+		var value any
+		if json.Unmarshal(raw, &value) != nil {
+			return "", relayNotificationMalformed
+		}
+		threadID, ok := value.(string)
+		if !ok {
+			return "", relayNotificationMalformed
+		}
+		return sourceID + ":" + threadID, relayNotificationTargeted
 	}
-	var targetThreadID string
-	if raw := params["threadId"]; len(raw) > 0 && json.Unmarshal(raw, &targetThreadID) != nil {
-		return true
-	}
-	if targetThreadID != "" {
-		return targetThreadID == threadID
-	}
-	return true
+	return "", relayNotificationUntargeted
 }
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
@@ -268,6 +286,27 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	canonicalRelays := map[appwire.Ref]*hubRelayHandle{}
+	removeStateRoutesLocked := func(handle *hubRelayHandle, state *relayKeyState) {
+		if state == nil {
+			return
+		}
+		for routingKey := range state.routingKeys {
+			if handle.routes[routingKey] == state {
+				delete(handle.routes, routingKey)
+			}
+			delete(state.routingKeys, routingKey)
+		}
+	}
+	bindStateRouteLocked := func(handle *hubRelayHandle, routingKey string, state *relayKeyState) {
+		if routingKey == "" {
+			return
+		}
+		if previous := handle.routes[routingKey]; previous != nil && previous != state {
+			delete(previous.routingKeys, routingKey)
+		}
+		handle.routes[routingKey] = state
+		state.routingKeys[routingKey] = struct{}{}
+	}
 	finishHandleLocked := func(handle *hubRelayHandle, err error) {
 		select {
 		case <-handle.ready:
@@ -294,8 +333,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				delete(relayedThreads, relayKey)
 			}
 		}
-		for relayKey := range handle.relayKeys {
+		for relayKey, state := range handle.relayKeys {
+			removeStateRoutesLocked(handle, state)
 			delete(handle.relayKeys, relayKey)
+		}
+		for routingKey := range handle.routes {
+			delete(handle.routes, routingKey)
 		}
 	}
 	retireRelayHandle := func(handle *hubRelayHandle) {
@@ -390,12 +433,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						thread       appwire.Thread
 						argsByCallID map[string]string
 					}
-					relayMu.Lock()
-					targets := make([]relayTargetState, 0, len(handle.relayKeys))
-					for relayKey, state := range handle.relayKeys {
-						if relayedThreads[relayKey] != handle {
-							continue
-						}
+					targetState := func(relayKey string, state *relayKeyState) relayTargetState {
 						parsedRef, _ := appwire.ParseRef(relayKey)
 						target := relayTargetState{
 							relayKey:     relayKey,
@@ -410,13 +448,26 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						if state.thread.Evener.Ref != "" {
 							target.ref = state.thread.Evener.Ref
 						}
-						targets = append(targets, target)
+						return target
+					}
+					relayKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
+					relayMu.Lock()
+					var targets []relayTargetState
+					if routing == relayNotificationTargeted {
+						state := handle.routes[relayKey]
+						if state != nil && handle.relayKeys[state.relayKey] == state && relayedThreads[state.relayKey] == handle {
+							targets = append(targets, targetState(state.relayKey, state))
+						}
+					} else {
+						targets = make([]relayTargetState, 0, len(handle.relayKeys))
+						for currentKey, state := range handle.relayKeys {
+							if relayedThreads[currentKey] == handle {
+								targets = append(targets, targetState(currentKey, state))
+							}
+						}
 					}
 					relayMu.Unlock()
 					for _, target := range targets {
-						if !relayNotificationTargets(delivery.Notification, target.threadID, target.ref) {
-							continue
-						}
 						notification := delivery.Notification
 						// The edits only this hub can make to a local daemon's
 						// notification on its way to a browser: the images it can
@@ -458,14 +509,24 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		bindRelayKeyLocked := func(handle *hubRelayHandle) *relayKeyState {
 			if previous := relayedThreads[relayKey]; previous != nil && previous != handle {
+				previousState := previous.relayKeys[relayKey]
+				removeStateRoutesLocked(previous, previousState)
 				delete(previous.relayKeys, relayKey)
+			}
+			if handle.routes == nil {
+				handle.routes = make(map[string]*relayKeyState)
 			}
 			state := handle.relayKeys[relayKey]
 			if relayedThreads[relayKey] != handle || state == nil {
-				state = &relayKeyState{argsByCallID: make(map[string]string)}
+				state = &relayKeyState{
+					relayKey:     relayKey,
+					argsByCallID: make(map[string]string),
+					routingKeys:  make(map[string]struct{}),
+				}
 				handle.relayKeys[relayKey] = state
 				relayedThreads[relayKey] = handle
 			}
+			bindStateRouteLocked(handle, relayKey, state)
 			state.commands++
 			return state
 		}
@@ -509,6 +570,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				cancel:    cancelRelay,
 				canonical: canonicalRef,
 				relayKeys: make(map[string]*relayKeyState),
+				routes:    make(map[string]*relayKeyState),
 			}
 			canonicalRelays[canonicalRef] = handle
 			relayMu.Unlock()
@@ -584,7 +646,17 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		relayMu.Lock()
 		for relayKey, current := range handle.relayKeys {
 			if current == state && relayedThreads[relayKey] == handle {
+				removeStateRoutesLocked(handle, current)
 				current.thread = result.Response.Thread
+				bindStateRouteLocked(handle, relayKey, current)
+				sourceID := result.Response.Thread.Source
+				if sourceID == "" {
+					sourceID = handle.canonical.SourceID
+				}
+				if result.Response.Thread.ID != "" {
+					bindStateRouteLocked(handle, sourceID+":"+result.Response.Thread.ID, current)
+				}
+				bindStateRouteLocked(handle, result.Response.Thread.Evener.Ref, current)
 				break
 			}
 		}
