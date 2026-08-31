@@ -33,6 +33,7 @@ import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
+import { useKeyboardInset } from "./useKeyboardInset";
 import { type OpenPaneRecord, workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
@@ -490,6 +491,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
       .catch(() => undefined);
   }, [locationFailed, locationRef, locationResource]);
   const isMobile = useIsMobile();
+  // iOS Safari half of the keyboard fix: keeps --keyboard-inset current so the
+  // mobile .shell padding-bottom (AppShell.module.css) rides the composer up
+  // with the on-screen keyboard. Harmless on desktop, where the inset stays 0.
+  useKeyboardInset();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
   // chrome - the rail (which carries the search/settings entry points, floor
