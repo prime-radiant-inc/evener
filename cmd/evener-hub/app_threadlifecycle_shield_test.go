@@ -45,7 +45,7 @@ func (d *disconnectingSpawner) Spawn(ctx context.Context, req hubcore.SpawnReque
 
 // startShieldedThread runs hubThreadStart with the fixed launch scaffolding
 // the shield tests share; only ctx, the spawner, and the source vary.
-func startShieldedThread(t *testing.T, ctx context.Context, spawner hubcore.Spawner, src appsource.Source) (appwire.ThreadStartResponse, error) {
+func startShieldedThread(ctx context.Context, t *testing.T, spawner hubcore.Spawner, src appsource.Source) (appwire.ThreadStartResponse, error) {
 	t.Helper()
 	cfg := hubcore.WebConfig{LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(), Spawner: spawner}
 	sources := appsource.NewRegistry()
@@ -76,7 +76,7 @@ func TestThreadStart_DisconnectMidSequenceStillCompletesThread(t *testing.T) {
 		},
 	}}
 
-	resp, err := startShieldedThread(t, ctx, &disconnectingSpawner{disconnect: cancel}, src)
+	resp, err := startShieldedThread(ctx, t, &disconnectingSpawner{disconnect: cancel}, src)
 	if err != nil {
 		t.Fatalf("thread/start abandoned after mid-sequence disconnect: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestThreadStart_DetachedSequenceDeadlineBoundsAWedge(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := startShieldedThread(t, context.Background(), &recordingSpawner{}, src)
+		_, err := startShieldedThread(context.Background(), t, &recordingSpawner{}, src)
 		done <- err
 	}()
 	select {
@@ -147,7 +147,7 @@ func TestThreadStart_ShutdownAtEachAwaitPointConverges(t *testing.T) {
 		spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{}, errors.New("rendezvous wait aborted: shutting down")
 		}}
-		if _, err := startShieldedThread(t, context.Background(), spawner, src); err == nil {
+		if _, err := startShieldedThread(context.Background(), t, spawner, src); err == nil {
 			t.Fatal("spawn failure swallowed; want loud error")
 		}
 		if turnStarted {
@@ -169,7 +169,7 @@ func TestThreadStart_ShutdownAtEachAwaitPointConverges(t *testing.T) {
 			},
 			readErr: errors.New("connection closed: shutting down"),
 		}
-		resp, err := startShieldedThread(t, context.Background(), &recordingSpawner{}, src)
+		resp, err := startShieldedThread(context.Background(), t, &recordingSpawner{}, src)
 		if err != nil {
 			t.Fatalf("read-leg failure must degrade, not abandon: %v", err)
 		}
@@ -185,7 +185,7 @@ func TestThreadStart_ShutdownAtEachAwaitPointConverges(t *testing.T) {
 		src := &ctxHonoringSource{scriptedAppSource: &scriptedAppSource{
 			id: "local", thread: appwire.Thread{ID: "T1"}, startTurn: failingTurn,
 		}}
-		if _, err := startShieldedThread(t, context.Background(), &recordingSpawner{}, src); err == nil {
+		if _, err := startShieldedThread(context.Background(), t, &recordingSpawner{}, src); err == nil {
 			t.Fatal("initial-turn failure swallowed; want loud error")
 		}
 	})
