@@ -381,3 +381,26 @@ func TestParseConfig_DefaultEffortVocabulary(t *testing.T) {
 		t.Fatalf("a typo must be refused by name and list the vocabulary: %v", err)
 	}
 }
+
+func TestParseConfig_SchemaTwoAccepted(t *testing.T) {
+	if _, err := ParseConfig([]byte("schema = 2\n\n[providers.openai]\n")); err != nil {
+		t.Fatalf("schema = 2 must parse: %v", err)
+	}
+}
+
+func TestParseConfig_SchemaOneIsOldSchema(t *testing.T) {
+	_, err := ParseConfig([]byte("schema = 1\n\n[providers.openai]\n"))
+	if !errors.Is(err, ErrOldSchema) {
+		t.Fatalf("schema = 1: want ErrOldSchema, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "§14.1") {
+		t.Fatalf("old-schema error must point at the spec: %v", err)
+	}
+}
+
+func TestParseConfig_UnsupportedSchemaNamesIt(t *testing.T) {
+	_, err := ParseConfig([]byte("schema = 3\n"))
+	if err == nil || !strings.Contains(err.Error(), "unsupported schema 3") || !strings.Contains(err.Error(), "2") {
+		t.Fatalf("schema = 3 must name the unsupported version and the supported one: %v", err)
+	}
+}

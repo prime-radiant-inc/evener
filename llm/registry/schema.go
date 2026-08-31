@@ -79,6 +79,7 @@ var oldSchemaKeys = []string{"type", "api_style", "quirks", "compat"}
 // (spec §10). Caps embeds directly so every cap is a key by its snake_case
 // name; transportSchema adds the transport keys at the same level.
 type fileSchema struct {
+	Schema       int                        `toml:"schema"`
 	Default      string                     `toml:"default"`
 	DefaultOrder []string                   `toml:"default_order"`
 	Transports   map[string]transportSchema `toml:"transports"`
@@ -160,6 +161,13 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 		return nil, fmt.Errorf("%s: %w", tag, err)
 	}
 	if !curated {
+		switch fs.Schema {
+		case 0, 2: // absent means current (schema 2); every earlier file omitted it
+		case 1:
+			return nil, fmt.Errorf("%w (schema = 1)", ErrOldSchema)
+		default:
+			return nil, fmt.Errorf("%s: unsupported schema %d (this evener reads schema 2)", tag, fs.Schema)
+		}
 		if md.IsDefined("instances") {
 			return nil, fmt.Errorf("%w ([instances.*])", ErrOldSchema)
 		}
