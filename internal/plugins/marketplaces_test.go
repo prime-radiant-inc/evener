@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,7 +50,7 @@ func TestAddListRemoveMarketplace(t *testing.T) {
 		t.Fatalf("marketplace 'acme' not listed: %v", list)
 	}
 
-	if err := m.RemoveMarketplace("acme"); err != nil {
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("RemoveMarketplace: %v", err)
 	}
 	list, _ = m.ListMarketplaces()
@@ -120,7 +119,7 @@ func TestRemoveMarketplace_DirectorySourceKeepsContents(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace directory: %v", err)
 	}
-	if err := m.RemoveMarketplace("local"); err != nil {
+	if err := m.RemoveMarketplace(context.Background(), "local"); err != nil {
 		t.Fatalf("RemoveMarketplace: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".claude-plugin", "marketplace.json")); err != nil {
@@ -146,25 +145,6 @@ func TestRefreshMarketplace_ClonesUnfetchedSeed(t *testing.T) {
 	}
 }
 
-// commitFile adds a commit touching file to an existing repo, so a refresh
-// has real upstream changes to pull.
-func commitFile(t *testing.T, repo, file, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(repo, file), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "update"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-}
-
 // TestRefreshMarketplace_RecoversWedgedCloneByStagedReclone pins the
 // self-heal path: when git pull fails in the persistent clone (here wedged
 // exactly the way a SIGKILLed git wedges it — a stale .git/index.lock),
@@ -182,7 +162,7 @@ func TestRefreshMarketplace_RecoversWedgedCloneByStagedReclone(t *testing.T) {
 	}
 	// Upstream gains a commit, so a refresh must move the index (and would
 	// visibly pull new content).
-	commitFile(t, src, "NEW.md", "new upstream content")
+	advanceGitRepo(t, src, "README.md", "new upstream content")
 	// Wedge the clone: a stale lock makes every pull fail.
 	if err := os.WriteFile(filepath.Join(ref.InstallLocation, ".git", "index.lock"), nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -191,8 +171,8 @@ func TestRefreshMarketplace_RecoversWedgedCloneByStagedReclone(t *testing.T) {
 	if err := m.RefreshMarketplace(context.Background(), "acme"); err != nil {
 		t.Fatalf("refresh did not self-heal a wedged clone: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(ref.InstallLocation, "NEW.md")); err != nil {
-		t.Fatalf("recovered clone lacks fresh upstream content: %v", err)
+	if b, err := os.ReadFile(filepath.Join(ref.InstallLocation, "README.md")); err != nil || string(b) != "new upstream content" {
+		t.Fatalf("recovered clone lacks fresh upstream content: %q, %v", b, err)
 	}
 	if _, err := os.Stat(filepath.Join(ref.InstallLocation, ".git", "index.lock")); !os.IsNotExist(err) {
 		t.Fatalf("stale index.lock survived the reclone: %v", err)

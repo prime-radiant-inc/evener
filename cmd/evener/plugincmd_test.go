@@ -248,7 +248,9 @@ type task3EffectiveListManager struct {
 	resolver *plugins.Manager
 }
 
-func (m *task3EffectiveListManager) SeedDefaultMarketplaces() (bool, error) { return false, nil }
+func (m *task3EffectiveListManager) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
 
 func (m *task3EffectiveListManager) ResolveForLaunch(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
 	return m.resolver.ResolveForLaunch(dirs, selected)
@@ -290,7 +292,7 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	if _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
 		t.Fatalf("Install disabled: %v", err)
 	}
-	if err := registry.SetEnabled("disabled-plugin", "task3-market", false); err != nil {
+	if err := registry.SetEnabled(context.Background(), "disabled-plugin", "task3-market", false); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
 	explicitDir := t.TempDir()
@@ -483,7 +485,7 @@ func TestPluginCheckNow_SkipsDirectorySourcePlugin(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	installDirectoryPluginForTest(t, "widget", "local")
 	m := plugins.NewManager("")
-	if err := m.SetAutoUpgrade("widget", "local", true); err != nil {
+	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 

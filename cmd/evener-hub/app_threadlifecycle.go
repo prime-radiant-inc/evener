@@ -149,22 +149,16 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	// The mutation is admitted here: every validation has passed and the spawn
-	// is about to happen. From this point its outcome must not depend on the
-	// connection's fate — a client that disconnects mid-sequence must still get
-	// a fully-formed thread (spawn + read + optional initial turn) that
-	// reconnect resync then discovers via thread/list, instead of an orphan
-	// half-progressed session. What the sequence sheds is PEER-lifetime
-	// cancellation only (disconnect, keepalive failure); it must keep a
-	// lifecycle bound of its own, because WithoutCancel alone would leave a
-	// wedged sequence parked with no cancel path and would stall hub shutdown
-	// indefinitely. So the detachment is paired with an explicit deadline
-	// covering the rendezvous wait, ReadThread, and the initial StartTurn.
-	// The spawned child itself was already detached from ctx (spawnDaemon
-	// deliberately uses exec.Command, not CommandContext); the shield covers
-	// only the handler's own awaits.
-	detached, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
+	// is about to happen. From this point the outcome must not depend on the
+	// connection's fate — a disconnecting client still gets a fully-formed
+	// thread (spawn + read + optional initial turn) that reconnect resync
+	// discovers via thread/list — so shed PEER-lifetime cancellation, but pair
+	// it with an explicit deadline: a wedged sequence may not park the worker
+	// with no cancel path (threadStartDetachedTimeout's doc covers sizing).
+	// The spawned child is already detached (spawnDaemon uses exec.Command);
+	// this shields only the handler's own awaits.
+	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
-	ctx = detached
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,

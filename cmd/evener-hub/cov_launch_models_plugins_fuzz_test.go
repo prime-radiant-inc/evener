@@ -155,8 +155,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _ = pctl.ListPlugins()
 		ref := appwire.PluginRefParams{Plugin: "missing", Marketplace: "missing"}
 		_, _ = pctl.Upgrade(ctx, ref)
-		_, _ = pctl.Enable(ref)
-		_, _ = pctl.Disable(ref)
+		_, _ = pctl.Enable(context.Background(), ref)
+		_, _ = pctl.Disable(context.Background(), ref)
 
 		mgr := plugins.NewManager(pluginRoot)
 		_, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)

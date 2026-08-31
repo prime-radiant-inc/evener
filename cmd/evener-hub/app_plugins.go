@@ -235,8 +235,8 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 }
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
-func (c *hubPluginsController) RemoveMarketplace(params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-	if err := c.mgr.RemoveMarketplace(params.Name); err != nil {
+func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
 	return c.listMarketplaces()
@@ -324,8 +324,8 @@ func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.Plugi
 
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)
 // and returns the updated list.
-func (c *hubPluginsController) Remove(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.Remove(params.Plugin, params.Marketplace); err != nil {
+func (c *hubPluginsController) Remove(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	if err := c.mgr.Remove(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
 	return c.listPlugins()
@@ -333,8 +333,8 @@ func (c *hubPluginsController) Remove(params appwire.PluginRefParams) (appwire.P
 
 // Enable flips an installed plugin's enabled flag on and returns the updated
 // list.
-func (c *hubPluginsController) Enable(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetEnabled(params.Plugin, params.Marketplace, true); err != nil {
+func (c *hubPluginsController) Enable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, true); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
 	return c.listPlugins()
@@ -342,8 +342,8 @@ func (c *hubPluginsController) Enable(params appwire.PluginRefParams) (appwire.P
 
 // Disable flips an installed plugin's enabled flag off and returns the
 // updated list.
-func (c *hubPluginsController) Disable(params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetEnabled(params.Plugin, params.Marketplace, false); err != nil {
+func (c *hubPluginsController) Disable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, false); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
 	return c.listPlugins()
@@ -351,8 +351,8 @@ func (c *hubPluginsController) Disable(params appwire.PluginRefParams) (appwire.
 
 // SetAutoUpgrade flips an installed plugin's auto-upgrade flag and returns
 // the updated list.
-func (c *hubPluginsController) SetAutoUpgrade(params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetAutoUpgrade(params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
+func (c *hubPluginsController) SetAutoUpgrade(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+	if err := c.mgr.SetAutoUpgrade(ctx, params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
 	return c.listPlugins()

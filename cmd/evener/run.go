@@ -77,7 +77,7 @@ var (
 	runGetwd                = os.Getwd
 	runEnsureUserConfigDirs = cmdutil.EnsureUserConfigDirs
 	runSeedMarketplaces     = func() error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces(context.Background())
 		return err
 	}
 	runAttachAPILogger  = cmdutil.AttachSessionAPILogger
