@@ -107,7 +107,15 @@ interface ToolCallItemBodyProps extends ItemRenderProps {
   thread?: ThreadModel;
 }
 
-function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderContext, thread }: ToolCallItemBodyProps) {
+function ToolCallItemBody({
+  item,
+  live,
+  sessionRef,
+  projectedSummary,
+  hideIntent,
+  renderContext,
+  thread,
+}: ToolCallItemBodyProps) {
   const context = renderContext;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
@@ -221,6 +229,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   } else if (projectedSummary !== undefined && statedIntent !== undefined) {
     intent = projectedSummary;
   }
+  // hideIntent suppresses the intent line so the expanded disclosure body of an
+  // IntentToolCallRow renders only the tool-call summary (the intent already
+  // served as the collapsed headline above it).
+  if (hideIntent) intent = undefined;
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a

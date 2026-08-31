@@ -19,6 +19,9 @@ export type ProjectedEntry =
       sourceItemId: string;
       rationale: string;
       failed: boolean;
+      /** The source item, so a renderer can drill from an intent row into a full
+       * tool-call row (verbosity = expansion). */
+      item: ItemModel;
     }
   | {
       kind: "critical";
@@ -174,6 +177,7 @@ function intentEntry(item: ItemModel, turnId: string, sourceIndex: number): Proj
     sourceItemId: item.id,
     rationale,
     failed: hasItemFailure(item),
+    item,
   };
 }
 

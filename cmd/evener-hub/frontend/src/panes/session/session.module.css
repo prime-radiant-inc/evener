@@ -57,17 +57,17 @@
   padding-bottom: var(--space-2);
 }
 
-.intent {
+/* IntentToolCallRow: a drill-down row inside the intent group. Collapsed it
+ * shows ToolRow (intent + icon + chevron); expanded it reveals the real
+ * ToolCallItem. The row itself is just a plain wrapper — ToolRow owns its own
+ * layout, and the body below indents under the headline. */
+.intentRow {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: 0 var(--space-3);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  font-style: italic;
-  line-height: var(--line-height-title);
-  overflow-wrap: anywhere;
+  flex-direction: column;
+}
+
+.intentRowBody {
+  padding-left: var(--space-3);
 }
 
 .coldStart {

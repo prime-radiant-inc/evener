@@ -421,7 +421,13 @@ test("named Intent opens only its action group while generic interaction and sys
   );
 
   expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
+  // The intent group's IntentToolCallRow renders its own ToolRow trigger; the
+  // interaction's tool-row trigger is a separate one. Both should be collapsed
+  // (the drill-down has not been opened).
+  const triggers = screen.getAllByTestId("tool-row-trigger");
+  for (const trigger of triggers) {
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  }
   expect(screen.getByTestId("system-notice-scaffold").hasAttribute("open")).toBe(false);
 });
 
@@ -443,6 +449,39 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   expect(screen.queryByTestId("tool-call-item")).toBeNull();
   expect(screen.queryByText("sensitive failure output")).toBeNull();
+});
+
+test("intent row shows a tool icon and drills down to a tool-call row on click", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+  const action = item({
+    id: "intent-drill-action",
+    type: "commandExecution",
+    toolName: "read_file",
+    description: "Read the configuration",
+    output: "private file output",
+    status: "completed",
+  });
+  render(withConfig(config, <TurnBlock turn={turn([action], { status: "completed" }, config)} />));
+
+  // The intent group is open at intent level, showing intent rows with icons.
+  expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
+  const intentRow = screen.getByTestId("intent-tool-call-row");
+  expect(intentRow.getAttribute("data-open")).toBe("false");
+  // Tool icon is rendered (read_file uses the file icon kind).
+  expect(screen.getByTestId("tool-row-icon")).toBeTruthy();
+  // Intent text is visible.
+  expect(screen.getByText("Read the configuration")).toBeTruthy();
+  // No tool-call-item until the intent row is expanded.
+  expect(screen.queryByTestId("tool-call-item")).toBeNull();
+
+  // Click the intent row's trigger to expand it.
+  const trigger = screen.getByTestId("tool-row-trigger");
+  fireEvent.click(trigger);
+  expect(screen.getByTestId("intent-tool-call-row").getAttribute("data-open")).toBe("true");
+  // The ToolCallItem is now rendered (with hideIntent, so no duplicated intent).
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // The private output is still hidden (the tool-call body is not yet expanded).
+  expect(screen.queryByText("private file output")).toBeNull();
 });
 
 test("a growing Chat group keeps its first-action identity and manually opened state (catches last-id key)", () => {
