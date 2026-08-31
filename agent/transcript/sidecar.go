@@ -141,12 +141,11 @@ type ResumeSidecar struct {
 
 	// SnapshotsComplete reports whether the fold snapshots below were
 	// computed over every entry. The post-full-scan anchor always sets it
-	// (it decoded the whole file). The compaction anchor sets it only when
-	// the session's live attention state is empty — a session with live
-	// pending attentions cannot reconstruct their durable content without
-	// re-reading the transcript, so it writes SnapshotsComplete=false and a
-	// resume that NEEDS the fold falls back to the full scan rather than
-	// folding an incomplete state.
+	// (it decoded the whole file). The compaction anchor never does: it
+	// cannot reconstruct the prefix's fold state without re-reading the
+	// transcript, so it writes SnapshotsComplete=false and a resume that
+	// NEEDS the fold falls back to the full scan rather than folding an
+	// incomplete state.
 	SnapshotsComplete bool `json:"snapshots_complete"`
 
 	// Fold snapshots (valid when SnapshotsComplete).

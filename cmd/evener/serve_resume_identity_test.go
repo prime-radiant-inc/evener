@@ -54,13 +54,13 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 // returns, and the test reads the probe only after that return. The serve
 // goroutines spawned along the way never touch the probe.
 type serveResumeIdentityProbe struct {
-	entriesFormUsed bool
-	fileFormUsed    bool
-	windowedFormUsed bool
-	windowedPrefixTurns int
+	entriesFormUsed       bool
+	fileFormUsed          bool
+	windowedFormUsed      bool
+	windowedPrefixTurns   int
 	windowedPrefixEntries int
-	gotThreadID     string
-	gotEntryCount   int
+	gotThreadID           string
+	gotEntryCount         int
 }
 
 // runServeResumeWithProbe drives one --resume through runServeWithDeps and
@@ -132,7 +132,7 @@ func seedWindowedResumableSession(t *testing.T, stateDir, sessionID string) {
 	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
 	writer, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:  sessionID,
-		ProfileID: "openai",
+		ProfileID:  "openai",
 		Model:      "gpt-test",
 		WorkingDir: stateDir,
 	})

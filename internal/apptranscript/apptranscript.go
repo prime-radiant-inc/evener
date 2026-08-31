@@ -707,13 +707,17 @@ func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, proj
 //
 // It returns the projected turns and the count of turn POSITIONS the full
 // projection would hold below them: the prelude (when the header projects
-// one) plus prefixTurnCount, the count of prefix entries that project at
-// least one thread item — a figure ONLY the sidecar can supply exactly
-// (it decoded the prefix; the suffix alone cannot infer which kinds
-// projected). The caller uses that count to offset paging cursors into the
-// same space, so a windowed snapshot pages as the full projection would.
-// A negative prefixTurnCount means the sidecar did not compute it: the
-// caller must not arm windowed paging on this projection.
+// one and the prefix is empty) plus prefixTurnCount, the count of prefix
+// entries that project at least one thread item — a figure ONLY the sidecar
+// can supply exactly (it decoded the prefix; the suffix alone cannot infer
+// which kinds projected). The caller uses that count to offset paging
+// cursors into the same space, so a windowed snapshot pages as the full
+// projection would. A negative prefixTurnCount is refused by the caller
+// (PrepareAppIdentityFromEntriesWindowed) before this runs; a zero-prefix
+// windowed resume cannot occur either (the full-scan anchor refuses a
+// checkpoint-first transcript, so every validated sidecar has a non-empty
+// prefix), but the zero-prefix prelude rule is kept for the function's own
+// contract.
 func TurnsFromEntriesWindowed(header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int, project EntryProjector) ([]appwire.Turn, int) {
 	var turns []appwire.Turn
 	for i := range entries {
@@ -724,7 +728,7 @@ func TurnsFromEntriesWindowed(header transcript.Header, entries []transcript.Ent
 	// a non-empty prefix its position is below the window and emitting it
 	// here would double it (the hub's file-backed pages already serve it).
 	// With no prefix it is the only position below the window — count 1.
-	if prefixEntryCount == 0 && prefixTurnCount < 0 {
+	if prefixEntryCount == 0 {
 		if p := PreludeTurn(header); p != nil {
 			turns = append([]appwire.Turn{*p}, turns...)
 			return turns, 1

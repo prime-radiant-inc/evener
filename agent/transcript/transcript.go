@@ -876,6 +876,12 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 		return
 	}
 	boundarySeq := prefix[len(prefix)-1].Seq
+	// The exact prefix-turn count: the prelude rule is header-derived (a
+	// non-empty SystemPrompt projects one), and the per-kind emission rule is
+	// the same one the projection applies per entry. Counted over the prefix
+	// because a windowed turn snapshot pages in the full projection's cursor
+	// space, and only this anchor holds the prefix entries to count.
+	turnsBelow := prefixTurnCount(scan.header, prefix)
 	sidecar := ResumeSidecar{
 		Version:                 resumeSidecarVersion,
 		TranscriptFormatVersion: FormatVersion,
@@ -885,18 +891,12 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 		Offset:                  offset,
 		MaxSeq:                  boundarySeq,
 		EntryCount:              len(prefix),
-		PrefixTurnCount:         -1,
+		PrefixTurnCount:         turnsBelow,
 		FileIdentity:            sidecarFileIdentity(info),
 		ModTimeUnixNS:           current.ModTime().UnixNano(),
 		BoundarySeq:             boundarySeq,
 		SnapshotsComplete:       true,
 	}
-	// The exact prefix-turn count: the prelude rule is header-derived (a
-	// non-empty SystemPrompt projects one), and the per-kind emission rule is
-	// the same one the projection applies per entry. Counted over the prefix
-	// because a windowed turn snapshot pages in the full projection's cursor
-	// space, and only this anchor holds the prefix entries to count.
-	sidecar.PrefixTurnCount = prefixTurnCount(scan.header, prefix)
 	// The failure floor is computed exactly the way a TrackFailures seed
 	// would count the PREFIX entries — same counter, same rule — so the
 	// windowed resume that draws from it reports the figure the full scan
