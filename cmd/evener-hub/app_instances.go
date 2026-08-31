@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -59,7 +59,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 				Name:      p.Name,
 				Protocol:  p.Protocol,
 				Auth:      p.Transport.Auth,
-				VarsEnv:   sortedValues(p.Transport.VarsEnv),
+				VarsEnv:   slices.Sorted(maps.Values(p.Transport.VarsEnv)),
 				APIKeyEnv: append([]string(nil), p.APIKeyEnv...),
 				Implicit:  registry.BoolValue(p.Implicit),
 			})
@@ -102,19 +102,6 @@ func (c *hubInstancesController) entryFor(inst registry.Instance) appwire.Instan
 		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:           inst.Warnings,
 	}
-}
-
-// sortedValues returns a map's values in sorted order.
-func sortedValues(m map[string]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(m))
-	for _, v := range m {
-		out = append(out, v)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // sanitizeEndpointURL keeps only the non-secret endpoint identity exposed to
