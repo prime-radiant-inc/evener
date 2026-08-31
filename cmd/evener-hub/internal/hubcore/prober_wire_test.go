@@ -187,6 +187,26 @@ func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
 	}
 }
 
+func TestStatusProberPreservesRunningStableDelegateAsActive(t *testing.T) {
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_running",
+		descendants: map[string]string{
+			"child-running": appwire.ThreadStatusActive,
+		},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Delegates: []server.DelegateStatusInfo{{
+			DelegateID: "dlg_running", ChildSessionID: "child-running",
+			Lifecycle: "running", Phase: "running", Status: "running", Resumable: true,
+		}}}},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if got.RunningSubagentStates["child-running"] != appwire.ThreadStatusActive {
+		t.Fatalf("running child state = %q, want active from the child projection", got.RunningSubagentStates["child-running"])
+	}
+}
+
 func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
 	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
 	var calls []string
