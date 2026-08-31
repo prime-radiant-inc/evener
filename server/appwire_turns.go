@@ -443,15 +443,16 @@ func (s *appTurnSnapshot) Page(cursor string, limit int) appwire.ThreadTurnsList
 			return appwire.ThreadTurnsListResponse{Data: nil, NextCursor: cursor}
 		}
 		// Window-local bounds: the window's turns occupy global positions
-		// [prefixTurnCount, prefixTurnCount+len(turns)). The page's lower
-		// bound never reaches below the prefix boundary: the turns there
-		// belong to the hub's file-backed pages, and the next cursor hands
-		// the client off at exactly that boundary — the position the full
-		// projection would point to when its own page runs out of window
-		// turns.
+		// [prefixTurnCount, prefixTurnCount+len(turns)). The next cursor
+		// points at the page's own lower bound — prefixTurnCount + localLo —
+		// so a client paging downward walks the window's turns page by page,
+		// exactly as the full projection's paging walks the same turns. Only
+		// when the page reaches the window floor (localLo == 0) does the
+		// cursor land on the prefix boundary, handing the client off to the
+		// hub's file-backed pages.
 		localHi := hi - s.prefixTurnCount
 		localLo := max(localHi-limit, 0)
-		return appwire.ThreadTurnsListResponse{Data: cloneAppTurns(s.turns[localLo:localHi]), NextCursor: strconv.Itoa(s.prefixTurnCount)}
+		return appwire.ThreadTurnsListResponse{Data: cloneAppTurns(s.turns[localLo:localHi]), NextCursor: strconv.Itoa(s.prefixTurnCount + localLo)}
 	}
 	page := appwire.PageTurns(s.turns, cursor, limit)
 	page.Data = cloneAppTurns(page.Data)

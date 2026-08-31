@@ -118,9 +118,20 @@ func NewFailureCounter(fromEntryOrdinal int) *FailureCounter {
 // A floor below zero (the sidecar's "not computed" sentinel) is refused: an
 // absent floor must fall back to the full scan, not silently count from
 // zero — the false all-clean is what the count exists to prevent.
+//
+// A divergence ordinal INSIDE the prefix is refused too: the floor is a
+// single count over [0, prefixEntryCount) computed without the fork bound, so
+// a fork child (inherited parent prefix below DivergenceTurn) cannot tell
+// how many of those failures were the parent's. Charging them to the child
+// is the attribution bug the bound exists to prevent; refusing the floor
+// sends the caller to its full-scan fallback, which re-derives the count
+// with the bound applied entry by entry.
 func NewFailureCounterSeeded(floor, prefixEntryCount, fromEntryOrdinal int) (*FailureCounter, error) {
 	if floor < 0 || prefixEntryCount < 0 {
 		return nil, fmt.Errorf("failure floor %d over %d prefix entries is invalid", floor, prefixEntryCount)
+	}
+	if fromEntryOrdinal > 0 && fromEntryOrdinal < prefixEntryCount {
+		return nil, fmt.Errorf("divergence ordinal %d inside the %d-entry prefix cannot bound a precomputed failure floor", fromEntryOrdinal, prefixEntryCount)
 	}
 	return &FailureCounter{
 		toolNames: map[string]string{},

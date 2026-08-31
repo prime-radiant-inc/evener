@@ -129,3 +129,33 @@ func TestWriterDoesNotCountAnEntryThatFailedToLand(t *testing.T) {
 		t.Fatalf("FailedToolCalls() = %d, want 0: the entry never reached the transcript", count)
 	}
 }
+
+// TestSeededFloorRefusesADivergenceOrdinalInsideThePrefix pins the fork-child
+// rule on the windowed path: the sidecar's floor is one count over the whole
+// prefix computed WITHOUT the fork bound, so a fork child (whose inherited
+// parent prefix sits below DivergenceTurn) cannot tell which of those failures
+// were the parent's. The seeded constructor must refuse such a floor so the
+// caller falls back to its full-scan re-derivation (which applies the bound
+// entry by entry) instead of charging the parent's failures to the child.
+func TestSeededFloorRefusesADivergenceOrdinalInsideThePrefix(t *testing.T) {
+	// A 4-entry prefix with a divergence ordinal inside it (a fork child
+	// inheriting 3 parent entries and starting its own history at ordinal 2).
+	if _, err := NewFailureCounterSeeded(3, 4, 2); err == nil {
+		t.Fatal("seeded counter accepted a floor over a prefix the divergence ordinal cuts through")
+	}
+	// The non-fork shapes stay valid: divergence 0 (nothing inherited — the
+	// floor's whole range is the session's own) and divergence at or past the
+	// prefix (the bound does not cut the range the floor covers). Ordinal 1
+	// cuts a 4-entry prefix just as much as 2 does: only 0 leaves the range
+	// whole.
+	for _, from := range []int{0, 4, 9} {
+		if _, err := NewFailureCounterSeeded(3, 4, from); err != nil {
+			t.Fatalf("seeded counter refused a valid divergence ordinal %d: %v", from, err)
+		}
+	}
+	// Ordinal 1 is inside the prefix: it excludes entry 0 from the session's
+	// own span, and the precomputed floor cannot express that.
+	if _, err := NewFailureCounterSeeded(3, 4, 1); err == nil {
+		t.Fatal("seeded counter accepted a floor over a prefix the divergence ordinal cuts through")
+	}
+}

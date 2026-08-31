@@ -1227,7 +1227,11 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) transcript.H
 
 // appLatestTurns windows the newest limit turns out of the installed snapshot
 // and returns the cursor for the page before them. A limit of zero or less
-// returns the whole thread with no cursor.
+// returns the whole thread with no cursor. A WINDOWED snapshot (a suffix seed)
+// holds only its window, so a zero-or-less limit returns the window with the
+// prefix-boundary cursor instead — the older turns live below that boundary,
+// where the hub's file-backed paging serves them; the daemon cannot return
+// what it never held.
 func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
 	snapshot := s.appTurnSnapshotForID(threadID)
 	if snapshot == nil {

@@ -154,13 +154,12 @@ func TestWindowedSnapshotMatchesFullProjectionDifferential(t *testing.T) {
 	}
 
 	// Page from a cursor above the window. The full projection pages turns
-	// 5-6 (next=4); the window holds only turn_6, so its page returns what
-	// it holds and hands off AT the prefix boundary (next=5). The invariant
-	// is not cursor equality — the windowed page is a prefix-truncated view,
-	// and smaller pages near the boundary are the design — it is that the
-	// windowed page never returns MORE than the full one, never skips a
-	// position the full page covered, and its next cursor lands exactly on
-	// the boundary the hub's file-backed paging takes over from.
+	// 5-6 (next=4); the window holds only turn_6, so its page returns what it
+	// holds and its next cursor lands AT the prefix boundary (next=5) — this
+	// page's lower bound IS the window floor (localLo=0), so the handoff is
+	// correct. The invariant is that the windowed page never returns MORE
+	// than the full one, never skips a position the full page covered, and
+	// its next cursor names the position the page actually stopped at.
 	fullPage := fullSnapshot.Page("6", 2)
 	winPage := windowedSnapshot.Page("6", 2)
 	if len(winPage.Data) > len(fullPage.Data) {
@@ -172,10 +171,62 @@ func TestWindowedSnapshotMatchesFullProjectionDifferential(t *testing.T) {
 		}
 	}
 	if winPage.NextCursor != "5" {
-		t.Fatalf("windowed next cursor: got %q, want the prefix boundary 5", winPage.NextCursor)
+		t.Fatalf("windowed next cursor: got %q, want 5 (the prefix boundary — this page reached the window floor)", winPage.NextCursor)
 	}
 	if fullPage.NextCursor != "4" {
 		t.Fatalf("full next cursor: got %q, want 4 (sanity)", fullPage.NextCursor)
+	}
+}
+
+// TestWindowedPagingWalksEveryWindowTurn pins the adversarial finding that a
+// full window page (localLo > 0) handed the client a cursor at the PREFIX
+// BOUNDARY, so the next page fell below the window and the hub's file-backed
+// paging took over — silently skipping every window turn below localLo. A
+// client paging the way the web frontend does (Latest, then follow
+// NextCursor) must reach every window turn exactly once, in order, with no
+// duplicates and no gaps, and hand off to the hub only at the window floor.
+func TestWindowedPagingWalksEveryWindowTurn(t *testing.T) {
+	// A window larger than one page: 70 window turns over a 5-turn prefix,
+	// paged 30 at a time (the frontend's OLDER_TURNS_PAGE_SIZE).
+	prefixTurns := 5
+	window := make([]appwire.Turn, 70)
+	for i := range window {
+		window[i] = appwire.Turn{ID: "turn_" + strconv.Itoa(prefixTurns+i+1), Items: []appwire.ThreadItem{{ID: "i" + strconv.Itoa(i)}}, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	}
+	snapshot := &appTurnSnapshot{threadID: "th_walk"}
+	snapshot.SeedWindowed(window, prefixTurns)
+
+	seen := map[string]bool{}
+	turns, cursor := snapshot.Latest(30)
+	if len(turns) != 30 {
+		t.Fatalf("Latest(30) turns: got %d, want 30", len(turns))
+	}
+	for _, turn := range turns {
+		if seen[turn.ID] {
+			t.Fatalf("duplicate turn %q in the paging walk", turn.ID)
+		}
+		seen[turn.ID] = true
+	}
+	pages := 0
+	for cursor != "" && pages < 10 {
+		page := snapshot.Page(cursor, 30)
+		for _, turn := range page.Data {
+			if seen[turn.ID] {
+				t.Fatalf("duplicate turn %q in the paging walk", turn.ID)
+			}
+			seen[turn.ID] = true
+		}
+		cursor = page.NextCursor
+		pages++
+	}
+	// Every window turn must have been reachable.
+	if len(seen) != len(window) {
+		t.Fatalf("paging walk reached %d of %d window turns — %d unreachable", len(seen), len(window), len(window)-len(seen))
+	}
+	// The walk must hand off to the hub's file-backed paging exactly at the
+	// prefix boundary, never above it (an early handoff is what skipped turns).
+	if cursor != strconv.Itoa(prefixTurns) {
+		t.Fatalf("final cursor: got %q, want the prefix boundary %d — the walk handed off at the wrong position", cursor, prefixTurns)
 	}
 }
 
