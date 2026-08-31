@@ -1849,10 +1849,42 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
+	if err := rejectWatchTriggerFieldsOnNonCreate(args, a); err != nil {
+		return watchArgs{}, err
+	}
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
 	}
 	return a, nil
+}
+
+// watchTriggerFieldNames lists the arguments that select what a created watch
+// fires on, in the DefJobWatch property order. They are meaningful only for
+// operation="create"; list/inspect/clear take only watch_id, so a trigger field
+// beside them was previously parsed and then silently ignored.
+var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter"}
+
+// rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
+// trigger field the call actually supplied alongside a non-create operation.
+// Omitting all of them stays valid: create on a granted cross-session source
+// (parent) watches all bounded public events, and list/inspect/clear need none.
+func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error {
+	if a.Operation == "create" {
+		return nil
+	}
+	var supplied []string
+	for _, name := range watchTriggerFieldNames {
+		if _, ok := args[name]; ok {
+			supplied = append(supplied, name)
+		}
+	}
+	if len(supplied) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"invalid_request: trigger fields apply only to operation=\"create\"; %s supplied with operation=%q — set operation=\"create\" to arm a watch, or drop %s to %s",
+		strings.Join(supplied, ", "), a.Operation, strings.Join(supplied, ", "), a.Operation,
+	)
 }
 
 func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
