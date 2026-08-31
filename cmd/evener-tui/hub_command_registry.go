@@ -403,22 +403,19 @@ var hubCommandRegistry = []hubCommandDefinition{
 				m.addSessionSystem("This model does not support reasoning effort.")
 				return nil
 			}
-			choices := effortChoices(m.detail.ReasoningEffortLevels)
+			levels := sessionEffortLevels(m.detail.ReasoningEffortLevels)
+			choices := effortChoices(levels)
 			if level == "" {
-				if len(m.detail.ReasoningEffortLevels) == 0 {
-					m.addSessionSystem("No reasoning effort levels available for this model.")
-					return nil
-				}
 				items := make([]tuipick.ModelPickerItem, 0, len(choices))
 				for _, l := range choices {
-					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, m.detail.ReasoningEffortLevels)})
+					items = append(items, tuipick.ModelPickerItem{ID: l, Display: effortDisplay(l, levels)})
 				}
 				picker := tuipick.NewModelPicker(items, m.detail.ReasoningEffort, m.width)
 				picker.SetTitle("Select reasoning effort")
 				m.sessionEffortPicker = &picker
 				return nil
 			}
-			if !reasoningEffortLevelSettable(m.detail.ReasoningEffortLevels, level) {
+			if !reasoningEffortLevelSettable(levels, level) {
 				m.addSessionSystem(fmt.Sprintf("Unknown reasoning effort %q. Available: %s", level, strings.Join(choices, ", ")))
 				return nil
 			}

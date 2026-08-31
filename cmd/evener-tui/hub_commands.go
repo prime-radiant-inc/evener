@@ -672,6 +672,20 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, expec
 	}
 }
 
+// sessionEffortLevels is the ladder /effort works from: the model's own when
+// it states one, else the canonical vocabulary. A reasoning model with no
+// stated ladder still takes an effort — the session sends its default on
+// every request and the request builder passes any level through unclamped —
+// so the picker offers the tiers instead of denying they exist. Callers gate
+// on SupportsReasoning first; a model that does not reason has no ladder at
+// all, not an unstated one.
+func sessionEffortLevels(levels []string) []string {
+	if len(levels) > 0 {
+		return append([]string(nil), levels...)
+	}
+	return llm.ReasoningEffortVocabulary()
+}
+
 // effortChoices lists what /effort accepts for a reasoning session: the
 // model's ladder plus the always-settable explicit off. The session stores
 // "none" and the request builder sends it only where the model's ladder

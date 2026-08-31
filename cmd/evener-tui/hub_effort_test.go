@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/llm"
 )
 
 // (a) /effort is registered and gated on ChangeModel, same as /model.
@@ -207,4 +208,50 @@ func mustParseRef(t *testing.T, s string) appwire.Ref {
 		t.Fatalf("ParseRef(%q): %v", s, err)
 	}
 	return ref
+}
+
+// A reasoning model that states no ladder still takes an effort: the session
+// sends one on every request and the request builder passes it through
+// unclamped, so /effort must offer the canonical tiers rather than deny they
+// exist. lunaroute/glm-5.3 is the shape — an uncataloged gateway row — and
+// google/gemini-2.5-pro and anthropic/claude-sonnet-4-5 are the cataloged
+// budget-only rows that land the same way.
+func TestHubModelEffortOnARowWithNoLadderOffersTheCanonicalTiers(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.SupportsReasoning = true
+	m.detail.ReasoningEffort = "medium"
+	m.detail.ReasoningEffortLevels = nil
+	m.session.setInputValue("/effort")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("bare /effort should build the picker from the cached snapshot without a round trip")
+	}
+	got := updated.(hubModel)
+	if got.sessionEffortPicker == nil {
+		t.Fatalf("expected a picker for a reasoning model with no stated ladder:\n%s", got.View())
+	}
+	view := got.View()
+	for _, level := range append(llm.ReasoningEffortVocabulary(), "none") {
+		if !strings.Contains(view, level) {
+			t.Fatalf("effort picker is missing %q:\n%s", level, view)
+		}
+	}
+}
+
+// And a level typed directly is accepted on such a row, matching what
+// --reasoning-effort accepts at launch.
+func TestHubModelEffortLevelSettableOnARowWithNoLadder(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.SupportsReasoning = true
+	m.detail.ReasoningEffortLevels = nil
+	m.session.setInputValue("/effort high")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("/effort high must reach the wire on a reasoning row with no stated ladder:\n%s", updated.(hubModel).View())
+	}
+	if view := updated.(hubModel).View(); strings.Contains(view, "Unknown reasoning effort") {
+		t.Fatalf("/effort high was rejected:\n%s", view)
+	}
 }
