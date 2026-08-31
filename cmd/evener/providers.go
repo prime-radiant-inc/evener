@@ -476,7 +476,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	if res.Credential.Source == "none" && res.Transport.Auth != registry.AuthNone && res.Transport.Auth != registry.AuthOptionalBearer {
 		if credentialPointerHelps(entry, res.Transport.Auth) {
 			_, _ = fmt.Fprintf(stdout, "no credential resolves for %s: set %s, add --api-key-env, or enter a key with the hub's credentials pane (credentials.toml [providers.%s]); not probing\n",
-				name, instanceKeyVar(name), name)
+				name, registry.InstanceKeyEnvVar(name), name)
 		} else {
 			_, _ = fmt.Fprintf(stdout, "no credential resolves for %s (the warning above names what to set); not probing\n", name)
 		}
@@ -510,12 +510,6 @@ func credentialPointerHelps(entry registry.Provider, auth string) bool {
 	default:
 		return false
 	}
-}
-
-// instanceKeyVar is the environment variable a custom-named instance falls
-// back to: the name uppercased with `-` → `_`, plus _API_KEY (spec §10).
-func instanceKeyVar(name string) string {
-	return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_API_KEY"
 }
 
 // parseKeyValues splits repeated K=V flag values into a map.

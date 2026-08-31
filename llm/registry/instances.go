@@ -41,6 +41,15 @@ func envVarName(id string) string {
 	return strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
 }
 
+// InstanceKeyEnvVar is the environment variable a custom-named instance
+// falls back to for its key: the name uppercased with `-` → `_`, plus
+// _API_KEY (spec §10). Resolution consults it last, and only for a name
+// that is not itself a registry provider id; `evener providers add` names
+// it when it has to say which variable to set.
+func InstanceKeyEnvVar(name string) string {
+	return envVarName(name) + "_API_KEY"
+}
+
 // oauthRecordPath is where the Codex transport keeps an instance's OAuth
 // record (spec §9.5): auth/<instance>.json under the state root.
 func oauthRecordPath(stateRoot, instance string) string {
@@ -135,7 +144,7 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		}
 	}
 	if _, isRegistryID := r.curated[rec.name]; !isRegistryID {
-		name := envVarName(rec.name) + "_API_KEY"
+		name := InstanceKeyEnvVar(rec.name)
 		if v, ok := r.env(name); ok && v != "" {
 			return Credential{Value: v, Source: "env:" + name}, nil
 		}
