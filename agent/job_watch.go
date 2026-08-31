@@ -1415,6 +1415,35 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 	}, nil
 }
 
+// watchConfigByIDWithFlushLocked resolves a watch config by ID, including
+// detached terminal-flush configs. Callers must hold jm.mu.
+func (jm *jobManager) watchConfigByIDWithFlushLocked(watchID string) (*watchConfig, bool) {
+	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok {
+		return cfg, true
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID {
+			return cfg, true
+		}
+	}
+	return nil, false
+}
+
+// watchReceiverIdentity looks a watch up by ID ignoring session visibility —
+// unlike hasWatchID, which returns the visibility verdict. Returns the watch's
+// receiver identity so a session holding a receiver-keyed watch it cannot see
+// can decide, from tree topology, whether it may route that watch's clear to
+// the receiver.
+func (jm *jobManager) watchReceiverIdentity(watchID string) (receiverSessionID, receiverDelegateID string, found bool) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg, found := jm.watchConfigByIDWithFlushLocked(watchID)
+	if !found || cfg == nil {
+		return "", "", false
+	}
+	return cfg.receiverSessionID, cfg.receiverDelegateID, true
+}
+
 func (jm *jobManager) hasWatchID(watchID string) (bool, error) {
 	jm.mu.Lock()
 	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok {
@@ -2062,16 +2091,21 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
+	sort.SliceStable(entries, watchListEntryLess(entries))
+	return entries
+}
+
+// watchListEntryLess orders watch rows by (Source, ID) — the shared ordering
+// for every receiver-keyed watch projection.
+func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
+	return func(i, j int) bool {
 		if entries[i].Source != entries[j].Source {
 			return entries[i].Source < entries[j].Source
 		}
 		return entries[i].ID < entries[j].ID
-	})
-	return entries
+	}
 }
 
-//nolint:unused // retained for the evenerfuzz restore/clear-history state-machine owner.
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
@@ -2094,12 +2128,7 @@ func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverD
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].Source != entries[j].Source {
-			return entries[i].Source < entries[j].Source
-		}
-		return entries[i].ID < entries[j].ID
-	})
+	sort.SliceStable(entries, watchListEntryLess(entries))
 	return entries
 }
 
