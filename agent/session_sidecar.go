@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -49,8 +50,9 @@ func foldDelegateAttentionSeeded(sidecar transcript.ResumeSidecar, suffix []tran
 }
 
 // foldDelegateAttentionSuffix folds suffix entries onto an existing fold
-// state. It shares foldDelegateAttention's per-entry rules by construction:
-// the loop body is the same sequence, applied to the pre-seeded state.
+// state. It is the general per-entry fold: foldDelegateAttention is this
+// function over a fresh fold, and the seeded form is this function over the
+// sidecar's pre-seeded state — one set of rules, three entry points.
 func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcript.Entry) (delegateAttentionFold, error) {
 	for _, entry := range entries {
 		turn := entry.Turn
@@ -62,7 +64,7 @@ func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcrip
 				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
 			}
 			if previous, exists := fold.content[turn.AttentionID]; exists {
-				if !deepEqualMessages(previous, turn.Message) {
+				if !reflect.DeepEqual(previous, turn.Message) {
 					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
 				}
 			} else {
@@ -74,12 +76,12 @@ func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcrip
 		resolution := turn.AttentionResolution
 		if resolution == nil {
 			if turn.Kind == schema.TurnAttentionResolution {
-				return delegateAttentionFold{}, fmt.Errorf("attention resolution turn has no resolution")
+				return delegateAttentionFold{}, errors.New("attention resolution turn has no resolution")
 			}
 			continue
 		}
 		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || resolution.AttentionID == "" {
-			return delegateAttentionFold{}, fmt.Errorf("invalid attention resolution turn")
+			return delegateAttentionFold{}, errors.New("invalid attention resolution turn")
 		}
 		disposition := delegateAttentionResolution(resolution.Disposition)
 		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
@@ -108,12 +110,6 @@ func foldDelegateAttentionSuffix(fold delegateAttentionFold, entries []transcrip
 		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
 	}
 	return fold, nil
-}
-
-// deepEqualMessages is reflect.DeepEqual specialized to the fold's one use,
-// kept so the seeded fold and the file fold compare identically.
-func deepEqualMessages(a, b llm.Message) bool {
-	return reflect.DeepEqual(a, b)
 }
 
 // writeCompactionSidecarAnchor writes the resume sidecar from the session's

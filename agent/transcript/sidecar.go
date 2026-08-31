@@ -8,7 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
+
+	"primeradiant.com/evener/internal/fileident"
 )
 
 // resumeSidecarVersion is the resume sidecar format version. Bump on any
@@ -266,52 +267,9 @@ func sidecarAnchorsMatch(file sidecarReaderAt, first, tail sidecarAnchor) bool {
 	return true
 }
 
-// sidecarFileIdentity derives the file incarnation identity. It mirrors
-// fileIdentity from turn_index.go (which the transcript package cannot
-// import): the reflect-based Dev/Ino read with a Windows fallback. The
-// anchors provide the byte-level binding; this identity binds the
-// incarnation.
+// sidecarFileIdentity derives the file incarnation identity through the
+// shared internal/fileident package (also used by internal/apptranscript's
+// turn index, which this package cannot import).
 func sidecarFileIdentity(info os.FileInfo) string {
-	if info == nil || info.Sys() == nil {
-		return ""
-	}
-	value := reflect.Indirect(reflect.ValueOf(info.Sys()))
-	if !value.IsValid() || value.Kind() != reflect.Struct {
-		return ""
-	}
-	field := func(name string) (uint64, bool) {
-		got := value.FieldByName(name)
-		if !got.IsValid() {
-			return 0, false
-		}
-		switch got.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return uint64(got.Int()), true
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return got.Uint(), true
-		default:
-			return 0, false
-		}
-	}
-	if device, ok := field("Dev"); ok {
-		if inode, ok := field("Ino"); ok {
-			return fmt.Sprintf("dev:%d:ino:%d", device, inode)
-		}
-	}
-	volume, volumeOK := field("VolumeSerialNumber")
-	high, highOK := field("FileIndexHigh")
-	low, lowOK := field("FileIndexLow")
-	if !volumeOK {
-		volume, volumeOK = field("vol")
-	}
-	if !highOK {
-		high, highOK = field("idxhi")
-	}
-	if !lowOK {
-		low, lowOK = field("idxlo")
-	}
-	if volumeOK && highOK && lowOK {
-		return fmt.Sprintf("volume:%d:index:%d", volume, high<<32|low)
-	}
-	return ""
+	return fileident.FileIdentity(info)
 }

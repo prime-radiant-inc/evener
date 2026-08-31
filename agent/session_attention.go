@@ -96,63 +96,7 @@ type delegateAttentionFold struct {
 }
 
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
-	fold := newDelegateAttentionFold()
-	for _, entry := range entries {
-		turn := entry.Turn
-		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
-			return delegateAttentionFold{}, err
-		}
-		if turn.AttentionID != "" {
-			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
-				return delegateAttentionFold{}, fmt.Errorf("attention %q is not a steering turn", turn.AttentionID)
-			}
-			if previous, exists := fold.content[turn.AttentionID]; exists {
-				if !reflect.DeepEqual(previous, turn.Message) {
-					return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting content", turn.AttentionID)
-				}
-			} else {
-				fold.content[turn.AttentionID] = turn.Message
-				fold.turns[turn.AttentionID] = turn
-				fold.order = append(fold.order, turn.AttentionID)
-			}
-		}
-		resolution := turn.AttentionResolution
-		if resolution == nil {
-			if turn.Kind == schema.TurnAttentionResolution {
-				return delegateAttentionFold{}, errors.New("attention resolution turn has no resolution")
-			}
-			continue
-		}
-		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || resolution.AttentionID == "" {
-			return delegateAttentionFold{}, errors.New("invalid attention resolution turn")
-		}
-		disposition := delegateAttentionResolution(resolution.Disposition)
-		if disposition != delegateAttentionConsumed && disposition != delegateAttentionDiscarded {
-			return delegateAttentionFold{}, fmt.Errorf("attention %q has invalid resolution %q", resolution.AttentionID, resolution.Disposition)
-		}
-		if disposition == delegateAttentionDiscarded && resolution.ResumeGeneration != 0 {
-			return delegateAttentionFold{}, fmt.Errorf("discarded attention %q has resume generation %d", resolution.AttentionID, resolution.ResumeGeneration)
-		}
-		if _, exists := fold.content[resolution.AttentionID]; !exists {
-			return delegateAttentionFold{}, fmt.Errorf("attention %q resolved before it was appended", resolution.AttentionID)
-		}
-		if previous, exists := fold.resolutions[resolution.AttentionID]; exists {
-			if previous != disposition || fold.resumeGenerations[resolution.AttentionID] != resolution.ResumeGeneration {
-				return delegateAttentionFold{}, fmt.Errorf("attention %q has conflicting resolutions", resolution.AttentionID)
-			}
-			continue
-		}
-		if resolution.ResumeGeneration != 0 {
-			for previousID, generation := range fold.resumeGenerations {
-				if generation == resolution.ResumeGeneration && previousID != resolution.AttentionID {
-					return delegateAttentionFold{}, fmt.Errorf("resume generation %d claims attention %q and %q", resolution.ResumeGeneration, previousID, resolution.AttentionID)
-				}
-			}
-		}
-		fold.resolutions[resolution.AttentionID] = disposition
-		fold.resumeGenerations[resolution.AttentionID] = resolution.ResumeGeneration
-	}
-	return fold, nil
+	return foldDelegateAttentionSuffix(newDelegateAttentionFold(), entries)
 }
 
 func foldDelegateDeliveryCommits(fold *delegateAttentionFold, turn schema.Turn) error {

@@ -92,24 +92,37 @@ func fromTranscriptFile(threadID, transcriptPath string) (prepareAppIdentitySour
 	return out, nil
 }
 
+// parseAppIdentityRef is the shared validation head of every
+// PrepareAppIdentity* form: sourceID defaulting, the thread-id requirement,
+// ref parsing, and the ref/source match. Each form then does its own
+// transcript work; the error text and ordering are identical across forms
+// because they all come through here.
+func parseAppIdentityRef(sourceID, threadID, ref string) (string, appwire.Ref, error) {
+	if sourceID == "" {
+		sourceID = "local"
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return "", appwire.Ref{}, errors.New("thread id is required")
+	}
+	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	if err != nil {
+		return "", appwire.Ref{}, fmt.Errorf("invalid app identity ref: %w", err)
+	}
+	if parsedRef.SourceID != sourceID {
+		return "", appwire.Ref{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+	}
+	return sourceID, parsedRef, nil
+}
+
 // PrepareAppIdentityForRef is PrepareAppIdentity for a replacement that keeps
 // the same stable workspace ref while advancing the live session instance.
 // The projector must use that ref too: otherwise the first event after clear
 // would be published to the replacement session's derived ref and existing
 // subscribers would miss it.
 func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (PreparedAppIdentity, error) {
-	if sourceID == "" {
-		sourceID = "local"
-	}
-	if strings.TrimSpace(threadID) == "" {
-		return PreparedAppIdentity{}, errors.New("thread id is required")
-	}
-	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	sourceID, parsedRef, err := parseAppIdentityRef(sourceID, threadID, ref)
 	if err != nil {
-		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
-	}
-	if parsedRef.SourceID != sourceID {
-		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+		return PreparedAppIdentity{}, err
 	}
 	source, err := fromTranscriptFile(threadID, transcriptPath)
 	if err != nil {
@@ -132,18 +145,9 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 // the fence of live turn ids above the seeded ones -- is identical to
 // PrepareAppIdentityForRef.
 func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
-	if sourceID == "" {
-		sourceID = "local"
-	}
-	if strings.TrimSpace(threadID) == "" {
-		return PreparedAppIdentity{}, errors.New("thread id is required")
-	}
-	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	sourceID, parsedRef, err := parseAppIdentityRef(sourceID, threadID, ref)
 	if err != nil {
-		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
-	}
-	if parsedRef.SourceID != sourceID {
-		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+		return PreparedAppIdentity{}, err
 	}
 	if header.SessionID != "" && header.SessionID != threadID {
 		return PreparedAppIdentity{}, fmt.Errorf("transcript header belongs to session %s, not %s", header.SessionID, threadID)
@@ -167,18 +171,9 @@ func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transc
 // The header rules are the entries form's: the restore pass already
 // validated it against threadID.
 func PrepareAppIdentityFromEntriesWindowed(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount int) (PreparedAppIdentity, error) {
-	if sourceID == "" {
-		sourceID = "local"
-	}
-	if strings.TrimSpace(threadID) == "" {
-		return PreparedAppIdentity{}, errors.New("thread id is required")
-	}
-	parsedRef, err := appwire.ParseRef(strings.TrimSpace(ref))
+	sourceID, parsedRef, err := parseAppIdentityRef(sourceID, threadID, ref)
 	if err != nil {
-		return PreparedAppIdentity{}, fmt.Errorf("invalid app identity ref: %w", err)
-	}
-	if parsedRef.SourceID != sourceID {
-		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
+		return PreparedAppIdentity{}, err
 	}
 	if header.SessionID != "" && header.SessionID != threadID {
 		return PreparedAppIdentity{}, fmt.Errorf("transcript header belongs to session %s, not %s", header.SessionID, threadID)
