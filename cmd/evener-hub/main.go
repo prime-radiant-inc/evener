@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
@@ -100,6 +101,7 @@ type hubOptions struct {
 	configPath   string
 	addr         string
 	evenerBinary string
+	appwireTrace string
 }
 
 type mainDeps struct {
@@ -182,6 +184,26 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 	defer release()
+
+	var appwireTrace *appserver.WebSocketTrace
+	if opts.appwireTrace != "" {
+		tracePath, absErr := filepath.Abs(opts.appwireTrace)
+		if absErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace path: %v\n", absErr)
+			return fmt.Errorf("resolve appwire trace path: %w", absErr)
+		}
+		appwireTrace, err = appserver.NewWebSocketTrace(tracePath)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] appwire trace: %v\n", err)
+			return fmt.Errorf("create appwire trace: %w", err)
+		}
+		defer func() {
+			if closeErr := appwireTrace.Close(); closeErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] close appwire trace: %v\n", closeErr)
+			}
+		}()
+		_, _ = fmt.Fprintf(stderr, "[hub] recording raw browser AppWire frames at %s; this file contains sensitive data\n", tracePath)
+	}
 
 	// Resolve runtime paths.
 	runDir := cfg.RunDir
@@ -344,7 +366,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	pluginRoot := plugins.NewManager("").Root
 
 	// Web
-	web := NewWebServer(hubcore.WebConfig{
+	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
 		MobileBaseURL:             cfg.MobileBaseURL,
@@ -375,7 +397,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PokeAttention:             pokeAttention,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
-	})
+	}, appwireTrace)
+	if appwireTrace != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire trace connections: %v\n", shutdownErr)
+			}
+		}()
+	}
 
 	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
 	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
@@ -495,6 +526,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
+	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()

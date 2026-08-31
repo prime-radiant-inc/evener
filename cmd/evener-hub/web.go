@@ -55,6 +55,10 @@ var manifestMarshal = json.Marshal
 
 // NewWebServer constructs the web server.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
+	return newWebServer(cfg, nil)
+}
+
+func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace) *WebServer {
 	var deletionStoreErr error
 	if cfg.DeletionStore == nil {
 		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)
@@ -90,7 +94,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
+	web.appRPC = newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
