@@ -405,6 +405,20 @@ func (i *PastIndex) All() []PastEntry {
 // in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 	if strings.TrimSpace(q) != "" {
+		// Search is FTS's only consumer, so a stale mirror (a fold's or
+		// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
+		// briefly unwritable) is observable only here — and this is the
+		// repair point: re-publish the current snapshot so the FTS path
+		// serves every indexed id again. While the mirror stays broken
+		// every Search re-attempts the full FTS write; the first success
+		// flips i.fts and the repair stops. The fingerprint gate keeps
+		// the redundant publish from firing onChange.
+		i.mu.RLock()
+		ftsStale := i.dbPath != "" && !i.fts
+		i.mu.RUnlock()
+		if ftsStale {
+			i.publishAndSignal(i.All())
+		}
 		if fts, ok := i.searchFTS(q); ok {
 			mem := i.searchMemoryMatches(q)
 			return i.mergeSearchResults(fts, mem, limit, offset)
@@ -722,18 +736,6 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 		return PastEntry{}, false
 	}
 	if e, ok := i.findCached(sessionID); ok {
-		// The FTS mirror can be stale after a fold's or rebuild's
-		// rebuildFTS lost a SQLITE_BUSY race — the entry is in memory but
-		// search would miss it. i.fts is the staleness signal; a cache-hit
-		// Find is the cheapest repair point, so re-publish. The fingerprint
-		// gate makes the redundant publish a no-op for onChange.
-		i.mu.RLock()
-		ftsStale := i.dbPath != "" && !i.fts
-		i.mu.RUnlock()
-		if ftsStale {
-			all := i.All()
-			i.publishAndSignal(all)
-		}
 		return e, true
 	}
 	if sessionID == "" || i.stateGlob == "" {
