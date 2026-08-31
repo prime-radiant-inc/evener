@@ -111,3 +111,36 @@ func reasoningKeys(body map[string]any) map[string]any {
 	}
 	return out
 }
+
+// The composed pin, on the real row rather than hand-written caps:
+// openrouter/minimax/minimax-m2.7 is reasoning = true, toggle-only,
+// thinking_always_on, no effort ladder, openrouter dialect. With nothing
+// configured the always-on body is what keeps a mandatory-thinking model
+// legal; with the user's explicit off it must not be sent, or turning
+// reasoning off would turn it on.
+func TestBuildBody_ExplicitOffOnAMandatoryThinkingRow(t *testing.T) {
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"openrouter": {APIKey: "k"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	res, err := r.Resolve("openrouter/minimax/minimax-m2.7")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !registry.BoolValue(res.Caps.ThinkingAlwaysOn) || res.Caps.EffortOffCapable() {
+		t.Fatalf("fixture: want a mandatory-thinking row with no off level, got %+v", res.Caps)
+	}
+
+	unset := build(t, userReq("hi"), res)
+	if jsonOf(t, unset["reasoning"]) != jsonOf(t, map[string]any{"enabled": true}) {
+		t.Fatalf("nothing configured: reasoning = %s, want the always-on enable object", jsonOf(t, unset["reasoning"]))
+	}
+	if got := reasoningKeys(build(t, offReq(), res)); len(got) != 0 {
+		t.Fatalf("--reasoning-effort none put %s on the wire, turning reasoning on", jsonOf(t, got))
+	}
+}
