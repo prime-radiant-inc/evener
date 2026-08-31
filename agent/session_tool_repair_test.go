@@ -201,9 +201,13 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		call := llm.ToolCallData{ID: "c1", Name: "task_list",
 			Arguments: json.RawMessage(`{"action":"update","updates":[{"status":"done","notes":"x"}]}`)}
 		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		// The Example shows the caller's own branch shape (issue #626 round 2,
+		// finding 3): a correctly-placed update call missing a required field
+		// gets the updates-array template, not the action-only one. (Main made
+		// status optional, so the same-branch case under test is missing id.)
 		want := "task_list: missing required argument \"id\" in updates[0].\n" +
 			"Required arguments in updates[0]: id (integer).\n" +
-			"Example: {\"action\": \"...\"}"
+			"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0}]}"
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
 		}
