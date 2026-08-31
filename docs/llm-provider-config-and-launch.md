@@ -260,8 +260,12 @@ equivalent allowlist function to describe here.
 
 ## Upgrading from the old schema
 
-There's no migration code. After upgrading, do the following once — the
-release notes and the load-error message both point here.
+Run `evener migrate` once after upgrading: it converts an old-schema
+`providers.toml` in place, keeps the original beside it as
+`providers.toml.pre-registry`, and records every dropped field as a
+`# migrate:` comment. The rest of this section is the by-hand story, for
+when you'd rather rewrite the file yourself — the release notes and the
+load-error message both point here.
 
 **`providers.toml` fails to load.** An old-schema file (`[instances.*]`,
 `type`, `api_style`, `quirks`, `compat`) fails to load. The CLI exits with a
@@ -269,8 +273,8 @@ pointer to
 [`docs/superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md);
 the hub starts with implicit instances only, shows the error as a
 diagnostic, launches sessions against the implicit set, and refuses
-instance writes until the file is fixed. Fix it by hand — edit, delete, or
-move the file aside; nothing does this automatically. Most users need no
+instance writes until the file is fixed. Fix it with `evener migrate`, or by
+hand — edit, delete, or move the file aside. Most users need no
 file at all afterward: every implicit provider (see the table in
 [`llm-providers.md`](llm-providers.md#the-implicit-provider-list)) exists
 from its key alone, and `*_BASE_URL` variables cover proxies. Re-create a
