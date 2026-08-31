@@ -473,6 +473,16 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	for _, w := range res.Warnings {
 		_, _ = fmt.Fprintf(stdout, "%s: %s\n", name, w)
 	}
+	// Name the protocol the instance landed on. A defaulted protocol is a
+	// silent choice, so it also names the override (the groq case: base =
+	// "groq" lands on openai-chat with openai-responses equally valid).
+	if strings.TrimSpace(*protocol) == "" {
+		_, _ = fmt.Fprintf(stdout, "%s: protocol %s (%s's default; --protocol %s overrides)\n",
+			name, res.Protocol, entry.Base,
+			strings.Join([]string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle}, "|"))
+	} else {
+		_, _ = fmt.Fprintf(stdout, "%s: protocol %s\n", name, res.Protocol)
+	}
 	if res.Credential.Source == "none" && res.Transport.Auth != registry.AuthNone && res.Transport.Auth != registry.AuthOptionalBearer {
 		if credentialPointerHelps(entry, res.Transport.Auth) {
 			_, _ = fmt.Fprintf(stdout, "no credential resolves for %s: set %s, add --api-key-env, or enter a key with the hub's credentials pane (credentials.toml [providers.%s]); not probing\n",

@@ -667,3 +667,35 @@ func TestProvidersListAndModelsInspectRedactBaseURLUserinfo(t *testing.T) {
 		t.Fatalf("models inspect dropped the endpoint host entirely:\n%s", stdout.String())
 	}
 }
+
+// Adding an instance without --protocol resolves the base's default silently;
+// the report must say which protocol the instance ended up on and that
+// --protocol can pick another, so the choice is visible at the moment it is
+// made (the groq3 case: base = "groq" landed on openai-chat with nothing
+// saying openai-responses existed).
+func TestProvidersAddNamesTheDefaultedProtocol(t *testing.T) {
+	providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"add", "g3", "--base", "groq"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("add: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"g3: protocol openai-chat", "--protocol", "openai-responses"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("defaulted add must name the protocol and the override:\nmissing %q in\n%s", want, out)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runProviders([]string{"add", "g4", "--base", "groq", "--protocol", "openai-responses"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("add with protocol: %v\n%s", err, stderr.String())
+	}
+	out = stdout.String()
+	if !strings.Contains(out, "g4: protocol openai-responses") {
+		t.Fatalf("chosen protocol must still be confirmed:\n%s", out)
+	}
+	if strings.Contains(out, "--protocol") {
+		t.Fatalf("no override hint when the user already chose:\n%s", out)
+	}
+}
