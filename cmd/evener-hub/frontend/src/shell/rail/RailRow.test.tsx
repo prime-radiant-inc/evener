@@ -441,23 +441,23 @@ describe("inactive-subagent fold row", () => {
 describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
   // shellguard's tap-target pass measures these in a real phone context; these
   // source assertions pin the rules themselves (jsdom evaluates no cascade).
-  function coarseBlock(): string {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    const block = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-    expect(block).not.toBeNull();
-    return block![1]!;
-  }
+  const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const coarseBlock = CSS.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/)?.[1] ?? null;
 
   test("row action buttons meet the 44px floor in BOTH dimensions", () => {
-    const rule = coarseBlock().match(/\.actions button\s*\{([^}]*)\}/);
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\s*\{([^}]*)\}/);
     expect(rule).not.toBeNull();
     expect(rule![1]).toContain("min-width: var(--tap-min)");
     expect(rule![1]).toContain("min-height: var(--tap-min)");
   });
 
   test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
-    const rule = coarseBlock().match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
+    expect(coarseBlock, "RailRow.module.css is missing its pointer:coarse block").not.toBeNull();
+    const rule = coarseBlock!.match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
     expect(rule).not.toBeNull();
     expect(rule![1]).toContain("padding: 0");
     expect(rule![1]).toContain("justify-content: center");

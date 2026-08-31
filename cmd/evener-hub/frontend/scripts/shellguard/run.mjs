@@ -16,9 +16,9 @@ import {
   applyViewport,
   clearViewportOverride,
   connectPage,
-  evaluate,
   createStartupDeadline,
   devtoolsHttpURL,
+  evaluate,
   navigateTo,
   waitForFonts,
   waitForHttp,
@@ -37,49 +37,19 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
-async function measure(cdpEndpoint, vitePort) {
+// One page load, one measurement: opens a fresh page at `viewport`, waits for
+// the harness to settle, and returns the parsed result of `expression`. Every
+// measurement below is one call to this - the per-measure differences are the
+// viewport and the expression, nothing else.
+async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
-    await applyViewport(send, VIEWPORT);
+    await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
-    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureShell())"));
-  } finally {
-    await clearViewportOverride(send);
-    page.close();
-  }
-}
-
-async function measureMobileSidebar(cdpEndpoint, vitePort) {
-  const page = await connectPage(cdpEndpoint);
-  const { send } = page;
-  try {
-    await applyViewport(send, MOBILE_VIEWPORT);
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
-    await evaluate(send, "window.settledShell");
-    await waitForFonts(send);
-    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureMobileSidebar())"));
-  } finally {
-    await clearViewportOverride(send);
-    page.close();
-  }
-}
-
-// The mobile rail is the session list a phone user taps through: every
-// interactive element in it must meet the platform's 44px tap floor. Measured
-// in the same emulated-phone context as measureMobileSidebar (a second page,
-// so the assertion is independent of the sidebar geometry checks).
-async function measureTapTargets(cdpEndpoint, vitePort) {
-  const page = await connectPage(cdpEndpoint);
-  const { send } = page;
-  try {
-    await applyViewport(send, MOBILE_VIEWPORT);
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
-    await evaluate(send, "window.settledShell");
-    await waitForFonts(send);
-    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureTapTargets())"));
+    return JSON.parse(await evaluate(send, expression));
   } finally {
     await clearViewportOverride(send);
     page.close();
@@ -174,7 +144,8 @@ function assertMobileResult(result) {
     );
   }
   if (result.rail === null) failures.push("mobile rail is not rendered inside the Sheet");
-  else if (result.rail.overflowY !== "visible") failures.push(`mobile rail overflow-y is ${result.rail.overflowY}, expected visible`);
+  else if (result.rail.overflowY !== "visible")
+    failures.push(`mobile rail overflow-y is ${result.rail.overflowY}, expected visible`);
   if (result.railBody === null) failures.push("mobile rail body is not rendered");
   else if (result.railBody.overflowY !== "visible") {
     failures.push(`mobile rail body overflow-y is ${result.railBody.overflowY}, expected visible`);
@@ -235,16 +206,22 @@ async function main() {
     } finally {
       startupDeadline.clear();
     }
-    const result = await measure(cdpEndpoint, vitePort);
-    const mobileResult = await measureMobileSidebar(cdpEndpoint, vitePort);
-    const tapResult = await measureTapTargets(cdpEndpoint, vitePort);
-    const failures = [...assertResult(result), ...assertMobileResult(mobileResult), ...assertTapTargets(tapResult)];
+    const result = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, "JSON.stringify(window.measureShell())");
+    // Both mobile measurements come from ONE page load of the emulated phone:
+    // the sidebar geometry and the tap-floor audit need the same context.
+    const mobile = await measureOnPage(
+      cdpEndpoint,
+      vitePort,
+      MOBILE_VIEWPORT,
+      "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
+    );
+    const failures = [...assertResult(result), ...assertMobileResult(mobile.sidebar), ...assertTapTargets(mobile.tap)];
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
-          `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobileResult.panelBody.scrollHeight}px in ${mobileResult.panelBody.clientHeight}px); ` +
-          `${tapResult.measured} mobile tap targets all >= ${tapResult.min}px`,
+          `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobile.sidebar.panelBody.scrollHeight}px in ${mobile.sidebar.panelBody.clientHeight}px); ` +
+          `${mobile.tap.measured} mobile tap targets all >= ${mobile.tap.min}px`,
       );
     } else {
       for (const failure of failures) console.error(`shellguard FAIL: ${failure}`);
@@ -255,9 +232,9 @@ async function main() {
         console.error(`  ${link.selector} height=${link.height.toFixed(1)} ${JSON.stringify(link.computed)}`);
       }
       console.error(`railBody: ${JSON.stringify(result.railBody)}`);
-      console.error(`mobile sidebar: ${JSON.stringify(mobileResult)}`);
+      console.error(`mobile sidebar: ${JSON.stringify(mobile.sidebar)}`);
       console.error("sub-floor tap targets in the mobile session list:");
-      for (const o of tapResult.offenders.slice(0, 20)) {
+      for (const o of mobile.tap.offenders.slice(0, 20)) {
         console.error(`  ${o.selector} ${JSON.stringify(o.box)}`);
       }
       console.error(`experiments: ${JSON.stringify(result.experiments)}`);

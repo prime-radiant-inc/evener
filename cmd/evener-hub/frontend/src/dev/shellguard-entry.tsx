@@ -355,13 +355,24 @@ function scrollMetrics(el: Element | null) {
   };
 }
 
+// The mobile Sheet panel hosting the rail, located from the rail's one
+// stable anchor (the settings button's testid). Shared by both mobile
+// measurements so the ancestor walk lives in exactly one place.
+function mobileRailPanel(): Element | null {
+  const settings = document.querySelector("[data-testid='rail-settings']");
+  const footer = settings?.parentElement ?? null;
+  const rail = footer?.parentElement ?? null;
+  const panelBody = rail?.parentElement ?? null;
+  return panelBody?.parentElement ?? null;
+}
+
 function measureMobileSidebar() {
   const settings = document.querySelector("[data-testid='rail-settings']");
   const footer = settings?.parentElement ?? null;
   const rail = footer?.parentElement ?? null;
   const railBody = footer?.previousElementSibling ?? null;
   const panelBody = rail?.parentElement ?? null;
-  const panel = panelBody?.parentElement ?? null;
+  const panel = mobileRailPanel();
   const panelText = panel?.textContent ?? "";
   const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors ?? [];
 
@@ -395,12 +406,10 @@ const booted = boot();
 // targets and are excluded. Both dimensions are reported; a target fails when
 // EITHER is under the floor - a 44px-tall row whose "⋯" button is 20px wide is
 // still a miss (Apple HIG/WCAG 2.5.5's 44x44).
-export const TAP_TARGET_MIN = 44;
+const TAP_TARGET_MIN = 44;
 
 function measureTapTargets() {
-  const settings = document.querySelector("[data-testid='rail-settings']");
-  const rail = settings?.parentElement?.parentElement ?? null;
-  const panel = rail?.parentElement?.parentElement ?? null;
+  const panel = mobileRailPanel();
   const interactive = panel
     ? [...panel.querySelectorAll('button, a[href], input, [role="treeitem"], [role="button"]')]
     : [];
