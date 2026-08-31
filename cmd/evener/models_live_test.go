@@ -724,6 +724,41 @@ func sortedNames[V any](m map[string]V) []string {
 	return names
 }
 
+// TestLiveTextReasoningOnly runs offline. It pins what liveText reports for
+// the Chat Completions shape both openrouter/minimax/minimax-m2.7 and
+// lunaroute/glm-5.2-vision answered with on 2026-08-31 (issue #715): a null
+// content, the reasoning in its own field, and finish_reason "length" because
+// the model spent the whole output cap thinking. The log line has to name the
+// truncation, since that — not a lost reply — is why there is no text.
+func TestLiveTextReasoningOnly(t *testing.T) {
+	body := []byte(`{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":null,` +
+		`"refusal":null,"reasoning":"still deciding","reasoning_details":[{"type":"reasoning.text","text":"still deciding"}]}}]}`)
+	got := string(liveText(registry.ProtocolOpenAIChat, body))
+	want := "<no content; finish=length, message carried [reasoning reasoning_details role]>"
+	if got != want {
+		t.Fatalf("liveText = %q, want %q", got, want)
+	}
+
+	answered := []byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"pong"}}]}`)
+	if got := string(liveText(registry.ProtocolOpenAIChat, answered)); got != "pong" {
+		t.Fatalf("liveText = %q, want %q for a message that did carry content", got, "pong")
+	}
+}
+
+// liveValuedNames lists the keys of a wire object whose value is not JSON
+// null, sorted. Names only, under the same rule as sortedNames: it reports
+// what a message carried without printing any of it.
+func liveValuedNames(m map[string]any) []string {
+	names := make([]string, 0, len(m))
+	for k, v := range m {
+		if v != nil {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // liveBody builds the smallest legal request per protocol from Resolved.
 func liveBody(res registry.Resolved) (string, map[string]any, bool) {
 	body := map[string]any{}
@@ -866,6 +901,12 @@ func liveModelIDs(body []byte) []string {
 }
 
 // liveText extracts the reply text per protocol for the log line.
+//
+// A reasoning model that spends this smoke's whole 64-token output cap
+// thinking answers 200 with a null content and its reasoning in a separate
+// field. Printing what the message did carry, plus the finish reason, is what
+// tells that apart from an extraction that lost the reply — a bare "<nil>"
+// reads as the latter and was filed as issue #715 when it was the former.
 func liveText(protocol string, body []byte) []byte {
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -874,8 +915,13 @@ func liveText(protocol string, body []byte) []byte {
 	switch protocol {
 	case registry.ProtocolOpenAIChat:
 		if choices, ok := doc["choices"].([]any); ok && len(choices) > 0 {
-			if msg, ok := choices[0].(map[string]any)["message"].(map[string]any); ok {
-				return []byte(fmt.Sprint(msg["content"]))
+			choice, _ := choices[0].(map[string]any)
+			if msg, ok := choice["message"].(map[string]any); ok {
+				if content, ok := msg["content"].(string); ok && content != "" {
+					return []byte(content)
+				}
+				return fmt.Appendf(nil, "<no content; finish=%v, message carried %v>",
+					choice["finish_reason"], liveValuedNames(msg))
 			}
 		}
 	case registry.ProtocolOpenAIResponses:
