@@ -1,6 +1,9 @@
 package migrate
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -171,5 +174,102 @@ func TestConvertOldConfig_OutputDeclaresSchemaTwo(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "schema = 2") {
 		t.Fatalf("converted file must declare schema = 2:\n%s", out)
+	}
+}
+
+func TestExecuteConvertsOldProvidersConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("default = \"kimi\"\n\n[instances.kimi]\ntype = \"kimi\"\n")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	converted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := registry.ParseConfig(converted)
+	if err != nil {
+		t.Fatalf("providers.toml must be converted in place: %v\n%s", err, converted)
+	}
+	if l.Providers["kimi"].Base != "moonshotai" {
+		t.Fatalf("converted kimi base = %q", l.Providers["kimi"].Base)
+	}
+	backup, err := os.ReadFile(path + ".pre-registry")
+	if err != nil {
+		t.Fatalf("original must be backed up beside the file: %v", err)
+	}
+	if string(backup) != string(src) {
+		t.Fatalf("backup must hold the original bytes")
+	}
+	if !strings.Contains(stdout.String(), "providers.toml") {
+		t.Fatalf("report must mention the conversion:\n%s", stdout.String())
+	}
+}
+
+func TestExecuteDryRunLeavesOldProvidersConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("[instances.kimi]\ntype = \"kimi\"\n")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := baseOpts(home, t.TempDir())
+	opts.dryRun = true
+	var stdout, stderr bytes.Buffer
+	if code := execute(opts, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(src) {
+		t.Fatal("dry-run must not touch the file")
+	}
+	if !strings.Contains(stdout.String(), "providers.toml") {
+		t.Fatalf("dry-run must announce the pending conversion:\n%s", stdout.String())
+	}
+}
+
+func TestExecuteSkipsNewSchemaProvidersConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "providers.toml")
+	src := []byte("schema = 2\n\n[providers.openai]\n")
+	if err := os.WriteFile(path, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := execute(baseOpts(home, t.TempDir()), &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d; stderr = %q", code, stderr.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(src) {
+		t.Fatal("a new-schema file is not to be rewritten")
+	}
+	if _, err := os.Stat(path + ".pre-registry"); !os.IsNotExist(err) {
+		t.Fatal("no backup may appear for a new-schema file")
 	}
 }
