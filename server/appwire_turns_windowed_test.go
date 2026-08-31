@@ -1,8 +1,8 @@
 package server
 
 import (
+	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -12,33 +12,6 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
-
-// agentSidecarPrefixTurnCount computes the prefix-turn count the way the
-// transcript package's full-scan anchor does. The rule is private there, so
-// this helper restates it beside the differential that compares it against
-// the real projection: a mismatch between the two is the drift the
-// differential catches.
-func agentSidecarPrefixTurnCount(t *testing.T, header transcript.Header, prefix []transcript.Entry) int {
-	t.Helper()
-	// Mirror of transcript.prefixTurnCount: prelude (non-empty system prompt)
-	// plus one position per entry whose turn projects thread items.
-	count := 0
-	if strings.TrimSpace(header.SystemPrompt) != "" {
-		count++
-	}
-	for i := range prefix {
-		turn := prefix[i].Turn
-		projects := true
-		switch turn.Kind {
-		case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnModelSwitch, schema.TurnEnvironment, schema.TurnHookCompleted:
-			projects = strings.TrimSpace(turn.Message.Text()) != "" || (turn.Kind == schema.TurnHookCompleted && turn.Hook != nil)
-		}
-		if projects {
-			count++
-		}
-	}
-	return count
-}
 
 // TestWindowedSnapshotPagesInFullPositionSpace: a windowed seed's Latest and
 // Page cursors must live in the same front-anchored position space a full
@@ -211,21 +184,26 @@ func TestWindowedSnapshotMatchesFullProjectionDifferential(t *testing.T) {
 // windowed projection returns must equal the number of turns the FULL
 // projection holds below the suffix. The count is computed by the transcript
 // package (prefixTurnCount) from the prefix entries the windowed form never
-// sees, so this differential — full projection over prefix+suffix versus
-// windowed projection seeded with the transcript package's count — is what
-// proves the restated emission rules have not drifted.
+// sees, so this differential compares the count the production anchor
+// actually wrote (read back from the sidecar) against the count the real
+// full projection holds below the suffix — a drift in either side fails.
 func TestTurnsFromEntriesWindowedCountMatchesFullProjection(t *testing.T) {
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	// A prefix mix that exercises the emission rules: projecting kinds, a
 	// marker kind with empty text (projects nothing), and a prelude.
-	header := transcript.Header{SessionID: "th_c", SystemPrompt: "system prompt"}
+	header := transcript.Header{SessionID: sessionID, SystemPrompt: "system prompt"}
+	// The fixture mirrors a real windowed resume's boundary: the sidecar
+	// anchors AT the checkpoint entry, so the checkpoint is the SUFFIX's
+	// first entry (ResumeHistory's window starts at it) and the prefix is
+	// everything before it.
 	prefix := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("one"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("two"))},
 		// Empty-text environment turn: ProjectTurn emits nothing.
 		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnEnvironment, llm.User("   "))},
-		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))},
 	}
 	suffix := []transcript.Entry{
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))},
 		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after"))},
 		{Kind: "entry", Seq: 5, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))},
 	}
@@ -233,18 +211,46 @@ func TestTurnsFromEntriesWindowedCountMatchesFullProjection(t *testing.T) {
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
 	}
 
-	// The count the sidecar would carry: transcript's restated rule.
-	want := agentSidecarPrefixTurnCount(t, header, prefix)
+	// The count the sidecar actually carries: write this transcript and
+	// resume it once — the full-scan anchor computes PrefixTurnCount from
+	// the prefix entries it decoded.
+	path := filepath.Join(t.TempDir(), sessionID+".transcript.jsonl")
+	writer, err := transcript.NewWriter(path, header)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	for _, entry := range append(append([]transcript.Entry{}, prefix...), suffix...) {
+		if err := writer.Append(entry.Turn); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	first, _, err := transcript.OpenWriterForResume(path, sessionID)
+	if err != nil {
+		t.Fatalf("first resume: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after the full-scan resume")
+	}
+	want := sidecar.PrefixTurnCount
 	// The full projection over prefix+suffix: prelude + one turn per
 	// projecting entry (2 prefix entries project; the empty environment
 	// turn does not), then the suffix's turns.
 	fullTurns, _ := apptranscript.TurnsFromEntries(header, append(append([]transcript.Entry{}, prefix...), suffix...), project)
-	// Turns below the suffix in the full projection: everything except the
-	// suffix's turns. The suffix holds 2 turns; count them directly.
+	// Turns below the WINDOW in the full projection: the window's turns are
+	// the SUFFIX entries' turns (the checkpoint entry is the suffix's first
+	// entry — ResumeHistory's window starts AT it), so below-the-window is
+	// everything the full projection holds before the first suffix turn.
 	suffixTurns, _ := apptranscript.TurnsFromEntries(transcript.Header{}, suffix, project)
 	below := len(fullTurns) - len(suffixTurns)
-	if want != below {
-		t.Fatalf("prefix turn count drift: sidecar rule says %d, full projection holds %d below the window", want, below)
+	if below != want {
+		t.Fatalf("prefix turn count drift: sidecar says %d, full projection holds %d below the window", want, below)
 	}
 
 	// The windowed turns are the full projection's suffix turns — the same
