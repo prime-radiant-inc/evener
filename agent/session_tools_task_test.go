@@ -398,3 +398,28 @@ func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
 		t.Fatalf("ack: %q", res.FullOutput)
 	}
 }
+
+// TestTaskTool_UpdateDependsOnSameCallAddRejected: an update's depends_on
+// may not reference an ID this call's add would assign — the model cannot
+// know it, and allowing it invites ID-guessing (the same reason update
+// targets validate against the pre-add state).
+func TestTaskTool_UpdateDependsOnSameCallAddRejected(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p"}})
+	res := h.call(t, map[string]any{
+		"add": []any{map[string]any{
+			"type": "implement", "description": "new", "prompt": "p",
+		}},
+		"update": []any{map[string]any{
+			"id": 1, "depends_on": []any{2},
+		}},
+	})
+	if !res.IsError {
+		t.Fatalf("update depending on same-call add must be rejected, got: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "depends on unknown task 2") {
+		t.Fatalf("error should name the unknown dep: %s", res.FullOutput)
+	}
+	if len(h.store.View()) != 1 {
+		t.Fatal("rejected combined call must apply nothing (atomicity)")
+	}
+}

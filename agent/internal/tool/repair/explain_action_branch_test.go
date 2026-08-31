@@ -11,6 +11,11 @@ import (
 // updates the update-branch array; the real schema selects between them by
 // the action value in prose, not by a combinator — the handler enforces it.
 // The "For <action>:" description tags are what the branch detection keys on.
+// taskListParams is a SYNTHETIC action-enum schema shaped like the pre-rework
+// DefTaskList, kept because the branch machinery it exercises (actionTag
+// parsing, namedBranch enum membership, action-scoped arrays) still serves
+// manage_worktree and any MCP tool carrying a selector; task_list itself is
+// presence-based now and cannot produce these failures.
 func taskListParams() map[string]any {
 	return map[string]any{
 		"type":                 "object",

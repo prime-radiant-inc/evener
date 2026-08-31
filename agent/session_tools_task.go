@@ -215,11 +215,14 @@ func decodeIDList(raw []any) ([]int, error) {
 	return ids, nil
 }
 
-// validateUpdateIDs rejects update entries whose target does not exist in
-// the pre-add store state. The model composed the call before any new IDs
-// existed, so an update can never legitimately target this call's adds; the
-// same error covers both "never existed" and "not yet created" (the model
-// cannot distinguish them and shouldn't need to).
+// validateUpdateIDs rejects update entries whose target — or any task their
+// depends_on names — does not exist in the pre-add store state. The model
+// composed the call before any new IDs existed, so an update can neither
+// target nor depend on this call's adds; the same error covers "never
+// existed" and "not yet created" (the model cannot distinguish them and
+// shouldn't need to). Without the depends_on check the store would validate
+// post-add and accept a guessed new ID — exactly the ID-guessing the
+// pre-add target rule exists to prevent.
 func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) error {
 	if len(updates) == 0 {
 		return nil
@@ -231,6 +234,14 @@ func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) e
 	for _, u := range updates {
 		if _, ok := known[u.ID]; !ok {
 			return fmt.Errorf("unknown task ID %d", u.ID)
+		}
+		if u.DependsOn == nil {
+			continue
+		}
+		for _, dep := range *u.DependsOn {
+			if _, ok := known[dep]; !ok {
+				return fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
+			}
 		}
 	}
 	return nil
@@ -288,7 +299,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 
 				// Classify each ID from the final status the store applied, so
 				// duplicate entries cannot steer a task that ended completed or
-				// suppress auto-advance after the final state is known.
+				// suppress auto-advance after the final state is known. Note:
+				// mutation.Before is the POST-ADD pre-update state, but every
+				// update target pre-existed the call (validateUpdateIDs), so its
+				// Before status equals its pre-call status — adds never touch
+				// existing tasks' statuses.
 				previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
 				for _, task := range mutation.Before {
 					previous[task.ID] = task.Status
