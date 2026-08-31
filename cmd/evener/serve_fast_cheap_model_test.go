@@ -38,8 +38,8 @@ func TestApplyFastCheapModel_SameProviderOverridesCheapModel(t *testing.T) {
 	if got.ID() != "openai" || got.Model() != "gpt-5.2" {
 		t.Fatalf("active profile changed: id=%q model=%q", got.ID(), got.Model())
 	}
-	if got.CheapModel() != "gpt-4.1-mini" {
-		t.Fatalf("CheapModel() = %q, want gpt-4.1-mini", got.CheapModel())
+	if got.ConfiguredCheapModel() != "gpt-4.1-mini" {
+		t.Fatalf("ConfiguredCheapModel() = %q, want gpt-4.1-mini", got.ConfiguredCheapModel())
 	}
 	if got.CheapProvider() != "openai" {
 		t.Fatalf("CheapProvider() = %q, want openai", got.CheapProvider())
@@ -79,19 +79,20 @@ func TestApplyFastCheapModel_BareModelKeepsActiveProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
-	if got.CheapModel() != "gpt-4.1-mini" || got.CheapProvider() != "openai" {
-		t.Fatalf("cheap = (%q, %q), want (gpt-4.1-mini, openai)", got.CheapProvider(), got.CheapModel())
+	if got.ConfiguredCheapModel() != "gpt-4.1-mini" || got.CheapProvider() != "openai" {
+		t.Fatalf("cheap = (%q, %q), want (gpt-4.1-mini, openai)", got.CheapProvider(), got.ConfiguredCheapModel())
 	}
 }
 
-func TestApplyFastCheapModel_BlankKeepsDefault(t *testing.T) {
+func TestApplyFastCheapModel_BlankUsesPrimaryModel(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
 	got, err := applyFastCheapModel(profile, "", clientWithProviders("openai"))
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
-	if got.CheapModel() != "gpt-4.1-nano" {
-		t.Fatalf("CheapModel() = %q, want gpt-4.1-nano", got.CheapModel())
+	providerName, model := got.CheapModelRef()
+	if providerName != "openai" || model != "gpt-5.2" {
+		t.Fatalf("CheapModelRef() = (%q, %q), want (openai, gpt-5.2)", providerName, model)
 	}
 }
 

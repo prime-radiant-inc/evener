@@ -9,7 +9,7 @@ import (
 
 func TestGc_NoCacheDirYet(t *testing.T) {
 	m := NewManager(t.TempDir())
-	removed, err := m.Gc()
+	removed, err := m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("Gc on empty store: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 		t.Fatalf("test setup: old sha-dir missing before gc: %v", err)
 	}
 
-	removed, err := m.Gc()
+	removed, err := m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	}
 
 	// A second sweep with nothing new to reclaim is a no-op.
-	removed, err = m.Gc()
+	removed, err = m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("second Gc: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestGc_DirectorySourceInstallPathNeverConsidered(t *testing.T) {
 		t.Fatalf("InstallPath = %q, want %q (referenced in place)", entry.InstallPath, pluginDir)
 	}
 
-	if _, err := m.Gc(); err != nil {
+	if _, err := m.Gc(context.Background()); err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
 	if _, err := os.Stat(pluginDir); err != nil {

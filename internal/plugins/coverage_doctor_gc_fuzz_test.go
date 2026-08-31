@@ -4,6 +4,7 @@ package plugins
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -146,15 +147,15 @@ func coverageGC(t *testing.T) {
 	boom := errors.New("boom")
 	m := NewManager(t.TempDir())
 
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return nil, boom }
-	if _, err := m.Gc(); !errors.Is(err, boom) {
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, boom }
+	if _, err := m.Gc(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("lock: %v", err)
 	}
-	gcAcquireLock = func(string, time.Duration) (func(), error) { return func() {}, nil }
+	gcAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	if err := os.WriteFile(m.registryPath(), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Gc(); err == nil {
+	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("corrupt registry succeeded")
 	}
 	if err := os.Remove(m.registryPath()); err != nil {
@@ -171,7 +172,7 @@ func coverageGC(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got, err := m.Gc(); err != nil || len(got) != 0 {
+	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
 		t.Fatalf("market: %#v, %v", got, err)
 	}
 	gcReadDir = func(path string) ([]os.DirEntry, error) {
@@ -186,7 +187,7 @@ func coverageGC(t *testing.T) {
 			return nil, boom
 		}
 	}
-	if got, err := m.Gc(); err != nil || len(got) != 0 {
+	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
 		t.Fatalf("plugin: %#v, %v", got, err)
 	}
 	gcReadDir = func(path string) ([]os.DirEntry, error) {
@@ -202,7 +203,7 @@ func coverageGC(t *testing.T) {
 		}
 	}
 	gcRemoveAll = func(string) error { return boom }
-	if _, err := m.Gc(); err == nil {
+	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("remove succeeded")
 	}
 }

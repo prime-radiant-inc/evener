@@ -910,3 +910,48 @@ func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 		t.Fatal("Evener.ParentRef is empty, want a non-empty parent reference")
 	}
 }
+
+func TestLocalDaemonRootAndReadOnlyAliasShareRelaySession(t *testing.T) {
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws://127.0.0.1/rpc",
+		SourceID:     "local",
+		ThreadID:     "sess_root",
+		SessionID:    "sess_root",
+		WorkspaceRef: "local:sess_root",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: entry, SessionID: "sess_root"},
+			{Entry: entry, SessionID: "sess_child", OwnerSessionID: "sess_root", ReadOnlyAlias: true},
+		}
+	}, nil)
+	rootValue, err := source.AcquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_root"})
+	if err != nil {
+		t.Fatalf("acquire root relay: %v", err)
+	}
+	defer rootValue.Close()
+	childValue, err := source.AcquireRelaySession(appwire.ThreadReadParams{Ref: "local:sess_child"})
+	if err != nil {
+		t.Fatalf("acquire child relay: %v", err)
+	}
+	defer childValue.Close()
+
+	root, ok := rootValue.(*relaySessionLease)
+	if !ok {
+		t.Fatalf("root lease type = %T, want *relaySessionLease", rootValue)
+	}
+	child, ok := childValue.(*relaySessionLease)
+	if !ok {
+		t.Fatalf("child lease type = %T, want *relaySessionLease", childValue)
+	}
+	if root.session != child.session {
+		t.Fatal("root and read-only child aliases acquired different relay sessions")
+	}
+	source.relayMu.Lock()
+	actors := len(source.relaySessions)
+	source.relayMu.Unlock()
+	if actors != 1 {
+		t.Fatalf("relay session actors = %d, want 1", actors)
+	}
+}

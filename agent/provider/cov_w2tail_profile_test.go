@@ -53,17 +53,16 @@ func TestW2Tail_cloneStringSlice_Nil(t *testing.T) {
 	}
 }
 
-// CheapModel falls through to the main model when no cheap model is configured
-// and the provider has no default (openai-compat "kimi").
-func TestW2Tail_CheapModel_DefaultFallthrough(t *testing.T) {
-	p := newOpenAICompatProfile("kimi", "kimi-k2", 0, nil)
-	if got := p.CheapModel(); got != p.Model() {
-		t.Errorf("CheapModel default fallthrough = %q, want main model %q", got, p.Model())
+func TestW2Tail_CheapModelRef_DefaultFallthrough(t *testing.T) {
+	profiles := []*Profile{
+		newOpenAICompatProfile("kimi", "kimi-k2", 0, nil),
+		newAnthropicProfile("claude-opus-4-6"),
 	}
-	// Anthropic has an explicit default.
-	a := newAnthropicProfile("claude-opus-4-6")
-	if got := a.CheapModel(); got != "claude-haiku-4-5-20251001" {
-		t.Errorf("anthropic CheapModel = %q", got)
+	for _, profile := range profiles {
+		providerName, model := profile.CheapModelRef()
+		if providerName != profile.ID() || model != profile.Model() {
+			t.Errorf("CheapModelRef = (%q, %q), want (%q, %q)", providerName, model, profile.ID(), profile.Model())
+		}
 	}
 }
 

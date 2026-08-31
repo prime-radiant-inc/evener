@@ -109,7 +109,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 		t.Fatalf("ListMarketplaces = %+v, want 1 entry", listResp.Marketplaces)
 	}
 
-	removeResp, err := ctl.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "acme"})
+	removeResp, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
 	if err != nil {
 		t.Fatalf("RemoveMarketplace: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 
 func TestPlugins_Marketplace_RemoveUnknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.RemoveMarketplace(appwire.MarketplaceNameParams{Name: "nope"})
+	_, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
 	if err == nil {
 		t.Fatal("expected error removing unknown marketplace, got nil")
 	}
@@ -295,7 +295,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("InstalledAt not set")
 	}
 
-	disableResp, err := ctl.Disable(ref)
+	disableResp, err := ctl.Disable(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("entry still enabled after Disable")
 	}
 
-	enableResp, err := ctl.Enable(ref)
+	enableResp, err := ctl.Enable(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("entry not enabled after Enable")
 	}
 
-	autoResp, err := ctl.SetAutoUpgrade(appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
+	autoResp, err := ctl.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
 	if err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Fatalf("Upgrade response = %+v, want 1 entry", upgradeResp.Plugins)
 	}
 
-	removeResp, err := ctl.Remove(ref)
+	removeResp, err := ctl.Remove(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 
 func TestPlugins_Remove_Unknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.Remove(appwire.PluginRefParams{Plugin: "nope", Marketplace: "nowhere"})
+	_, err := ctl.Remove(context.Background(), appwire.PluginRefParams{Plugin: "nope", Marketplace: "nowhere"})
 	if err == nil {
 		t.Fatal("expected error removing unknown plugin, got nil")
 	}

@@ -63,7 +63,7 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"cheap cross provider", TestApplyFastCheapModel_CrossProviderWhenRegistered},
 			{"cheap missing provider", TestApplyFastCheapModel_CrossProviderRejectedWhenNotRegistered},
 			{"cheap bare", TestApplyFastCheapModel_BareModelKeepsActiveProvider},
-			{"cheap blank", TestApplyFastCheapModel_BlankKeepsDefault},
+			{"cheap blank", TestApplyFastCheapModel_BlankUsesPrimaryModel},
 			{"session env", TestNewSessionFromEnv},
 			{"simple prompt", TestProcessInputSimplePrompt},
 			{"tool prompt", TestProcessInputWithToolUse},

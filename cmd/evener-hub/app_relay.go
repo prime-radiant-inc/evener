@@ -215,6 +215,33 @@ func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams)
 	return source.ID() + ":" + threadID, threadID, nil
 }
 
+// relayNotificationTargets reports whether one notification from a shared
+// local-daemon relay session belongs to this hub relay handle. Root sessions
+// and their in-process descendants share one upstream RelaySession, so every
+// handle's listener observes every subscribed alias unless the hub filters at
+// this boundary. Ref has the same precedence the browser reducer uses.
+func relayNotificationTargets(notification appwire.Notification, threadID, ref string) bool {
+	var params map[string]json.RawMessage
+	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
+		return true
+	}
+	var targetRef string
+	if raw := params["ref"]; len(raw) > 0 && json.Unmarshal(raw, &targetRef) != nil {
+		return true
+	}
+	if targetRef != "" {
+		return targetRef == ref
+	}
+	var targetThreadID string
+	if raw := params["threadId"]; len(raw) > 0 && json.Unmarshal(raw, &targetThreadID) != nil {
+		return true
+	}
+	if targetThreadID != "" {
+		return targetThreadID == threadID
+	}
+	return true
+}
+
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
 	retryClock := newRelayRetryClock()
@@ -310,8 +337,16 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					relayMu.Lock()
 					active := relayedThreads[relayKey] == handle
 					thread := handle.thread
+					targetThreadID := threadID
+					if thread.ID != "" {
+						targetThreadID = thread.ID
+					}
+					targetRef := ref
+					if thread.Evener.Ref != "" {
+						targetRef = thread.Evener.Ref
+					}
 					relayMu.Unlock()
-					if active {
+					if active && relayNotificationTargets(delivery.Notification, targetThreadID, targetRef) {
 						notification := delivery.Notification
 						// The edits only this hub can make to a local daemon's
 						// notification on its way to a browser: the images it can
@@ -428,7 +463,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			handle.established = true
 			finishHandleLocked(handle, nil)
 			relayMu.Unlock()
-			startAcknowledgedFanout(relayKey, threadID, params.Ref, handle, deliveries)
+			fanoutRef := strings.TrimSpace(params.Ref)
+			if fanoutRef == "" {
+				fanoutRef = relayKey
+			}
+			startAcknowledgedFanout(relayKey, threadID, fanoutRef, handle, deliveries)
 			return handle, func() {
 				relayMu.Lock()
 				if handle.commands > 0 {

@@ -731,8 +731,8 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(_ context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RemoveMarketplace(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.RemoveMarketplace(ctx, params)
 		if err == nil {
 			notifyMarketplaceUpdated(server)
 		}
@@ -768,29 +768,29 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Remove(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Remove(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Enable(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Enable(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Disable(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.Disable(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(_ context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.SetAutoUpgrade(params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+		resp, err := pluginsController.SetAutoUpgrade(ctx, params)
 		if err == nil {
 			notifyPluginUpdated(server)
 		}

@@ -18,6 +18,7 @@ const (
 	ChangeCoerceType    ChangeKind = "coerce_type"
 	ChangeDropUnknown   ChangeKind = "drop_unknown"
 	ChangeUnicodeRepair ChangeKind = "unicode_repair"
+	ChangeFillRequired  ChangeKind = "fill_required"
 )
 
 // Change records one repair for telemetry. Field is the affected key ("" for a
@@ -158,4 +159,16 @@ func dropUnknown(params, args map[string]any) []Change {
 		changes = append(changes, Change{Kind: ChangeDropUnknown, Field: key, Detail: "dropped " + key})
 	}
 	return changes
+}
+
+// missingRequired lists the container schema's required property names that
+// are absent from the instance object, in schema order.
+func missingRequired(container map[string]any, inst map[string]any) []string {
+	var missing []string
+	for _, r := range asStringSlice(container["required"]) {
+		if _, present := inst[r]; !present {
+			missing = append(missing, r)
+		}
+	}
+	return missing
 }

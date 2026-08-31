@@ -1093,6 +1093,9 @@ func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*pro
 			return nil, false, err
 		}
 		if resolved != nil {
+			if cheapModelRef := base.CheapModelRefString(); cheapModelRef != "" {
+				resolved = provider.WithCheapModel(resolved, cheapModelRef)
+			}
 			return resolved, true, nil
 		}
 	}

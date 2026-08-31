@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -26,10 +27,12 @@ type prepareResult struct {
 // prepareToolCall heals a tool call before dispatch. t is the resolved tool
 // (nil if the name is unknown). visibleNames and requestedVisible are already
 // provider-visible names (the caller snapshots the name-map outside s.mu).
+// resultToolName is the session's result tool (communicate) — the only tool
+// whose default output envelope is eligible for the documented-defaults fill.
 // finishReason is the round's stop reason ("" when no model response is in
 // play); llm.FinishReasonLength disables JSON repair, since closing a
 // truncated string would execute a silently truncated call.
-func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames []string, requestedVisible, finishReason string) prepareResult {
+func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames []string, requestedVisible, resultToolName, finishReason string) prepareResult {
 	res := prepareResult{Call: call}
 	if strings.TrimSpace(res.Call.ID) == "" {
 		res.Call.ID = "call_" + shortHash(res.Call.Arguments)
@@ -80,6 +83,24 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		args = normalized
 	}
 
+	// The default communicate envelope documents message/data/artifacts as
+	// always-present with empty defaults (issue #627), but the schema demands
+	// them as required — reconcile by filling the documented defaults before
+	// validation. communicateEnvelopeFor owns both gates (identity: the
+	// session's result tool only; exact shape: precisely the default
+	// envelope), and returns the envelope it validated so the fill cannot
+	// diverge from what was checked. The fill runs on a working copy and is
+	// committed (args + recorded changes) only if validation passes, so a
+	// call that still fails never emits a ToolCallRepaired event whose
+	// Arguments bytes were never applied.
+	var fillChanges []repair.Change
+	if envelope, ok := communicateEnvelopeFor(t, resultToolName); ok {
+		filled := make(map[string]any, len(args))
+		maps.Copy(filled, args)
+		fillChanges = fillCommunicateEnvelope(envelope, filled)
+		args = filled
+	}
+
 	if err := t.Schema.Validate(args); err != nil {
 		// A length stop that cut the stream before any argument byte leaves
 		// empty args; on a tool with required parameters that reads as a
@@ -95,7 +116,12 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		args = healed
+		// The healed form carries the fill (it was validated above), so the
+		// fill's changes belong in the record alongside the healing changes.
+		res.Changes = append(res.Changes, fillChanges...)
 		res.Changes = append(res.Changes, c...)
+	} else if len(fillChanges) > 0 {
+		res.Changes = append(res.Changes, fillChanges...)
 	}
 
 	if len(res.Changes) > 0 {

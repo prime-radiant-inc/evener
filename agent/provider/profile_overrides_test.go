@@ -288,9 +288,9 @@ func TestProfileGetters(t *testing.T) {
 		t.Errorf("KnowledgeCutoff = %q", p.KnowledgeCutoff())
 	}
 
-	// CheapModel fallback for openai behaviorTag
-	if got := p.CheapModel(); got != "gpt-4.1-nano" {
-		t.Errorf("CheapModel fallback = %q, want gpt-4.1-nano", got)
+	// Unconfigured auxiliary work uses the active provider and model.
+	if providerName, model := p.CheapModelRef(); providerName != p.ID() || model != p.Model() {
+		t.Errorf("CheapModelRef = (%q, %q), want (%q, %q)", providerName, model, p.ID(), p.Model())
 	}
 
 	// ConfiguredCheapModel with empty cheapModel
@@ -364,7 +364,7 @@ func TestWithCheapModel(t *testing.T) {
 		p := NewOpenAIProfile("gpt-4")
 		q := WithCheapModel(p, "  model  ")
 		if q.ConfiguredCheapModel() != "model" {
-			t.Errorf("CheapModel = %q, want model", q.ConfiguredCheapModel())
+			t.Errorf("ConfiguredCheapModel = %q, want model", q.ConfiguredCheapModel())
 		}
 	})
 }
