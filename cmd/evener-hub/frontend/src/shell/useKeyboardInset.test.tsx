@@ -1,41 +1,20 @@
 // @vitest-environment jsdom
 
-// Pins the iOS half of the on-screen-keyboard fix: the hook mirrors the
-// visual viewport's occluded bottom strip into --keyboard-inset, which the
-// mobile .shell rule (AppShell.module.css) spends as padding-bottom. The fake
-// visualViewport below is the external boundary (the browser's own object);
-// everything under test is the real hook.
+// Pins the hook half of the keyboard fix (see useKeyboardInset.ts's header
+// for the full rationale): --keyboard-inset tracks the visual viewport's
+// occluded bottom strip. The fake visualViewport below is the external
+// boundary (the browser's own object); everything under test is the real hook.
 import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { keyboardInset, useKeyboardInset } from "./useKeyboardInset";
 
-type Listener = () => void;
-
-class FakeVisualViewport {
+class FakeVisualViewport extends EventTarget {
   height = 700;
   offsetTop = 0;
   scale = 1;
-  private listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener): void {
-    let set = this.listeners.get(type);
-    if (!set) {
-      set = new Set();
-      this.listeners.set(type, set);
-    }
-    set.add(listener);
-  }
-
-  removeEventListener(type: string, listener: Listener): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  listenerCount(type: string): number {
-    return this.listeners.get(type)?.size ?? 0;
-  }
 
   fire(type: "resize" | "scroll"): void {
-    for (const listener of this.listeners.get(type) ?? []) listener();
+    this.dispatchEvent(new Event(type));
   }
 }
 
@@ -91,16 +70,19 @@ describe("useKeyboardInset", () => {
     unmount();
   });
 
-  test("unmount removes the variable and every listener", () => {
+  test("unmount removes the variable and every listener it added", () => {
     const vv = installVisualViewport();
     setInnerHeight(768);
+    const addSpy = vi.spyOn(vv, "addEventListener");
+    const removeSpy = vi.spyOn(vv, "removeEventListener");
     const { unmount } = renderHook(() => useKeyboardInset());
-    expect(vv.listenerCount("resize")).toBe(1);
-    expect(vv.listenerCount("scroll")).toBe(1);
+    const added = addSpy.mock.calls.map(([type, listener]) => ({ type, listener }));
+    expect(added.map(({ type }) => type).sort()).toEqual(["resize", "scroll"]);
 
     unmount();
-    expect(vv.listenerCount("resize")).toBe(0);
-    expect(vv.listenerCount("scroll")).toBe(0);
+    for (const { type, listener } of added) {
+      expect(removeSpy).toHaveBeenCalledWith(type, listener);
+    }
     expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("");
   });
 

@@ -38,10 +38,7 @@ test("the viewport meta uses viewport-fit=cover so safe-area insets are nonzero"
 });
 
 test("the viewport meta resizes content around the on-screen keyboard", () => {
-  // Without interactive-widget=resizes-content, Chromium/Android keeps the
-  // layout viewport at full height when the keyboard opens (resizes-visual is
-  // the default), so the fixed mobile shell and the composer docked in its
-  // footer slide under the keyboard. Safari ignores the unknown key and is
-  // covered by useKeyboardInset instead.
+  // Chromium/Android's half of the keyboard fix; Safari ignores the unknown
+  // key and is covered by useKeyboardInset (see its header).
   expect(viewportContent()).toContain("interactive-widget=resizes-content");
 });

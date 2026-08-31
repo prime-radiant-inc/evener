@@ -51,13 +51,8 @@
     position: fixed;
     inset: 0;
     width: 100%;
-    /* iOS Safari shrinks only the visual viewport when the on-screen keyboard
-     * opens, leaving this fixed shell at full height with the composer under
-     * the keyboard. useKeyboardInset mirrors the occluded strip into
-     * --keyboard-inset; spending it as padding (border-box is global) pulls
-     * the footer's composer up above the keyboard. 0px everywhere else:
-     * Chromium/Android resizes the layout viewport itself via the viewport
-     * meta's interactive-widget=resizes-content. */
+    /* Rides the composer up with iOS's on-screen keyboard: useKeyboardInset
+     * (see its header) feeds --keyboard-inset; 0px elsewhere. */
     padding-bottom: var(--keyboard-inset, 0px);
   }
 

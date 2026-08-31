@@ -2038,10 +2038,9 @@ test("mobile: the shell content frame drops its padding so the workspace is full
 });
 
 test("mobile: the shell spends --keyboard-inset as bottom padding so the composer clears the on-screen keyboard", () => {
-  // iOS Safari shrinks only the visual viewport when the keyboard opens, so
-  // the fixed shell would keep the composer under it; useKeyboardInset feeds
-  // this variable. Comments are stripped before matching (testing.md: a
-  // comment quoting the declaration must not satisfy the assertion).
+  // See useKeyboardInset.ts's header for the mechanism. Comments are stripped
+  // before matching (testing.md: a comment quoting the declaration must not
+  // satisfy the assertion).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "AppShell.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const mobile = css.match(/@media \(max-width: 899px\) \{([\s\S]*?)\n\}/);
