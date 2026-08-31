@@ -44,10 +44,10 @@ func FuzzFinalMainBackground(f *testing.F) {
 			hubRosterWatch = func(context.Context, *hubcore.Roster) error { return errors.New("watch") }
 			watchHubRoster(context.Background(), roster)
 		case 2:
-			hubSeedDefaults = func() error { return errors.New("seed") }
-			seedHubMarketplaces()
+			hubSeedDefaults = func(context.Context) error { return errors.New("seed") }
+			seedHubMarketplaces(context.Background())
 		case 3, 4:
-			hubPluginGC = func() ([]string, error) {
+			hubPluginGC = func(context.Context) ([]string, error) {
 				if mode == 3 {
 					return nil, errors.New("gc")
 				}

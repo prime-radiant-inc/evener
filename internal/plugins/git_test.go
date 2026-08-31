@@ -112,9 +112,10 @@ func TestGit_CancellationSendsSIGTERM(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"trap 'touch " + termed + "; exit 143' TERM\n" +
 		"touch " + started + "\n" +
-		// Sleep in short interruptible slices; redirect so the background
-		// sleep never holds git()'s output pipe open past the shell's exit.
-		"i=0; while [ $i -lt 300 ]; do sleep 0.1 >/dev/null 2>&1 & wait $!; i=$((i+1)); done\n"
+		// Background + wait keeps the shell interruptible (the trap fires
+		// during wait); the redirect keeps the orphaned sleep from holding
+		// git()'s output pipe open past the shell's exit.
+		"sleep 30 >/dev/null 2>&1 & wait $!\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

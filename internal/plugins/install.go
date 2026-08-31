@@ -262,8 +262,8 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	return prev, true, false, nil
 }
 
-func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)) error {
-	release, err := installAcquireLock(context.Background(), m.lockPath(), 30*time.Second)
+func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
+	release, err := installAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -283,18 +283,18 @@ func (m *Manager) mutateEntry(plugin, marketplace string, fn func(*InstallEntry)
 	return installSaveRegistry(m.registryPath(), reg)
 }
 
-func (m *Manager) SetEnabled(plugin, marketplace string, enabled bool) error {
-	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
+func (m *Manager) SetEnabled(ctx context.Context, plugin, marketplace string, enabled bool) error {
+	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
 }
 
-func (m *Manager) SetAutoUpgrade(plugin, marketplace string, on bool) error {
-	return m.mutateEntry(plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
+func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string, on bool) error {
+	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
 }
 
 // Remove deletes the registry entry and its cache dir. A plugin referenced in
 // place (directory-source marketplace) leaves the source untouched.
-func (m *Manager) Remove(plugin, marketplace string) error {
-	release, err := installAcquireLock(context.Background(), m.lockPath(), 30*time.Second)
+func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error {
+	release, err := installAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}

@@ -19,7 +19,9 @@ type pluginManagerReplay struct {
 	updated []plugins.UpgradedPlugin
 }
 
-func (m *pluginManagerReplay) SeedDefaultMarketplaces() (bool, error) { return false, m.err }
+func (m *pluginManagerReplay) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, m.err
+}
 func (m *pluginManagerReplay) ListMarketplaces() (plugins.Marketplaces, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -29,7 +31,7 @@ func (m *pluginManagerReplay) ListMarketplaces() (plugins.Marketplaces, error) {
 func (m *pluginManagerReplay) AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error) {
 	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, m.err
 }
-func (m *pluginManagerReplay) RemoveMarketplace(string) error                   { return m.err }
+func (m *pluginManagerReplay) RemoveMarketplace(context.Context, string) error  { return m.err }
 func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) error { return m.err }
 func (m *pluginManagerReplay) Browse(context.Context, string) (plugins.Catalog, error) {
 	return plugins.Catalog{Name: "market", Plugins: []plugins.CatalogPlugin{{Name: "plug", Description: "desc"}}, SkippedPlugins: []string{"skip"}}, m.err
@@ -46,8 +48,8 @@ func (m *pluginManagerReplay) List() ([]plugins.ListItem, error) {
 func (m *pluginManagerReplay) Install(context.Context, string, string) (plugins.InstallEntry, error) {
 	return plugins.InstallEntry{Version: "1", InstallPath: "/tmp/plugin", Note: "note"}, m.err
 }
-func (m *pluginManagerReplay) Remove(string, string) error           { return m.err }
-func (m *pluginManagerReplay) SetEnabled(string, string, bool) error { return m.err }
+func (m *pluginManagerReplay) Remove(context.Context, string, string) error           { return m.err }
+func (m *pluginManagerReplay) SetEnabled(context.Context, string, string, bool) error { return m.err }
 func (m *pluginManagerReplay) UpdateAll(context.Context) ([]plugins.InstallEntry, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -60,8 +62,10 @@ func (m *pluginManagerReplay) UpdateAll(context.Context) ([]plugins.InstallEntry
 func (m *pluginManagerReplay) Upgrade(context.Context, string, string) (plugins.InstallEntry, error) {
 	return plugins.InstallEntry{Version: "2"}, m.err
 }
-func (m *pluginManagerReplay) SetAutoUpgrade(string, string, bool) error { return m.err }
-func (m *pluginManagerReplay) Gc() ([]string, error) {
+func (m *pluginManagerReplay) SetAutoUpgrade(context.Context, string, string, bool) error {
+	return m.err
+}
+func (m *pluginManagerReplay) Gc(context.Context) ([]string, error) {
 	if m.err != nil {
 		return nil, m.err
 	}

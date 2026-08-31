@@ -170,10 +170,9 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	installLoc := src.Path // directory source: in place
 	if src.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
-		_ = marketplaceRemoveAll(installLoc)
-		if err := marketplaceRename(staging, installLoc); err != nil {
+		if err := m.swapInClone(staging, installLoc); err != nil {
 			_ = marketplaceRemoveAll(staging)
-			return MarketplaceRef{}, fmt.Errorf("installing marketplace clone: %w", err)
+			return MarketplaceRef{}, err
 		}
 	} else {
 		_ = marketplaceRemoveAll(staging)
@@ -199,8 +198,8 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 
 func (m *Manager) ListMarketplaces() (Marketplaces, error) { return m.loadMarketplaces() }
 
-func (m *Manager) RemoveMarketplace(name string) error {
-	release, err := marketplaceAcquireLock(context.Background(), m.lockPath(), 30*time.Second)
+func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
+	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -224,30 +223,45 @@ func (m *Manager) RemoveMarketplace(name string) error {
 
 // recloneMarketplace replaces a marketplace clone whose git pull failed. The
 // fresh clone is fully downloaded into a staging dir before the existing clone
-// is touched (rename old aside → rename new in → remove old), so the current
-// clone — possibly wedged, but the only local copy — is never lost to a failed
-// download; a failed reclone leaves it exactly as it was. The caller must hold
-// m.lockPath(), which also serializes use of the shared staging/aside dirs.
+// is touched, so the current clone — possibly wedged, but the only local copy
+// — is never lost to a failed download; a failed reclone leaves it exactly as
+// it was. The caller must hold m.lockPath(), which also serializes use of the
+// shared staging/aside dirs.
 func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) error {
 	staging := m.marketplaceDir(".staging")
 	_ = marketplaceRemoveAll(staging)
+	// After a successful swap the staging dir no longer exists, so this defer
+	// only ever sweeps a leftover from a failed path.
+	defer func() { _ = marketplaceRemoveAll(staging) }()
 	if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, staging); err != nil {
-		_ = marketplaceRemoveAll(staging)
 		return err
 	}
+	return m.swapInClone(staging, ref.InstallLocation)
+}
+
+// swapInClone replaces dest with the fully-downloaded staging dir: rename any
+// existing dest aside, rename staging in, then drop the aside copy. A failed
+// swap restores dest, and no path removes the old clone before the new one is
+// in place. The caller must hold m.lockPath().
+func (m *Manager) swapInClone(staging, dest string) error {
 	old := m.marketplaceDir(".old")
 	_ = marketplaceRemoveAll(old)
-	if err := marketplaceRename(ref.InstallLocation, old); err != nil {
-		_ = marketplaceRemoveAll(staging)
-		return fmt.Errorf("moving old clone aside: %w", err)
-	}
-	if err := marketplaceRename(staging, ref.InstallLocation); err != nil {
-		// Put the old clone back so InstallLocation keeps pointing at a
-		// real directory; a restore failure is reported over the rename one.
-		if restoreErr := marketplaceRename(old, ref.InstallLocation); restoreErr != nil {
-			return fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr)
+	movedAside := false
+	if _, err := marketplaceStat(dest); err == nil {
+		if err := marketplaceRename(dest, old); err != nil {
+			return fmt.Errorf("moving old clone aside: %w", err)
 		}
-		_ = marketplaceRemoveAll(staging)
+		movedAside = true
+	}
+	if err := marketplaceRename(staging, dest); err != nil {
+		if movedAside {
+			// Put the old clone back so dest keeps pointing at a real
+			// directory. If even that fails, .old still holds the only
+			// local copy — deliberately NOT swept — and the error says so.
+			if restoreErr := marketplaceRename(old, dest); restoreErr != nil {
+				return fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr)
+			}
+		}
 		return fmt.Errorf("installing fresh clone: %w", err)
 	}
 	_ = marketplaceRemoveAll(old)
@@ -282,6 +296,11 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 			// .git/index.lock stranded by a killed git — and a plain retry
 			// would then fail the same way forever. Self-heal with a staged
 			// reclone; on failure it leaves the existing clone untouched.
+			// When the pull failed because the request itself was canceled,
+			// skip the doomed reclone and surface the cancellation directly.
+			if ctx.Err() != nil {
+				return pullErr
+			}
 			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
 				return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
 			}

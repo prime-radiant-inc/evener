@@ -464,7 +464,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
 	// session happened to spawn and seed them first.
-	seedHubMarketplaces()
+	seedHubMarketplaces(ctx)
 
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with

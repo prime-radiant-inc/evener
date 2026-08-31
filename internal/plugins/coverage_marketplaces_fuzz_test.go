@@ -133,7 +133,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: "p"}); err == nil {
 		t.Fatal("add lock error accepted")
 	}
-	if err := m.RemoveMarketplace("x"); err == nil {
+	if err := m.RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove lock error accepted")
 	}
 	if err := m.RefreshMarketplace(ctx, "x"); err == nil {
@@ -216,7 +216,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: root}); err == nil {
 		t.Fatal("add load error accepted")
 	}
-	if err := NewManager(t.TempDir()).RemoveMarketplace("x"); err == nil {
+	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove load error accepted")
 	}
 	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
@@ -225,7 +225,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	reset()
 
 	missing := NewManager(t.TempDir())
-	if err := missing.RemoveMarketplace("x"); err == nil {
+	if err := missing.RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove missing accepted")
 	}
 	if err := missing.RefreshMarketplace(ctx, "x"); err == nil {
@@ -240,14 +240,14 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	if err := dm.RefreshMarketplace(ctx, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := dm.RemoveMarketplace("x"); err != nil {
+	if err := dm.RemoveMarketplace(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
 	removeBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}, InstallLocation: "old"}})
 	marketplaceReadFile = func(string) ([]byte, error) { return removeBody, nil }
 	marketplaceRemoveAll = func(string) error { return fail }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := NewManager(t.TempDir()).RemoveMarketplace("x"); err != nil {
+	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
 	reset()
@@ -279,17 +279,17 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	reset()
 
 	marketplaceStat = func(string) (os.FileInfo, error) { return nil, fail }
-	if _, err := m.SeedDefaultMarketplaces(); err == nil {
+	if _, err := m.SeedDefaultMarketplaces(context.Background()); err == nil {
 		t.Fatal("seed stat error accepted")
 	}
 	reset()
 	marketplaceStat = func(string) (os.FileInfo, error) { return nil, nil }
-	if seeded, err := m.SeedDefaultMarketplaces(); err != nil || seeded {
+	if seeded, err := m.SeedDefaultMarketplaces(context.Background()); err != nil || seeded {
 		t.Fatalf("existing seed = %v, %v", seeded, err)
 	}
 	reset()
 	marketplaceAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, fail }
-	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err == nil {
+	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(context.Background()); err == nil {
 		t.Fatal("seed lock error accepted")
 	}
 	reset()
@@ -301,7 +301,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		}
 		return nil, fail
 	}
-	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err == nil {
+	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(context.Background()); err == nil {
 		t.Fatal("seed recheck error accepted")
 	}
 	reset()
@@ -313,16 +313,16 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if seeded, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err != nil || seeded {
+	if seeded, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(context.Background()); err != nil || seeded {
 		t.Fatalf("seed recheck = %v, %v", seeded, err)
 	}
 	reset()
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return fail }
-	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err == nil {
+	if _, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(context.Background()); err == nil {
 		t.Fatal("seed save error accepted")
 	}
 	reset()
-	if seeded, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(); err != nil || !seeded {
+	if seeded, err := NewManager(t.TempDir()).SeedDefaultMarketplaces(context.Background()); err != nil || !seeded {
 		t.Fatalf("seed success = %v, %v", seeded, err)
 	}
 }
