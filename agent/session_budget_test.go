@@ -34,7 +34,7 @@ func newBudgetSession(
 	cfg.testOnly.noSyncJobStore = true
 	sess, err := NewSession(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		cfg,
 	)
@@ -65,7 +65,7 @@ func restoreBudgetSession(
 	}
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		meta,
 		restoreCfg,

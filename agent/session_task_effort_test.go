@@ -158,7 +158,7 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 	})
 	if err != nil {
@@ -210,7 +210,8 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 
 			seedClient := llm.NewClient()
 			seedClient.Register(&fakeAdapter{name: "openai"})
-			seed, err := NewSession(seedClient, profile, execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+			seedProfile := withTestSessionNamer(seedClient, profile)
+			seed, err := NewSession(seedClient, seedProfile, execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 				StateDir:        stateDir,
 				ReasoningEffort: "max",
 			})
@@ -258,7 +259,8 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 			}}
 			client := llm.NewClient()
 			client.Register(adapter)
-			restored, err := RestoreSessionFromMeta(client, profile, execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+			restoredProfile := withTestSessionNamer(client, profile)
+			restored, err := RestoreSessionFromMeta(client, restoredProfile, execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMeta: %v", err)
 			}
@@ -409,7 +411,7 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "high",
 	})
 	if err != nil {
@@ -467,7 +469,7 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "medium",
 	})
 	if err != nil {
@@ -536,7 +538,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 		testOnly:        testConfig{contextStrategyOverride: compactionEventStrategy{emitCompaction: true}},
 	})
@@ -586,7 +588,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 		ReasoningEffort: "max",
 		StateDir:        stateDir,
 	})
@@ -622,7 +624,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	if got := meta.Config.ReasoningEffort; got != "max" {
 		t.Fatalf("persisted configured effort = %q, want %q", got, "max")
 	}
-	restored, err := RestoreSessionFromMeta(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -654,7 +656,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 		},
 	}
 	c.Register(f)
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 		ReasoningEffort: "medium",
 		StateDir:        stateDir,
 	})
@@ -686,7 +688,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	restored, err := RestoreSessionFromMeta(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	restored, err := RestoreSessionFromMeta(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -741,7 +743,7 @@ EFF_AGENT_ROLE`)
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, fullLadderProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
 		ReasoningEffort: "max",
 		NonInteractive:  true,
 		PluginDirs:      []string{pluginDir},

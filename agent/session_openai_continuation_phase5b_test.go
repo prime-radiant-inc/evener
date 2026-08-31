@@ -60,7 +60,7 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 	}
 	client.Use(apiLogger)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-4.1-mini"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-4.1-mini")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

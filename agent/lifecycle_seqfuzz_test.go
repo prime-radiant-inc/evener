@@ -484,9 +484,8 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	// WithCheapModel configures the auxiliary "cheap" model the session namer
-	// runs on; without it sessionNamerEnabled is false and the namer never
-	// launches (so W4's namer coverage below would be vacuous).
+	// Keep this harness on the explicit cheap-model route while sending naming
+	// calls to the same scripted adapter as the active model.
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5.2")
 	cfg := SessionConfig{
 		clock:                 clk,

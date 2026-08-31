@@ -33,7 +33,7 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 
 	cfg := SessionConfig{}
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -82,7 +82,7 @@ func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allo
 	cfg.spawn.delegationAllowance = allowance
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 		},
 	}})
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
 		StateDir:         t.TempDir(),

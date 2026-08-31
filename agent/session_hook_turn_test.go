@@ -78,7 +78,7 @@ func sessionRunningHook(t *testing.T, command string) string {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
 		PluginDirs: []string{hookPluginDir(t, command)},
 		testOnly:   testConfig{metaFS: afero.NewMemMapFs()},
@@ -171,7 +171,7 @@ func TestMidSessionHookPersistsHookCompletedTurn(t *testing.T) {
 		name:  "openai",
 		steps: []func(req llm.Request) llm.Response{func(req llm.Request) llm.Response { return finalResponse("ok") }},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:   dir,
 		PluginDirs: []string{pluginDir},
 		testOnly:   testConfig{metaFS: afero.NewMemMapFs()},
@@ -316,7 +316,7 @@ func TestPreToolUseHookDoesNotDuplicateResultInNextModelRequest(t *testing.T) {
 	client.Register(adapter)
 	sess, err := NewSession(
 		client,
-		newAnthropicProfile("k3"),
+		withTestSessionNamer(client, newAnthropicProfile("k3")),
 		execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{
 			StateDir:   dir,

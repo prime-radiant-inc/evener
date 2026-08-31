@@ -127,6 +127,7 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 	}
 	childClient := llm.NewClient()
 	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
 	parent := newSession(t,
 		withClient(delegateTestClient(func(llm.Request) llm.Response {
 			return communicateWithDefaultOutput("parent done")

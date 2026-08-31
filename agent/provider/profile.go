@@ -398,8 +398,8 @@ func (p *Profile) CheapModel() string {
 
 // ConfiguredCheapModel returns the auxiliary model explicitly set via
 // WithCheapModel, or "" if none was configured. Unlike CheapModel it does not
-// fall back to a provider default, so callers can detect whether a cheap model
-// was configured at all (e.g. to decide whether to run session naming).
+// fall back to a provider default, so callers can distinguish explicit routing
+// from a default or primary-model fallback.
 func (p *Profile) ConfiguredCheapModel() string {
 	if p == nil {
 		return ""

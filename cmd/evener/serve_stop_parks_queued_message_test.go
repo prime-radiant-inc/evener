@@ -39,6 +39,9 @@ func newStopParkAdapter() *stopParkAdapter {
 func (a *stopParkAdapter) Name() string { return "openai" }
 
 func (a *stopParkAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.calls++
 	n := a.calls

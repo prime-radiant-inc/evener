@@ -31,7 +31,10 @@ type closedStreamAdapter struct {
 
 func (a *closedStreamAdapter) Name() string { return "openai" }
 
-func (a *closedStreamAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+func (a *closedStreamAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	a.mu.Lock()
 	a.completeCalls++
 	a.mu.Unlock()

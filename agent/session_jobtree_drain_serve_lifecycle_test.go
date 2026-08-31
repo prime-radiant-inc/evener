@@ -57,7 +57,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 			},
 		},
 	})
-	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), wedge, SessionConfig{
+	root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), wedge, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,

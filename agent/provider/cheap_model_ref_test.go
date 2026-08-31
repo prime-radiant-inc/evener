@@ -74,8 +74,8 @@ func TestCheapModelRefString_RoundTrips(t *testing.T) {
 
 func TestCheapModelRef_DefaultsToActiveProviderAndDefaultCheapModel(t *testing.T) {
 	p := provider.NewOpenAIProfile("gpt-5.2")
-	// No cheap model configured: ConfiguredCheapModel stays empty (the namer's
-	// enable gate), but CheapModelRef falls through to the provider default.
+	// No cheap model configured: ConfiguredCheapModel stays empty, while
+	// CheapModelRef falls through to the provider default.
 	if p.ConfiguredCheapModel() != "" {
 		t.Errorf("ConfiguredCheapModel() = %q, want empty", p.ConfiguredCheapModel())
 	}
