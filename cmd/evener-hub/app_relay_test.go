@@ -935,7 +935,17 @@ func (s *relaySessionTestSource) StartTurn(context.Context, appwire.TurnStartPar
 	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn-started"}}, nil
 }
 
-func (s *relaySessionTestSource) AcquireRelaySession(appwire.ThreadReadParams) (appsource.RelaySessionLease, error) {
+func (s *relaySessionTestSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	if params.Ref != "" {
+		return appwire.ParseRef(params.Ref)
+	}
+	if params.ThreadID == "" {
+		return appwire.Ref{}, errors.New("missing relay target")
+	}
+	return appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}, nil
+}
+
+func (s *relaySessionTestSource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
 	s.mu.Lock()
 	s.acquireCalls++
 	s.mu.Unlock()

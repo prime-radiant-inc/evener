@@ -41,7 +41,8 @@ type Source interface {
 // upstream snapshot-to-live stream. Codex deliberately does not implement this
 // interface because it converges through authoritative full-state replacement.
 type RelaySessionSource interface {
-	AcquireRelaySession(appwire.ThreadReadParams) (RelaySessionLease, error)
+	ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
+	AcquireRelaySession(appwire.Ref) (RelaySessionLease, error)
 }
 
 type RelaySessionLease interface {

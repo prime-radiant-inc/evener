@@ -234,7 +234,7 @@ func queueRelayNotificationAtEpoch(session *relaySession, epoch uint64, notifica
 func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestRelaySessionSnapshotCutFlushesPreCutAndHoldsPostCut(t *testing.T) {
 func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.
 func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
 func TestRelaySessionCanceledListenerCannotStrandPreCutFlush(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestRelaySessionCanceledListenerCannotStrandPreCutFlush(t *testing.T) {
 func TestRelaySessionCanceledListenerIsSafeAfterPublisherSnapshotsIt(t *testing.T) {
 	source, _ := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +487,7 @@ func TestRelaySessionCanceledListenerIsSafeAfterPublisherSnapshotsIt(t *testing.
 func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestRelaySessionCancellationBeforeCutResumesFeedAndFencesLateResponse(t *te
 func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestRelaySessionAbortAfterCutReleasesPostCutFeedOnce(t *testing.T) {
 func TestRelaySessionDisconnectDuringReadCannotReturnSnapshot(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +708,7 @@ func TestRelaySessionEOFBeforeConnectionInstallForcesNextReadToRedial(t *testing
 func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func TestRelaySessionCommitAbortRaceHasOneWinner(t *testing.T) {
 func TestRelaySessionPreparedHandoffPinsEpochUntilResponseOutcome(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +783,7 @@ func TestRelaySessionPreparedHandoffPinsEpochUntilResponseOutcome(t *testing.T) 
 func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversListener(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +829,7 @@ func TestRelaySessionPreparedHandoffAbortAppliesDeferredDisconnectAndRecoversLis
 func TestRelaySessionHandoffCannotPrepareAfterEpochDisconnect(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +859,7 @@ func TestRelaySessionHandoffCannotPrepareAfterEpochDisconnect(t *testing.T) {
 func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +912,7 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 func TestRelaySessionDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -981,7 +981,7 @@ func TestRelaySessionDisconnectRevokesBlockedPublicationBeforeRecovery(t *testin
 func TestRelaySessionPreparedHandoffDisconnectRevokesBlockedPublicationBeforeRecovery(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1050,7 +1050,7 @@ func TestRelaySessionPreparedHandoffDisconnectRevokesBlockedPublicationBeforeRec
 func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,7 +1077,7 @@ func TestRelaySessionIdleClosesCanonicalConnectionAfterLastOwner(t *testing.T) {
 func TestRelaySessionPreparedHandoffDefersIdleUntilResponseOutcome(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func TestRelaySessionPreparedHandoffDefersIdleUntilResponseOutcome(t *testing.T)
 func TestRelaySessionAcquireReplacesClosedActorBeforeIdleMapRemoval(t *testing.T) {
 	source, _ := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	firstValue, err := source.AcquireRelaySession(params)
+	firstValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1131,7 +1131,7 @@ func TestRelaySessionAcquireReplacesClosedActorBeforeIdleMapRemoval(t *testing.T
 	}()
 	<-idleEntered
 
-	secondValue, err := source.AcquireRelaySession(params)
+	secondValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession while closed actor awaited map removal: %v", err)
 	}
@@ -1151,12 +1151,12 @@ func TestRelaySessionUnrelatedActorProgressesWhileSnapshotBlocked(t *testing.T) 
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1"), relayEntry("thread-2")})
 	firstParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
 	secondParams := appwire.ThreadReadParams{Ref: "local:thread-2", Subscribe: true}
-	firstLease, err := source.AcquireRelaySession(firstParams)
+	firstLease, err := source.acquireRelaySession(firstParams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer firstLease.Close()
-	secondLease, err := source.AcquireRelaySession(secondParams)
+	secondLease, err := source.acquireRelaySession(secondParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,12 +1188,12 @@ func TestRelaySessionPreparedHandoffDoesNotBlockUnrelatedActor(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1"), relayEntry("thread-2")})
 	firstParams := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
 	secondParams := appwire.ThreadReadParams{Ref: "local:thread-2", Subscribe: true}
-	firstLease, err := source.AcquireRelaySession(firstParams)
+	firstLease, err := source.acquireRelaySession(firstParams)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer firstLease.Close()
-	secondLease, err := source.AcquireRelaySession(secondParams)
+	secondLease, err := source.acquireRelaySession(secondParams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1228,7 +1228,7 @@ func TestRelaySessionPreparedHandoffDoesNotBlockUnrelatedActor(t *testing.T) {
 func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1277,7 +1277,7 @@ func TestRelaySessionCanonicalFeedDoesNotOverflowUnusedClientNotificationBuffer(
 func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1322,7 +1322,7 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.AcquireRelaySession(params)
+	leaseValue, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1426,7 +1426,7 @@ func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testing.T) {
 	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-1")})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	lease, err := source.AcquireRelaySession(params)
+	lease, err := source.acquireRelaySession(params)
 	if err != nil {
 		t.Fatalf("AcquireRelaySession: %v", err)
 	}
