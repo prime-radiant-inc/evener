@@ -163,7 +163,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			if data.Usage == nil {
 				data.Usage = derivedWorkspaceUsage(pe)
 			}
-			data.Cost = appwire.EstimateCost(costFor(s.cfg.Registry, pe.Meta.ProfileID, pe.Meta.Model), data.Usage)
+			data.Cost = appwire.EstimateCost(pastEntryCost(s.cfg, pe), data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
 			s.fillObserverLink(&data, pe.Meta)
