@@ -178,6 +178,82 @@ func liveSmokeInstance(t *testing.T, r *registry.Registry, client *http.Client, 
 	}
 }
 
+// oneMegaContextRef is the [1m] row the live pin below exercises.
+const oneMegaContextRef = "anthropic/claude-sonnet-4-5[1m]"
+
+// TestLiveOneMegaContextRowAccepted pins both halves of what the
+// anthropic/claude-sonnet-4-5[1m] row promises: it resolves to the 1M context
+// window, and a real /messages request assembled from that row is accepted.
+// The request carries exactly the headers the row resolves to, so this test is
+// what tells us the day the row's header set stops being the one Anthropic
+// wants — whether that set is a beta opt-in or empty. Gated like TestLiveSmoke.
+// Run with:
+//
+//	EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveOneMegaContextRowAccepted -v -count=1 -args -live-config=/path/to/providers.toml
+//
+// The resolution and window assertions run before the credential check on
+// purpose: they need no network and no credential, so the offline half of this
+// pin is exercisable by running it with the gate set in an environment that has
+// no Anthropic key. It never prints a credential value — only header names, the
+// status, and the reply's length.
+func TestLiveOneMegaContextRowAccepted(t *testing.T) {
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skip("set EVENER_LIVE_TESTS=1 to run the live [1m] pin")
+	}
+	if *liveConfig == "" {
+		t.Skip("pass -args -live-config=<providers.toml> to run the live [1m] pin")
+	}
+	store, err := credentials.LoadStore(filepath.Join(filepath.Dir(*liveConfig), "credentials.toml"))
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+		registry.WithStateRoot(t.TempDir()), registry.WithOffline(true))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	res, err := r.Resolve(oneMegaContextRef)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", oneMegaContextRef, err)
+	}
+	if res.Caps.ContextWindow == nil {
+		t.Fatalf("%s: no resolved context window, want at least 1000000", oneMegaContextRef)
+	}
+	if *res.Caps.ContextWindow < 1_000_000 {
+		t.Fatalf("%s: context window %d, want at least 1000000", oneMegaContextRef, *res.Caps.ContextWindow)
+	}
+	t.Logf("%s: wire=%s window=%d headers=%v provenance=%s", oneMegaContextRef, res.WireID,
+		*res.Caps.ContextWindow, headerNames(res.Headers), res.Provenance["model"])
+	if res.Credential.Value == "" {
+		t.Skipf("%s: no credential in this environment (source %s)", oneMegaContextRef, res.Credential.Source)
+	}
+	url, body, ok := liveBody(res)
+	if !ok {
+		t.Fatalf("%s: protocol %s builds no request body", oneMegaContextRef, res.Protocol)
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	status, resp := liveRequest(t, client, http.MethodPost, url, body, res)
+	if status != http.StatusOK {
+		t.Fatalf("%s: POST %s (wire %s) → %d: %s", oneMegaContextRef, res.Transport.Endpoint, res.WireID, status, excerpt(resp, 300))
+	}
+	text := strings.TrimSpace(string(liveText(res.Protocol, resp)))
+	if text == "" {
+		t.Fatalf("%s: POST %s → %d with no reply text: %s", oneMegaContextRef, res.Transport.Endpoint, status, excerpt(resp, 300))
+	}
+	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", oneMegaContextRef, res.Transport.Endpoint, res.WireID, status, len(text))
+}
+
+// headerNames lists a header map's names, sorted. Only names: a resolved
+// header map can carry a credential-bearing value, which is never logged.
+func headerNames(h map[string]string) []string {
+	names := make([]string, 0, len(h))
+	for k := range h {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // liveBody builds the smallest legal request per protocol from Resolved.
 func liveBody(res registry.Resolved) (string, map[string]any, bool) {
 	body := map[string]any{}
