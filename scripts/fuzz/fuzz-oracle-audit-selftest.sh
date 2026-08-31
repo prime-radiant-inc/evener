@@ -133,8 +133,15 @@ assert_str_has "$out" "does not compile" "non-compiling mutation: diagnosed as a
 assert_str_has "$out" "UNAUDITED: .:FuzzUnaudited" "gap report flags the unaudited target"
 assert_eq "$rc" "1" "audit exits non-zero when an oracle is blind or a patch rotted"
 # The disposable worktree (mktemp'd as fuzz-oracle-audit.XXXX) is gone; only the
-# throwaway repo's own main worktree should remain registered.
-if git -C "$repo" worktree list | grep -q 'fuzz-oracle-audit\.'; then
+# throwaway repo's own main worktree should remain registered. Pipe-free on
+# purpose (#586), same producer-SIGPIPE shape as assert_str_has above (#277):
+# `grep -q` exits at the first hit while git is still writing, so a >pipe-buffer
+# listing would make a true match read as "no worktree left behind" under
+# pipefail (141). Untriggerable today (the listing is short), but one
+# output-size change away. A quoted [[ == *...* ]] is the same
+# literal-substring test with no pipe to break.
+worktrees_left="$(git -C "$repo" worktree list)"
+if [[ "$worktrees_left" == *'fuzz-oracle-audit.'* ]]; then
 	bad "audit left a worktree behind"
 else
 	ok "audit cleaned up its worktree"
