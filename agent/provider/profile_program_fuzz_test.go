@@ -136,7 +136,7 @@ func assertProviderProfileCopies(t *testing.T, profile *Profile) {
 	_ = profile.SupportsStreaming()
 	_ = profile.DefaultCommandTimeoutMS()
 	_ = profile.KnowledgeCutoff()
-	_ = profile.CheapModel()
+	_, _ = profile.CheapModelRef()
 	if profile.ConfiguredCheapModel() != "" {
 		t.Fatalf("new %s profile unexpectedly has configured cheap model", profile.ID())
 	}
@@ -192,8 +192,8 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 		t.Fatalf("WithProviderID identity = %q/%q (base %q)", renamed.ID(), renamed.BehaviorTag(), profile.ID())
 	}
 	bareCheap := WithCheapModel(profile, "  cheap-model  ")
-	if bareCheap.CheapProvider() != profile.ID() || bareCheap.CheapModel() != "cheap-model" || bareCheap.CheapModelRefString() != "cheap-model" {
-		t.Fatalf("bare WithCheapModel = %q/%q/%q", bareCheap.CheapProvider(), bareCheap.CheapModel(), bareCheap.CheapModelRefString())
+	if bareCheap.CheapProvider() != profile.ID() || bareCheap.ConfiguredCheapModel() != "cheap-model" || bareCheap.CheapModelRefString() != "cheap-model" {
+		t.Fatalf("bare WithCheapModel = %q/%q/%q", bareCheap.CheapProvider(), bareCheap.ConfiguredCheapModel(), bareCheap.CheapModelRefString())
 	}
 	qualifiedCheap := WithCheapModel(profile, "other/"+next)
 	if provider, model := qualifiedCheap.CheapModelRef(); provider != "other" || model != next || qualifiedCheap.CheapModelRefString() != "other/"+next {

@@ -5,6 +5,7 @@ package agent
 // which no longer work after the prefixActionSwitch arms are removed.
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -101,6 +102,119 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	outProps, _ := output["properties"].(map[string]any)
 	if _, ok := outProps["my_field"]; !ok {
 		t.Errorf("after cross-provider SetModel, communicate.output.properties is missing my_field — custom schema was not preserved")
+	}
+}
+
+func TestSetModel_CrossProvider_PreservesConfiguredCheapRoute(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		cheapRef     string
+		wantProvider string
+		wantModel    string
+	}{
+		{name: "relative route", cheapRef: "gpt-5-mini", wantProvider: "anthropic", wantModel: "gpt-5-mini"},
+		{name: "qualified route", cheapRef: "openai/gpt-5-mini", wantProvider: "openai", wantModel: "gpt-5-mini"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			client.Register(&fakeAdapter{name: "anthropic"})
+			startProfile := WithCheapModel(NewOpenAIProfile("gpt-5.4"), tc.cheapRef)
+			sess, err := NewSession(client, startProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+				NoProjectPrompts: true,
+				ResolveProfile:   testResolver,
+				StateDir:         stateDir,
+				testOnly:         testConfig{skipGitSnapshot: true},
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+
+			if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+				t.Fatalf("SetModel: %v", err)
+			}
+			if got := sess.profile.CheapModelRefString(); got != tc.cheapRef {
+				t.Fatalf("CheapModelRefString() = %q, want %q", got, tc.cheapRef)
+			}
+			providerName, model := sess.profile.CheapModelRef()
+			if providerName != tc.wantProvider || model != tc.wantModel {
+				t.Fatalf("CheapModelRef() = (%q, %q), want (%q, %q)", providerName, model, tc.wantProvider, tc.wantModel)
+			}
+			persisted, err := schema.LoadSessionMeta(stateDir, sess.ID())
+			if err != nil {
+				t.Fatalf("LoadSessionMeta: %v", err)
+			}
+			if persisted.CheapModel != tc.cheapRef {
+				t.Fatalf("persisted CheapModel = %q, want %q", persisted.CheapModel, tc.cheapRef)
+			}
+			sess.Close()
+
+			restored, err := RestoreSessionFromMetaWithConfig(
+				client,
+				newAnthropicProfile(persisted.Model),
+				execenv.NewLocalExecutionEnvironment(t.TempDir()),
+				persisted,
+				RestoreSessionConfig{StateDir: stateDir, ResolveProfile: testResolver},
+			)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			defer restored.Close()
+			restoredProvider, restoredModel := restored.profile.CheapModelRef()
+			if restoredProvider != tc.wantProvider || restoredModel != tc.wantModel {
+				t.Fatalf("restored CheapModelRef() = (%q, %q), want (%q, %q)",
+					restoredProvider, restoredModel, tc.wantProvider, tc.wantModel)
+			}
+		})
+	}
+}
+
+func TestSelectSubagentModel_CrossProviderPreservesConfiguredCheapRoute(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		cheapRef     string
+		wantProvider string
+		wantModel    string
+	}{
+		{name: "relative route", cheapRef: "gpt-5-mini", wantProvider: "anthropic", wantModel: "gpt-5-mini"},
+		{name: "qualified route", cheapRef: "openai/gpt-5-mini", wantProvider: "openai", wantModel: "gpt-5-mini"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+			client.Register(&fakeAdapter{name: "anthropic"})
+			startProfile := WithCheapModel(NewOpenAIProfile("gpt-5.4"), tc.cheapRef)
+			sess, err := NewSession(client, startProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+				MaxSubagentDepth: 1,
+				NoProjectPrompts: true,
+				ResolveProfile:   testResolver,
+				testOnly:         testConfig{skipGitSnapshot: true},
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+
+			selected, err := sess.selectSubagentModel(context.Background(), "anthropic/claude-opus-4-6", "")
+			if err != nil {
+				t.Fatalf("selectSubagentModel: %v", err)
+			}
+			if got := selected.profile.CheapModelRefString(); got != tc.cheapRef {
+				t.Fatalf("CheapModelRefString() = %q, want %q", got, tc.cheapRef)
+			}
+			providerName, model := selected.profile.CheapModelRef()
+			if providerName != tc.wantProvider || model != tc.wantModel {
+				t.Fatalf("CheapModelRef() = (%q, %q), want (%q, %q)", providerName, model, tc.wantProvider, tc.wantModel)
+			}
+		})
 	}
 }
 

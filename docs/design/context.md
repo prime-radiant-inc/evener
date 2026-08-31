@@ -263,9 +263,11 @@ The checkpoint turn uses `TurnCheckpoint` kind and `llm.RoleUser` role.
 
 ### LLM Summarize (Layer 2)
 
-Calls the provider's cheap model to generate a narrative summary. Only fires when
-checkpoint alone doesn't free enough space (>= 95% after checkpoint). The prompt is
-capped at ~80K chars to fit within cheap model context windows.
+Uses the configured fast/cheap model when present; otherwise it uses the active
+provider and model. Eligible failures on a configured auxiliary route fall back
+to the active model. Summarization runs only when the checkpoint does not free
+enough space (>= 95% after checkpoint). The prompt is capped at ~80K chars to
+bound summarization input across model context windows.
 
 The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
 
