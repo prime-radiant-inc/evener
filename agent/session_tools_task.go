@@ -81,6 +81,17 @@ func formatTaskUpdates(updates []taskpkg.TaskUpdate) string {
 	return strings.Join(parts, ", ")
 }
 
+// formatMutationAck renders the terse acknowledgement prefix for a call that
+// applied adds and/or updates: "Added N task(s); updated 1→done" (or either
+// half alone). formatTaskUpdates carries the id→status detail.
+func formatMutationAck(added int, updates []taskpkg.TaskUpdate) string {
+	detail := formatTaskUpdates(updates)
+	if added > 0 {
+		return fmt.Sprintf("Added %d task(s); updated %s.", added, detail)
+	}
+	return "Updated " + detail + "."
+}
+
 // taskToolState is the task-list mutation snapshot carried to human clients.
 // Started is present only for explicit updates whose final status is
 // in_progress, so the frontend can distinguish a real transition from a
@@ -123,6 +134,7 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // literal string "<nil>" and broke the schema-documented optional status.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	rawAdds, _ := args["add"].([]any)
+	adds = make([]taskpkg.TaskInput, 0, len(rawAdds))
 	for i, r := range rawAdds {
 		m, ok := r.(map[string]any)
 		if !ok {
@@ -142,8 +154,12 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 			return nil, nil, fmt.Errorf("add entry %d requires a string prompt", i)
 		}
 		input.Prompt = prompt
-		if depsRaw, ok := m["depends_on"].([]any); ok {
-			depIDs, err := decodeIDList(depsRaw)
+		if depsRaw, has := m["depends_on"]; has {
+			arr, ok := depsRaw.([]any)
+			if !ok {
+				return nil, nil, fmt.Errorf("add entry %d depends_on must be an array of task IDs", i)
+			}
+			depIDs, err := decodeIDList(arr)
 			if err != nil {
 				return nil, nil, fmt.Errorf("add entry %d depends_on: %w", i, err)
 			}
@@ -158,6 +174,7 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		adds = append(adds, input)
 	}
 	rawUpdates, _ := args["update"].([]any)
+	updates = make([]taskpkg.TaskUpdate, 0, len(rawUpdates))
 	for i, r := range rawUpdates {
 		m, ok := r.(map[string]any)
 		if !ok {
@@ -201,9 +218,6 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 
 // decodeIDList converts a JSON array of numbers into []int.
 func decodeIDList(raw []any) ([]int, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
 	ids := make([]int, 0, len(raw))
 	for _, d := range raw {
 		v, ok := d.(float64)
@@ -223,12 +237,25 @@ func decodeIDList(raw []any) ([]int, error) {
 // shouldn't need to). Without the depends_on check the store would validate
 // post-add and accept a guessed new ID — exactly the ID-guessing the
 // pre-add target rule exists to prevent.
+//
+// This is handler-side policy over a store API that cannot express the
+// pre-add transaction: the semantic rule (the model cannot know new IDs)
+// belongs here, not in the store. If a second mutation caller appears, hoist
+// the whole combined batch into a store-level ApplyBatch(adds, updates) that
+// validates updates against the pre-add state under one lock and returns one
+// snapshot — until then the double validation (updateLocked re-rejects the
+// same unknown IDs) is the price of exactly one caller.
+//
+// Only load-bearing when the call also adds: updateLocked enforces the same
+// rejections (identical errors, nothing applied) when there are no adds, so
+// callers gate on len(adds) > 0 and skip the duplicated pass.
 func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
-	known := make(map[int]struct{}, 8)
-	for _, t := range store.View() {
+	tasks := store.View()
+	known := make(map[int]struct{}, len(tasks))
+	for _, t := range tasks {
 		known[t.ID] = struct{}{}
 	}
 	for _, u := range updates {
@@ -262,15 +289,20 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
 				// slices; a mutation with nothing to mutate is the view.)
-				return tool.StateResult{Output: formatTaskList(store.View()), State: store.View()}, nil
+				tasks := store.View()
+				return tool.StateResult{Output: formatTaskList(tasks), State: tasks}, nil
 			}
 
 			return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
-				// Validate update IDs against the PRE-ADD state: the model
-				// composed this call before any new IDs existed, so an update
-				// can never legitimately target this call's adds.
-				if err := validateUpdateIDs(store, updates); err != nil {
-					return nil, err
+				// Validate update IDs against the PRE-ADD state when this
+				// call also adds: the model composed the call before any new
+				// IDs existed, so an update can never legitimately target or
+				// depend on this call's adds. (Without adds, updateLocked
+				// enforces the same rejections itself.)
+				if len(adds) > 0 {
+					if err := validateUpdateIDs(store, updates); err != nil {
+						return nil, err
+					}
 				}
 				var added []taskpkg.Task
 				if len(adds) > 0 {
@@ -308,12 +340,14 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				for _, task := range mutation.Before {
 					previous[task.ID] = task.Status
 				}
-				// Final statuses come from the snapshot, not the raw
+				// afterByID serves the classification below and the steering
+				// lookup: one pass over the snapshot instead of a scan per
+				// purpose. Final statuses come from the snapshot, not the raw
 				// entries: an empty-status entry (no change) must classify
 				// by the task's resulting status.
-				finalStatus := make(map[int]taskpkg.TaskStatus, len(mutation.After))
+				afterByID := make(map[int]taskpkg.Task, len(mutation.After))
 				for _, t := range mutation.After {
-					finalStatus[t.ID] = t.Status
+					afterByID[t.ID] = t
 				}
 				inProgressUpdates := make(map[int]struct{}, len(updates))
 				started := make(map[int]bool)
@@ -325,7 +359,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						continue
 					}
 					seenIDs[u.ID] = struct{}{}
-					status := finalStatus[u.ID]
+					status := afterByID[u.ID].Status
 					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
 						completedAny = true
 					}
@@ -342,36 +376,22 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// steering so the SYSTEM-REMINDER for the new task shows up on
 				// the next turn.
 				if manuallyStartedID != 0 {
-					for _, t := range mutation.After {
-						if t.ID == manuallyStartedID {
-							// Inside the task_list handler: the tool is registered by
-							// construction, so the steering may name it.
-							deps.steer(formatCurrentTaskSteering(t, true), events.SteeringKindCurrentTask)
-							break
-						}
-					}
+					// Inside the task_list handler: the tool is registered by
+					// construction, so the steering may name it.
+					deps.steer(formatCurrentTaskSteering(afterByID[manuallyStartedID], true), events.SteeringKindCurrentTask)
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
 					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
-					output := "Updated " + formatTaskUpdates(updates) + "."
-					if len(added) > 0 {
-						output = fmt.Sprintf("Added %d task(s); updated %s.", len(added), formatTaskUpdates(updates))
-					}
 					return tool.StateResult{
-						Output: output,
+						Output: formatMutationAck(len(added), updates),
 						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
 					}, nil
 				}
 
 				var msg strings.Builder
-				if len(added) > 0 {
-					fmt.Fprintf(&msg, "Added %d task(s); updated ", len(added))
-				} else {
-					msg.WriteString("Updated ")
-				}
-				msg.WriteString(formatTaskUpdates(updates))
-				msg.WriteString(". ")
+				msg.WriteString(formatMutationAck(len(added), updates))
+				msg.WriteString(" ")
 				finalTasks := mutation.After
 
 				if completedAny {

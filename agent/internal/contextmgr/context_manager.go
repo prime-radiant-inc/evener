@@ -677,17 +677,26 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 
 	case "task_list":
 		// Presence-based dispatch: derive the verb from whichever array the
-		// call carried (add/update, either or both; none = view).
+		// call carried with at least one entry (add/update, either or both;
+		// none = view). getArg stringifies, so an empty array would read as
+		// present — inspect argsMap directly instead.
 		verb := "view"
-		if a := getArg("add"); a != "" {
-			verb = "add"
-		}
-		if u := getArg("update"); u != "" {
-			if verb == "add" {
-				verb = "add+update"
-			} else {
-				verb = "update"
+		hasAdd, hasUpdate := false, false
+		if argsMap != nil {
+			if arr, ok := argsMap["add"].([]any); ok && len(arr) > 0 {
+				hasAdd = true
 			}
+			if arr, ok := argsMap["update"].([]any); ok && len(arr) > 0 {
+				hasUpdate = true
+			}
+		}
+		switch {
+		case hasAdd && hasUpdate:
+			verb = "add+update"
+		case hasAdd:
+			verb = "add"
+		case hasUpdate:
+			verb = "update"
 		}
 		tasks := countJSONArrayElements(contentStr)
 		return fmt.Sprintf("[task_list: %s → %d tasks]", verb, tasks)
