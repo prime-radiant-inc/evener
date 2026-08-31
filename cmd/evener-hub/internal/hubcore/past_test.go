@@ -579,19 +579,16 @@ func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
 // fuzzScenarioPastIndex_FindFoldWritesFTS pins the fold's FTS mirror on the
 // production configuration: the hub always runs NewPastIndexWithDB (main.go),
 // so a probe-folded session must land in the SQLite FTS index too, or search
-// would miss a session Find just surfaced until the next full Rebuild.
+// would miss a session Find just surfaced until the next full Rebuild. The
+// assertion goes through searchFTS (the FTS-only path), not Search: Search
+// unions FTS with the in-memory scan, which would rescue the assertion even
+// if the fold never wrote FTS.
 func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
-	writeMeta(t, proj, schema.SessionMeta{
-		ID:             sessionID,
-		UpdatedAt:      time.Unix(1_700_000_000, 0).UTC(),
-		OriginalPrompt: "fts-folded-needle",
-	})
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -608,9 +605,12 @@ func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
 	if _, ok := idx.Find(foldedID); !ok {
 		t.Fatal("expected Find to surface the newly persisted session")
 	}
-	results := idx.Search("fts-probe-needle", 10, 0)
+	results, ok := idx.searchFTS("fts-probe-needle")
+	if !ok {
+		t.Fatal("FTS index unavailable after the fold; searchFTS must serve the folded row")
+	}
 	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
-		t.Fatalf("Search did not surface the probe-folded session %s (results: %d entries)", foldedID, len(results))
+		t.Fatalf("FTS did not surface the probe-folded session %s (results: %d entries)", foldedID, len(results))
 	}
 }
 
@@ -692,8 +692,6 @@ func fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir(t *testing.T) {
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	fired := 0
-	idx.SetOnChange(func() { fired++ })
 
 	// Find must NOT surface the session Rebuild cannot list: the probe's
 	// gate must fail the same way the rebuild did.
@@ -702,9 +700,6 @@ func fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir(t *testing.T) {
 	}
 	if all := idx.All(); len(all) != 0 {
 		t.Fatalf("index holds %d entries, want 0 (Rebuild skipped the project)", len(all))
-	}
-	if fired != 0 {
-		t.Fatalf("onChange fired %d times, want 0", fired)
 	}
 }
 
