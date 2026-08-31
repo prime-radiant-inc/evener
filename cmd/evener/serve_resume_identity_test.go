@@ -254,3 +254,72 @@ func TestServeResumeForeignHeaderEntryListFailsStartup(t *testing.T) {
 		t.Fatalf("serve error = %v, want the restore-stage failure naming the mismatch", serveErr)
 	}
 }
+
+// TestServeResumeCompactionFallbackRefreshesSidecar pins the steady-state
+// repair: a --resume over a compaction-anchored sidecar (whose prefix-turn
+// count is -1) must take the file form ONCE and convert the sidecar to the
+// full-scan one — so the NEXT resume windows and arms paging instead of
+// re-reading the whole file on every daemon start forever. Without the
+// refresh, compacting sessions pay the full file re-read per resume as a
+// permanent steady state, which is exactly the cost the sidecar exists to
+// remove.
+func TestServeResumeCompactionFallbackRefreshesSidecar(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	// Seed the windowed fixture, then overwrite its sidecar with the
+	// compaction-anchored shape: same boundary, but PrefixTurnCount -1 and
+	// no fold snapshots — what the compaction anchor writes after a
+	// checkpoint that no full scan has followed.
+	seedWindowedResumableSession(t, stateDir, sessionID)
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after seeded first resume")
+	}
+	sidecar.PrefixTurnCount = -1
+	sidecar.SnapshotsComplete = false
+	sidecar.PendingAttention = nil
+	sidecar.DeliveryCommits = nil
+	sidecar.ClientMutationTurns = nil
+	if err := transcript.WriteSidecar(path, sidecar); err != nil {
+		t.Fatalf("rewrite sidecar with compaction-anchor shape: %v", err)
+	}
+
+	// First serve run: the compaction-anchored sidecar validates (windowed
+	// read) but cannot arm paging, so the file form runs — and the refresh
+	// must follow it.
+	probe, serveErr := runServeResumeWithProbe(t, stateDir, sessionID)
+	if serveErr != nil {
+		t.Fatalf("first serve run: %v", serveErr)
+	}
+	if !probe.fileFormUsed {
+		t.Fatal("compaction-anchored resume did not take the file form")
+	}
+	if probe.windowedFormUsed || probe.entriesFormUsed {
+		t.Fatal("compaction-anchored resume used a non-file identity form")
+	}
+	refreshed, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after the fallback run")
+	}
+	if !refreshed.SnapshotsComplete || refreshed.PrefixTurnCount != 2 {
+		t.Fatalf("sidecar was not refreshed to the full-scan shape: complete=%v prefixTurns=%d, want complete=true prefixTurns=2", refreshed.SnapshotsComplete, refreshed.PrefixTurnCount)
+	}
+
+	// Second serve run over the refreshed sidecar: it must go windowed with
+	// the armed count — the steady state is repaired, not repeated.
+	probe, serveErr = runServeResumeWithProbe(t, stateDir, sessionID)
+	if serveErr != nil {
+		t.Fatalf("second serve run: %v", serveErr)
+	}
+	if !probe.windowedFormUsed {
+		t.Fatal("resume after the refresh did not use the windowed form")
+	}
+	if probe.fileFormUsed {
+		t.Fatal("resume after the refresh repeated the file form — the steady state was not repaired")
+	}
+	if probe.windowedPrefixTurns != 2 {
+		t.Fatalf("windowed prefix turns after refresh = %d, want 2", probe.windowedPrefixTurns)
+	}
+}

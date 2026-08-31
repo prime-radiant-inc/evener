@@ -239,6 +239,123 @@ func TestForkChildResumeFallsBackToFullScanWithoutSidecar(t *testing.T) {
 	}
 }
 
+// TestFullScanSnapshotDedupesReSentAttentionAndCarriesResolutions pins the
+// opportunistic anchor's fold snapshot over the two attention shapes the
+// reviewer's probe showed it mishandling: a steering turn re-sent with
+// identical content (a legal transcript the file fold tolerates) must appear
+// ONCE, and an attention resolved before the boundary must carry its
+// resolution — so the seeded fold reports it resolved exactly as the file
+// fold over the same file does, instead of resurrecting it as pending.
+func TestFullScanSnapshotDedupesReSentAttentionAndCarriesResolutions(t *testing.T) {
+	const sessionID = "sidecar_dedupe"
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionID+".transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("new writer: %v", err)
+	}
+	steering := func(id string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User("steer "+id))
+		turn.AttentionID = id
+		return turn
+	}
+	// att_dup: opened, then RE-SENT with identical content — one row.
+	if err := w.Append(steering("att_dup")); err != nil {
+		t.Fatalf("append att_dup: %v", err)
+	}
+	if err := w.Append(steering("att_dup")); err != nil {
+		t.Fatalf("append att_dup again: %v", err)
+	}
+	// att_resolved: opened and resolved BEFORE the boundary.
+	if err := w.Append(steering("att_resolved")); err != nil {
+		t.Fatalf("append att_resolved: %v", err)
+	}
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: "att_resolved",
+		Disposition: "consumed",
+	}
+	if err := w.Append(resolution); err != nil {
+		t.Fatalf("append resolution: %v", err)
+	}
+	// att_pending: opened, never resolved — pending.
+	if err := w.Append(steering("att_pending")); err != nil {
+		t.Fatalf("append att_pending: %v", err)
+	}
+	// The checkpoint anchors the sidecar's offset after all of the above.
+	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Full-scan resume writes the opportunistic sidecar; read the snapshot
+	// back the way the next, windowed resume will.
+	first, _, err := transcript.OpenWriterForResume(path, sessionID)
+	if err != nil {
+		t.Fatalf("full-scan resume: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after full-scan resume")
+	}
+	if !sidecar.SnapshotsComplete {
+		t.Fatalf("full-scan sidecar must claim complete snapshots")
+	}
+	rows := map[string]transcript.SidecarPendingAttention{}
+	for _, row := range sidecar.PendingAttention {
+		rows[row.AttentionID] = row
+	}
+	if want := []string{"att_dup", "att_resolved", "att_pending"}; len(sidecar.PendingAttention) != len(want) {
+		t.Fatalf("snapshot rows: got %d (%v), want %d — a re-sent attention must not add a row", len(sidecar.PendingAttention), sidecar.PendingAttention, len(want))
+	}
+	for _, id := range []string{"att_dup", "att_resolved", "att_pending"} {
+		if _, present := rows[id]; !present {
+			t.Fatalf("snapshot is missing attention %q: %+v", id, sidecar.PendingAttention)
+		}
+	}
+	if rows["att_resolved"].Resolution != "consumed" {
+		t.Fatalf("prefix-resolved attention lost its resolution: %+v", rows["att_resolved"])
+	}
+	if rows["att_pending"].Resolution != "" {
+		t.Fatalf("pending attention gained a resolution: %+v", rows["att_pending"])
+	}
+
+	// The whole point: the seeded fold over this snapshot must agree with
+	// the file fold over the same file — same pending set, same resolutions.
+	_, view, err := transcript.OpenWriterForResume(path, sessionID)
+	if err != nil {
+		t.Fatalf("windowed resume: %v", err)
+	}
+	if !view.SidecarUsed {
+		t.Fatalf("second resume fell back to full scan — the snapshot the anchor wrote must validate")
+	}
+	seeded, err := foldDelegateAttentionSeeded(view.Sidecar, view.Entries)
+	if err != nil {
+		t.Fatalf("seeded fold: %v", err)
+	}
+	file, err := readDelegateAttentionFold(path, sessionID)
+	if err != nil {
+		t.Fatalf("file fold: %v", err)
+	}
+	seededPending, filePending := seeded.pendingIDs(), file.pendingIDs()
+	if len(seededPending) != 2 || seededPending[0] != "att_dup" || seededPending[1] != "att_pending" {
+		t.Fatalf("seeded fold pending: %v, want [att_dup att_pending] — the re-sent and pending attentions, not the resolved one", seededPending)
+	}
+	if len(filePending) != 2 || filePending[0] != "att_dup" || filePending[1] != "att_pending" {
+		t.Fatalf("file fold pending: %v, want [att_dup att_pending]", filePending)
+	}
+	if disposition, resolved := seeded.resolutions["att_resolved"]; !resolved || disposition != delegateAttentionConsumed {
+		t.Fatalf("seeded fold resolutions[att_resolved]: %v %v, want consumed true", disposition, resolved)
+	}
+	if len(seeded.order) != len(file.order) {
+		t.Fatalf("fold order lengths: seeded=%d file=%d — the re-sent attention must not duplicate an order entry", len(seeded.order), len(file.order))
+	}
+}
+
 // TestRestoreSessionAcceptsCorruptPrefixLineWithSidecarAndFullReaderStillFails
 // pins the deliberate wf7e posture change: the windowed reader ACCEPTS a
 // prefix it did not decode (that is its purpose — the sidecar's anchors

@@ -163,8 +163,14 @@ type serveDeps struct {
 	// one this daemon actually takes on a large resumed session, so tests
 	// must be able to observe and fault it.
 	prepareAppIdentityFromEntriesWindowed func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry, prefixEntryCount, prefixTurnCount int) (server.PreparedAppIdentity, error)
-	updateSessionID                       func(*rvreg.Registration, string) error
-	observeCallbacks                      func(serveCallbackObserver)
+	// refreshResumeSidecar rewrites a session's resume sidecar from a full
+	// transcript scan. The compaction-anchored fallback calls it after its
+	// file-form re-read so the NEXT resume windows instead of repeating that
+	// re-read. Injectable so a test can observe (and fault) the refresh the
+	// same way the identity forms above are observed.
+	refreshResumeSidecar func(transcriptPath, sessionID string) error
+	updateSessionID      func(*rvreg.Registration, string) error
+	observeCallbacks     func(serveCallbackObserver)
 }
 
 type serveCallbackObserver struct {
@@ -209,6 +215,7 @@ func defaultServeDeps() serveDeps {
 		prepareAppIdentity:                    server.PrepareAppIdentityForRef,
 		prepareAppIdentityFromEntries:         server.PrepareAppIdentityFromEntries,
 		prepareAppIdentityFromEntriesWindowed: server.PrepareAppIdentityFromEntriesWindowed,
+		refreshResumeSidecar:                  transcript.RefreshSidecarFromFullScan,
 		updateSessionID:                       func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
@@ -568,6 +575,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				prepared, err = deps.prepareAppIdentityFromEntriesWindowed("local", sess.ID(), workspaceRef, header, entries, prefixEntries, prefixTurns)
 			} else {
 				prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
+				// The file form re-reads the whole transcript anyway, so pay
+				// the same cost once to convert the compaction-anchored sidecar
+				// into the full-scan one — the NEXT resume then windows and
+				// arms paging instead of taking this fallback again.
+				// Best-effort: a session whose sidecar cannot be refreshed
+				// keeps the fallback, which is correct, only slower.
+				if refreshErr := deps.refreshResumeSidecar(sess.TranscriptPath(), sess.ID()); refreshErr != nil {
+					fmt.Fprintf(os.Stderr, "resume sidecar refresh after compaction-anchored fallback: %v\n", refreshErr)
+				}
 			}
 		} else {
 			prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)

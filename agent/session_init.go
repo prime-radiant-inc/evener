@@ -1115,7 +1115,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// final entry list the file holds. A windowed resume folds the suffix
 	// over the sidecar's prefix snapshot; if the snapshot cannot seed the
 	// fold (incomplete, or the refresh above replaced it) the rearm falls
-	// back to its own full file read.
+	// back to its own full file read. The windowed facts are installed BEFORE
+	// the rearm because they describe the read that produced the entry list,
+	// not the rearm: the rearm's fallback re-reads the file only to rebuild
+	// the wake cache and deliberately does not rewrite them — the fallback
+	// is a rearm detail, not a new restored view.
 	s.setRestoredTranscriptWindowed(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened, resumeView.SidecarUsed, resumeView.PrefixEntryCount, resumeView.PrefixTurnCount)
 	if resumeView.SidecarUsed && resumeView.Entries != nil {
 		if err := s.rearmRootDelegateAttentionSeeded(resumeView); err != nil {
