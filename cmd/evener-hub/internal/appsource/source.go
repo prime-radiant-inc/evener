@@ -51,6 +51,15 @@ type RelaySessionLease interface {
 	Close()
 }
 
+// RelaySessionRoutePublicationLease lets the hub publish the response's
+// authoritative routing identity before the session waits for pre-cut delivery
+// acknowledgements. The ordinary Read method remains available to callers that
+// do not own a routing index.
+type RelaySessionRoutePublicationLease interface {
+	RelaySessionLease
+	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(appwire.Thread)) (RelayReadResult, error)
+}
+
 type RelayReadResult struct {
 	Response appwire.ThreadReadResponse
 	Handoff  RelayHandoff
@@ -65,4 +74,8 @@ type RelayHandoff interface {
 type RelayDelivery struct {
 	Notification appwire.Notification
 	Acknowledge  func()
+	// Proceed transfers bounded pending ownership to the listener without
+	// acknowledging the delivery. It permits later ordered publications to
+	// reach that listener; capture barriers still wait for Acknowledge.
+	Proceed func()
 }

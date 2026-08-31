@@ -2,7 +2,9 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -1098,6 +1100,419 @@ func TestHubRelayStaleRelayKeyReleaseDoesNotAffectReplacement(t *testing.T) {
 	replacementRead.finish(false)
 }
 
+func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
+	const (
+		downstreamRef = "local:publication-fence-downstream"
+		oldTargetRef  = "local:publication-fence-old"
+		newTargetRef  = "local:publication-fence-new"
+	)
+	canonicalOld := appwire.Ref{SourceID: "local", ThreadID: "publication-fence-canonical-old"}
+	canonicalNew := appwire.Ref{SourceID: "local", ThreadID: "publication-fence-canonical-new"}
+	newLease := func(targetRef string) *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "publication-fence-downstream", Source: "local",
+					Evener: appwire.EvenerThread{Ref: targetRef},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	oldLease := newLease(oldTargetRef)
+	replacementLease := newLease(newTargetRef)
+	var resolveMu sync.Mutex
+	resolved := canonicalOld
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+			if ref == canonicalOld {
+				return oldLease, nil
+			}
+			return replacementLease, nil
+		},
+	}
+	oldFanoutLookedUp := make(chan struct{})
+	releaseOldFanout := make(chan struct{})
+	var parkOnce sync.Once
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.BeforeCanonicalPublish = func(_ string, notification appwire.Notification) {
+		var params appwire.AgentMessageDeltaParams
+		if json.Unmarshal(notification.Params, &params) != nil || params.Delta != "stale old publication" {
+			return
+		}
+		parkOnce.Do(func() {
+			close(oldFanoutLookedUp)
+			<-releaseOldFanout
+		})
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(cfg, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
+		t.Fatalf("initial ThreadRead: %v", err)
+	}
+
+	oldAcknowledged := make(chan struct{})
+	go func() {
+		oldLease.deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyAgentMessageDelta,
+				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+					Ref: oldTargetRef, ThreadID: "publication-fence-old", Delta: "stale old publication",
+				}),
+			},
+			Acknowledge: func() { close(oldAcknowledged) },
+		}
+	}()
+	<-oldFanoutLookedUp
+
+	resolveMu.Lock()
+	resolved = canonicalNew
+	resolveMu.Unlock()
+	replacementResult := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+			Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
+		})
+		replacementResult <- err
+	}()
+	select {
+	case err := <-replacementResult:
+		if err != nil {
+			close(releaseOldFanout)
+			t.Fatalf("replacement ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseOldFanout)
+		t.Fatal("replacement ownership did not publish while old fanout was parked before publication entry")
+	}
+	close(releaseOldFanout)
+	<-oldAcknowledged
+
+	liveAcknowledged := make(chan struct{})
+	replacementLease.deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Ref: newTargetRef, ThreadID: "publication-fence-new", Delta: "live replacement publication",
+			}),
+		},
+		Acknowledge: func() { close(liveAcknowledged) },
+	}
+	select {
+	case notification := <-client.Notifications():
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Delta != "live replacement publication" {
+			t.Fatalf("first post-remap publication = %q, want replacement frame; displaced listener broadcast stale ownership", params.Delta)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement publication did not reach the downstream subscriber")
+	}
+	<-liveAcknowledged
+}
+
+func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) {
+	const relayKey = "local:review-hol"
+	thread := appwire.Thread{ID: "review-hol", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey}}
+	secondEntered := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var readsMu sync.Mutex
+	reads := 0
+	deliveries := make(chan appsource.RelayDelivery, 2)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			readsMu.Lock()
+			reads++
+			call := reads
+			readsMu.Unlock()
+			if call == 2 {
+				close(secondEntered)
+				<-releaseSecond
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{lease: lease}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "review", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	first, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.finish(false)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	secondResult := make(chan outcome, 1)
+	go func() {
+		read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		secondResult <- outcome{read: read, err: err}
+	}()
+	<-secondEntered
+	waitEntered := make(chan struct{})
+	var waitOnce sync.Once
+	previous := observeHubRelayWait
+	observeHubRelayWait = func() { waitOnce.Do(func() { close(waitEntered) }) }
+	t.Cleanup(func() { observeHubRelayWait = previous })
+	unknownAck := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: []byte(`{"ref":"local:foreign"}`)},
+		Acknowledge:  func() { close(unknownAck) },
+	}
+	<-waitEntered
+	knownAck := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: []byte(`{"ref":"local:review-hol"}`)},
+		Acknowledge:  func() { close(knownAck) },
+	}
+	select {
+	case <-knownAck:
+	case <-time.After(time.Second):
+		close(releaseSecond)
+		t.Fatal("known delivery remained behind unrelated pending target")
+	}
+	select {
+	case <-unknownAck:
+		close(releaseSecond)
+		t.Fatal("unresolved target was acknowledged before the pending Read published routes")
+	default:
+	}
+	close(releaseSecond)
+	second := <-secondResult
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	second.read.finish(false)
+	<-unknownAck
+}
+
+func TestHubRelayPendingTargetPreservesOrderWhileKnownTargetProgresses(t *testing.T) {
+	const (
+		rootRef      = "local:pending-order-root"
+		childRef     = "local:pending-order-child"
+		childTarget  = "local:pending-order-authoritative-child"
+		canonicalRef = "local:pending-order-canonical"
+	)
+	childEntered := make(chan struct{})
+	releaseChild := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			threadRef := rootRef
+			if params.Ref == childRef {
+				close(childEntered)
+				<-releaseChild
+				threadRef = childTarget
+			}
+			parsed, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: parsed.ThreadID, Source: parsed.SourceID, Evener: appwire.EvenerThread{Ref: threadRef},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: make(chan appsource.RelayDelivery, 3),
+	}
+	canonical, err := appwire.ParseRef(canonicalRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &relaySessionTestSource{
+		lease:        lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "pending-order", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	root, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.finish(false)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	childResult := make(chan outcome, 1)
+	go func() {
+		read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childResult <- outcome{read: read, err: err}
+	}()
+	<-childEntered
+
+	ackOrder := make(chan string, 2)
+	for _, delta := range []string{"first", "second"} {
+		delta := delta
+		lease.deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyAgentMessageDelta,
+				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: childTarget, Delta: delta}),
+			},
+			Acknowledge: func() { ackOrder <- delta },
+		}
+	}
+	knownAck := make(chan struct{})
+	lease.deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: rootRef, Delta: "known"}),
+		},
+		Acknowledge: func() { close(knownAck) },
+	}
+	select {
+	case <-knownAck:
+	case <-time.After(time.Second):
+		close(releaseChild)
+		t.Fatal("known sibling target did not progress around pending target queue")
+	}
+	select {
+	case got := <-ackOrder:
+		close(releaseChild)
+		t.Fatalf("pending target delivery %q acknowledged before route publication", got)
+	default:
+	}
+	close(releaseChild)
+	child := <-childResult
+	if child.err != nil {
+		t.Fatal(child.err)
+	}
+	child.read.finish(false)
+	if got := <-ackOrder; got != "first" {
+		t.Fatalf("first pending acknowledgement = %q, want first", got)
+	}
+	if got := <-ackOrder; got != "second" {
+		t.Fatalf("second pending acknowledgement = %q, want second", got)
+	}
+}
+
+func TestHubRelayPendingDeliveryLimitCleansUpOnCanonicalStop(t *testing.T) {
+	const relayKey = "local:pending-limit"
+	thread := appwire.Thread{ID: "pending-limit", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey}}
+	secondEntered := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var reads int
+	var readsMu sync.Mutex
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			readsMu.Lock()
+			reads++
+			call := reads
+			readsMu.Unlock()
+			if call == 2 {
+				close(secondEntered)
+				<-releaseSecond
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{lease: lease}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "pending-limit", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	first, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.finish(false)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	secondResult := make(chan outcome, 1)
+	go func() {
+		read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+		secondResult <- outcome{read: read, err: err}
+	}()
+	<-secondEntered
+	acknowledged := make(chan int, hubRelayPendingDeliveryLimit)
+	for i := 0; i < hubRelayPendingDeliveryLimit; i++ {
+		proceeded := make(chan struct{})
+		delivery := appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyAgentMessageDelta,
+				Params: testRawJSON(t, map[string]any{"ref": fmt.Sprintf("local:pending-foreign-%d", i)}),
+			},
+			Acknowledge: func() { acknowledged <- i },
+			Proceed:     func() { close(proceeded) },
+		}
+		go func() { lease.deliveries <- delivery }()
+		select {
+		case <-proceeded:
+		case <-time.After(time.Second):
+			close(releaseSecond)
+			t.Fatalf("pending delivery %d was not transferred into the bounded queue", i)
+		}
+	}
+	select {
+	case got := <-acknowledged:
+		close(releaseSecond)
+		t.Fatalf("pending delivery %d acknowledged before route resolution", got)
+	default:
+	}
+	ref, err := appwire.ParseRef(relayKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relays.stopCanonicalRelay(ref)
+	if got := lease.closeCallCount(); got != 0 {
+		close(releaseSecond)
+		t.Fatalf("canonical stop closed lease before pending command release: %d", got)
+	}
+	close(releaseSecond)
+	second := <-secondResult
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	second.read.finish(false)
+	seen := make(map[int]struct{}, hubRelayPendingDeliveryLimit)
+	for len(seen) < hubRelayPendingDeliveryLimit {
+		select {
+		case got := <-acknowledged:
+			seen[got] = struct{}{}
+		case <-time.After(time.Second):
+			t.Fatalf("canonical cancellation acknowledged %d/%d bounded pending deliveries", len(seen), hubRelayPendingDeliveryLimit)
+		}
+	}
+	if got := lease.closeCallCount(); got != 1 {
+		t.Fatalf("lease closes after bounded pending cleanup = %d, want 1", got)
+	}
+}
+
 func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.T) {
 	const (
 		downstreamRef       = "local:remap-read-downstream"
@@ -1781,6 +2196,18 @@ func (l *scriptedRelaySessionLease) Read(_ context.Context, params appwire.Threa
 	}
 	if readFunc != nil {
 		return readFunc(params)
+	}
+	return result, err
+}
+
+func (l *scriptedRelaySessionLease) ReadWithRoutePublication(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	publish func(appwire.Thread),
+) (appsource.RelayReadResult, error) {
+	result, err := l.Read(ctx, params)
+	if err == nil && publish != nil {
+		publish(result.Response.Thread)
 	}
 	return result, err
 }

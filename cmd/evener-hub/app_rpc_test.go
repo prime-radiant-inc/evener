@@ -4378,6 +4378,269 @@ func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
 	relays.stopCanonicalRelay(canonicalB)
 }
 
+func TestHubRelayCanonicalStopRetainsBusyPublishedHandleUntilFreshGeneration(t *testing.T) {
+	const relayKey = "local:canonical-stop-busy"
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-busy"}
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "canonical-stop-busy", Source: "local", Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc:   func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) { return readResult(), nil },
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return oldLease, nil
+			}
+			return freshLease, nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-busy", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	initial, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.finish(false)
+
+	busyEntered := make(chan struct{})
+	releaseBusy := make(chan struct{})
+	oldLease.mu.Lock()
+	oldLease.readHook = func() {
+		close(busyEntered)
+		<-releaseBusy
+	}
+	oldLease.mu.Unlock()
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	busyResult := startRead()
+	<-busyEntered
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseBusy)
+		t.Fatalf("canonical stop closed busy published lease: %d", got)
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseBusy)
+		t.Fatalf("busy published command owners after canonical stop = %d, want 1", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(releaseBusy)
+		t.Fatal("post-canonical-stop command did not defer behind busy handle")
+	}
+	if got := oldLease.readCallCount(); got != 2 {
+		close(releaseBusy)
+		t.Fatalf("old generation Read calls after stop = %d, want initial plus busy only", got)
+	}
+	close(releaseBusy)
+	busy := <-busyResult
+	if busy.err != nil {
+		t.Fatal(busy.err)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed lease before busy handoff released: %d", got)
+	}
+	busy.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("busy canonical generation did not close after exact owner release")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatal(postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after canonical stop drain = %d, want fresh generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old canonical lease closes = %d, want once", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh canonical calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+}
+
+func TestHubRelayCanonicalStopRetainsOverlappingPendingStates(t *testing.T) {
+	const (
+		relayA = "local:canonical-stop-pending-a"
+		relayB = "local:canonical-stop-pending-b"
+	)
+	canonical := appwire.Ref{SourceID: "local", ThreadID: "canonical-stop-pending-owner"}
+	type gate struct {
+		entered chan struct{}
+		release chan struct{}
+	}
+	gates := map[string]gate{
+		relayA: {entered: make(chan struct{}), release: make(chan struct{})},
+		relayB: {entered: make(chan struct{}), release: make(chan struct{})},
+	}
+	resultFor := func(ref string) appsource.RelayReadResult {
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: parsed.ThreadID, Source: parsed.SourceID, Evener: appwire.EvenerThread{Ref: ref},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldClosed := make(chan struct{})
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			g := gates[params.Ref]
+			close(g.entered)
+			<-g.release
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return resultFor(params.Ref), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquisitions int
+	var acquireMu sync.Mutex
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) { return canonical, nil },
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return oldLease, nil
+			}
+			return freshLease, nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "canonical-stop-pending", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type outcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func(ref string) <-chan outcome {
+		out := make(chan outcome, 1)
+		go func() {
+			read, err := relays.readThread(t.Context(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+			out <- outcome{read: read, err: err}
+		}()
+		return out
+	}
+	resultA := startRead(relayA)
+	<-gates[relayA].entered
+	resultB := startRead(relayB)
+	<-gates[relayB].entered
+	if got := relays.relayCommandCount(relayA) + relays.relayCommandCount(relayB); got != 2 {
+		t.Fatalf("overlapping canonical pending owners = %d, want 2", got)
+	}
+	relays.stopCanonicalRelay(canonical)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical stop closed overlapping pending lease: %d", got)
+	}
+
+	deferred := make(chan struct{})
+	var deferredOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { deferredOnce.Do(func() { close(deferred) }) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStop := startRead(relayA)
+	select {
+	case <-deferred:
+	case <-time.After(time.Second):
+		close(gates[relayA].release)
+		close(gates[relayB].release)
+		t.Fatal("post-stop command did not defer behind overlapping pending canonical states")
+	}
+
+	close(gates[relayA].release)
+	first := <-resultA
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	if relays.relayPublished(relayA) {
+		t.Fatal("stopped pending relay A published")
+	}
+	first.read.finish(false)
+	if got := oldLease.closeCallCount(); got != 0 {
+		t.Fatalf("canonical lease closed with second pending owner: %d", got)
+	}
+	close(gates[relayB].release)
+	second := <-resultB
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if relays.relayPublished(relayB) {
+		t.Fatal("stopped pending relay B published")
+	}
+	second.read.finish(false)
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("overlapping pending canonical handle did not close after all exact owners released")
+	}
+	fresh := <-postStop
+	if fresh.err != nil {
+		t.Fatal(fresh.err)
+	}
+	fresh.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("canonical acquisitions after overlapping drain = %d, want fresh second generation", got)
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old overlapping lease closes = %d, want once", got)
+	}
+}
+
 func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFreshStart(t *testing.T) {
 	const threadID = "th_request_canceled_initializing"
 	initialRelease := make(chan struct{})

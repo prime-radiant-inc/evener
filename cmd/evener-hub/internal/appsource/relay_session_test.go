@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
@@ -382,6 +383,114 @@ func TestRelaySessionSnapshotCutWaitsForQueuedPreCaptureNotification(t *testing.
 		t.Fatalf("queued pre-capture notification duplicated after Read: %+v", delivery.Notification)
 	default:
 	}
+}
+
+func TestRelaySessionDeferredDeliveryAllowsLaterPublicationAndPreservesReadBarrier(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-deferred")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-deferred", Subscribe: true}
+	lease, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := readRelayAsync(t.Context(), lease, params)
+	initialCall := <-daemon.reads
+	initialCall.transport.recv <- appwire.ResponseMessage(initialCall.request.ID, relaySnapshot("thread-deferred", "initial"))
+	initialResult := <-initial
+	if initialResult.err != nil {
+		t.Fatal(initialResult.err)
+	}
+	if !initialResult.result.Handoff.Commit() {
+		t.Fatal("initial handoff commit lost")
+	}
+
+	session := relaySessionFor(t, source)
+	observeRelayFrame(t, session, relayDelta("thread-deferred", "pending unknown"))
+	pending := <-deliveries
+	if pending.Proceed == nil {
+		pending.Acknowledge()
+		t.Fatal("RelayDelivery has no non-acknowledging continuation signal")
+	}
+	observeRelayFrame(t, session, relayDelta("thread-deferred", "later known"))
+
+	read := readRelayAsync(t.Context(), lease, params)
+	call := <-daemon.reads
+	pending.Proceed()
+	later := <-deliveries
+	if got := decodeRelayDelta(t, later.Notification); got != "later known" {
+		t.Fatalf("publication after deferred delivery = %q, want later known", got)
+	}
+	later.Acknowledge()
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-deferred", "replacement"))
+	select {
+	case result := <-read:
+		t.Fatalf("Read crossed its pre-capture publication barrier before deferred acknowledgement: %+v", result)
+	default:
+	}
+	pending.Acknowledge()
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	result.result.Handoff.Abort()
+}
+
+func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t *testing.T) {
+	source, daemon := newRelayTestSource(t, []rendezvous.Entry{relayEntry("thread-route-publication")})
+	params := appwire.ThreadReadParams{Ref: "local:thread-route-publication", Subscribe: true}
+	lease, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type routePublishingLease interface {
+		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(appwire.Thread)) (RelayReadResult, error)
+	}
+	publishingLease, ok := lease.(routePublishingLease)
+	if !ok {
+		t.Fatal("production relay lease cannot publish authoritative routes before its pre-cut acknowledgement barrier")
+	}
+	routesPublished := make(chan appwire.Thread, 1)
+	result := make(chan relayReadOutcome, 1)
+	go func() {
+		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, func(thread appwire.Thread) {
+			routesPublished <- thread
+		})
+		result <- relayReadOutcome{result: read, err: err}
+	}()
+	call := <-daemon.reads
+	call.transport.recv <- appwire.Message{Notification: new(relayDelta("thread-route-publication", "before"))}
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-publication", "snapshot"))
+	before := <-deliveries
+	select {
+	case thread := <-routesPublished:
+		if thread.ID != "thread-route-publication" {
+			t.Fatalf("published route thread = %q", thread.ID)
+		}
+	case <-time.After(time.Second):
+		before.Acknowledge()
+		t.Fatal("authoritative route callback did not run before pre-cut acknowledgement")
+	}
+	select {
+	case outcome := <-result:
+		before.Acknowledge()
+		t.Fatalf("Read returned before pre-cut acknowledgement: %+v", outcome)
+	default:
+	}
+	before.Acknowledge()
+	outcome := <-result
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	outcome.result.Handoff.Abort()
 }
 
 func TestRelaySessionRacingReadsDoNotOverlap(t *testing.T) {
