@@ -232,3 +232,24 @@ func TestProbeIgnoresRetiredDetailedJobType(t *testing.T) {
 		t.Fatalf("delegate job inferred consumer status: %+v", result)
 	}
 }
+
+func TestProbeSeparatesActiveAndCompletedNonAgentJobs(t *testing.T) {
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Jobs: []server.JobStatusInfo{
+			{JobID: "job-running", JobType: "shell", Status: "running"},
+			{JobID: "job-completed", JobType: "shell", Status: "completed"},
+			{JobID: "job-delegate", JobType: "delegate", Status: "completed"},
+		}}},
+	})
+	result := prober.Probe(entry)
+	if !result.OK {
+		t.Fatal("expected successful status probe")
+	}
+	if len(result.RunningJobs) != 1 || result.RunningJobs[0].JobID != "job-running" {
+		t.Fatalf("running jobs = %+v, want only active non-agent job", result.RunningJobs)
+	}
+	if len(result.CompletedJobs) != 1 || result.CompletedJobs[0].JobID != "job-completed" {
+		t.Fatalf("completed jobs = %+v, want only terminal non-agent job", result.CompletedJobs)
+	}
+}

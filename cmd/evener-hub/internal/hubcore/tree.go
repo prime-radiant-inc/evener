@@ -113,6 +113,8 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 			return nil, err
 		}
 		out[index] = node
+		out[index].RunningJobs = appwire.CloneEvenerJobs(node.RunningJobs)
+		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -428,6 +430,10 @@ type TreeNode struct {
 	// cap. The client folds this into the parent's inactive-child disclosure so
 	// capped children are counted rather than silently disappearing.
 	MoreSubagents int
+	// RunningJobs and CompletedJobs are the non-delegate jobs owned by this
+	// session. Delegate jobs remain represented by Children as subagents.
+	RunningJobs   []appwire.EvenerJobInfo
+	CompletedJobs []appwire.EvenerJobInfo
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Age           string // pre-formatted "now", "2m", "3h", "5d"
@@ -1125,18 +1131,20 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// for children WITH one (it overwrote the child's own daemon-reported
 		// status with the parent's projection).
 		node := TreeNode{
-			ID:         m.ID,
-			Ref:        liveRefMap[m.ID],
-			Title:      nodeTitle(m, kind),
-			Project:    acc.name,
-			Branch:     m.EnvInfo.GitBranch,
-			State:      state,
-			AskPending: askPending,
-			Dormant:    dormantFor(m.ID),
-			Kind:       kind,
-			CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-			UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-			Age:        AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			ID:            m.ID,
+			Ref:           liveRefMap[m.ID],
+			Title:         nodeTitle(m, kind),
+			Project:       acc.name,
+			Branch:        m.EnvInfo.GitBranch,
+			State:         state,
+			AskPending:    askPending,
+			Dormant:       dormantFor(m.ID),
+			Kind:          kind,
+			CreatedAt:     OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+			UpdatedAt:     OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+			Age:           AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
+			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1206,6 +1214,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			taskState := s.State
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
+				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+					taskState = "active"
+				}
 				for _, child := range node.Children {
 					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
 						taskState = child.State
@@ -1355,16 +1366,18 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// has no lineage to recurse into.
 		if !hasMeta {
 			node := TreeNode{
-				ID:         le.SessionID,
-				Ref:        liveRefMap[le.SessionID],
-				State:      stateFor(le.SessionID),
-				AskPending: askPendingFor(le.SessionID),
-				Dormant:    dormantFor(le.SessionID),
-				Kind:       "session",
-				Title:      ShortID(le.SessionID),
-				CreatedAt:  le.StartedAt,
-				UpdatedAt:  le.StartedAt,
-				Age:        AgeString(le.StartedAt),
+				ID:            le.SessionID,
+				Ref:           liveRefMap[le.SessionID],
+				State:         stateFor(le.SessionID),
+				AskPending:    askPendingFor(le.SessionID),
+				Dormant:       dormantFor(le.SessionID),
+				Kind:          "session",
+				Title:         ShortID(le.SessionID),
+				CreatedAt:     le.StartedAt,
+				UpdatedAt:     le.StartedAt,
+				Age:           AgeString(le.StartedAt),
+				RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
+				CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1449,11 +1462,13 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			continue
 		}
 		node := TreeNode{
-			ID:         le.SessionID,
-			State:      st,
-			Kind:       "session",
-			AskPending: le.PendingAsk,
-			Dormant:    dormantFor(le.SessionID),
+			ID:            le.SessionID,
+			State:         st,
+			Kind:          "session",
+			AskPending:    le.PendingAsk,
+			Dormant:       dormantFor(le.SessionID),
+			RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
+			CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -1650,7 +1665,7 @@ func clusterable(n TreeNode) bool {
 	if n.Kind != "session" {
 		return false
 	}
-	if len(n.Children) > 0 {
+	if len(n.Children) > 0 || len(n.RunningJobs) > 0 || len(n.CompletedJobs) > 0 {
 		return false
 	}
 	return n.State == "idle" || n.State == "ended"

@@ -194,12 +194,30 @@ function sessions(value: unknown): boolean {
       !optional(candidate.dormant, bool) ||
       !optional(candidate.updated_at, string) ||
       !optional(candidate.more_subagents, count) ||
-      !optional(candidate.omitted_descendants, count)
+      !optional(candidate.omitted_descendants, count) ||
+      !optional(candidate.running_jobs, jobs) ||
+      !optional(candidate.completed_jobs, jobs)
     )
       return false;
     pending.push(...candidate.children);
   }
   return true;
+}
+
+function jobs(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (candidate) =>
+        record(candidate) &&
+        string(candidate.job_id) &&
+        string(candidate.job_type) &&
+        string(candidate.status) &&
+        optional(candidate.command, string) &&
+        optional(candidate.task, string) &&
+        optional(candidate.reason, string),
+    )
+  );
 }
 function tier(value: unknown): boolean {
   return record(value) && sessions(value.sessions) && count(value.remaining);

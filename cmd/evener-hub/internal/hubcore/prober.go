@@ -86,6 +86,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	sort.Strings(runningSubagentIDs)
 
+	runningJobs, completedJobs := splitNonAgentJobs(root.Evener.Diagnostics)
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
@@ -93,7 +94,8 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
 		RunningSubagentIDs:    runningSubagentIDs,
 		RunningSubagentStates: runningSubagentStates,
-		RunningJobs:           runningNonAgentJobs(root.Evener.Diagnostics),
+		RunningJobs:           runningJobs,
+		CompletedJobs:         completedJobs,
 		OK:                    true,
 	}
 }
@@ -105,18 +107,29 @@ func statusThreadID(thread appwire.Thread) string {
 	return strings.TrimSpace(thread.ID)
 }
 
-func runningNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
+func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {
 	if diagnostics == nil {
-		return nil
+		return nil, nil
 	}
-	var jobs []appwire.EvenerJobInfo
-	for _, job := range diagnostics.Jobs {
-		if strings.TrimSpace(job.JobType) == "delegate" || terminalJobStatus(job.Status) {
+	return SplitNonAgentJobs(diagnostics.Jobs)
+}
+
+// SplitNonAgentJobs separates non-delegate jobs into active and terminal
+// groups for navigation consumers. The input is already the daemon's bounded
+// diagnostic inventory, so the function preserves its order within each group.
+func SplitNonAgentJobs(jobs []appwire.EvenerJobInfo) ([]appwire.EvenerJobInfo, []appwire.EvenerJobInfo) {
+	var running, completed []appwire.EvenerJobInfo
+	for _, job := range jobs {
+		if strings.TrimSpace(job.JobType) == "delegate" {
 			continue
 		}
-		jobs = append(jobs, job)
+		if terminalJobStatus(job.Status) {
+			completed = append(completed, job)
+		} else {
+			running = append(running, job)
+		}
 	}
-	return jobs
+	return running, completed
 }
 
 func terminalJobStatus(status string) bool {

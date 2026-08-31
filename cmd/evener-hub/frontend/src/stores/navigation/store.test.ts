@@ -506,6 +506,16 @@ test("invalid AppWire envelopes and resource bodies become resource errors", asy
   expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
 });
 
+test("rejects malformed job collections in navigation session summaries", async () => {
+  await init((params) =>
+    params.resource === "manifest"
+      ? wire(emptyManifest())
+      : wire({ sessions: [{ ref: "local:bad", running_jobs: {} }], remaining: 0, truncated: false }),
+  );
+  const resource = await navigationStore.getState().loadSection("live");
+  expect(resource.error).toBeTruthy();
+});
+
 test("stale client completion cannot overwrite newer client", async () => {
   const old = deferred<NavigationReadResponse>();
   const first = new FakeClient("ready");

@@ -68,6 +68,35 @@ describe("resource projection semantics", () => {
     expect(node?.children.map((child) => child.kind)).toEqual(["session", "inactiveFold"]);
     expect(node?.children[1]).toMatchObject({ count: 1, expanded: false });
   });
+
+  test("keeps active jobs inline and puts idle subagents and completed jobs in separate folds", () => {
+    const root = session({
+      ref: "root",
+      row_id: "root",
+      state: "idle",
+      children: [
+        session({ ref: "idle-child", row_id: "idle-child", kind: "subagent", state: "idle" }),
+        session({ ref: "active-child", row_id: "active-child", kind: "subagent", state: "active" }),
+      ],
+    });
+    Object.assign(root, {
+      running_jobs: [{ job_id: "job-running", job_type: "shell", status: "running" }],
+      completed_jobs: [{ job_id: "job-completed", job_type: "shell", status: "completed" }],
+    });
+    const [node] = sessionNodes([root], closed);
+    expect(node?.children.map((child) => child.kind)).toEqual(["session", "job", "inactiveFold", "completedJobsFold"]);
+    expect(node?.children[1]).toMatchObject({ kind: "job", job: { job_id: "job-running" } });
+    expect(node?.children[2]).toMatchObject({ kind: "inactiveFold", count: 1 });
+    expect(node?.children[3]).toMatchObject({ kind: "completedJobsFold", count: 1 });
+  });
+
+  test("keeps an idle subagent with active work in the inline list", () => {
+    const child = session({ ref: "child", row_id: "child", kind: "subagent", state: "idle" });
+    Object.assign(child, { running_jobs: [{ job_id: "job-child", job_type: "shell", status: "running" }] });
+    const [node] = sessionNodes([session({ ref: "root", row_id: "root", children: [child] })], closed);
+    expect(node?.children.map((entry) => entry.kind)).toEqual(["session"]);
+    expect(node?.children[0]).toMatchObject({ children: [{ kind: "job", job: { job_id: "job-child" } }] });
+  });
   test("handles cluster disclosure without a second inactive fold", () => {
     const cluster = session({
       kind: "cluster",
