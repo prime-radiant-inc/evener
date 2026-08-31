@@ -376,7 +376,7 @@ func TestDefDelegateSendDescriptionDistinguishesCallerFromFinalReport(t *testing
 
 func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 	def := DefTaskList(nil)
-	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array."
+	want := "Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array."
 	if !strings.Contains(def.Description, want) {
 		t.Fatalf("DefTaskList description = %q, want to contain %q", def.Description, want)
 	}
@@ -384,16 +384,19 @@ func TestDefTaskListDescriptionStatesInProgressInvariant(t *testing.T) {
 
 func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 	def := DefTaskList([]string{"low", "medium", "high"})
-	tasks := def.Parameters["properties"].(map[string]any)["tasks"].(map[string]any)
-	item := tasks["items"].(map[string]any)
-	schema := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)
-	enum, ok := schema["enum"].([]string)
-	if !ok {
-		t.Fatalf("reasoning_effort enum missing: %#v", schema)
-	}
 	want := []string{"low", "medium", "high", "inherit"}
-	if !reflect.DeepEqual(enum, want) {
-		t.Fatalf("reasoning_effort enum = %v, want %v", enum, want)
+	props := def.Parameters["properties"].(map[string]any)
+	for _, arrayName := range []string{"add", "update"} {
+		arraySchema := props[arrayName].(map[string]any)
+		item := arraySchema["items"].(map[string]any)
+		schema := item["properties"].(map[string]any)["reasoning_effort"].(map[string]any)
+		enum, ok := schema["enum"].([]string)
+		if !ok {
+			t.Fatalf("%s reasoning_effort enum missing: %#v", arrayName, schema)
+		}
+		if !reflect.DeepEqual(enum, want) {
+			t.Fatalf("%s reasoning_effort enum = %v, want %v", arrayName, enum, want)
+		}
 	}
 }
 
@@ -844,5 +847,43 @@ func TestDefModelListIsBoundedReadOnlyContract(t *testing.T) {
 	def := DefModelList()
 	if def.Name != "model_list" || def.Parameters["additionalProperties"] != false {
 		t.Fatalf("definition = %#v", def)
+	}
+}
+
+// TestDefTaskList_PresenceBased pins the combined-tool schema: no action
+// property, add/update arrays optional, update items require only id, no
+// top-level required list (a bare call is a view), and Strict explicitly
+// false (strict-mode normalization would force-requires nested update
+// fields, reintroducing forced status/depends_on values).
+func TestDefTaskList_PresenceBased(t *testing.T) {
+	def := DefTaskList([]string{"low", "high"})
+	params := def.Parameters
+	props := params["properties"].(map[string]any)
+	if _, has := props["action"]; has {
+		t.Fatal("schema must not have an action property")
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatal("DefTaskList must set Strict: false explicitly")
+	}
+	add, has := props["add"]
+	if !has {
+		t.Fatal("schema must have an add property")
+	}
+	addItems := add.(map[string]any)["items"].(map[string]any)
+	addReq, ok := addItems["required"].([]string)
+	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
+		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
+	}
+	update, has := props["update"]
+	if !has {
+		t.Fatal("schema must have an update property")
+	}
+	updateItems := update.(map[string]any)["items"].(map[string]any)
+	updateReq, ok := updateItems["required"].([]string)
+	if !ok || len(updateReq) != 1 || updateReq[0] != "id" {
+		t.Fatalf("update item required = %v, want [id]", updateItems["required"])
+	}
+	if top, has := params["required"]; has {
+		t.Fatalf("schema must not force-require add/update at top level: %v", top)
 	}
 }
