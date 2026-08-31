@@ -27,4 +27,4 @@ primeradiant.com/evener/test/e2e/fake429  # e2e test helper: stands in for a rat
 primeradiant.com/evener/cmd/evener-hub/internal/hubtest  # fixture helpers shared by cmd/evener-hub tests; test support, not shipped runtime
 primeradiant.com/evener/internal/appwirets  # code GENERATOR run via go generate to emit the AppWire TypeScript types; its output is verified up to date by TestGeneratedFileCurrent, and the generator itself is not a shipped runtime surface
 primeradiant.com/evener/cmd/evener-test-dev-tooling  # the dev-tooling selftest wave runner; tooling that tests tooling, not shipped runtime
-primeradiant.com/evener/llm/providers  # no production file exists in this package — it holds only cross-provider tests, so there is no local surface to fuzz
+primeradiant.com/evener/llm/registry/internal/modelsdevsample  # dev command (package main), not shipped runtime: it cuts the checked-in registry fixture out of a models.dev api.json a developer curls by hand, so its only input is our own repo fixture material
