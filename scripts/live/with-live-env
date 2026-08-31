@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# with-live-env — run a command under an isolated fake HOME for evener's live
+# cloud-provider verification (provider-registry step 4, spec §13 "Live").
+#
+# WHY THIS EXISTS: live verification sends real requests, with real
+# credentials, to real provider endpoints. Every one of those runs must be
+# unable to read or write the developer's actual ~/.config/evener or
+# ~/.local/state/evener — an isolated fake homedir for every live run is
+# Jesse's explicit requirement, not a nicety. This script builds that
+# isolation once so every later live-testing task runs its commands through
+# it instead of re-deriving isolation by hand.
+#
+# It exports the following, then runs <command...> with them in its
+# environment:
+#
+#   HOME                   a fresh directory made by mktemp, chmod 700,
+#                          deleted on exit unless --keep.
+#   XDG_CONFIG_HOME
+#   XDG_CACHE_HOME
+#   XDG_STATE_HOME         redirected under the same fake home (via
+#                          scripts/lib/private-go-home.sh), so anything that
+#                          resolves paths from these instead of the EVENER_*
+#                          variables below still cannot see the real ones.
+#   GOENV                  a private copy of the ambient `go env -w` file (or
+#                          an empty one) — `go env -w` run under the wrapper
+#                          can never touch the developer's real Go config.
+#   GOPATH, GOCACHE        preserved at their ambient (real) values when not
+#                          already set in the environment. Without this,
+#                          redirecting HOME makes every `go build`/`go test`
+#                          run under the wrapper recompile from a cold cache —
+#                          measured ~22s and ~1GB of re-downloaded modules per
+#                          invocation — which this harness cannot afford to
+#                          pay on every one of plan 4's remaining tasks.
+#   EVENER_STATE_DIR       $HOME/state — evener's per-invocation state root.
+#   EVENER_PROVIDERS_CONFIG
+#                          with --config FILE: a copy of FILE at
+#                          $HOME/providers.toml. Without --config: a path
+#                          under $HOME that does not exist. Either way the
+#                          variable is always present: the registry's
+#                          tri-state rule (llm/registry/load.go) treats a
+#                          named-but-missing path the same as "no user
+#                          layer", so curated providers still activate
+#                          implicitly from the credential env vars sourced
+#                          below — no providers.toml is required to exercise
+#                          them.
+#   EVENER_CREDENTIALS_CONFIG
+#                          only with --store: the DEVELOPER's real credential
+#                          store, ~/.config/evener/credentials.toml, used
+#                          read-only. Never set otherwise.
+#
+# It also sources ~/git/prime-radiant/serf/.env into the process environment
+# when that file exists (ANTHROPIC_API_KEY, OPENROUTER_API_KEY,
+# OPENAI_API_KEY, GEMINI_API_KEY, OLLAMA_HOST, MOONSHOT_API_KEY) so curated
+# providers can pick them up implicitly. A credential value is never echoed,
+# logged, or placed in argv — not even on an error path.
+#
+# Usage:
+#   scripts/live/with-live-env [--config providers.toml] [--store] [--keep] -- <command...>
+#
+#   --config FILE  copy FILE into the fake home as the providers.toml the
+#                  command sees. Omitted: the command sees no providers.toml
+#                  at all, only the implicit/curated providers the sourced
+#                  credential env vars activate.
+#   --store        point EVENER_CREDENTIALS_CONFIG at the developer's real
+#                  ~/.config/evener/credentials.toml (read-only use).
+#   --keep         do not delete the fake home on exit; print its path to
+#                  stderr instead.
+#
+# Examples:
+#   scripts/live/with-live-env -- sh -c 'echo $HOME'
+#   scripts/live/with-live-env --store --config /tmp/providers.toml -- \
+#       env EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveSmoke -count=1
+set -euo pipefail
+
+die() { printf 'with-live-env: %s\n' "$1" >&2; exit 2; }
+note() { printf 'with-live-env: %s\n' "$1" >&2; }
+
+usage() {
+	awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"
+}
+
+config_path=""
+use_store=0
+keep=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--help | -h)
+		usage
+		exit 0
+		;;
+	--config)
+		[ $# -ge 2 ] || die "--config requires a path (see --help)"
+		config_path="$2"
+		shift 2
+		;;
+	--store)
+		use_store=1
+		shift
+		;;
+	--keep)
+		keep=1
+		shift
+		;;
+	--)
+		shift
+		break
+		;;
+	*)
+		die "unknown argument: $1 (the command to run must follow --; see --help)"
+		;;
+	esac
+done
+
+[ $# -gt 0 ] || die "no command given (pass it after --; see --help)"
+
+if [ -n "$config_path" ]; then
+	[ -f "$config_path" ] || die "--config: no such file: $config_path"
+fi
+
+ambient_home=${HOME:-}
+[ -n "$ambient_home" ] || die "HOME is not set in the ambient environment"
+
+credentials_store="$ambient_home/.config/evener/credentials.toml"
+if [ "$use_store" -eq 1 ]; then
+	[ -f "$credentials_store" ] || die "--store: no such file: $credentials_store"
+fi
+
+credential_env_file="$ambient_home/git/prime-radiant/serf/.env"
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+. "$script_dir/../lib/private-go-home.sh"
+
+# An explicit template, never `mktemp -t`: macOS's mktemp ignores TMPDIR for
+# -t (scripts/lib/live-eval-isolation.sh made the same call).
+fake_home_root=$(mktemp -d "${TMPDIR:-/tmp}/evener-live-env.XXXXXX")
+chmod 700 "$fake_home_root"
+
+cleanup() {
+	if [ "$keep" -eq 1 ]; then
+		note "kept fake home: $fake_home_root"
+	else
+		rm -rf "$fake_home_root"
+	fi
+}
+trap cleanup EXIT
+
+# Redirects HOME (and XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_STATE_HOME) under
+# fake_home_root while preserving the ambient GOPATH/GOCACHE, per the header
+# comment above.
+evener_prepare_private_go_home "$fake_home_root"
+note "fake home: $HOME"
+
+state_dir="$HOME/state"
+mkdir -p "$state_dir"
+export EVENER_STATE_DIR="$state_dir"
+
+providers_config="$HOME/providers.toml"
+if [ -n "$config_path" ]; then
+	cp -- "$config_path" "$providers_config"
+fi
+export EVENER_PROVIDERS_CONFIG="$providers_config"
+
+if [ "$use_store" -eq 1 ]; then
+	export EVENER_CREDENTIALS_CONFIG="$credentials_store"
+fi
+
+if [ -f "$credential_env_file" ]; then
+	set -a
+	# shellcheck disable=SC1090  # dynamic path to a private, uncommitted secrets file
+	. "$credential_env_file"
+	set +a
+	note "sourced credentials from $credential_env_file"
+else
+	note "no credential file at $credential_env_file; continuing without it"
+fi
+
+# A plain foreground run, not `exec`: replacing this process would replace
+# away the cleanup trap above too, so the fake home would never be removed
+# (and --keep's notice would never print). Capturing the status this way,
+# rather than letting a failure trip `set -e`, is deliberate: the wrapped
+# command's real exit code is what a caller (a shell script, a CI job) needs
+# back.
+status=0
+"$@" || status=$?
+exit "$status"
