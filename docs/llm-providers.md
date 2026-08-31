@@ -228,7 +228,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
 | `google-vertex-anthropic` | none — `gcp-adc` (`GOOGLE_APPLICATION_CREDENTIALS` or the well-known ADC file) | n/a — host derived from `GOOGLE_VERTEX_LOCATION` | also needs `GOOGLE_VERTEX_PROJECT` to exist at all; surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5@20251001` |
 | `google-vertex` | none — `gcp-adc` | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.7-flash`, `cheap_model = gemini-2.5-flash-lite` |
-| `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = global.anthropic.claude-opus-5`, `cheap_model = global.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
 | `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; provider-level `context_window = 131072` |
 
@@ -474,11 +474,15 @@ alias_of = "claude-opus-4-5"  # facts, the anthropic protocol, the Foundry /anth
 
 **Bedrock.** `amazon-bedrock` uses Anthropic's Messages API on
 `bedrock-mantle` (`https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1`),
-bearer token via `x-api-key`. Global/regional routing is expressed in the
-model id (`global.`, `us.`, `eu.`, `jp.`, `au.` inference-profile ids), not
-the host. Nine Mantle OpenAI-shaped rows (gpt-oss, gpt-5.x, grok) also exist,
-via a separate bearer-auth preset. Token counting is estimate-only — exact
-counting is tracked as
+bearer token via `x-api-key`. Mantle serves exactly the six unprefixed Claude
+ids its own `/v1/models` catalog lists; `global.`/`us.`/`eu.`/`jp.`/`au.`
+inference-profile ids resolve for metadata and stay usable by explicit
+reference, but are hidden from `evener models list` and 404 on this endpoint
+(verified live 2026-08-31 — see spec §9.3) because they address
+`bedrock-runtime`'s `InvokeModel`/`Converse` path, not Mantle. Nine Mantle
+OpenAI-shaped rows (gpt-oss, gpt-5.x, grok) also exist, via a separate
+bearer-auth preset. Token counting is estimate-only — exact counting is
+tracked as
 [issue #565](https://github.com/prime-radiant-inc/evener/issues/565).
 
 **Vertex.** Host is derived from location: `global` →
