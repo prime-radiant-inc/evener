@@ -54,6 +54,23 @@ func complete(t *testing.T, caller *cheapmodel.Caller, profile *provider.Profile
 	})
 }
 
+func profileWithCheap(main string) *provider.Profile {
+	return provider.WithCheapModel(provider.NewOpenAIProfile(main), "gpt-4.1-nano")
+}
+
+func TestCallerUsesSessionModelWhenCheapUnconfigured(t *testing.T) {
+	adapter := servesOnly("openai", "main", refusal(400, "unexpected model"))
+	caller := cheapmodel.New(clientWith(adapter))
+
+	resp, err := complete(t, caller, provider.NewOpenAIProfile("main"))
+	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+		t.Fatalf("Complete = (%q, %v), want answered", resp.Text(), err)
+	}
+	if got, want := adapter.Models(), []string{"main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+}
+
 func TestCallerFallsBackAndRemembersObservedRefusals(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -66,7 +83,7 @@ func TestCallerFallsBackAndRemembersObservedRefusals(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			adapter := servesOnly("openai", "main", refusal(400, test.message))
 			caller := cheapmodel.New(clientWith(adapter))
-			profile := provider.NewOpenAIProfile("main")
+			profile := profileWithCheap("main")
 
 			for range 2 {
 				resp, err := complete(t, caller, profile)
@@ -94,7 +111,7 @@ func TestCallerDeduplicatesConcurrentCheapRefusalProbes(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("answered")}, nil
 	}
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, callers)
@@ -174,7 +191,7 @@ func TestCallerRunsConcurrentSuccessfulCheapRequestsIndependently(t *testing.T) 
 	}
 
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 	start := make(chan struct{})
 	ready := make(chan struct{}, callers)
 	responses := make(chan string, callers)
@@ -251,7 +268,7 @@ func TestCallerDoesNotGeneralizeRequestErrorsIntoModelRefusals(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			adapter := servesOnly("openai", "main", refusal(test.status, test.message))
 			caller := cheapmodel.New(clientWith(adapter))
-			profile := provider.NewOpenAIProfile("main")
+			profile := profileWithCheap("main")
 
 			for range 2 {
 				if _, err := complete(t, caller, profile); err == nil {
@@ -274,7 +291,7 @@ func TestCallerDoesNotGeneralizeRequestErrorsIntoModelRefusals(t *testing.T) {
 func TestCallerIgnoresRefusalWordingOnARetryableError(t *testing.T) {
 	adapter := servesOnly("openai", "main", refusal(429, "The provided model identifier is invalid."))
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 
 	for range 2 {
 		_, err := complete(t, caller, profile)
@@ -314,7 +331,7 @@ func TestCallerUsesStaticCompatibilityWithoutAProbe(t *testing.T) {
 	adapter := &declaredModelAdapter{ModelTrackingAdapter: tracker, served: "main"}
 	caller := cheapmodel.New(clientWith(adapter))
 
-	if _, err := complete(t, caller, provider.NewOpenAIProfile("main")); err != nil {
+	if _, err := complete(t, caller, profileWithCheap("main")); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if got, want := tracker.Models(), []string{"main"}; !slices.Equal(got, want) {
@@ -333,7 +350,7 @@ func TestCallerReturnsBothErrorsWhenFallbackFails(t *testing.T) {
 	}
 	caller := cheapmodel.New(clientWith(adapter))
 
-	_, err := complete(t, caller, provider.NewOpenAIProfile("main"))
+	_, err := complete(t, caller, profileWithCheap("main"))
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "model identifier") {
 		t.Fatalf("Complete error = %v, want refusal and deadline", err)
 	}
@@ -342,11 +359,10 @@ func TestCallerReturnsBothErrorsWhenFallbackFails(t *testing.T) {
 	}
 }
 
-// TestCompleteConfiguredPrefersTheSessionModelOverAProviderDefault covers the
-// entry point summarization uses: with no cheap model configured it runs the
-// session's own model rather than the provider's default cheap one, and it says
-// so, so a caller layering its own routes does not repeat the session model.
-func TestCompleteConfiguredPrefersTheSessionModelOverAProviderDefault(t *testing.T) {
+// TestCompleteConfiguredReportsSessionModelWhenCheapUnset covers the entry
+// point summarization uses: with no cheap model configured it runs the session
+// model and reports that route so callers do not repeat it.
+func TestCompleteConfiguredReportsSessionModelWhenCheapUnset(t *testing.T) {
 	adapter := servesOnly("openai", "main", refusal(400, "unexpected model"))
 	caller := cheapmodel.New(clientWith(adapter))
 
@@ -411,16 +427,19 @@ func TestCallerKeepsRefusalsAcrossModelSwitchButNotProviderSwitch(t *testing.T) 
 	bedrock := servesOnly("bedrock", "bedrock-main", refusal(400, "The provided model identifier is invalid."))
 	caller := cheapmodel.New(clientWith(openAI, bedrock))
 
-	if _, err := complete(t, caller, provider.NewOpenAIProfile("main")); err != nil {
+	if _, err := complete(t, caller, profileWithCheap("main")); err != nil {
 		t.Fatalf("openai Complete: %v", err)
 	}
-	if _, err := complete(t, caller, provider.NewOpenAIProfile("main-2")); err != nil {
+	if _, err := complete(t, caller, profileWithCheap("main-2")); err != nil {
 		t.Fatalf("switched Complete: %v", err)
 	}
 	if got, want := openAI.Models(), []string{"gpt-4.1-nano", "main", "main-2"}; !slices.Equal(got, want) {
 		t.Fatalf("openai models = %v, want %v", got, want)
 	}
-	bedrockProfile := provider.WithProviderID(provider.NewOpenAIProfile("bedrock-main"), "bedrock")
+	bedrockProfile := provider.WithCheapModel(
+		provider.WithProviderID(provider.NewOpenAIProfile("bedrock-main"), "bedrock"),
+		"gpt-4.1-nano",
+	)
 	if _, err := complete(t, caller, bedrockProfile); err != nil {
 		t.Fatalf("bedrock Complete: %v", err)
 	}
@@ -502,7 +521,7 @@ func TestCallerWaiterHonorsItsOwnContext(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("answered")}, nil
 	}
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 	leaderDone := make(chan error, 1)
 	go func() {
 		_, err := caller.Complete(context.Background(), profile, llm.Request{Messages: []llm.Message{llm.User("leader")}})
@@ -547,7 +566,7 @@ func TestCallerRetriesAfterCanceledProbe(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("answered")}, nil
 	}
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan error, 1)
 	go func() {
@@ -611,7 +630,7 @@ func TestCallerKeepsRefusalFlightUntilAllFallbacksSettle(t *testing.T) {
 		}
 	}
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan error, 1)
@@ -670,7 +689,7 @@ func TestCallerRetriesAfterFallbackFailure(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("answered")}, nil
 	}
 	caller := cheapmodel.New(clientWith(adapter))
-	profile := provider.NewOpenAIProfile("main")
+	profile := profileWithCheap("main")
 	if _, err := complete(t, caller, profile); err == nil || !strings.Contains(err.Error(), "fallback unavailable") {
 		t.Fatalf("first Complete error = %v, want fallback failure", err)
 	}
@@ -796,7 +815,7 @@ func TestCallerEmitsOneAttemptGroupForCheapAndFallback(t *testing.T) {
 	client.Use(sink)
 	caller := cheapmodel.New(client)
 
-	resp, err := complete(t, caller, provider.NewOpenAIProfile("main"))
+	resp, err := complete(t, caller, profileWithCheap("main"))
 	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
 		t.Fatalf("Complete = (%q, %v), want answered", resp.Text(), err)
 	}

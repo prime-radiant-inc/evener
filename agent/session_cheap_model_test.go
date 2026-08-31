@@ -48,7 +48,8 @@ func TestCheapModelRefusalIsLearnedOnceForTheWholeSession(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(fa)
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	profile := WithCheapModel(NewOpenAIProfile("test-model"), "gpt-4.1-nano")
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		ContextStrategy: "session-log",
 		StateDir:        t.TempDir(),
 	})

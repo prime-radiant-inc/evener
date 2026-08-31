@@ -385,20 +385,18 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 	}
 }
 
-func TestProviderProfile_CheapModel(t *testing.T) {
+func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		profile *provider.Profile
-		want    string
-	}{
-		{NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano"},
-		{newAnthropicProfile("claude-opus-4-6"), "claude-haiku-4-5-20251001"},
-		{newGeminiProfile("gemini-3-pro"), "gemini-2.5-flash-lite"},
+	profiles := []*provider.Profile{
+		NewOpenAIProfile("gpt-5.2"),
+		newAnthropicProfile("claude-opus-4-6"),
+		newGeminiProfile("gemini-3-pro"),
 	}
-	for _, tc := range cases {
-		got := tc.profile.CheapModel()
-		if got != tc.want {
-			t.Fatalf("profile %q CheapModel: got %q want %q", tc.profile.ID(), got, tc.want)
+	for _, profile := range profiles {
+		providerName, model := profile.CheapModelRef()
+		if providerName != profile.ID() || model != profile.Model() {
+			t.Fatalf("profile %q CheapModelRef = (%q, %q), want (%q, %q)",
+				profile.ID(), providerName, model, profile.ID(), profile.Model())
 		}
 	}
 }
@@ -2081,30 +2079,20 @@ func TestWithProviderID(t *testing.T) {
 	}
 }
 
-// TestRenamedInstance_CheapModel verifies that CheapModel uses behaviorTag (not
-// id) so a renamed instance keeps the right cheap model.
-func TestRenamedInstance_CheapModel(t *testing.T) {
+// TestRenamedInstance_CheapModelRefUsesPrimary verifies that an unconfigured
+// auxiliary route uses the renamed provider instance and its active model.
+func TestRenamedInstance_CheapModelRefUsesPrimary(t *testing.T) {
 	t.Parallel()
-	// kimi renamed to "work" → cheap model should be the kimi default (p.model).
-	kimiWork := WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work")
-	// CheapModel for kimi falls through to p.model (no explicit case for kimi in
-	// the switch), so the expected value is the model itself.
-	if got := kimiWork.CheapModel(); got == "" {
-		t.Fatalf("CheapModel() is empty for renamed kimi instance")
+	profiles := []*provider.Profile{
+		WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work"),
+		WithProviderID(newGeminiProfile("gemini-2.5-pro"), "work"),
+		WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work"),
 	}
-
-	// google/gemini renamed to "work" → cheap model should be gemini-2.5-flash-lite
-	googleWork := WithProviderID(newGeminiProfile("gemini-2.5-pro"), "work")
-	const wantGeminiCheap = "gemini-2.5-flash-lite"
-	if got := googleWork.CheapModel(); got != wantGeminiCheap {
-		t.Fatalf("CheapModel() = %q, want %q for renamed google (gemini) instance", got, wantGeminiCheap)
-	}
-
-	// anthropic renamed to "work" → cheap model should be claude-haiku-4-5-20251001
-	anthropicWork := WithProviderID(newAnthropicProfile("claude-opus-4-6"), "work")
-	const wantAnthropicCheap = "claude-haiku-4-5-20251001"
-	if got := anthropicWork.CheapModel(); got != wantAnthropicCheap {
-		t.Fatalf("CheapModel() = %q, want %q for renamed anthropic instance", got, wantAnthropicCheap)
+	for _, profile := range profiles {
+		providerName, model := profile.CheapModelRef()
+		if providerName != "work" || model != profile.Model() {
+			t.Fatalf("CheapModelRef() = (%q, %q), want (work, %q)", providerName, model, profile.Model())
+		}
 	}
 }
 
