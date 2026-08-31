@@ -135,6 +135,11 @@ func TestExplainTruncatedCall(t *testing.T) {
 // taskListParamsForExplain mirrors DefTaskList's updates-item schema (this
 // package must stay dependency-free of agent/internal/tool, so the fixture is
 // hand-built rather than calling the real Def* function).
+// taskListParamsForExplain is a SYNTHETIC action-enum schema shaped like the
+// pre-rework DefTaskList. It exercises the generic branch machinery
+// (actionTag/namedBranch) in isolation; it deliberately does not mirror the
+// current DefTaskList (presence-based add/update arrays, no action), which
+// has no selector for the branch machinery to key on.
 func taskListParamsForExplain() map[string]any {
 	return map[string]any{
 		"type":                 "object",
