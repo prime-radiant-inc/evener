@@ -37,7 +37,7 @@
 - Test: a dry run of the wrapper proving isolation
 
 **Interfaces:**
-- Produces: `scripts/live/with-live-env [--config <providers.toml>] -- <command…>` — builds a fake `HOME` (mktemp), exports `EVENER_STATE_DIR=$HOME/state`, `EVENER_PROVIDERS_CONFIG` (default: a copy of the repo-root live config written by this script from a committed template with NO secrets), `EVENER_CREDENTIALS_CONFIG` pointing at the DEVELOPER's real store only when `--store` is passed, sources `~/git/prime-radiant/serf/.env` into the process env when present (never echoing values), then execs the command.
+- Produces: `scripts/live/with-live-env [--config <providers.toml>] -- <command…>` — builds a fake `HOME` (mktemp), exports `EVENER_STATE_DIR=$HOME/state`, `EVENER_PROVIDERS_CONFIG` (default: an absent path inside the fake home — the registry treats it as "user layer: none" and implicit instances come from the sourced env; `--config` copies a given providers.toml into the fake home instead), `EVENER_CREDENTIALS_CONFIG` pointing at the DEVELOPER's real store only when `--store` is passed, sources `~/git/prime-radiant/serf/.env` into the process env when present (never echoing values), then execs the command.
 
 - [ ] **Step 1: Write the wrapper** with `set -euo pipefail`, a `--help`, and a comment block naming every variable it exports. It must `chmod 700` the fake home and delete it on exit unless `--keep`.
 - [ ] **Step 2: Prove isolation**: `scripts/live/with-live-env -- sh -c 'echo $HOME'` prints a temp path; run it again with `EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveSmoke -count=1` WITHOUT `-args -live-config` and confirm the suite skips cleanly (no config → skip), touching nothing under the real `~/.config/evener` (assert by mtime).
