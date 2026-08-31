@@ -3981,6 +3981,136 @@ func TestHubRelayKeyStopDefersFinalTeardownForInFlightCommand(t *testing.T) {
 	}
 }
 
+func TestHubRelayPostStopCommandWaitsForFreshGeneration(t *testing.T) {
+	const relayKey = "local:stop-fresh-generation"
+	readResult := func() appsource.RelayReadResult {
+		return appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "stop-fresh-generation", Source: "local",
+				Evener: appwire.EvenerThread{Ref: relayKey},
+			}},
+			Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		}
+	}
+	oldReadEntered := make(chan struct{})
+	releaseOldRead := make(chan struct{})
+	oldLeaseClosed := make(chan struct{})
+	var oldReadOnce sync.Once
+	oldLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			oldReadOnce.Do(func() {
+				close(oldReadEntered)
+				<-releaseOldRead
+			})
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+		closeHook:  func() { close(oldLeaseClosed) },
+	}
+	freshLease := &scriptedRelaySessionLease{
+		readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			return readResult(), nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	var acquireMu sync.Mutex
+	acquisitions := 0
+	source := &relaySessionTestSource{
+		acquireRelay: func(appwire.Ref) (appsource.RelaySessionLease, error) {
+			acquireMu.Lock()
+			defer acquireMu.Unlock()
+			acquisitions++
+			if acquisitions == 1 {
+				return oldLease, nil
+			}
+			return freshLease, nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	type readOutcome struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	startRead := func() <-chan readOutcome {
+		out := make(chan readOutcome, 1)
+		go func() {
+			read, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+			out <- readOutcome{read: read, err: err}
+		}()
+		return out
+	}
+	oldResult := startRead()
+	<-oldReadEntered
+	relays.stopRelay(relayKey)
+
+	postStopDeferred := make(chan struct{})
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { close(postStopDeferred) }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	postStopResult := startRead()
+	select {
+	case <-postStopDeferred:
+	case <-time.After(time.Second):
+		close(releaseOldRead)
+		t.Fatal("post-stop command joined the stopped generation instead of waiting")
+	}
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation command owners = %d, want only the original command", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		close(releaseOldRead)
+		t.Fatalf("stopped generation Read calls = %d, want 1", got)
+	}
+	if got := oldLease.closeCallCount(); got != 0 {
+		close(releaseOldRead)
+		t.Fatalf("old lease closes while original command is in flight = %d, want 0", got)
+	}
+
+	close(releaseOldRead)
+	old := <-oldResult
+	if old.err != nil {
+		t.Fatalf("old readThread: %v", old.err)
+	}
+	old.read.finish(false)
+	select {
+	case <-oldLeaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("stopped generation did not close after its original command released")
+	}
+	postStop := <-postStopResult
+	if postStop.err != nil {
+		t.Fatalf("post-stop readThread: %v", postStop.err)
+	}
+	postStop.read.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after stopped generation retired = %d, want fresh second generation", got)
+	}
+	if got := oldLease.readCallCount(); got != 1 {
+		t.Fatalf("old generation Read calls after fresh read = %d, want 1", got)
+	}
+	if got := freshLease.readCallCount(); got != 1 || freshLease.listenCallCount() != 1 {
+		t.Fatalf("fresh generation calls: Read=%d Listen=%d, want 1/1", got, freshLease.listenCallCount())
+	}
+
+	rejoined, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: relayKey, Subscribe: true})
+	if err != nil {
+		t.Fatalf("fresh generation rejoin: %v", err)
+	}
+	rejoined.finish(false)
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("relay acquisitions after fresh generation rejoin = %d, want 2", got)
+	}
+	if got := freshLease.listenCallCount(); got != 1 {
+		t.Fatalf("fresh generation Listen calls after rejoin = %d, want 1", got)
+	}
+	relays.stopRelay(relayKey)
+}
+
 func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
 	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-a"}
 	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-b"}
