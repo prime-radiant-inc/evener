@@ -386,7 +386,7 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 	}
 }
 
-func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
+func TestProviderProfile_CheapModel(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		profile *provider.Profile
@@ -396,11 +396,10 @@ func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
 		{newAnthropicProfile("claude-opus-4-6"), "claude-haiku-4-5"},
 		{newGeminiProfile("gemini-3-pro"), "gemini-2.5-flash-lite"},
 	}
-	for _, profile := range profiles {
-		providerName, model := profile.CheapModelRef()
-		if providerName != profile.ID() || model != profile.Model() {
-			t.Fatalf("profile %q CheapModelRef = (%q, %q), want (%q, %q)",
-				profile.ID(), providerName, model, profile.ID(), profile.Model())
+	for _, tc := range cases {
+		got := tc.profile.CheapModel()
+		if got != tc.want {
+			t.Fatalf("profile %q CheapModel: got %q want %q", tc.profile.ID(), got, tc.want)
 		}
 	}
 }
@@ -1808,5 +1807,22 @@ func TestNamedOpenRouterInstanceKeepsUpstreamNamespace(t *testing.T) {
 	}
 	if got := registry.StringValue(cloned.Resolved().Caps.ReasoningField); got != "reasoning_details" {
 		t.Fatalf("reasoning_field = %q, want reasoning_details from the openrouter minimax glob", got)
+	}
+}
+
+// TestProviderProfile_CheapModelRefDefaultsToPrimary ports main's
+// aux-route rule (6b5af0acb): an instance with no cheap_model anywhere —
+// configured, instance row, or curated base — routes auxiliary work to the
+// active instance and model rather than to nothing.
+func TestProviderProfile_CheapModelRefDefaultsToPrimary(t *testing.T) {
+	t.Parallel()
+	p := resolveTestProfile("plaingw", openAICompatInstance("plaingw"), "some-model")
+	if got := p.ConfiguredCheapModel(); got != "" {
+		t.Fatalf("fixture has a configured cheap model %q; the test needs none", got)
+	}
+	providerName, model := p.CheapModelRef()
+	if providerName != p.ID() || model != p.Model() {
+		t.Fatalf("CheapModelRef = (%q, %q), want the primary (%q, %q)",
+			providerName, model, p.ID(), p.Model())
 	}
 }

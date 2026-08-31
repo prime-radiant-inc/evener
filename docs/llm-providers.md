@@ -393,6 +393,10 @@ instance level → `Provider.Caps`, or inside
 there too). A top-level `[models."<glob>"]` table is accepted in both the
 curated overlay and `providers.toml`.
 
+Auxiliary calls (session naming, summarization) resolve an explicitly
+configured route first, then the instance's `cheap_model`, and otherwise run
+on the active instance and model.
+
 Load rules, enforced with errors that name the instance and key:
 
 - names are lowercase, no slash, unique; `base` must name a registry id;

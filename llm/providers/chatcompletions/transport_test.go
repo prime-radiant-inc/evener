@@ -159,3 +159,31 @@ func TestCountTokensIsUnsupported(t *testing.T) {
 		t.Fatal("a configured endpoint on a protocol without one is a configuration error")
 	}
 }
+
+// TestCompleteWrapsImmediateCancel ports the deleted openaicompat pin (#696):
+// a Complete whose context is already canceled classifies as the caller's
+// abort — never as a retryable timeout. The server holds the connection open
+// until the request context dies, and the client carries no http.Client
+// timeout, so net/http's timeoutError wrapper cannot win the race and
+// misreport the cancellation on a slow runner.
+func TestCompleteWrapsImmediateCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p := &Protocol{Client: srv.Client()}
+	_, err := p.Complete(ctx, userReq("hi"), liveRes(srv, nil))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want a context.Canceled wrap", err)
+	}
+	if llm.Classify(err) == llm.ErrorClassRetryable {
+		t.Fatalf("err classifies retryable, want non-retryable abort: %v", err)
+	}
+}
