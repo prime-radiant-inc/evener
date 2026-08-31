@@ -132,7 +132,17 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // is rejected rather than silently no-opping. No fmt.Sprint coercion: the
 // old handler's fmt.Sprint(m["status"]) turned a missing status into the
 // literal string "<nil>" and broke the schema-documented optional status.
+//
+// Retired keys (action/tasks/updates) are rejected here too, not only in
+// prepareToolCall's guard: a direct handler caller (tests, internal callers)
+// bypasses prevalidation, and silently treating an action-shaped call as a
+// view would let the caller believe its mutations applied.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
+	for _, retired := range []string{"action", "tasks", "updates"} {
+		if _, supplied := args[retired]; supplied {
+			return nil, nil, fmt.Errorf("task_list no longer takes %s; use add and/or update, or a bare call to view", retired)
+		}
+	}
 	rawAdds, _ := args["add"].([]any)
 	adds = make([]taskpkg.TaskInput, 0, len(rawAdds))
 	for i, r := range rawAdds {

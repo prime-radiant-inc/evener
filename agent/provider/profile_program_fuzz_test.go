@@ -182,11 +182,18 @@ func providerProgramTaskListEfforts(defs []llm.ToolDefinition) []string {
 			continue
 		}
 		properties, _ := def.Parameters["properties"].(map[string]any)
-		tasks, _ := properties["tasks"].(map[string]any)
-		items, _ := tasks["items"].(map[string]any)
-		taskProperties, _ := items["properties"].(map[string]any)
-		reasoning, _ := taskProperties["reasoning_effort"].(map[string]any)
-		return append([]string(nil), toStringSlice(reasoning["enum"])...)
+		// Both add and update item schemas carry the reasoning_effort enum;
+		// read whichever is present (either satisfies the sync check).
+		for _, arrayName := range []string{"add", "update"} {
+			arraySchema, _ := properties[arrayName].(map[string]any)
+			if arraySchema == nil {
+				continue
+			}
+			items, _ := arraySchema["items"].(map[string]any)
+			taskProperties, _ := items["properties"].(map[string]any)
+			reasoning, _ := taskProperties["reasoning_effort"].(map[string]any)
+			return append([]string(nil), toStringSlice(reasoning["enum"])...)
+		}
 	}
 	return nil
 }
