@@ -74,6 +74,15 @@ func (s *captureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSe
 	return nil
 }
 
+// records returns a copy of the attempts appended so far. Every read goes
+// through it: the producer appends from its own goroutine, so an unguarded
+// read is only accidentally safe.
+func (s *captureSink) records() []apilog.APIAttemptRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
+}
+
 func TestPrepareRunsPruneConstantsAuthPrepareInOrder(t *testing.T) {
 	registerTestSchemes()
 	res := testRes("https://api.example.test/v1", "test-runner-preparer")
