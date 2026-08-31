@@ -54,7 +54,7 @@ export type MenuVariant = "default" | "quiet";
  * trigger; consumers that render a Menu-styled trigger OUTSIDE a Menu popover
  * (SessionMenu's mobile bottom-Sheet drawer, which swaps the popover for a
  * Sheet across the breakpoint) use it to keep the trigger's look identical. */
-export function menuTriggerClassName(variant: MenuVariant = "default"): string {
+export function menuTriggerClassName(variant: MenuVariant): string {
   return variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
 }
 
@@ -352,8 +352,6 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     };
   }, [isOpen, closeMenu]);
 
-  const triggerClassName = menuTriggerClassName(variant);
-
   return (
     <div ref={rootRef} className={CLASS.root}>
       <button
@@ -361,7 +359,7 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
         id={triggerId}
         type="button"
         tabIndex={triggerTabIndex}
-        className={triggerClassName}
+        className={menuTriggerClassName(variant)}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         onClick={handleTriggerClick}

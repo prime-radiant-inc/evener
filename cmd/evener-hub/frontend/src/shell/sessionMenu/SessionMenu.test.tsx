@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
-import { resetMobileViewportForTests } from "../useIsMobile";
+import { installMobileViewport } from "../testing/mobileViewport";
 import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
@@ -75,6 +75,8 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /session actions/i }));
 }
 
+let restoreViewport: (() => void) | null = null;
+
 beforeEach(() => {
   resetToastStoreForTests();
   resetNavigationStoreForTests();
@@ -85,8 +87,8 @@ afterEach(() => {
   cleanup();
   resetNavigationStoreForTests();
   // Drops any mobile matchMedia stub a drawer test installed.
-  vi.unstubAllGlobals();
-  resetMobileViewportForTests();
+  restoreViewport?.();
+  restoreViewport = null;
 });
 
 test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {
@@ -274,25 +276,14 @@ test("Delete… confirms before calling onDelete", async () => {
 });
 
 // --- mobile: the same entries render as a bottom Sheet drawer ---------------
-// Mirrors ModelSwitchTrigger's mobile Sheet (design-system §11: mobile choice
-// controls use the bottom Sheet). jsdom implements no matchMedia, so the
-// mobile query is stubbed the same way AppShell.test.tsx stubs it.
+// The why lives in SessionMenu.tsx's isMobile branch comment.
 
-function installMobileViewport(): void {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((media: string) => ({
-      media,
-      matches: media === "(max-width: 899px)",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    })),
-  );
-  resetMobileViewportForTests();
+function installMobile(): void {
+  restoreViewport = installMobileViewport();
 }
 
 test("mobile: the trigger opens a bottom Sheet named for the session, not a menu popover", async () => {
-  installMobileViewport();
+  installMobile();
   const user = userEvent.setup();
   renderMenu({ session: navigationSession() });
   await openMenu(user);
@@ -301,7 +292,7 @@ test("mobile: the trigger opens a bottom Sheet named for the session, not a menu
 });
 
 test("mobile: the drawer lists the same entries in the same groups as the desktop menu", async () => {
-  installMobileViewport();
+  installMobile();
   const user = userEvent.setup();
   renderMenu({ session: navigationSession() });
   await openMenu(user);
@@ -326,7 +317,7 @@ test("mobile: the drawer lists the same entries in the same groups as the deskto
 });
 
 test("mobile: tapping an entry closes the drawer, then runs the action", async () => {
-  installMobileViewport();
+  installMobile();
   const user = userEvent.setup();
   const actions = renderMenu();
   await openMenu(user);
@@ -336,7 +327,7 @@ test("mobile: tapping an entry closes the drawer, then runs the action", async (
 });
 
 test("mobile: a dialog-opening entry stacks nothing on the drawer", async () => {
-  installMobileViewport();
+  installMobile();
   const user = userEvent.setup();
   renderMenu();
   await openMenu(user);
@@ -347,7 +338,7 @@ test("mobile: a dialog-opening entry stacks nothing on the drawer", async () => 
 });
 
 test("mobile: disabled entries stay disabled", async () => {
-  installMobileViewport();
+  installMobile();
   const user = userEvent.setup();
   renderMenu({ canRename: false });
   await openMenu(user);

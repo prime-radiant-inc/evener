@@ -201,31 +201,33 @@ export function SessionMenu({
           >
             {triggerContent}
           </button>
-          <Sheet open={drawerOpen} side="bottom" onClose={() => setDrawerOpen(false)} title={title}>
-            <div className={CLASS.drawerBody}>
-              {items.map((entry) =>
-                isSeparator(entry) ? (
-                  <hr key={entry.id} className={CLASS.drawerSeparator} />
-                ) : (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className={CLASS.drawerItem}
-                    disabled={entry.disabled}
-                    onClick={() => {
-                      // Menu semantics: the overlay closes first, then the
-                      // action runs (a dialog-opening action like Rename
-                      // never stacks its dialog on top of the drawer).
-                      setDrawerOpen(false);
-                      entry.onSelect();
-                    }}
-                  >
-                    {entry.label}
-                  </button>
-                ),
-              )}
-            </div>
-          </Sheet>
+          {drawerOpen && (
+            <Sheet open side="bottom" onClose={() => setDrawerOpen(false)} title={title}>
+              <div className={CLASS.drawerBody}>
+                {items.map((entry) =>
+                  isSeparator(entry) ? (
+                    <hr key={entry.id} className={CLASS.drawerSeparator} />
+                  ) : (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={CLASS.drawerItem}
+                      disabled={entry.disabled}
+                      onClick={() => {
+                        // Menu semantics: the overlay closes first, then the
+                        // action runs (a dialog-opening action like Rename
+                        // never stacks its dialog on top of the drawer).
+                        setDrawerOpen(false);
+                        entry.onSelect();
+                      }}
+                    >
+                      {entry.label}
+                    </button>
+                  ),
+                )}
+              </div>
+            </Sheet>
+          )}
         </>
       ) : (
         <Menu variant="quiet" triggerTabIndex={triggerTabIndex} trigger={triggerContent} items={items} />

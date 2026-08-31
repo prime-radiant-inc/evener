@@ -37,9 +37,8 @@
 }
 
 /* --- Mobile bottom-Sheet drawer (SessionMenu's isMobile branch) ----------
- * The same MenuEntry list the desktop popover shows, rendered as full-width
- * touch rows inside a bottom Sheet - the design system's mobile choice-control
- * pattern (ModelSwitchTrigger's "Choose model" Sheet is the reference). */
+ * Styles for the mobile drawer; the why lives in SessionMenu.tsx's branch
+ * comment. */
 
 /* Same safe-area reservation as modelswitch.module.css's own .sheetBody, so a
  * home-indicator never covers the last row. The Sheet's own .body padding
