@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -535,6 +536,159 @@ func assertBedrockRouting(t *testing.T, r *registry.Registry, wire, wantBase str
 	return res
 }
 
+// vertexAnthropicInstance is the curated implicit provider both Vertex pins
+// below resolve: google-vertex-anthropic serves Claude on Vertex AI through
+// the vertex-anthropic transport preset (spec §9.4). Resolving it directly
+// by this id works whether or not GOOGLE_VERTEX_PROJECT/LOCATION or ADC let
+// it become a listed instance (spec §5.2), so neither pin needs a
+// -live-config entry naming it.
+const vertexAnthropicInstance = "google-vertex-anthropic"
+
+// vertexClaudeModel is the row both Vertex pins resolve: the provider's own
+// cheap_model (providers_overlay.toml), so the live half below spends the
+// smallest request the row supports.
+const vertexClaudeModel = "claude-haiku-4-5@20251001"
+
+// vertexOfflineProject and vertexOfflineLocation are synthetic
+// GOOGLE_VERTEX_PROJECT/LOCATION values for TestVertexAnthropicRequestShape:
+// a location outside "global"/"us"/"eu" so the assertion exercises the
+// per-region branch of the vertex-location host rule (spec §9.4). vertexHost's
+// own table (llm/registry/hostrules_test.go, TestVertexHost) already covers
+// every branch exhaustively; this pin only needs one location to prove the
+// row's Transport wires that rule end to end.
+const (
+	vertexOfflineProject  = "test-project"
+	vertexOfflineLocation = "us-central1"
+)
+
+// TestVertexAnthropicRequestShape pins what the google-vertex-anthropic row
+// promises about a request before any network is involved (spec §9.4): the
+// resolved base URL follows the vertex-location host rule, both endpoints are
+// path-addressed (:rawPredict, and its streaming twin :streamRawPredict), and
+// the anthropic protocol's real body builder omits "model" from the JSON
+// body since the wire id already lives in the URL path
+// (protocolhttp.ModelInBody). It runs in the ordinary offline suite — no
+// EVENER_LIVE_TESTS, no -live-config, no credential — against the registry's
+// embedded snapshot and overlay, so `go test ./cmd/evener/` alone exercises
+// it. TestLiveVertexOneRequest below sends this exact shape over the wire
+// once ADC is configured.
+func TestVertexAnthropicRequestShape(t *testing.T) {
+	env := map[string]string{
+		envvars.GoogleVertexProject.Name:  vertexOfflineProject,
+		envvars.GoogleVertexLocation.Name: vertexOfflineLocation,
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithNoUserLayer(),
+		registry.WithEnv(func(name string) (string, bool) { v, ok := env[name]; return v, ok }),
+	)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ref := vertexAnthropicInstance + "/" + vertexClaudeModel
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	if res.Synthesized {
+		t.Fatalf("%s: the catalog lists no such row, so the reference was synthesized", ref)
+	}
+	if res.Transport.Auth != registry.AuthGCPADC {
+		t.Fatalf("%s: auth %q, want %q", ref, res.Transport.Auth, registry.AuthGCPADC)
+	}
+	if res.Transport.HostRule != registry.HostRuleVertexLocation {
+		t.Fatalf("%s: host_rule %q, want %q", ref, res.Transport.HostRule, registry.HostRuleVertexLocation)
+	}
+	wantBase := "https://" + vertexOfflineLocation + "-aiplatform.googleapis.com/v1/projects/" + vertexOfflineProject + "/locations/" + vertexOfflineLocation
+	if res.Transport.BaseURL != wantBase {
+		t.Fatalf("%s: base URL %q, want %q (spec §9.4 host-by-location rule)", ref, res.Transport.BaseURL, wantBase)
+	}
+	if !strings.Contains(res.Transport.Endpoint, "{model}") || !strings.HasSuffix(res.Transport.Endpoint, ":rawPredict") {
+		t.Fatalf("%s: endpoint %q, want a path-addressed :rawPredict endpoint", ref, res.Transport.Endpoint)
+	}
+	if !strings.Contains(res.Transport.StreamEndpoint, "{model}") || !strings.HasSuffix(res.Transport.StreamEndpoint, ":streamRawPredict") {
+		t.Fatalf("%s: stream endpoint %q, want a path-addressed :streamRawPredict endpoint", ref, res.Transport.StreamEndpoint)
+	}
+
+	maxTokens := 64
+	req := llm.Request{
+		Model:     ref,
+		Messages:  []llm.Message{llm.User(liveSmokePrompt)},
+		MaxTokens: &maxTokens,
+	}
+	body, err := anthropic.DefaultProtocol.BuildBody(req, res)
+	if err != nil {
+		t.Fatalf("%s: build body: %v", ref, err)
+	}
+	if _, ok := body["model"]; ok {
+		t.Fatalf("%s: built body carries \"model\"; want it omitted — the wire id (%q) is path-addressed", ref, res.WireID)
+	}
+	t.Logf("%s: base=%s endpoint=%s wire=%s body fields=%v", ref, res.Transport.BaseURL, res.Transport.Endpoint, res.WireID, sortedNames(body))
+}
+
+// requireGCPADC skips the calling test unless application-default
+// credentials resolve through evener's own gcp-adc authenticator
+// (llm/providers/tokenauth.DefaultGCPADC) — the exact seam the live request
+// below authenticates through; gcloud is never shelled out to. The
+// authenticator's own error already names the remedy (`gcloud auth
+// application-default login`, or GOOGLE_APPLICATION_CREDENTIALS), so the skip
+// message only needs to repeat it.
+func requireGCPADC(t *testing.T) {
+	t.Helper()
+	probe, err := http.NewRequest(http.MethodPost, "https://vertex-adc-probe.invalid/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenauth.DefaultGCPADC.Apply(context.Background(), probe, registry.Resolved{Instance: vertexAnthropicInstance}); err != nil {
+		t.Skipf("application-default credentials: %v", err)
+	}
+}
+
+// TestLiveVertexOneRequest sends the shape TestVertexAnthropicRequestShape
+// proved offline through a real Vertex endpoint: one pong via :rawPredict,
+// authenticated by the tokenauth gcp-adc source. It skips, cleanly, unless
+// EVENER_LIVE_TESTS + -live-config (requireLiveGate), application-default
+// credentials resolve through evener's own authenticator (requireGCPADC), and
+// GOOGLE_VERTEX_PROJECT/GOOGLE_VERTEX_LOCATION are both set. Run with:
+//
+//	EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveVertexOneRequest -v -count=1 -args -live-config=/path/to/providers.toml
+//
+// It never prints a credential value: only the base URL, the wire id, the
+// status, and the reply's length.
+func TestLiveVertexOneRequest(t *testing.T) {
+	requireLiveGate(t, "the Vertex live pin")
+	requireGCPADC(t)
+	project := os.Getenv(envvars.GoogleVertexProject.Name)
+	location := os.Getenv(envvars.GoogleVertexLocation.Name)
+	if project == "" || location == "" {
+		t.Skipf("set %s and %s to run the Vertex live pin", envvars.GoogleVertexProject.Name, envvars.GoogleVertexLocation.Name)
+	}
+	r := loadLiveRegistry(t)
+	ref := vertexAnthropicInstance + "/" + vertexClaudeModel
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	url, body, ok := liveBody(res)
+	if !ok {
+		t.Fatalf("%s: protocol %s builds no request body", ref, res.Protocol)
+	}
+	if _, ok := body["model"]; ok {
+		t.Fatalf("%s: request body carries \"model\"; want it omitted — the wire id (%q) is path-addressed", ref, res.WireID)
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	status, resp := liveRequest(t, client, http.MethodPost, url, body, res)
+	if status != http.StatusOK {
+		t.Fatalf("%s: POST %s (wire %s) → %d: %s", ref, res.Transport.Endpoint, res.WireID, status, excerpt(resp, 300))
+	}
+	text := strings.TrimSpace(string(liveText(res.Protocol, resp)))
+	if text == "" {
+		t.Fatalf("%s: POST %s → %d with no reply text: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
+	}
+	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", ref, res.Transport.Endpoint, res.WireID, status, len(text))
+}
+
 // liveWireRecorder keeps the request body of the call it forwards so a
 // property test can assert what actually went on the wire rather than what the
 // builder returned. The bytes it holds carry the prompt and the request it
@@ -621,7 +775,10 @@ func liveSetPath(body map[string]any, path string, v any) {
 }
 
 // liveRequest performs one request with the resolved auth and headers and
-// returns the status and body. It never logs a credential value.
+// returns the status and body. gcp-adc mints its bearer through
+// tokenauth.DefaultGCPADC — the same production seam TestLiveVertexOneRequest
+// gates on — rather than a value already sitting in res.Credential.Value.
+// It never logs a credential value.
 func liveRequest(t *testing.T, client *http.Client, method, url string, body map[string]any, res registry.Resolved) (int, []byte) {
 	t.Helper()
 	var payload io.Reader
@@ -645,6 +802,10 @@ func liveRequest(t *testing.T, client *http.Client, method, url string, body map
 		}
 	case registry.AuthHeader:
 		req.Header.Set(res.Transport.AuthHeader, res.Credential.Value)
+	case registry.AuthGCPADC:
+		if err := tokenauth.DefaultGCPADC.Apply(ctx, req, res); err != nil {
+			t.Fatalf("%s %s: application-default credentials: %v", method, url, err)
+		}
 	}
 	for k, v := range res.Headers {
 		req.Header.Set(k, v)
