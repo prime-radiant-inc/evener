@@ -3401,7 +3401,7 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "off",
 	})
 	if err != nil {
