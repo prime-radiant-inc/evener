@@ -113,11 +113,9 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 	}
 	// A planned Responses continuation needs server-side storage; the
 	// continuation store override (spec §7.6) turns store on unless the
-	// caller decided it explicitly. §7.6 calls a continuation planned only
-	// on the Responses protocol with a row that sends both fields, so a row
-	// that cannot carry the anchor is never told to store for one.
-	plannedContinuation := res.Protocol == registry.ProtocolOpenAIResponses &&
-		caps.Fields["store"] && caps.Fields["previous_response_id"] &&
+	// caller decided it explicitly. continuationAvailable is §7.6's own gate,
+	// so a row that cannot carry the anchor is never told to store for one.
+	plannedContinuation := continuationAvailable(res) &&
 		req.HistoryMode == HistoryModeResponsesDelta && strings.TrimSpace(req.PreviousResponseID) != ""
 	if plannedContinuation && req.Store == nil {
 		req.Store = new(true)
