@@ -245,7 +245,7 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 		// Put the old clone back so InstallLocation keeps pointing at a
 		// real directory; a restore failure is reported over the rename one.
 		if restoreErr := marketplaceRename(old, ref.InstallLocation); restoreErr != nil {
-			return fmt.Errorf("installing fresh clone failed (%v); restoring old clone: %w", err, restoreErr)
+			return fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr)
 		}
 		_ = marketplaceRemoveAll(staging)
 		return fmt.Errorf("installing fresh clone: %w", err)
@@ -283,7 +283,7 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 			// would then fail the same way forever. Self-heal with a staged
 			// reclone; on failure it leaves the existing clone untouched.
 			if recloneErr := m.recloneMarketplace(ctx, ref); recloneErr != nil {
-				return fmt.Errorf("refreshing marketplace %q: git pull failed (%v); staged reclone failed: %w", name, pullErr, recloneErr)
+				return fmt.Errorf("refreshing marketplace %q: git pull failed (%w); staged reclone failed: %w", name, pullErr, recloneErr)
 			}
 		}
 	}
