@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,9 +23,12 @@ var (
 )
 
 // acquireLock takes an exclusive flock on lockPath, retrying with capped
-// exponential backoff until timeout elapses. The returned release unlocks and
-// closes the file.
-func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
+// exponential backoff until ctx is canceled or timeout elapses. The returned
+// release unlocks and closes the file. Callers without a request context pass
+// context.Background(). Cancellation is observed within one backoff interval
+// (≤200ms), so a disconnected client's handler stops waiting promptly instead
+// of spinning out the full timeout.
+func acquireLock(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
 	if err := lockMkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating lock parent: %w", err)
 	}
@@ -35,6 +39,10 @@ func acquireLock(lockPath string, timeout time.Duration) (func(), error) {
 	deadline := lockNow().Add(timeout)
 	backoff := 10 * time.Millisecond
 	for {
+		if cerr := ctx.Err(); cerr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("waiting for plugin lock %s: %w", lockPath, cerr)
+		}
 		err := lockFlock(int(f.Fd()), lockOpExclusiveNB)
 		if err == nil {
 			return func() {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -20,6 +21,13 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// threadStartDetachedTimeout bounds thread/start's admitted sequence once it
+// detaches from the connection context: it must comfortably cover the spawn's
+// rendezvous wait (30s default) plus the ReadThread and initial StartTurn
+// RPCs, while guaranteeing a wedged daemon cannot park the worker forever.
+// Var, not const, so tests can shrink the bound.
+var threadStartDetachedTimeout = 2 * time.Minute
 
 var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
@@ -140,6 +148,17 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
+	// The mutation is admitted here: every validation has passed and the spawn
+	// is about to happen. From this point the outcome must not depend on the
+	// connection's fate — a disconnecting client still gets a fully-formed
+	// thread (spawn + read + optional initial turn) that reconnect resync
+	// discovers via thread/list — so shed PEER-lifetime cancellation, but pair
+	// it with an explicit deadline: a wedged sequence may not park the worker
+	// with no cancel path (threadStartDetachedTimeout's doc covers sizing).
+	// The spawned child is already detached (spawnDaemon uses exec.Command);
+	// this shields only the handler's own awaits.
+	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
+	defer cancelDetached()
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,

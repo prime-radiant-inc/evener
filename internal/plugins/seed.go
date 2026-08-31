@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"time"
@@ -19,13 +20,13 @@ func DefaultMarketplaceSeeds() map[string]Source {
 // does not yet exist. It is a no-op once the file exists, so a user who removes a
 // seeded marketplace never gets it back. Seeded entries are unfetched pointers
 // (empty InstallLocation), cloned lazily on first Browse/Install.
-func (m *Manager) SeedDefaultMarketplaces() (bool, error) {
+func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
 	if _, err := marketplaceStat(m.marketplacesFile()); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	release, err := marketplaceAcquireLock(m.lockPath(), 30*time.Second)
+	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return false, err
 	}

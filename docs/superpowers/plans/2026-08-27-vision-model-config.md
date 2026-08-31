@@ -72,8 +72,8 @@ In `agent/internal/cheapmodel/caller.go`, replace `Complete` (lines 52-60) with:
 ```go
 // Complete resolves and executes a cheap-model request, falling back once to
 // the session model when the provider refuses the resolved model. It resolves
-// through the profile's cheap-model ref, which falls through to the provider's
-// default cheap model when the session configured none.
+// through the profile's cheap-model ref, which uses the session model when no
+// cheap model is configured.
 func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req llm.Request) (llm.Response, error) {
 	cheapProvider, cheapModel := profile.CheapModelRef()
 	return c.CompleteRouted(ctx, profile, cheapProvider, cheapModel, req)

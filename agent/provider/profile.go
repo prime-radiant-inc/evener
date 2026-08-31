@@ -137,7 +137,6 @@ type profileSpec struct {
 	providerOpts    map[string]any
 	toolNameMap     map[string]string
 	capabilities    []toolCapability
-	cheapModel      string
 	// catalogModel is the catalog entry for spec.model, nil when the model is
 	// unknown or the constructor suppresses catalog lookups. It is the source
 	// of the model-level reasoning facts (support, levels, default effort); a
@@ -328,7 +327,6 @@ func buildBaseProfile(spec profileSpec) Profile {
 		providerOpts:    cloneAnyMap(spec.providerOpts),
 		toolNameMap:     cloneStringMap(spec.toolNameMap),
 		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, enumEfforts),
-		cheapModel:      spec.cheapModel,
 	}
 }
 
@@ -428,30 +426,9 @@ func (p *Profile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
 // KnowledgeCutoff returns the model's training knowledge-cutoff date (YYYY-MM-DD).
 func (p *Profile) KnowledgeCutoff() string { return p.knowledgeCutoff }
 
-// CheapModel returns a cheaper model from the same provider for auxiliary
-// work such as session naming and summarization.
-func (p *Profile) CheapModel() string {
-	if strings.TrimSpace(p.cheapModel) != "" {
-		return strings.TrimSpace(p.cheapModel)
-	}
-	switch p.behaviorTag {
-	case "openai":
-		return "gpt-4.1-nano"
-	case "anthropic":
-		return "claude-haiku-4-5-20251001"
-	case "google":
-		return "gemini-2.5-flash-lite"
-	case "glm":
-		return "glm-4.7-flash"
-	default:
-		return p.model
-	}
-}
-
 // ConfiguredCheapModel returns the auxiliary model explicitly set via
-// WithCheapModel, or "" if none was configured. Unlike CheapModel it does not
-// fall back to a provider default, so callers can detect whether a cheap model
-// was configured at all (e.g. to decide whether to run session naming).
+// WithCheapModel, or "" if none was configured. Callers can use the empty
+// result to detect whether to run optional work such as session naming.
 func (p *Profile) ConfiguredCheapModel() string {
 	if p == nil {
 		return ""
@@ -472,20 +449,24 @@ func (p *Profile) CheapProvider() string {
 	return p.ID()
 }
 
-// CheapModelRef returns the (provider, model) pair for auxiliary side calls,
-// resolving the provider via CheapProvider and the model via CheapModel. Sites
-// that issue a cheap completion route on this pair so the cheap model can live
-// on a different provider than the main model.
+// CheapModelRef returns the (provider, model) pair for auxiliary side calls.
+// An explicit cheap-model route wins; otherwise auxiliary work uses the active
+// provider and model.
 func (p *Profile) CheapModelRef() (provider, model string) {
-	return p.CheapProvider(), p.CheapModel()
+	if p == nil {
+		return "", ""
+	}
+	if model := p.ConfiguredCheapModel(); model != "" {
+		return p.CheapProvider(), model
+	}
+	return p.ID(), p.Model()
 }
 
 // CheapModelRefString returns the configured cheap model as a WithCheapModel ref
 // ("provider/model" when cross-provider, else the bare model), or "" when no
 // cheap model is configured. It is the persistable form: feeding the result back
-// to WithCheapModel reproduces the routing, so it survives evener resume. Unlike
-// CheapModelRef it does NOT fall back to a provider default — an empty result
-// means "not configured", matching ConfiguredCheapModel.
+// to WithCheapModel reproduces the routing, so it survives evener resume. An
+// empty result means "not configured", matching ConfiguredCheapModel.
 func (p *Profile) CheapModelRefString() string {
 	if p == nil {
 		return ""

@@ -139,7 +139,7 @@ func TestWebFetchTool_Integration(t *testing.T) {
 					Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "What is this page about?"}`, srv.URL)),
 				})
 			},
-			// Step 1: the cheap model Complete() call from web_fetch.
+			// Step 1: the auxiliary model Complete() call from web_fetch.
 			func(req llm.Request) llm.Response {
 				capturedReqs = append(capturedReqs, req)
 				return finalResponse("This page is about Go programming.")
@@ -171,13 +171,13 @@ func TestWebFetchTool_Integration(t *testing.T) {
 		t.Fatalf("unexpected output: %s", out)
 	}
 
-	// Verify the cheap model call used CheapModel().
+	// With no cheap model configured, web_fetch uses the primary model.
 	if len(capturedReqs) == 0 {
-		t.Fatalf("expected at least one cheap model request")
+		t.Fatalf("expected at least one auxiliary model request")
 	}
 	cheapReq := capturedReqs[0]
-	if cheapReq.Model != "gpt-4.1-nano" {
-		t.Fatalf("cheap model request used model %q, want %q", cheapReq.Model, "gpt-4.1-nano")
+	if cheapReq.Model != "test-model" {
+		t.Fatalf("auxiliary model request used model %q, want %q", cheapReq.Model, "test-model")
 	}
 	// Verify the cheap model request includes the question and content.
 	var sysTextSb171 strings.Builder
@@ -559,8 +559,8 @@ func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) 
 	if answer, ok := result["answer"].(string); !ok || answer == "" {
 		t.Fatalf("answer field = %#v, want non-empty string", result["answer"])
 	}
-	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
-		t.Fatalf("models addressed = %v, want successful cheap-model route %v", got, want)
+	if got, want := adapter.Models(), []string{"test-model"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want primary-model route %v", got, want)
 	}
 	if requestCount != 2 || len(transport.requests) != 2 {
 		t.Fatalf("HTTP requests = %d, transport requests = %d, want exactly one retry", requestCount, len(transport.requests))
@@ -645,7 +645,8 @@ func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, NewOpenAIProfile("test-model"),
+	profile := WithCheapModel(NewOpenAIProfile("test-model"), "gpt-4.1-nano")
+	sess, err := NewSession(client, profile,
 		execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -720,7 +721,7 @@ func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
 	if _, err := sess.webFetch(context.Background(), page.URL, "WFNONREFUSALQUESTION3C67A9"); err == nil {
 		t.Fatal("webFetch succeeded, want non-refusal model error")
 	}
-	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+	if got, want := adapter.Models(), []string{"test-model"}; !slices.Equal(got, want) {
 		t.Fatalf("models addressed = %v, want no fallback %v", got, want)
 	}
 }

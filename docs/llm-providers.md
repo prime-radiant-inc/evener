@@ -51,10 +51,11 @@ cmdutil.SelectProfile(provider, model)            (wraps agent profile construct
   ▼
 ProviderProfile  (agent/profile.go)   profile.ID()=="openai"  profile.BehaviorTag()=="openai"
   │  carries: instance name (id), behavior tag, context window, tool surface,
-  │           quirks, ProviderOptions key, CheapModel
+  │           quirks, ProviderOptions key, configured auxiliary route
   ▼
-agent.Session   sets req.Provider = s.profile.ID()   (the NAME)
+agent.Session   sets primary req.Provider = s.profile.ID()   (the NAME)
   │  provider-conditional behavior branches on s.profile.BehaviorTag()  (the TAG)
+  │  auxiliary calls resolve an explicit route or the active provider/model
   ▼
 llm.Client.Complete / Stream            llm/client.go
   │  prov = normalizeProviderName(req.Provider)   (now just lower/trim)
@@ -578,7 +579,6 @@ the catalog **ingest** normalization (`model_catalog.go normalizeCatalogProvider
 
 Profile methods that branch on provider behavior now switch on **`p.behaviorTag`**
 (not `p.id`):
-- `CheapModel()` (`:355`).
 - `decidePrefixAction(behaviorTag, instanceName, prefix)` (`:411`) — the
   **meta-provider** logic: a self-prefix (`prefix == instanceName`) is stripped;
   meta-provider upstream namespaces (openrouter/openrouter-anthropic/minimax, by
@@ -590,6 +590,10 @@ Profile methods that branch on provider behavior now switch on **`p.behaviorTag`
 - `WithModel(model)` (`:506`, anthropic variant) re-targets the model **within
   the current instance only** — it strips/keeps prefixes and rebuilds for the
   catalog, but **no longer switches providers** (the switch arm was removed).
+
+Auxiliary routing does not branch on provider behavior. `CheapModelRef()` uses
+the explicitly configured fast/cheap route when present and otherwise returns
+the active provider and model.
 
 `ProviderOptions` is a `map[string]any` keyed by the behavior tag's contract
 string; each profile writes its options under that key and the matching adapter
@@ -788,10 +792,10 @@ provider/model>`, surviving reload and daemon restart.
 ## What keys on what (the map to consult before touching identity)
 
 **Routing + identity (the NAME — `req.Provider`/`profile.ID()`):**
-- `req.Provider = s.profile.ID()` at every LLM call site (main loop, vision,
-  fallbacks, and the side-channel calls in `session_namer.go`,
-  `fork_summarize.go`, `context_manager.go`, `tool_web_*`, `strategy_*`,
-  `eval_probes.go`, `ListModels`), all resolving through `client.providers[...]`.
+- Primary requests use `req.Provider = s.profile.ID()`. Auxiliary requests use
+  their resolved route: `CheapModelRef()` through `cheapmodel.Caller`,
+  `CheapProvider()` for the session namer, or the configured vision route. Every
+  route resolves through `client.providers[...]`.
 - `cmdutil.SelectProfile` — rejects unknown names; the hub's launch gate runs it
   in a subprocess (companion doc).
 - `resp.Provider` + error labels — stamped centrally to the instance name.
@@ -804,9 +808,10 @@ provider/model>`, surviving reload and daemon restart.
 - Gemini native web_search registration: `session.go:4881` `BehaviorTag() ==
   "google"` (and re-applied on switch by `reapplyProviderSpecificTools`).
 - Cross-provider fallback guard: compares `BehaviorTag()`.
-- Profile model-handling: `CheapModel`, `decidePrefixAction`,
-  `rebuildOnSameProviderChange`, catalog lookups, the openrouter gate — all on
-  the tag.
+- Profile model-handling: `decidePrefixAction`,
+  `rebuildOnSameProviderChange`, catalog lookups, and the openrouter gate all key
+  on the tag. Auxiliary routing does not; `CheapModelRef()` uses explicit config
+  or the active provider/model.
 - Prompt sections: `SectionResolver.provider = s.profile.BehaviorTag()`
   (`session.go`) → filenames like `tools.provider-openai_append.md`.
 - OpenAI Responses→chat endpoint-fallback signal: `classify.go:118` on the

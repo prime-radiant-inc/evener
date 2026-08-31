@@ -16,20 +16,20 @@ import (
 )
 
 type pluginManager interface {
-	SeedDefaultMarketplaces() (bool, error)
+	SeedDefaultMarketplaces(context.Context) (bool, error)
 	ListMarketplaces() (plugins.Marketplaces, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
-	RemoveMarketplace(string) error
+	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
 	Browse(context.Context, string) (plugins.Catalog, error)
 	List() ([]plugins.ListItem, error)
 	Install(context.Context, string, string) (plugins.InstallEntry, error)
-	Remove(string, string) error
-	SetEnabled(string, string, bool) error
+	Remove(context.Context, string, string) error
+	SetEnabled(context.Context, string, string, bool) error
 	UpdateAll(context.Context) ([]plugins.InstallEntry, error)
 	Upgrade(context.Context, string, string) (plugins.InstallEntry, error)
-	SetAutoUpgrade(string, string, bool) error
-	Gc() ([]string, error)
+	SetAutoUpgrade(context.Context, string, string, bool) error
+	Gc(context.Context) ([]string, error)
 	Doctor() ([]plugins.DoctorFinding, error)
 	UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error)
 }
@@ -46,7 +46,7 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// mutates store state) and must not trigger first-run seeding the way
 	// every other verb does.
 	if len(args) == 0 || args[0] != "doctor" {
-		if _, err := newPluginManager().SeedDefaultMarketplaces(); err != nil {
+		if _, err := newPluginManager().SeedDefaultMarketplaces(context.Background()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
 	}
@@ -126,7 +126,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return errors.New("usage: evener plugin marketplace remove <name>")
 		}
 		name := fs.Arg(0)
-		if err := m.RemoveMarketplace(name); err != nil {
+		if err := m.RemoveMarketplace(context.Background(), name); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed marketplace %q\n", name)
@@ -421,7 +421,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.Remove(plugin, marketplace); err != nil {
+		if err := m.Remove(ctx, plugin, marketplace); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed %s@%s\n", plugin, marketplace)
@@ -440,7 +440,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.SetEnabled(plugin, marketplace, true); err != nil {
+		if err := m.SetEnabled(ctx, plugin, marketplace, true); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Enabled %s@%s\n", plugin, marketplace)
@@ -459,7 +459,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		if err := m.SetEnabled(plugin, marketplace, false); err != nil {
+		if err := m.SetEnabled(ctx, plugin, marketplace, false); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Disabled %s@%s\n", plugin, marketplace)
@@ -518,7 +518,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			return err
 		}
 		on := !*off
-		if err := m.SetAutoUpgrade(plugin, marketplace, on); err != nil {
+		if err := m.SetAutoUpgrade(ctx, plugin, marketplace, on); err != nil {
 			return err
 		}
 		state := "enabled"
@@ -535,7 +535,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		removed, err := m.Gc()
+		removed, err := m.Gc(context.Background())
 		if err != nil {
 			return err
 		}

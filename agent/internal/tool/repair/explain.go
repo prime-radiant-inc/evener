@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,12 +67,18 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		if containerPath != "" {
 			fullPath = containerPath + "." + field
 		}
+		// The wrong branch's array can also reject a present field (issue
+		// #626 round 2: {"action":"update","tasks":[{"type":123}]}), and the
+		// early return here would otherwise bypass the branch-naming below —
+		// entering the same unrecoverable loop one step later, via a type
+		// error instead of a missing one. Attribute the branch here too.
+		ctx := newBranchCtx(params, args, containerPath)
 		if constraintKeyword != "" {
-			if specific := constraintMessage(toolName, fullPath, containerSchema, field, constraintKeyword, args, instanceLocation); specific != "" {
-				return specific
+			if specific := constraintMessage(toolName, containerSchema, fullPath, field, constraintKeyword, args, instanceLocation); specific != "" {
+				return specific + ctx.wrongBranchTail(args)
 			}
 		}
-		return fmt.Sprintf("%s: argument %q has the wrong type or value.\nExample: %s", toolName, fullPath, minimalExample(params))
+		return fmt.Sprintf("%s: argument %q has the wrong type or value.\nExample: %s%s", toolName, fullPath, ctx.example(params), ctx.wrongBranchTail(args))
 	}
 
 	// A branch-combinator failure names no property: the deepest cause is the
@@ -93,26 +100,335 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		fmt.Fprintf(&b, "%s: missing required argument %q in %s.", toolName, field, containerPath)
 	}
 
+	// A conditional sub-schema's required list describes one action's branch,
+	// not the call the caller made (issue #626: task_list's tasks[0] belongs to
+	// append, but an update caller read the bare list as describing its own
+	// call and retried into an unrecoverable loop). When the failing container
+	// sits inside an array property scoped to an action the caller did not
+	// send, name that branch, and point the caller at the array its own action
+	// takes instead.
+	ctx := newBranchCtx(params, args, containerPath)
+	branchNamed := ctx.branchValue != ""
+	// The Example shows the caller's own branch shape whenever the failure
+	// sits inside an action-scoped array — a same-branch caller (append
+	// missing prompt) needs it just as much as a wrong-branch one (issue
+	// #626 complaint 3: the action-only Example gave neither a usable
+	// template). Only the caller-sent-wrong-array tail is wrong-branch-only.
 	req := requiredList(containerSchema)
 	if len(req) > 0 {
-		if containerPath == "" {
+		if branchNamed {
+			fmt.Fprintf(&b, "\nRequired arguments in %s for action %q: %s.", containerPath, ctx.branchValue, strings.Join(req, ", "))
+		} else if containerPath == "" {
 			fmt.Fprintf(&b, "\nRequired arguments: %s.", strings.Join(req, ", "))
 		} else {
 			fmt.Fprintf(&b, "\nRequired arguments in %s: %s.", containerPath, strings.Join(req, ", "))
 		}
 	}
-	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	if branchNamed || ctx.actionArrays != nil {
+		fmt.Fprintf(&b, "\nExample: %s", ctx.example(params))
+		if tail := ctx.takesClause(args); tail != "" {
+			b.WriteString(tail)
+		}
+	} else {
+		fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+	}
 	return b.String()
+}
+
+// branchCtx is the branch context for one explained error, computed once
+// and shared by the present-field and missing-field paths (issue #626 round
+// 3: the two paths previously computed it independently, twice each).
+type branchCtx struct {
+	selectorName string
+	actionValue  string
+	branchValue  string // non-empty only when the failure sits in another action's branch
+	actionArrays []string
+}
+
+// newBranchCtx resolves the branch context for the failing container's
+// path. selectorName and actionValue are set whenever the schema has an
+// action selector the caller exercised (a same-branch caller still gets its
+// own branch's Example); branchValue is non-empty only when the container's
+// property is scoped to a different action's branch.
+func newBranchCtx(params, args map[string]any, containerPath string) branchCtx {
+	selectorName, actionValue, branchValue := namedBranch(params, args, containerPath)
+	return branchCtx{
+		selectorName: selectorName,
+		actionValue:  actionValue,
+		branchValue:  branchValue,
+		actionArrays: actionScopedArrays(schemaProps(params), actionValue),
+	}
+}
+
+// wrongBranchTail renders the wrong-branch attribution appended to a
+// present-field failure's message. Empty when the failure is not in another
+// action's branch. Unlike takesClause it names the branch itself, because a
+// present-field message carries no branch-phrased line of its own.
+func (c branchCtx) wrongBranchTail(args map[string]any) string {
+	if c.branchValue == "" {
+		return ""
+	}
+	missing := missingArray(c.actionArrays, args)
+	sent := sentArgNames(c.selectorName, args)
+	if missing == "" || sent == "" {
+		// The correct array was also sent (or nothing else was): still name
+		// the branch so the caller knows where the failure came from.
+		return fmt.Sprintf(" (this failure is in the array for action %q)", c.branchValue)
+	}
+	return fmt.Sprintf(" (this failure is in the array for action %q; your action %q takes %q, not %s)", c.branchValue, c.actionValue, missing, sent)
+}
+
+// takesClause renders the "your action takes X" line appended after the
+// Example on the missing-field path. Empty when the caller's action has no
+// action-scoped array missing from the call.
+func (c branchCtx) takesClause(args map[string]any) string {
+	missing := missingArray(c.actionArrays, args)
+	if missing == "" {
+		return ""
+	}
+	sent := sentArgNames(c.selectorName, args)
+	if sent == "" {
+		return ""
+	}
+	return fmt.Sprintf(" Your action %q takes %q (sent: %s).", c.actionValue, missing, sent)
+}
+
+// example renders the Example for this failure: the caller's own branch
+// shape when the failure sits inside an action-scoped array (same-branch or
+// wrong-branch), the generic top-level Example otherwise.
+func (c branchCtx) example(params map[string]any) string {
+	if c.branchValue == "" && c.actionArrays == nil {
+		return minimalExample(params)
+	}
+	return actionExample(params, c.selectorName, c.actionValue, c.actionArrays)
+}
+
+// namedBranch reports the branch context for a conditional-sub-schema
+// failure (issue #626): the action selector's name, the action value the
+// caller sent, and the action value whose branch the failing container's
+// property is scoped to. selectorName and actionValue are set whenever the
+// schema has an action selector the caller exercised (a same-branch caller
+// still gets its own branch's Example); branchValue is non-empty only when
+// the property's "For X:" description tag names a member of the selector's
+// enum that differs from the caller's action — prose such as read_file's
+// "For large files read in slices: ..." on offset parses to a tag, but no
+// selector enum contains it, so it cannot masquerade as a branch. The enum
+// membership check does not materialize a []string copy, keeping the
+// not-firing path allocation-free.
+// containerPath is the DISPLAY form produced by resolveSchemaErrorContainer
+// ("tasks[0]", not the JSON-Pointer "tasks/0" that ExplainSchemaError takes
+// as its instanceLocation) — pathRootProperty parses the bracket form.
+func namedBranch(params, args map[string]any, containerPath string) (selectorName, actionValue, branchValue string) {
+	selectorName, actionValue = actionSelector(params, args)
+	if selectorName == "" {
+		return "", "", ""
+	}
+	props := schemaProps(params)
+	tag := actionTag(schemaMap(props, pathRootProperty(containerPath)))
+	if tag == "" || tag == actionValue {
+		return selectorName, actionValue, ""
+	}
+	if !listContains(schemaMap(props, selectorName)["enum"], tag) {
+		return selectorName, actionValue, ""
+	}
+	return selectorName, actionValue, tag
+}
+
+// listContains reports whether v is a string list ([]string hand-built or
+// []any from JSON) containing s, without materializing a []string copy.
+// Sibling of hasListEntries.
+func listContains(v any, s string) bool {
+	switch list := v.(type) {
+	case []string:
+		return slices.Contains(list, s)
+	case []any:
+		for _, e := range list {
+			if str, ok := e.(string); ok && str == s {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// actionSelector finds the action/operation selector in params: a required
+// string property with an enum, whose value the caller actually sent. It
+// walks the schema's required list (not the properties map) so selection is
+// deterministic when more than one property qualifies, and materializes no
+// string slices: this runs on every explained error, including MCP schemas
+// where it never fires.
+func actionSelector(params, args map[string]any) (name, value string) {
+	props := schemaProps(params)
+	if props == nil {
+		return "", ""
+	}
+	switch required := params["required"].(type) {
+	case []string:
+		for _, propName := range required {
+			if v, ok := selectorValue(props, args, propName); ok {
+				return propName, v
+			}
+		}
+	case []any:
+		for _, raw := range required {
+			propName, ok := raw.(string)
+			if !ok {
+				continue
+			}
+			if v, ok := selectorValue(props, args, propName); ok {
+				return propName, v
+			}
+		}
+	}
+	return "", ""
+}
+
+// selectorValue reports whether propName is the action selector — a string
+// property with a non-empty enum that the caller sent a value for — and
+// returns that value. The enum is checked for presence only, not
+// materialized; namedBranch materializes it once a branch tag actually needs
+// validating against it.
+func selectorValue(props, args map[string]any, propName string) (string, bool) {
+	p := schemaMap(props, propName)
+	if p == nil {
+		return "", false
+	}
+	if t, _ := p["type"].(string); t != "string" {
+		return "", false
+	}
+	sent, _ := args[propName].(string)
+	if sent == "" || !hasListEntries(p["enum"]) {
+		return "", false
+	}
+	return sent, true
+}
+
+// hasListEntries reports whether v is a non-empty slice — the shapes a
+// schema's enum or required list may carry ([]string hand-built, []any from
+// JSON) — without materializing a []string copy.
+func hasListEntries(v any) bool {
+	switch s := v.(type) {
+	case []string:
+		return len(s) > 0
+	case []any:
+		return len(s) > 0
+	}
+	return false
+}
+
+// actionTag returns the action value a property schema is scoped to by its
+// description tag ("For append: ..." → "append"), or "" when the description
+// carries no such tag. Only task_list's tasks/updates descriptions carry the
+// tag today; the enum-membership check in namedBranch is what makes a parsed
+// tag count as a branch.
+func actionTag(propSchema map[string]any) string {
+	if propSchema == nil {
+		return ""
+	}
+	desc, _ := propSchema["description"].(string)
+	rest, ok := strings.CutPrefix(desc, "For ")
+	if !ok {
+		return ""
+	}
+	if value, _, ok := strings.Cut(rest, ":"); ok {
+		return value
+	}
+	return ""
+}
+
+// pathRootProperty extracts the top-level property name a display path
+// starts with ("tasks[0]" → "tasks", "updates[0].id" → "updates"). Returns
+// "" for a path with no leading property segment.
+func pathRootProperty(containerPath string) string {
+	if containerPath == "" {
+		return ""
+	}
+	seg := containerPath
+	if idx := strings.IndexAny(seg, "[."); idx >= 0 {
+		seg = seg[:idx]
+	}
+	return seg
+}
+
+// actionScopedArrays returns the array property names scoped to the given
+// action value by their description tag, sorted for deterministic output.
+func actionScopedArrays(props map[string]any, actionValue string) []string {
+	if actionValue == "" {
+		return nil
+	}
+	var out []string
+	for propName, p := range props {
+		schema, ok := p.(map[string]any)
+		if ok && schemaIsArray(schema) && actionTag(schema) == actionValue {
+			out = append(out, propName)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// missingArray returns the first action-scoped array name absent from the
+// call — the array the caller should have sent instead of the one that failed
+// (issue #626: update takes "updates", not "tasks") — or "" when every
+// action-scoped array was supplied.
+func missingArray(actionArrays []string, args map[string]any) string {
+	for _, name := range actionArrays {
+		if _, ok := args[name]; !ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// sentArgNames renders the argument names the caller actually sent, sorted,
+// excluding the action selector itself so the contrast the message draws —
+// this array, not that one — stays sharp. Returns "" when nothing else was
+// sent.
+func sentArgNames(selectorName string, args map[string]any) string {
+	names := make([]string, 0, len(args))
+	for name := range args {
+		if name == selectorName {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
+	return strings.Join(names, ", ")
+}
+
+// actionExample renders a minimal example for the branch the caller actually
+// used: the action plus its tagged array with one minimal item. The item
+// renders through minimalExample (the same sorted required list with type
+// placeholders it builds for any schema), wrapped in the array's brackets.
+// Falls back to minimalExample(params) when the branch has no tagged array
+// or the array has no item schema.
+func actionExample(params map[string]any, selectorName, actionValue string, actionArrays []string) string {
+	props := schemaProps(params)
+	for _, arrayName := range actionArrays {
+		arraySchema := schemaMap(props, arrayName)
+		if arraySchema == nil {
+			continue
+		}
+		item := schemaMap(arraySchema, "items")
+		if item == nil {
+			continue
+		}
+		return fmt.Sprintf(`{%q: %q, %q: [%s]}`, selectorName, actionValue, arrayName, minimalExample(item))
+	}
+	return minimalExample(params)
 }
 
 // constraintMessage renders a specific constraint-violation message for a
 // present field whose schema rejected it: the field's display path, the
 // constraint name, its limit, and the actual value/length. Returns "" when
 // the keyword is not one of the recognized constraints (maxLength,
-// minLength, minItems, maxItems, enum) or when the schema/value shape
-// doesn't match the keyword, so the caller falls back to the generic
+// minLength, minItems, maxItems, enum, required) or when the schema/value
+// shape doesn't match the keyword, so the caller falls back to the generic
 // "wrong type or value" message.
-func constraintMessage(toolName, displayPath string, containerSchema map[string]any, field, keyword string, args map[string]any, instanceLocation string) string {
+func constraintMessage(toolName string, containerSchema map[string]any, displayPath string, field, keyword string, args map[string]any, instanceLocation string) string {
 	fieldSchema, _ := schemaProps(containerSchema)[field].(map[string]any)
 	if fieldSchema == nil {
 		return ""
@@ -155,8 +471,42 @@ func constraintMessage(toolName, displayPath string, containerSchema map[string]
 			return ""
 		}
 		return fmt.Sprintf("%s: argument %q is not one of the allowed values: %s. Value is %q.", toolName, displayPath, strings.Join(allowed, ", "), fmt.Sprint(value))
+	case "required":
+		// The field itself is present but its object value is missing required
+		// properties (the issue #627 shape: communicate's output object without
+		// its nested message/data/artifacts). Name them rather than reporting
+		// the whole object as a wrong type or value, and show the accepted
+		// shape, resolved from the field's own schema (the container it lives
+		// in), never from a same-named top-level property.
+		inst, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		missing := missingRequired(fieldSchema, inst)
+		if len(missing) == 0 {
+			return ""
+		}
+		for i, name := range missing {
+			missing[i] = fmt.Sprintf("%s.%s", displayPath, name)
+		}
+		return fmt.Sprintf("%s: argument %q is missing required properties: %s.\nExample: %s",
+			toolName, displayPath, strings.Join(missing, ", "), exampleForField(containerSchema, field))
 	}
 	return ""
+}
+
+// exampleForField renders a minimal example naming just the failing field,
+// with its nested required shape expanded (issue #627: the example must show
+// the accepted output envelope, not a bare {}). containerSchema is the schema
+// of the object holding field — the example resolves field's shape there, so
+// a nested field never picks up a same-named top-level property's schema.
+func exampleForField(containerSchema map[string]any, field string) string {
+	props := schemaProps(containerSchema)
+	if prop, ok := props[field].(map[string]any); ok {
+		typ, _ := prop["type"].(string)
+		return fmt.Sprintf("{%q: %s}", field, exampleValue(prop, typ))
+	}
+	return exampleObject(containerSchema, true)
 }
 
 // resolveInstanceValue walks a JSON-Pointer-style path (e.g.
@@ -267,10 +617,8 @@ func resolveSchemaErrorContainer(params, args map[string]any, instanceLocation s
 		// container — find its first missing required property.
 		item := schemas[n]
 		itemInst, _ := insts[n].(map[string]any)
-		for _, r := range requiredNames(item) {
-			if _, present := itemInst[r]; !present {
-				return item, formatPath(segs), r, false, true
-			}
+		if missing := missingRequired(item, itemInst); len(missing) > 0 {
+			return item, formatPath(segs), missing[0], false, true
 		}
 		return nil, "", "", false, false
 	}
@@ -535,18 +883,55 @@ func requiredList(params map[string]any) []string {
 }
 
 func minimalExample(params map[string]any) string {
-	props := schemaProps(params)
-	req := append([]string(nil), asStringSlice(params["required"])...)
+	return exampleObject(params, true)
+}
+
+// exampleObject renders an object schema's required properties as
+// "name: placeholder" pairs, sorted alphabetically. expandNested also
+// expands an object property that itself declares required keys one level
+// deep (issue #627: communicate's output example must show the accepted
+// envelope, not a bare {}).
+//
+// The required list is copied before sorting — a schema's "required" value
+// may be a []string held by reference (DefCommunicateNamed builds it that
+// way, and asStringSlice returns such a slice as-is), so sorting in place
+// would corrupt the shared schema for every later message and every
+// registry clone that shares it.
+func exampleObject(schema map[string]any, expandNested bool) string {
+	props := schemaProps(schema)
+	req := append([]string(nil), asStringSlice(schema["required"])...)
 	sort.Strings(req)
 	parts := make([]string, 0, len(req))
-	for _, r := range req {
+	for _, name := range req {
 		typ := ""
-		if p, ok := props[r].(map[string]any); ok {
+		if p, ok := props[name].(map[string]any); ok {
 			typ, _ = p["type"].(string)
 		}
-		parts = append(parts, fmt.Sprintf("%q: %s", r, examplePlaceholder(typ)))
+		placeholder := examplePlaceholder(typ)
+		if expandNested {
+			placeholder = exampleValue(props[name], typ)
+		}
+		parts = append(parts, fmt.Sprintf("%q: %s", name, placeholder))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// exampleValue renders a property's placeholder: examplePlaceholder for
+// scalars, or (for an object property that declares its own required list)
+// the nested shape via exampleObject, one level deep.
+func exampleValue(prop any, typ string) string {
+	placeholder := examplePlaceholder(typ)
+	if typ != "object" {
+		return placeholder
+	}
+	p, ok := prop.(map[string]any)
+	if !ok {
+		return placeholder
+	}
+	if len(asStringSlice(p["required"])) == 0 {
+		return placeholder
+	}
+	return exampleObject(p, false)
 }
 
 func examplePlaceholder(typ string) string {

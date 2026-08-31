@@ -30,7 +30,7 @@ func TestEnabledPluginDirs_FiltersDisabledAndBroken(t *testing.T) {
 	}
 
 	// disabled → excluded
-	if err := m.SetEnabled("widget", name, false); err != nil {
+	if err := m.SetEnabled(context.Background(), "widget", name, false); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
 	if dirs := m.EnabledPluginDirs(nil); len(dirs) != 0 {

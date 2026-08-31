@@ -10,8 +10,8 @@ func TestWithCheapModel_QualifiedRefSetsCheapProvider(t *testing.T) {
 	p := provider.NewOpenAIProfile("gpt-5.2")
 	got := provider.WithCheapModel(p, "anthropic/claude-haiku-4-5-20251001")
 
-	if got.CheapModel() != "claude-haiku-4-5-20251001" {
-		t.Errorf("CheapModel() = %q, want claude-haiku-4-5-20251001", got.CheapModel())
+	if got.ConfiguredCheapModel() != "claude-haiku-4-5-20251001" {
+		t.Errorf("ConfiguredCheapModel() = %q, want claude-haiku-4-5-20251001", got.ConfiguredCheapModel())
 	}
 	if got.CheapProvider() != "anthropic" {
 		t.Errorf("CheapProvider() = %q, want anthropic", got.CheapProvider())
@@ -30,8 +30,8 @@ func TestWithCheapModel_BareRefKeepsSameProvider(t *testing.T) {
 	p := provider.NewOpenAIProfile("gpt-5.2")
 	got := provider.WithCheapModel(p, "gpt-4.1-mini")
 
-	if got.CheapModel() != "gpt-4.1-mini" {
-		t.Errorf("CheapModel() = %q, want gpt-4.1-mini", got.CheapModel())
+	if got.ConfiguredCheapModel() != "gpt-4.1-mini" {
+		t.Errorf("ConfiguredCheapModel() = %q, want gpt-4.1-mini", got.ConfiguredCheapModel())
 	}
 	// A bare model keeps the active provider.
 	if got.CheapProvider() != "openai" {
@@ -60,9 +60,11 @@ func TestCheapModelRefString_RoundTrips(t *testing.T) {
 		}
 		// Re-applying the persisted string reproduces the routing.
 		rt := provider.WithCheapModel(provider.NewOpenAIProfile("gpt-5.2"), p.CheapModelRefString())
-		if rt.CheapProvider() != p.CheapProvider() || rt.CheapModel() != p.CheapModel() {
+		rtProvider, rtModel := rt.CheapModelRef()
+		providerName, model := p.CheapModelRef()
+		if rtProvider != providerName || rtModel != model {
 			t.Errorf("round-trip mismatch for %q: got (%q,%q), want (%q,%q)",
-				tc.ref, rt.CheapProvider(), rt.CheapModel(), p.CheapProvider(), p.CheapModel())
+				tc.ref, rtProvider, rtModel, providerName, model)
 		}
 	}
 
@@ -72,10 +74,10 @@ func TestCheapModelRefString_RoundTrips(t *testing.T) {
 	}
 }
 
-func TestCheapModelRef_DefaultsToActiveProviderAndDefaultCheapModel(t *testing.T) {
+func TestCheapModelRef_DefaultsToActiveProviderAndModel(t *testing.T) {
 	p := provider.NewOpenAIProfile("gpt-5.2")
 	// No cheap model configured: ConfiguredCheapModel stays empty (the namer's
-	// enable gate), but CheapModelRef falls through to the provider default.
+	// enable gate), and auxiliary work uses the active model.
 	if p.ConfiguredCheapModel() != "" {
 		t.Errorf("ConfiguredCheapModel() = %q, want empty", p.ConfiguredCheapModel())
 	}
@@ -83,7 +85,7 @@ func TestCheapModelRef_DefaultsToActiveProviderAndDefaultCheapModel(t *testing.T
 		t.Errorf("CheapProvider() = %q, want openai", p.CheapProvider())
 	}
 	prov, model := p.CheapModelRef()
-	if prov != "openai" || model != p.CheapModel() {
-		t.Errorf("CheapModelRef() = (%q, %q), want (openai, %q)", prov, model, p.CheapModel())
+	if prov != "openai" || model != "gpt-5.2" {
+		t.Errorf("CheapModelRef() = (%q, %q), want (openai, gpt-5.2)", prov, model)
 	}
 }

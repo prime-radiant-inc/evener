@@ -350,7 +350,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {
 		seedMarketplaces = func() error {
-			_, err := pluginManager.SeedDefaultMarketplaces()
+			_, err := pluginManager.SeedDefaultMarketplaces(context.Background())
 			return err
 		}
 	}

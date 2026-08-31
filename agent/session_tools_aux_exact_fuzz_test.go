@@ -97,7 +97,7 @@ func auxWebFetchExact(t *testing.T) {
 
 func auxRepairExact(t *testing.T) {
 	call := llm.ToolCallData{Arguments: json.RawMessage(`{"x":1}`)}
-	if got := prepareToolCall(call, nil, []string{"known"}, "missing", ""); got.Call.ID == "" || got.PrevalErr == "" {
+	if got := prepareToolCall(call, nil, []string{"known"}, "missing", "communicate", ""); got.Call.ID == "" || got.PrevalErr == "" {
 		t.Fatalf("unknown repair = %#v", got)
 	}
 	if got := offendingField(errors.New("plain")); got != "" {
@@ -154,7 +154,7 @@ func auxCommunicateExact(t *testing.T) {
 	}}}) {
 		t.Fatal("incomplete communicate requirements accepted")
 	}
-	if communicateSchemaContains([]string{"x"}, "y") {
+	if stringSetsEqual(map[string]any{"x": map[string]any{}}, []string{"y"}, defaultEnvelopeKeys...) {
 		t.Fatal("schema contains absent value")
 	}
 	if got := canonicalNodeOutputTextWithMarshal(nil, func(any) ([]byte, error) { return nil, errors.New("marshal") }); got != "{}" {

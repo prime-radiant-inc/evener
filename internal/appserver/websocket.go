@@ -124,7 +124,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "") //nolint:errcheck // connection cleanup; close error is not actionable
 
-	transport := appwire.NewWSTransport(ws)
+	transport := webSocketTransport(appwire.NewWSTransport(ws))
+	if s.wrapWebSocketTransport != nil {
+		transport = s.wrapWebSocketTransport(transport)
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	conn := s.NewConnection(fmt.Sprintf("conn-%d", serverConnSeq.Add(1)))
 	conn.setCancel(cancel)
@@ -134,17 +137,33 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.unregisterConnection(conn)
 	}()
 
+	writeTimeout := s.sendWriteTimeout
+	if writeTimeout == 0 {
+		writeTimeout = webSocketWriteTimeout
+	}
 	go func() {
 		defer cancel()
-		runWebSocketSendLoop(ctx, transport, conn.send)
+		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout)
 	}()
+	go conn.runWorker(ctx)
 
 	gate := newWebSocketReadGate()
 	go runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, keepalivePongTimeout, s.keepaliveTickerFactory(keepalivePingInterval), s.keepaliveDecision)
 
 	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
+	// The receive loop returned, so the queue's only producer has stopped —
+	// cancel first so a racing worker dequeue discards rather than executes,
+	// then drop the buffered frames (see purgeRequestQueue). The deferred
+	// cancel/unregister above still runs afterward; cancel is idempotent.
+	cancel()
+	conn.purgeRequestQueue()
 }
 
+// runWebSocketReceiveLoop keeps only transport concerns: park in Recv
+// (reader available; keepalive can ping), hand each frame to the
+// connection's inbound policy (Connection.receiveInbound owns the
+// ping-inline-vs-enqueue decision), and stop when the transport or the
+// connection dies.
 func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) {
 	for {
 		gate.readerAvailable()
@@ -156,7 +175,9 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 			}
 			return
 		}
-		conn.dispatchMessage(ctx, msg)
+		if !conn.receiveInbound(ctx, msg) {
+			return
+		}
 	}
 }
 
@@ -195,6 +216,10 @@ func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel 
 }
 
 func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
+	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout)
+}
+
+func runWebSocketSendLoopWithTimeout(ctx context.Context, transport webSocketSender, send <-chan appwire.Message, writeTimeout time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -203,7 +228,7 @@ func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <
 			if !ok {
 				return
 			}
-			writeCtx, cancel := context.WithTimeout(ctx, webSocketWriteTimeout)
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
 			err := transport.Send(writeCtx, msg)
 			cancel()
 			if err != nil {

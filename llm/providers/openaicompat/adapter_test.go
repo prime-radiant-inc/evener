@@ -988,10 +988,20 @@ func TestComplete_NoCachedTokensField_LeavesNil(t *testing.T) {
 }
 
 func TestComplete_WrapsContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	a := &Adapter{BaseURL: "http://127.0.0.1:1", Client: &http.Client{Timeout: time.Millisecond}}
+	// srv.Client() carries no http.Client.Timeout: a client timeout racing the
+	// cancellation would let net/http's timeoutError wrapper (which reports
+	// only context.DeadlineExceeded and unwraps to nothing) win the
+	// classification, turning the expected AbortError into a retryable
+	// requestTimeoutError on a slow runner (#696).
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
 	_, err := a.Complete(ctx, llm.Request{Model: "test", Messages: []llm.Message{llm.User("hi")}})
 	if err == nil {
 		t.Fatal("expected error")
