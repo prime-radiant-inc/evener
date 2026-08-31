@@ -623,7 +623,14 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		w.lastCheckpointStart = startOffset
 		w.checkpointPrefixSeq = w.lastAppendedSeq
 		w.checkpointPrefixCount = w.sidecarEntryCount
-		w.checkpointFailureFloor = w.failures.Count()
+		// The absent floor is -1, not 0: a nil counter has measured nothing,
+		// and "zero failures over the prefix" from a producer that never
+		// counted is the false all-clear the -1 sentinel exists to prevent
+		// (the same convention FailureFloor documents).
+		w.checkpointFailureFloor = -1
+		if w.failures != nil {
+			w.checkpointFailureFloor = w.failures.Count()
+		}
 	}
 	// The entry just written carried seq w.seq-1 (Entry.Seq is assigned
 	// before the increment above).
