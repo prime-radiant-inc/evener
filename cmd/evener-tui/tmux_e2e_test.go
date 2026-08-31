@@ -316,13 +316,11 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
-	screen := app.WaitFor("EVENER LIVE", "0 live", "2 recent", "1 recent", "filter")
-	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
-		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
-	}
-	if strings.Contains(screen, "Prompt (optional):") || strings.Contains(screen, "enter: send") {
-		t.Fatalf("recent-only dashboard rendered session composer content:\n%s", screen)
-	}
+	// Ended sessions fold by default and composer content belongs to session
+	// view, so both are awaited as absences on the same frame as the positives
+	// (WaitForWithout; mid-repaint shape from #694).
+	screen := app.WaitForWithout([]string{"ended maintenance", "ops task", "Prompt (optional):", "enter: send"},
+		"EVENER LIVE", "0 live", "2 recent", "1 recent", "filter")
 	t.Logf("recent-only dashboard capture:\n%s", screen)
 
 	app.SendKeys("Down", "Enter")
