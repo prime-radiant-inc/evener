@@ -604,7 +604,9 @@ func (req Request) Validate() error {
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "minimal":
-		return 512
+		// Anthropic documents 1024 as the minimum for thinking.budget_tokens;
+		// a lower value is wire-rejectable on budget-shaped rows (#714).
+		return 1024
 	case "low":
 		return 1024
 	case "medium":
