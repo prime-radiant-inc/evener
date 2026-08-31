@@ -16,18 +16,28 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // liveSmokeModels names cheap models to exercise per instance. An instance
 // with a credential that is not listed here uses the first ids its models
-// endpoint returns.
+// endpoint returns, so naming one model is also what keeps a row to a single
+// request instead of the four an auto-picked listing costs.
+//
+// The `anthropic` row deliberately stops at the cheap model: the
+// claude-sonnet-4-5[1m] row has its own pin below, which asserts the resolved
+// window as well as acceptance, so listing it here too would only buy a second
+// request against a row already covered.
 var liveSmokeModels = map[string][]string{
 	"openrouter":      {"google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5", "deepseek/deepseek-v4-flash", "minimax/minimax-m2.7", "openai/gpt-4.1-nano"},
 	"orclaude":        {"minimax/minimax-m2.7", "anthropic/claude-haiku-4.5"},
 	"kimi-for-coding": {"kimi-for-coding", "k3"},
-	"anthropic":       {"claude-haiku-4-5", "claude-sonnet-4-5[1m]"},
+	"kimi":            {"kimi-for-coding"},
+	"anthropic":       {"claude-haiku-4-5"},
 	"openai":          {"gpt-4.1-nano"},
 	"groq":            {"openai/gpt-oss-120b"},
 	"google":          {"gemini-2.5-flash-lite"},
@@ -41,12 +51,73 @@ var liveSmokeModels = map[string][]string{
 	"minimax":         {"MiniMax-M2.7"},
 }
 
+// liveSmokeEndpoints pins the endpoint an instance's completions must be
+// dispatched to, for the rows where the endpoint is itself the property under
+// test (spec §13). `openai` is one: its surface selects the Responses API, so
+// a row that quietly fell back to Chat Completions would still answer "pong"
+// and hide the regression.
+var liveSmokeEndpoints = map[string]string{"openai": "/responses"}
+
 const liveSmokePrompt = "Reply with the single word: pong"
 
 // liveConfig names the providers.toml the smoke loads (its credentials.toml
 // sibling supplies the keys). A flag rather than EVENER_PROVIDERS_CONFIG
-// because TestMain scrubs every EVENER_* variable and redirects HOME.
-var liveConfig = flag.String("live-config", "", "providers.toml for TestLiveSmoke (credentials.toml is its sibling)")
+// because TestMain scrubs every EVENER_* variable and redirects HOME. It is
+// also the whole gate on the live tests running at all, so it stays a flag
+// nothing can supply by accident.
+var liveConfig = flag.String("live-config", "", "providers.toml for the live tests (credentials.toml is its sibling)")
+
+// liveCredentialsConfig is EVENER_CREDENTIALS_CONFIG as this process was
+// started. TestMain clears every EVENER_* variable before the first test runs,
+// so the value has to be captured at package initialization — which Go
+// performs before it calls TestMain. scripts/live/with-live-env --store sets
+// the variable to the developer's real store while --config copies the
+// providers.toml into the run's fake home; without this capture those two
+// flags could not be used together.
+var liveCredentialsConfig = envvars.EVENERCredentialsConfig.Trimmed()
+
+// liveStorePath is credentials.toml's location for a live run:
+// EVENER_CREDENTIALS_CONFIG when one was set, else the sibling of the
+// -live-config providers.toml. Same rule as cmdutil.CredentialsPath, which
+// this package cannot call because TestMain has already cleared the variable.
+func liveStorePath() string {
+	if liveCredentialsConfig != "" {
+		return liveCredentialsConfig
+	}
+	return filepath.Join(filepath.Dir(*liveConfig), "credentials.toml")
+}
+
+// requireLiveGate skips unless both halves of the gate are present: the
+// EVENER_LIVE_TESTS environment gate and the -live-config flag. what names
+// the test in the skip message.
+func requireLiveGate(t *testing.T, what string) {
+	t.Helper()
+	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
+		t.Skipf("set EVENER_LIVE_TESTS=1 to run %s", what)
+	}
+	if *liveConfig == "" {
+		t.Skipf("pass -args -live-config=<providers.toml> to run %s", what)
+	}
+}
+
+// loadLiveRegistry loads the registry a live test resolves against: the user
+// layer -live-config names, the credential store liveStorePath names, and a
+// throwaway state root. Offline, so no live run can start a catalog refresh.
+// The log line carries paths and warnings, never a credential value.
+func loadLiveRegistry(t *testing.T) *registry.Registry {
+	t.Helper()
+	store, err := credentials.LoadStore(liveStorePath())
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+		registry.WithStateRoot(t.TempDir()), registry.WithOffline(true))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	t.Logf("%s; credential store: %s; warnings=%v", r.UserLayerNote(), store.Path(), r.Warnings())
+	return r
+}
 
 // TestLiveSmoke sends one minimal request per (instance, model) built from
 // the registry's Resolved record — the resolved base URL, endpoint, auth
@@ -59,22 +130,8 @@ var liveConfig = flag.String("live-config", "", "providers.toml for TestLiveSmok
 // It never prints a credential value: only URLs, header names, statuses,
 // and short response excerpts.
 func TestLiveSmoke(t *testing.T) {
-	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
-		t.Skip("set EVENER_LIVE_TESTS=1 to run the live provider smoke")
-	}
-	if *liveConfig == "" {
-		t.Skip("pass -args -live-config=<providers.toml> to run the live provider smoke")
-	}
-	store, err := credentials.LoadStore(filepath.Join(filepath.Dir(*liveConfig), "credentials.toml"))
-	if err != nil {
-		t.Fatalf("credentials: %v", err)
-	}
-	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
-		registry.WithStateRoot(t.TempDir()), registry.WithOffline(true))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	t.Logf("%s; warnings=%v", r.UserLayerNote(), r.Warnings())
+	requireLiveGate(t, "the live provider smoke")
+	r := loadLiveRegistry(t)
 	client := &http.Client{Timeout: 90 * time.Second}
 	ran := 0
 	for _, inst := range r.Instances() {
@@ -156,6 +213,11 @@ func liveSmokeInstance(t *testing.T, r *registry.Registry, client *http.Client, 
 			t.Errorf("resolve %s: %v", ref, err)
 			continue
 		}
+		// Asserted here rather than off the probe above so it pins the
+		// endpoint of the request actually sent below.
+		if want, pinned := liveSmokeEndpoints[inst.Name]; pinned && res.Transport.Endpoint != want {
+			t.Errorf("%s: dispatches to %q, want %q", ref, res.Transport.Endpoint, want)
+		}
 		url, body, ok := liveBody(res)
 		if !ok {
 			t.Logf("%s: protocol %s not covered by the smoke", ref, res.Protocol)
@@ -197,22 +259,8 @@ const oneMegaContextRef = "anthropic/claude-sonnet-4-5[1m]"
 // no Anthropic key. It never prints a credential value — only header names, the
 // status, and the reply's length.
 func TestLiveOneMegaContextRowAccepted(t *testing.T) {
-	if os.Getenv("EVENER_LIVE_TESTS") != "1" {
-		t.Skip("set EVENER_LIVE_TESTS=1 to run the live [1m] pin")
-	}
-	if *liveConfig == "" {
-		t.Skip("pass -args -live-config=<providers.toml> to run the live [1m] pin")
-	}
-	store, err := credentials.LoadStore(filepath.Join(filepath.Dir(*liveConfig), "credentials.toml"))
-	if err != nil {
-		t.Fatalf("credentials: %v", err)
-	}
-	r, err := registry.Load(registry.WithConfigPath(*liveConfig), registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
-		registry.WithStateRoot(t.TempDir()), registry.WithOffline(true))
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	t.Logf("%s; warnings=%v", r.UserLayerNote(), r.Warnings())
+	requireLiveGate(t, "the live [1m] pin")
+	r := loadLiveRegistry(t)
 	res, err := r.Resolve(oneMegaContextRef)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", oneMegaContextRef, err)
@@ -224,7 +272,7 @@ func TestLiveOneMegaContextRowAccepted(t *testing.T) {
 		t.Fatalf("%s: context window %d, want at least 1000000", oneMegaContextRef, *res.Caps.ContextWindow)
 	}
 	t.Logf("%s: wire=%s window=%d headers=%v provenance=%s", oneMegaContextRef, res.WireID,
-		*res.Caps.ContextWindow, headerNames(res.Headers), res.Provenance["model"])
+		*res.Caps.ContextWindow, sortedNames(res.Headers), res.Provenance["model"])
 	if res.Credential.Value == "" {
 		t.Skipf("%s: no credential in this environment (source %s)", oneMegaContextRef, res.Credential.Source)
 	}
@@ -244,11 +292,166 @@ func TestLiveOneMegaContextRowAccepted(t *testing.T) {
 	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", oneMegaContextRef, res.Transport.Endpoint, res.WireID, status, len(text))
 }
 
-// headerNames lists a header map's names, sorted. Only names: a resolved
-// header map can carry a credential-bearing value, which is never logged.
-func headerNames(h map[string]string) []string {
-	names := make([]string, 0, len(h))
-	for k := range h {
+// kimiK3Ref is the row whose thinking shape spec §13 pins. The curated
+// kimi-for-coding rows give k3* thinking_shape = "budget+effort", so a request
+// carrying an effort must send both halves of the Anthropic thinking body —
+// the budget object and output_config.effort — and the reply must come back
+// with thinking content. The instance half is the name the coding endpoint has
+// in the live smoke's providers.toml (`base = "kimi-for-coding"`); a config
+// that names no such instance skips.
+const kimiK3Ref = "kimi/k3"
+
+// kimiK3Effort is the effort the pin sets: the cheapest level that still turns
+// thinking on, so the property is proven with the smallest budget
+// llm.ReasoningBudget hands out.
+const kimiK3Effort = "low"
+
+// liveThinkingPrompt wants one number back but a step of arithmetic to get
+// there, so a thinking-enabled row has something to think about while still
+// answering in a handful of tokens.
+const liveThinkingPrompt = "What is 17 times 23? Reply with the number only."
+
+// TestLiveKimiK3ThinkingShape pins Kimi K3's thinking shape end to end (spec
+// §13): the registry resolves budget+effort for the row, the anthropic
+// protocol turns that into the budget object plus output_config.effort, the
+// wire body that leaves the process still carries both, and the endpoint
+// answers with thinking content. It builds and sends through the shipping
+// protocol, not a hand-rolled body, so it is the real request shape that is
+// under test. Gated like TestLiveSmoke. Run with:
+//
+//	EVENER_LIVE_TESTS=1 go test ./cmd/evener/ -run TestLiveKimiK3ThinkingShape -v -count=1 -args -live-config=/path/to/providers.toml
+//
+// Everything down to the credential check is offline, so the shape half is
+// exercisable with no key present and costs no request. It logs shape field
+// names and lengths only: never the prompt, the thinking text, or a header
+// value.
+func TestLiveKimiK3ThinkingShape(t *testing.T) {
+	requireLiveGate(t, "the Kimi K3 thinking-shape pin")
+	r := loadLiveRegistry(t)
+	instance, _, _ := strings.Cut(kimiK3Ref, "/")
+	if _, ok := r.Instance(instance); !ok {
+		t.Skipf("%s: this config has no %q instance", kimiK3Ref, instance)
+	}
+	res, err := r.Resolve(kimiK3Ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", kimiK3Ref, err)
+	}
+	if got := registry.StringValue(res.Caps.ThinkingShape); got != "budget+effort" {
+		t.Fatalf("%s: resolved thinking_shape %q, want %q", kimiK3Ref, got, "budget+effort")
+	}
+	effort := kimiK3Effort
+	maxTokens := 64
+	req := llm.Request{
+		Model:           kimiK3Ref,
+		Messages:        []llm.Message{llm.User(liveThinkingPrompt)},
+		MaxTokens:       &maxTokens,
+		ReasoningEffort: &effort,
+	}
+	body, err := anthropic.DefaultProtocol.BuildBody(req, res)
+	if err != nil {
+		t.Fatalf("%s: build body: %v", kimiK3Ref, err)
+	}
+	budget := assertThinkingShape(t, kimiK3Ref+" built body", body)
+	t.Logf("%s: protocol=%s wire=%s shape=%s effort=%q budget_tokens=%d headers=%v provenance=%s", kimiK3Ref,
+		res.Protocol, res.WireID, registry.StringValue(res.Caps.ThinkingShape), effort, budget, sortedNames(res.Headers), res.Provenance["model"])
+	if res.Credential.Value == "" {
+		t.Skipf("%s: no credential in this environment (source %s)", kimiK3Ref, res.Credential.Source)
+	}
+
+	// One request, through the shipping protocol so the prune, the body
+	// constants, and the authenticator all run exactly as they do in
+	// production. The recorder captures what actually went on the wire.
+	rec := &liveWireRecorder{next: http.DefaultTransport}
+	protocol := &anthropic.Protocol{Client: &http.Client{Timeout: 90 * time.Second, Transport: rec}}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	resp, err := protocol.Complete(ctx, req, res)
+	if err != nil {
+		t.Fatalf("%s: POST %s (wire %s): %v", kimiK3Ref, res.Transport.Endpoint, res.WireID, err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(rec.body, &wire); err != nil {
+		t.Fatalf("%s: the recorded request body is not JSON: %v", kimiK3Ref, err)
+	}
+	assertThinkingShape(t, kimiK3Ref+" wire body", wire)
+
+	parts, chars := 0, 0
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			parts++
+			chars += len(p.Thinking.Text)
+		}
+	}
+	if parts == 0 || chars == 0 {
+		t.Fatalf("%s: reply carried no thinking content: %d content part(s), finish=%s", kimiK3Ref, len(resp.Message.Content), resp.Finish.Reason)
+	}
+	t.Logf("%s: POST %s (wire %s) → %d thinking part(s), %d chars of thinking, %d chars of reply text, finish=%s",
+		kimiK3Ref, res.Transport.Endpoint, res.WireID, parts, chars, len(strings.TrimSpace(resp.Text())), resp.Finish.Reason)
+}
+
+// assertThinkingShape checks that body carries the whole budget+effort
+// Anthropic thinking shape and returns the budget it committed to. what names
+// which body is under test (the builder's or the wire's). It logs field names
+// and the numeric budget, never a field carrying prompt or reply text.
+func assertThinkingShape(t *testing.T, what string, body map[string]any) int {
+	t.Helper()
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: no thinking object; fields=%v", what, sortedNames(body))
+	}
+	if typ, _ := thinking["type"].(string); typ != "enabled" {
+		t.Fatalf("%s: thinking.type = %q, want %q", what, typ, "enabled")
+	}
+	budget := 0
+	switch v := thinking["budget_tokens"].(type) {
+	case int:
+		budget = v
+	case float64: // the recorded wire body round-trips through JSON
+		budget = int(v)
+	}
+	if budget <= 0 {
+		t.Fatalf("%s: thinking.budget_tokens = %v, want a positive budget", what, thinking["budget_tokens"])
+	}
+	output, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: no output_config object; fields=%v", what, sortedNames(body))
+	}
+	if got, _ := output["effort"].(string); got != kimiK3Effort {
+		t.Fatalf("%s: output_config.effort = %q, want %q", what, got, kimiK3Effort)
+	}
+	t.Logf("%s: thinking fields=%v output_config fields=%v budget_tokens=%d", what, sortedNames(thinking), sortedNames(output), budget)
+	return budget
+}
+
+// liveWireRecorder keeps the request body of the call it forwards so a
+// property test can assert what actually went on the wire rather than what the
+// builder returned. The bytes it holds carry the prompt and the request it
+// forwards carries the credential, so nothing here is ever logged; only the
+// recorded body's field names leave this file.
+type liveWireRecorder struct {
+	next http.RoundTripper
+	body []byte
+}
+
+func (rec *liveWireRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.GetBody != nil {
+		if rc, err := req.GetBody(); err == nil {
+			raw, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err == nil {
+				rec.body = raw
+			}
+		}
+	}
+	return rec.next.RoundTrip(req)
+}
+
+// sortedNames lists a map's keys, sorted. Names only, for every map a live
+// test logs: a resolved header map can carry a credential-bearing value and a
+// request body carries the prompt, so no value from either is ever printed.
+func sortedNames[V any](m map[string]V) []string {
+	names := make([]string, 0, len(m))
+	for k := range m {
 		names = append(names, k)
 	}
 	sort.Strings(names)
