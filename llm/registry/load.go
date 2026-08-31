@@ -41,7 +41,6 @@ type options struct {
 	fetcher     Fetcher
 	offline     *bool
 	instances   map[string]Provider
-	now         func() time.Time
 	snapshot    []byte
 	overlay     []byte
 	logf        func(format string, args ...any)
@@ -148,7 +147,7 @@ type capLayer struct {
 }
 
 func defaultOptions() *options {
-	return &options{env: os.LookupEnv, now: time.Now, logf: log.Printf}
+	return &options{env: os.LookupEnv, logf: log.Printf}
 }
 
 // defaultConfigRoot mirrors cmdutil.DefaultConfigRoot, which the llm module
@@ -853,7 +852,7 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	if offline {
 		return
 	}
-	if _, meta, ok := readCache(o.stateRoot); ok && o.now().Sub(meta.FetchedAt) < cacheMaxAge {
+	if _, meta, ok := readCache(o.stateRoot); ok && time.Since(meta.FetchedAt) < cacheMaxAge {
 		return
 	}
 	fetcher := o.fetcher
@@ -864,12 +863,12 @@ func (r *Registry) maybeStartRefresh(o *options) {
 	r.refreshDone = make(chan struct{})
 	// The sanity floors compare against the embedded snapshot (spec §6.4);
 	// o.snapshot is nil in production and the injected snapshot in tests.
-	stateRoot, now, logf, baseline := o.stateRoot, o.now, o.logf, o.snapshot
+	stateRoot, logf, baseline := o.stateRoot, o.logf, o.snapshot
 	go func() {
 		defer close(r.refreshDone)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Now: now, Baseline: baseline}); err != nil {
+		if _, err := Refresh(ctx, RefreshOptions{StateRoot: stateRoot, Fetcher: fetcher, Baseline: baseline}); err != nil {
 			logf("models.dev refresh: %v (keeping the previous catalog)", err)
 		}
 	}()
