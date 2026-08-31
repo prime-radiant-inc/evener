@@ -757,12 +757,15 @@ the merge order of §4.1 applies to them.
   Sonnet 4.6+, Sonnet 5, Fable 5, Mythos, says Sonnet 4.5 is 200k, and says
   "no beta header" for the 1M models; models.dev already has Opus 4.5 and
   Haiku 4.5 at 200000; the same Sonnet 4.5 rows on gateways are left to
-  those gateways' live listings). **`[1m]` rows** only where the 1M window
-  is a beta: `claude-sonnet-4-5[1m]`, `claude-sonnet-4-5-20250929[1m]`,
+  those gateways' live listings). **`[1m]` rows** where the base row's window
+  is not the 1M one: `claude-sonnet-4-5[1m]`, `claude-sonnet-4-5-20250929[1m]`,
   `claude-opus-4-5[1m]`, and `claude-opus-4-5-20251101[1m]`, each `alias_of`
-  and `wire_id` naming the base row, `context_window = 1000000`, and
-  `headers = { anthropic-beta = "context-1m-2025-08-07" }` (the live test in
-  §13 verifies the beta still works before they ship). The 4.6+ rows are 1M
+  and `wire_id` naming the base row and `context_window = 1000000`. Only the
+  Opus 4.5 pair carries `headers = { anthropic-beta =
+  "context-1m-2025-08-07" }`: Sonnet 4.5's 1M window went GA (verified live
+  2026-08-31 — `/v1/models` reports `max_input_tokens = 1000000` with and
+  without the beta, and `/messages` accepts a headerless request), so its
+  rows send no header and the live test in §13 pins that. The 4.6+ rows are 1M
   natively, so `claude-opus-4-6[1m]` is not a row and a saved ref spelled
   that way fails to resolve (flag day, §14.1).
   Two Mythos rows models.dev lacks under `anthropic`: `claude-mythos-5` with
@@ -2052,7 +2055,9 @@ error types is removed; `Provider()` returns the instance name and a new
   constructs adapters by struct literal and calls the two-argument interface
   today (`differential_fuzz_test.go:89-92`), so it moves to `Resolved`
   inputs; the openai-compat leg becomes the `chatcompletions` leg.
-- **Live** (`EVENER_LIVE_TESTS=1`): the `[1m]` beta on Sonnet 4.5 and Opus
+- **Live** (`EVENER_LIVE_TESTS=1`): the Sonnet 4.5 `[1m]` row, whose 1M
+  window is GA and whose request therefore carries no beta header
+  (`TestLiveOneMegaContextRowAccepted`); the `[1m]` beta on Opus
   4.5, Groq Responses, Bedrock `global.` routing, Kimi K3's thinking shape,
   MiniMax M3's budget object, and one request per cloud transport once
   step 4 lands.

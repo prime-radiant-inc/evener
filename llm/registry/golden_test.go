@@ -194,7 +194,8 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"anthropic-sonnet-4-5-1m", "anthropic/claude-sonnet-4-5[1m]", nil, func(t *testing.T, res Resolved) {
-			if res.WireID != "claude-sonnet-4-5" || ip(res.Caps.ContextWindow) != 1000000 || res.Headers["anthropic-beta"] != "context-1m-2025-08-07" || sp(res.Caps.ThinkingShape) != "budget" {
+			// GA 1M window: the row sends no beta header (see the overlay).
+			if res.WireID != "claude-sonnet-4-5" || ip(res.Caps.ContextWindow) != 1000000 || res.Headers["anthropic-beta"] != "" || sp(res.Caps.ThinkingShape) != "budget" {
 				t.Errorf("%+v", res)
 			}
 		}},

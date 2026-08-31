@@ -469,7 +469,9 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(groqChat["max_tokens"] != nil && groqChat["max_completion_tokens"] == nil && groqChat["stream_options"] != nil, "groq chat spelling/stream_options: %s", byName["groq-chat-stream"].Body)
 
 	sonnet1m := byName["anthropic-sonnet-4-5-1m-stream"]
-	check(strings.Contains(sonnet1m.Headers["Anthropic-Beta"], "context-1m-2025-08-07") && sonnet1m.Headers["X-Api-Key"] == "<credential>" && sonnet1m.Headers["Anthropic-Version"] != "", "sonnet [1m] headers: %v", sonnet1m.Headers)
+	// Sonnet 4.5's 1M window is GA (verified live 2026-08-31), so the [1m] row
+	// puts no anthropic-beta on the wire — only the standing auth/version pair.
+	check(sonnet1m.Headers["Anthropic-Beta"] == "" && sonnet1m.Headers["X-Api-Key"] == "<credential>" && sonnet1m.Headers["Anthropic-Version"] != "", "sonnet [1m] headers: %v", sonnet1m.Headers)
 	check(bodyOf(t, sonnet1m)["model"] == "claude-sonnet-4-5", "sonnet [1m] wire id: %v", bodyOf(t, sonnet1m)["model"])
 	opus46 := bodyOf(t, byName["anthropic-opus-4-6-no-effort"])
 	check(opus46["thinking"].(map[string]any)["type"] == "adaptive" && opus46["thinking"].(map[string]any)["display"] == nil && opus46["output_config"] == nil, "opus 4.6 adaptive without display: %s", byName["anthropic-opus-4-6-no-effort"].Body)

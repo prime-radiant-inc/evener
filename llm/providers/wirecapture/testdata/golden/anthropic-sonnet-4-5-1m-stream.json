@@ -5,7 +5,6 @@
   "method": "POST",
   "url": "https://api.anthropic.com/v1/messages",
   "headers": {
-    "Anthropic-Beta": "context-1m-2025-08-07",
     "Anthropic-Version": "2023-06-01",
     "Content-Type": "application/json",
     "X-Api-Key": "\u003ccredential\u003e"

@@ -150,7 +150,8 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	if *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
 		t.Fatalf("[1m]: %v %v", res.Caps.ContextWindow, res.Provenance)
 	}
-	if res.WireID != "claude-sonnet-4-5" || res.Surface != SurfaceAnthropic || res.Model.Family != "claude-sonnet" || res.Headers["anthropic-beta"] != "context-1m-2025-08-07" || *res.Caps.ThinkingShape != "budget" || res.Caps.ThinkingAlwaysOn != nil || res.Caps.Sampling != nil {
+	// Sonnet 4.5's 1M window is GA, so the [1m] row resolves with no beta header.
+	if res.WireID != "claude-sonnet-4-5" || res.Surface != SurfaceAnthropic || res.Model.Family != "claude-sonnet" || res.Headers["anthropic-beta"] != "" || *res.Caps.ThinkingShape != "budget" || res.Caps.ThinkingAlwaysOn != nil || res.Caps.Sampling != nil {
 		t.Fatalf("[1m] row: %+v", res)
 	}
 	res = mustResolve(t, r, "openai-codex/gpt-5.6")

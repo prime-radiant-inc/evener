@@ -25,9 +25,6 @@
     "wire_id": "claude-sonnet-4-5",
     "alias_of": "claude-sonnet-4-5",
     "family": "claude-sonnet",
-    "headers": {
-      "anthropic-beta": "context-1m-2025-08-07"
-    },
     "surface": "anthropic",
     "caps": {}
   },
@@ -64,9 +61,6 @@
     },
     "thinking_shape": "budget",
     "web_search": true
-  },
-  "headers": {
-    "anthropic-beta": "context-1m-2025-08-07"
   },
   "provenance": {
     "ContextWindow": "overlay/row",

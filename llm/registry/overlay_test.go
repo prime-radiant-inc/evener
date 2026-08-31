@@ -98,11 +98,23 @@ func TestCuratedOverlay_Transports(t *testing.T) {
 func TestCuratedOverlay_AnthropicRows(t *testing.T) {
 	l := loadOverlay(t)
 	a := l.Providers["anthropic"]
+	// Every [1m] row aliases its base row and pins the 1M window. Only the
+	// Opus 4.5 pair still opts in with the beta header; Sonnet 4.5's 1M window
+	// is GA (verified live 2026-08-31), so its rows must send no beta header —
+	// a stale opt-in reintroduced here would ride every [1m] request.
 	for _, id := range []string{"claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929[1m]", "claude-opus-4-5[1m]", "claude-opus-4-5-20251101[1m]"} {
 		row, ok := a.Models[id]
 		base := strings.TrimSuffix(id, "[1m]")
-		if !ok || row.AliasOf != base || row.WireID != base || row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1000000 || row.Headers["anthropic-beta"] != "context-1m-2025-08-07" {
+		if !ok || row.AliasOf != base || row.WireID != base || row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1000000 {
 			t.Errorf("%s: %+v", id, row)
+			continue
+		}
+		want := "context-1m-2025-08-07"
+		if strings.HasPrefix(id, "claude-sonnet-4-5") {
+			want = ""
+		}
+		if got := row.Headers["anthropic-beta"]; got != want {
+			t.Errorf("%s: anthropic-beta = %q, want %q", id, got, want)
 		}
 	}
 	for _, id := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"} {

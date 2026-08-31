@@ -1233,10 +1233,6 @@ func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
 	if p.Model() != "claude-sonnet-4-5[1m]" {
 		t.Errorf("model: got %q, want %q", p.Model(), "claude-sonnet-4-5[1m]")
 	}
-	// The alias row is what makes the 1M window legal on the wire.
-	if bh := p.Resolved().Headers["anthropic-beta"]; bh != "context-1m-2025-08-07" {
-		t.Errorf("anthropic-beta = %q, want context-1m-2025-08-07", bh)
-	}
 }
 
 func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
@@ -1285,16 +1281,15 @@ func TestProfile_ProviderOptionsAreNotAliased(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
+// Sonnet 4.5's 1M window is GA (verified live 2026-08-31), and so is prompt
+// caching, so the [1m] profile opts into neither: it sends no anthropic-beta
+// header at all. Any value here means a retired beta crept back onto every
+// [1m] request.
+func TestAnthropicProfile_1M_NoBetaHeader(t *testing.T) {
 	t.Parallel()
 	p := newAnthropicProfile("claude-sonnet-4-5[1m]")
-	bh := p.Resolved().Headers["anthropic-beta"]
-	if !strings.Contains(bh, "context-1m-2025-08-07") {
-		t.Fatalf("expected 1M beta header, got %q", bh)
-	}
-	// Should NOT have prompt-caching — caching is GA.
-	if strings.Contains(bh, "prompt-caching-2024-07-31") {
-		t.Fatalf("prompt-caching beta header should not be present (GA), got %q", bh)
+	if bh := p.Resolved().Headers["anthropic-beta"]; bh != "" {
+		t.Fatalf("anthropic-beta = %q, want no header: the 1M window and prompt caching are both GA", bh)
 	}
 }
 

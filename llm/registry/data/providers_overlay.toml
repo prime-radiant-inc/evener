@@ -104,17 +104,18 @@ context_window = 200000
 [providers.anthropic.models."claude-sonnet-4-5-20250929"]
 context_window = 200000
 
-# [1m] rows exist only where the 1M window is a beta.
+# [1m] rows give a 1M window the base row does not. Sonnet 4.5's is GA
+# (verified live 2026-08-31: /v1/models reports max_input_tokens = 1000000
+# with and without the beta, and /messages accepts a headerless request), so
+# its rows carry no header; Opus 4.5 still opts in with anthropic-beta.
 [providers.anthropic.models."claude-sonnet-4-5[1m]"]
 alias_of = "claude-sonnet-4-5"
 wire_id = "claude-sonnet-4-5"
 context_window = 1000000
-headers = { "anthropic-beta" = "context-1m-2025-08-07" }
 [providers.anthropic.models."claude-sonnet-4-5-20250929[1m]"]
 alias_of = "claude-sonnet-4-5-20250929"
 wire_id = "claude-sonnet-4-5-20250929"
 context_window = 1000000
-headers = { "anthropic-beta" = "context-1m-2025-08-07" }
 [providers.anthropic.models."claude-opus-4-5[1m]"]
 alias_of = "claude-opus-4-5"
 wire_id = "claude-opus-4-5"
