@@ -148,10 +148,10 @@ func FuzzStoolDispatch(f *testing.F) {
 		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"in_progress"}]}`))
 		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"done"}]}`))
 		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":2,"status":"done"}]}`))
-			stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "add"))
+		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "add"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "update"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "view"))
-			stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "both"))
+		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "both"))
 
 		// Entry-cancellation path: execTool must short-circuit to a skipped result
 		// (never a panic) when handed an already-canceled context.
