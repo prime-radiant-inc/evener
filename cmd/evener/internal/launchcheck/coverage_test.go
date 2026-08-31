@@ -111,6 +111,10 @@ func TestLaunchCheckModelsListsVisibleInstances(t *testing.T) {
 	client := launchCheckClient(t, map[string]registry.Provider{
 		"fake": {Base: "openai-compatible", APIKey: "k", Transport: registry.Transport{BaseURL: "http://fake.invalid/v1"}},
 		"bad":  {Base: "openai-compatible", APIKey: "k", Transport: registry.Transport{BaseURL: "http://bad.invalid/v1"}},
+		// The curated ollama instance is implicit with no environment at all
+		// and would probe the developer's real localhost daemon; hiding it
+		// keeps the visible set to this fixture's own instances on any host.
+		"ollama": {Hidden: true},
 	},
 		&launchCheckFakeAdapter{name: "fake", models: []registry.Model{{ID: "z-chat"}, {ID: "a-chat"}}},
 		&launchCheckFakeAdapter{name: "bad", err: errors.New("listing refused")},
