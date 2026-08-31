@@ -537,3 +537,59 @@ func TestView_ReturnsCopy(t *testing.T) {
 		t.Error("View did not return a copy; mutation leaked into the store")
 	}
 }
+
+// TestTaskUpdate_EmptyStatusMeansNoChange pins the combined-tool contract:
+// an update entry with an empty status leaves the task's status unchanged
+// while still applying notes, deps, and effort — the tool schema has always
+// documented status as optional, so the store must honor that.
+func TestTaskUpdate_EmptyStatusMeansNoChange(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "d", Prompt: "p"}})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note one"}}); err != nil {
+		t.Fatalf("notes-only update: %v", err)
+	}
+	got := s.View()
+	if got[0].Status != TaskOpen {
+		t.Fatalf("status changed by notes-only update: %v", got[0].Status)
+	}
+	if len(got[0].Notes) != 1 || got[0].Notes[0] != "note one" {
+		t.Fatalf("notes not applied: %v", got[0].Notes)
+	}
+
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note two"}}); err != nil {
+		t.Fatalf("notes-only during progress: %v", err)
+	}
+	got = s.View()
+	if got[0].Status != TaskInProgress {
+		t.Fatalf("notes-only update clobbered in_progress: %v", got[0].Status)
+	}
+	if len(got[0].Notes) != 2 {
+		t.Fatalf("second note not appended: %v", got[0].Notes)
+	}
+}
+
+// TestTaskUpdate_EmptyStatusStillValidates pins that empty status does not
+// weaken the other validations: unknown IDs, unknown deps, and invalid
+// non-empty statuses still fail.
+func TestTaskUpdate_EmptyStatusStillValidates(t *testing.T) {
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "d", Prompt: "p"}})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.Update([]TaskUpdate{{ID: 999, Notes: "x"}}); err == nil {
+		t.Fatal("unknown ID with empty status must still be rejected")
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, DependsOn: &[]int{999}}}); err == nil {
+		t.Fatal("unknown dep must still be rejected")
+	}
+	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "bogus"}}); err == nil {
+		t.Fatal("bogus status must still be rejected")
+	}
+}
