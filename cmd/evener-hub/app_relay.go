@@ -26,8 +26,9 @@ type hubRelayHandle struct {
 }
 
 type relayKeyState struct {
-	commands int
-	thread   appwire.Thread
+	commands     int
+	thread       appwire.Thread
+	argsByCallID map[string]string
 }
 
 type hubThreadReadResult struct {
@@ -311,7 +312,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			ticker := time.NewTicker(relayIdleInterval)
 			defer ticker.Stop()
 			defer retireRelayHandle(handle)
-			argsByCallID := map[string]string{}
 			for {
 				select {
 				case <-handle.ctx.Done():
@@ -384,10 +384,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						return
 					}
 					type relayTargetState struct {
-						relayKey string
-						threadID string
-						ref      string
-						thread   appwire.Thread
+						relayKey     string
+						threadID     string
+						ref          string
+						thread       appwire.Thread
+						argsByCallID map[string]string
 					}
 					relayMu.Lock()
 					targets := make([]relayTargetState, 0, len(handle.relayKeys))
@@ -397,10 +398,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						}
 						parsedRef, _ := appwire.ParseRef(relayKey)
 						target := relayTargetState{
-							relayKey: relayKey,
-							threadID: parsedRef.ThreadID,
-							ref:      relayKey,
-							thread:   state.thread,
+							relayKey:     relayKey,
+							threadID:     parsedRef.ThreadID,
+							ref:          relayKey,
+							thread:       state.thread,
+							argsByCallID: state.argsByCallID,
 						}
 						if state.thread.ID != "" {
 							target.threadID = state.thread.ID
@@ -422,7 +424,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						// be asked to do once the daemon announcing its own close is
 						// gone.
 						if strings.HasPrefix(target.relayKey, "local:") {
-							notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, argsByCallID, notification)
+							notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
 							notification = stampClosedThreadCapabilities(notification)
 						}
 						_, publicationErr := withDeletionTargetOwnership(cfg, target.ref, target.threadID, "", func() (struct{}, error) {
@@ -460,7 +462,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			state := handle.relayKeys[relayKey]
 			if relayedThreads[relayKey] != handle || state == nil {
-				state = &relayKeyState{}
+				state = &relayKeyState{argsByCallID: make(map[string]string)}
 				handle.relayKeys[relayKey] = state
 				relayedThreads[relayKey] = handle
 			}
