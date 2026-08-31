@@ -351,8 +351,13 @@ hub's credentials pane.
 and later are unknown ids — the 4.6+ rows are 1M natively, no suffix needed
 or accepted.
 
-**Sessions on Fable 5 with no `--reasoning-effort`** move from the injected
-`medium` to Anthropic's default `high`.
+**Sessions with no `--reasoning-effort`** carry the model's own stated
+default effort, else `medium`, clamped to the model's ladder. Adaptive
+Claude (Opus 4.6/4.7/4.8, Sonnet 4.6, and the 5 family, Fable 5 included)
+states `high`, which is what Anthropic runs when the effort is omitted; the
+budget-shaped Claude 4.5 generation, Gemini 2.5, and the zai/qwen thinking
+toggles move from their provider's dynamic default to `medium`. Pass
+`--reasoning-effort none` to send no reasoning control at all.
 
 **Ollama and local-model context windows.** The bundled per-model catalog
 (8192 for `llama3.1`, tag-stripping) is gone; every live-only model on

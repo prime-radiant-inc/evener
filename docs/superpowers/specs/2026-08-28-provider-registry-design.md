@@ -237,6 +237,7 @@ type Caps struct {
     Reasoning         *bool      // false: no reasoning controls, no thinking replay, empty effort list
     ReasoningControls []string   // subset of effort, budget_tokens, toggle (models.dev names); replace on overlay
     EffortValues      []string   // wire-spelled ladder, ascending; replace on overlay; non-empty implies effort
+    DefaultEffort     *string    // the effort the model runs at when the request omits one (§7.4)
     InputModalities   []string   // text, image, pdf, audio; replace on overlay
     KnowledgeCutoff   *string    // YYYY-MM or YYYY-MM-DD
     Cost              *Cost      // $/M tokens; replace on overlay
@@ -621,6 +622,7 @@ Model-level mapping:
 | `tool_call`, `structured_output` | `Tools`, `StructuredOutput` |
 | `reasoning` | `Reasoning` |
 | `reasoning_options[].type` (a list; 752 rows carry two or three, 1237 text rows carry an empty list) | `ReasoningControls` as the set of types present, models.dev spelling (`effort`, `budget_tokens`, `toggle`); the `effort` entry's `values` → `EffortValues` with `none` dropped (evener's `none` clears the setting); values outside evener's vocabulary (`default`, `null`, one descending ladder) are kept verbatim; `ClampReasoningEffort` skips entries it cannot rank and passes the request through, as today (`llm/types.go:699-733`) |
+| no models.dev field | `DefaultEffort` — models.dev states nothing about what a model does when the effort is omitted, so every value is curated (§6.2) or live (the Codex backend's `default_reasoning_level`) |
 | `temperature: false` | `Sampling = false`, a fact (so alias rows inherit it); the builder then omits the protocol's temperature and top-p paths (`temperature`/`top_p` on the OpenAI protocols and anthropic, `generationConfig.temperature`/`generationConfig.topP` on google) regardless of `Fields` |
 | `modalities.input` | `InputModalities` |
 | `knowledge` | `KnowledgeCutoff` |
@@ -1022,13 +1024,38 @@ excepted), `Resolve` derives, in this order:
    Opus 4.7/4.8 and Mythos), applied on every instance that serves those
    rows.
 
-Provenance records `derived` for each. `ThinkingAlwaysOn` never injects an
-effort: today's session branch that turns it into `medium`
-(`agent/session_model_call.go:806-816`) is deleted in step 3, `ShapeRequest`
-(§7.5) never adds an effort the caller did not set, and the only place a
-default effort value appears on the wire is inside the two chat dialects
-that need one (§8.4). Anthropic's own default when `output_config.effort`
-is omitted is `high`, so injecting `medium` would be a silent downgrade.
+Provenance records `derived` for each.
+
+**The effort a request carries** (amended 2026-08-30, Jesse: a session with
+nothing configured was reaching gateways with no reasoning field at all,
+and a lunaroute-fronted glm-5.3 spent 25k reasoning tokens on its first turn
+that way, while mandatory-thinking models reject a reasoning-less request
+outright). One rule decides it, in `agent`, for the primary request and each
+fallback alike:
+
+- A model that does not reason (`Reasoning = false`) never gets an effort,
+  whatever is configured.
+- An explicit off (`none`, and the disable aliases that normalize to it) is
+  carried only when the row's `EffortValues` lists an off level; otherwise
+  the field is omitted. It is never replaced by a default. The adapters send
+  nothing for it in any case (§8.4), so today it always means "no reasoning
+  control on the wire".
+- A configured effort is clamped to `EffortValues`.
+- Nothing configured: the row's own `DefaultEffort`, else `medium`, clamped.
+
+`ThinkingAlwaysOn` is not a branch in that rule: a mandatory-thinking model
+is a reasoning model and takes the default like any other, and the dialect
+default of §8.4 remains the backstop for the requests that still reach an
+adapter with no effort. The consequence is deliberate: rows whose provider
+default was dynamic or off (Gemini 2.5 and the budget-shaped Claude 4.5
+generation, the zai and qwen thinking toggles) now run at `medium` unless
+told otherwise, and adaptive Claude keeps running at `high` because its
+rows state `default_effort = "high"` — Anthropic's own default when
+`output_config.effort` is omitted, which an injected `medium` would
+silently downgrade.
+
+`ShapeRequest` (§7.5) still adds no effort of its own: it clamps what the
+caller set, and the caller is the one rule above.
 
 ### 7.5 What the agent reads from `Resolved`
 
@@ -1057,14 +1084,15 @@ to exactly one of five keys:
 | plugin-agent `model:` declarations (`resolvePluginAgentCatalogRef`, `subagent_model_selection.go:155-190`, today via `catalog.ResolveAlias`) | `Registry.FindModel` | `instance/model` resolves directly; a bare id resolves to the session's current instance when that instance serves it, else to the highest-ranked serving instance under §5.1's default ranking (explicit or implicit alike), and to *unavailable* when none serves it, preserving today's fallback-with-warning. With both `openai-codex` and `openai` present, a bare `gpt-5.6` from an `anthropic` session therefore goes to `openai-codex` |
 | `ProviderOptions` map key and the API-log tag (`session_model_call.go:248`) | `Protocol` | options are protocol extras (beta headers, safety settings) |
 | `openAIPromptCacheSupported` (`session.go:1343`) | `PromptCacheKey` set iff `Fields["prompt_cache_key"]`; `PromptCacheRetention = "24h"` set iff `Fields["prompt_cache_retention"]` | two independent gates, so Codex keeps the cache key and GPT-5.6 drops only the legacy retention field |
-| the `ThinkingAlwaysOn` → `medium` injection (`session_model_call.go:806-816`) | deleted | §7.4: always-on is a builder concern, never an injected effort |
+| the `ThinkingAlwaysOn` → `medium` injection (`session_model_call.go:806-816`) | `Caps.DefaultEffort` | §7.4: always-on is not a special case; the default is a model fact the one rule reads, not a branch on the always-on flag |
 | `Client.BehaviorTagOf` identity fallback for replay scope (`client.go:432`, `session_model_call.go:1171`) | `Instance` + `Protocol`, both recorded on every turn | turns produced by instances no longer configured still carry what the replay needs; a turn written before the cut-over carries only `ResponseProvider`/`ResponseModel` (`agent/schema/turn.go:189-190`), so the replay resolves that instance name at replay time and treats an unknown instance as not eligible |
 
 `llm.ShapeRequest(req, resolved)` is the single place the request-level
 shaping happens and the only caller of `ClampReasoningEffort`. It runs in
 this order: clear reasoning controls when `Caps.Reasoning == false`; clamp
 the effort to `EffortValues` when one is set (an empty ladder passes the
-requested effort through unchanged; no effort is ever added); apply
+requested effort through unchanged; no effort is ever added here — §7.4's
+rule in `agent` is what sets one); apply
 `MaxOutputTokens` when the request has none; apply the
 Responses-continuation store override when a continuation is planned
 (§7.6); drop request-level sampling parameters whose `Fields` entry is
@@ -1313,7 +1341,7 @@ the dialects that had one.
 
 | `ThinkingFormat` | when an effort is set | with `ThinkingAlwaysOn` and no effort |
 |---|---|---|
-| `openai` (default) | `reasoning_effort: <wire>` if effort-capable, else nothing (Chat Completions has no toggle) | `reasoning_effort: medium` clamped to `EffortValues` (today's default, `request.go:238-247`; the only place a default effort appears on the wire, with `string-thinking`) |
+| `openai` (default) | `reasoning_effort: <wire>` if effort-capable, else nothing (Chat Completions has no toggle) | `reasoning_effort: medium` clamped to `EffortValues` (today's default, `request.go:238-247`; the adapter-side backstop, reached only by a request §7.4's rule left without an effort) |
 | `openrouter` | `reasoning: {effort: <wire>}` **unconditionally** (today's `request.go:265-266`; OpenRouter normalizes effort for every reasoning model, translating it to a budget for Anthropic-routed ones, and six of its `anthropic/*` rows are toggle-only in models.dev while its live listing reports no `supported_efforts` for them, so a gate here would silently downgrade `high` to medium) | `reasoning: {enabled: true}` |
 | `zai` | always `thinking: {type: enabled, clear_thinking: false}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled, clear_thinking: false}` |
 | `deepseek` | always `thinking: {type: enabled}`; plus `reasoning_effort: <wire>` if effort-capable | `thinking: {type: enabled}` |
@@ -2131,8 +2159,11 @@ once, and the release notes and the load-error pointer say so:
   re-enters them under the new names.
 - **`[1m]` references**: only the Sonnet 4.5 and Opus 4.5 rows keep the
   suffix (§6.2); `claude-opus-4-6[1m]` and later are unknown ids.
-- **Sessions on Fable 5 with no `--reasoning-effort`** move from the
-  injected `medium` to Anthropic's default `high` (§7.4).
+- **Sessions with no `--reasoning-effort`** carry the row's `DefaultEffort`,
+  else `medium`, clamped to its ladder (§7.4). Fable 5 and the rest of
+  adaptive Claude run at `high`, their stated default; the budget-shaped
+  Claude 4.5 generation, Gemini 2.5, and the zai/qwen toggles move from
+  their provider's dynamic default to `medium`.
 - **Context windows for Ollama and local models**: the LiteLLM `ollama/*`
   rows (8192 for `llama3.1`, `:tag` stripping) are gone; every live-only
   model on `ollama` or a pseudo-provider now budgets against the
@@ -2167,8 +2198,10 @@ files are renamed or deleted.
 - Wire-shape derivation on the anthropic protocol is keyed on the row's
   family (or the provider's curated family for synthesized rows), never on
   its surface; the pins are the Opus 4.5 hybrid, Kimi, and MiniMax.
-- `ThinkingAlwaysOn` is a builder concern; no layer ever injects an effort
-  the caller did not set.
+- `ThinkingAlwaysOn` is a builder concern, not a branch in the effort rule.
+  No registry layer injects an effort; `agent` applies one rule for the
+  effort a request carries, reading the row's `DefaultEffort` (§7.4,
+  Jesse, 2026-08-30).
 - The `openrouter` dialect sends `reasoning.effort` unconditionally, as
   today.
 - Implicit instances only for the curated list; everything else is opt-in

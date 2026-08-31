@@ -350,6 +350,7 @@ stream_options = false                   # this gateway rejects stream_options
 context_window    = 1048576
 max_output_tokens = 131072
 effort_values     = ["high", "max"]      # implies the effort control
+default_effort    = "high"               # what it runs at with nothing configured
 thinking_format   = "zai"
 
 [providers.local]
@@ -370,7 +371,7 @@ GOOGLE_VERTEX_LOCATION = "global"
 ```
 
 `[providers.work]` above is also the pattern for a gateway that needs
-per-model overrides (a custom `context_window`/`effort_values`/
+per-model overrides (a custom `context_window`/`effort_values`/`default_effort`/
 `thinking_format` on one model id) — there's no separate worked example for
 that, this is it.
 
@@ -400,7 +401,8 @@ Load rules, enforced with errors that name the instance and key:
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
   validated against their vocabularies; `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
-  non-empty, and `"off"` is rejected.
+  non-empty, and `"off"` is rejected. `default_effort` takes any level plus
+  the disable aliases, normalized when the profile reads it.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
   blocks another. **This is a behavior change:** an unset variable in
@@ -627,14 +629,38 @@ forcing, `agent/` declines to use it.
 
 ## Reasoning effort
 
-One per-session knob ordered `minimal < low < medium < high < xhigh == max`
-(`xhigh` and `max` are aliases for the top tier; `none` clears it).
+One per-session knob ordered `minimal < low < medium < high < xhigh < max` —
+distinct ascending tiers, not aliases, which the per-model clamp resolves to
+the nearest level the model advertises. The vocabulary and its helpers
+(`ClampReasoningEffort`, `NormalizeReasoningEffort`, `ReasoningEffortRank`)
+live in `llm/types.go`; `none` and its aliases (`off`, `null`, `false`, `0`)
+are the explicit off, which is distinct from leaving the knob unset.
+
+**What a request carries.** One rule in `agent`
+(`resolveRequestEffort`, `agent/session_model_call.go`) decides it for the
+primary request and every fallback:
+
+| configured | model | on the request |
+|---|---|---|
+| anything | `reasoning = false` | nothing |
+| an explicit off | any reasoning model | nothing, unless the model's ladder lists an off level; never replaced by a default |
+| a level | any reasoning model | that level, clamped to the model's ladder |
+| nothing | a model that states a `default_effort` | that default, clamped |
+| nothing | any other reasoning model | `medium`, clamped |
+
+A reasoning model therefore reasons at `medium` unless something says
+otherwise, which is why adaptive Claude's rows state `default_effort =
+"high"`: that is Anthropic's own default when `output_config.effort` is
+omitted, and taking `medium` instead would be a silent downgrade. Rows whose
+provider default was dynamic (Gemini 2.5, the budget-shaped Claude 4.5
+generation, the zai and qwen thinking toggles) do move to `medium`. Set
+`--reasoning-effort none` to send no reasoning control at all and let the
+provider decide.
 
 **Per-model clamping.** Each resolved row advertises the levels it supports
-(`EffortValues` → `Profile.ReasoningEffortLevels()`). `buildModelRequest`
-clamps the requested effort to that set before the call, so an over-range
+(`EffortValues` → `Profile.ReasoningEffortLevels()`), so an over-range
 request (e.g. `xhigh` to a model capped at `high`) is reduced rather than
-rejected.
+rejected. A row that states no ladder passes the effort through unchanged.
 
 **Provider mapping.** The openai-chat dialects send the `reasoning_effort`
 enum (see [Reasoning and thinking dialects](#reasoning-and-thinking-dialects)
