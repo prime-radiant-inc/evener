@@ -427,8 +427,9 @@ func (p *Profile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
 func (p *Profile) KnowledgeCutoff() string { return p.knowledgeCutoff }
 
 // ConfiguredCheapModel returns the auxiliary model explicitly set via
-// WithCheapModel, or "" if none was configured. Callers can use the empty
-// result to detect whether to run optional work such as session naming.
+// WithCheapModel, or "" if none was configured. Unlike CheapModelRef, it does
+// not fall back to the active provider and model, so callers can distinguish
+// explicit routing from the default auxiliary fallback.
 func (p *Profile) ConfiguredCheapModel() string {
 	if p == nil {
 		return ""

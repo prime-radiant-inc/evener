@@ -53,6 +53,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 		}
 		c := llm.NewClient()
 		c.Register(childAdapter)
+		registerTestSessionNamer(c)
 		return c
 	}
 
@@ -65,7 +66,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	}
 	cfg.testOnly.childClientFactory = factory
 
-	sess, err := NewSession(parentClient, NewOpenAIProfile("gpt-5.2"), env, cfg)
+	sess, err := NewSession(parentClient, withTestSessionNamer(parentClient, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

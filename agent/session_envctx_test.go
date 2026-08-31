@@ -194,7 +194,7 @@ func TestSession_MaybeAppendEnvironmentContext_NoRaceWithCompact(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
@@ -229,7 +229,7 @@ func TestRestoredSessionWithMatchingEnvContextStaysSilent(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(2, "ok")})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
 	})
@@ -284,7 +284,7 @@ func TestRestoredSessionWithNilEnvContextReemitsFullBlock(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		testOnly: testCfg,
 	})

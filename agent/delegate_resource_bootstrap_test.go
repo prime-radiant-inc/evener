@@ -477,7 +477,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
@@ -503,7 +503,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 	adapter := &fakeAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,

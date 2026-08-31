@@ -150,7 +150,7 @@ func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) 
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		clock:    fakeClock,
 	})
@@ -222,7 +222,7 @@ func TestPersistToolResults_VisionSteeringOmitsAbsentUsage(t *testing.T) {
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 		clock:    fakeClock,
 	})
@@ -359,7 +359,7 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}
 	c := llm.NewClient()
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("m")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {

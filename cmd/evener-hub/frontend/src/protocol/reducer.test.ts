@@ -524,7 +524,19 @@ function agentMessageDelta(delta: string): AnyNotification {
   };
 }
 
-test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", () => {
+// The O(1)-append test's ceiling is a tripwire for a hang, not a
+// responsiveness bar: its 20,000-delta fold measures ~0.4s in isolation and
+// in-suite, so the 5s default holds ~12x headroom — until the whole gate's
+// concurrent Go and vitest streams saturate the runner and a single worker
+// loses more than that (the #672 CI failure: 5,000ms exceeded, same tree
+// green on rerun). Sized like hookTimeout/WARM_ROUTE_TRIPWIRE_MS: well above
+// the work, still bounded, and a regression to O(n^2) blows through it
+// regardless (a copy per delta is ~200M string copies at N=20,000).
+const O1_APPEND_TRIPWIRE_MS = 30_000;
+
+test("every delta's fold appends onto the SAME backing array, which grows by exactly one (O(1) append)", {
+  timeout: O1_APPEND_TRIPWIRE_MS,
+}, () => {
   // White-box on purpose (chunkViewBackingForTests): chunk strings are
   // PRIMITIVES, so element-level identity checks survive a per-delta copy
   // ([...chunks, delta] preserves every string reference) — only the

@@ -9,8 +9,22 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
+
+const fallbackTestNamerProvider = "fallback-test-namer"
+
+func withFallbackTestNamer(client *llm.Client, profile *provider.Profile) *provider.Profile {
+	client.Register(&agenttest.ScriptedAdapter{Provider: fallbackTestNamerProvider, Responder: func(request llm.Request) llm.Response {
+		return llm.Response{
+			Provider: fallbackTestNamerProvider,
+			Model:    request.Model,
+			Message:  llm.Assistant(`{"name":"Fallback Test"}`),
+		}
+	}})
+	return provider.WithCheapModel(profile, fallbackTestNamerProvider+"/namer")
+}
 
 // kata cxw8: when the primary model returns a Permanent class error
 // (403/404/...) and ModelFallbacks is configured, the session must try each
@@ -44,7 +58,7 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -103,7 +117,7 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b"},
 	})
@@ -180,7 +194,7 @@ func TestFallbackChain_UsesSnapshotEffortClampedToFallback(t *testing.T) {
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	profile := agent.NewOpenAIProfile("primary").WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})
 	var err error
-	sess, err = agent.NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err = agent.NewSession(c, withFallbackTestNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"fallback-b"},
@@ -237,7 +251,7 @@ func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -299,7 +313,7 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	// Burn budget quickly: 1 retry = 2 primary attempts total, no sleeps.
 	policy := llm.RetryPolicy{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
 	sleep := func(ctx context.Context, d time.Duration) error { return nil }
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       sleep,
 		ModelFallbacks: []string{"fallback-b"},
@@ -347,7 +361,7 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 	c.Register(openaiAdapter)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	_, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	_, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"anthropic/claude-test", "fallback-b"},
 	})
@@ -377,7 +391,7 @@ func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		// ModelFallbacks left nil — empty chain.
 	})
@@ -434,7 +448,7 @@ func TestFallbackChain_RetryAfterBeyondMaxDelayFallsBack(t *testing.T) {
 
 	policy := llm.RetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond, MaxDelay: 60 * time.Second}
 	sleep := func(ctx context.Context, d time.Duration) error { return nil }
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, withFallbackTestNamer(c, agent.NewOpenAIProfile("primary")), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       sleep,
 		ModelFallbacks: []string{"fallback-b"},

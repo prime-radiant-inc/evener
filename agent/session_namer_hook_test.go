@@ -199,7 +199,7 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	}
 }
 
-func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
+func TestSessionProcessInput_LaunchesInitialPromptNamerWithoutConfiguredCheapModel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
@@ -208,7 +208,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 			return toolCallResponse(communicateCall("c1", "done"))
 		},
 	}})
-	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
+	profile := NewOpenAIProfile("gpt-5.2")
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

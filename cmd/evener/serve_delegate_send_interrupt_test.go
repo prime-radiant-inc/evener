@@ -56,6 +56,9 @@ func newWaiterInterruptAdapter() *waiterInterruptAdapter {
 func (a *waiterInterruptAdapter) Name() string { return "openai" }
 
 func (a *waiterInterruptAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if response, ok := scriptedSessionNamerResponse(a.Name(), req); ok {
+		return response, nil
+	}
 	text := requestFullText(req)
 	if strings.Contains(text, waiterInterruptChildTask) && !strings.Contains(text, waiterInterruptRootPrompt) {
 		a.mu.Lock()

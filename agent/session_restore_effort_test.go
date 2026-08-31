@@ -44,7 +44,7 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 				Model:     "gpt-5.2",
 				Config:    schema.ConfigSnapshot{ReasoningEffort: tc.persisted},
 			}
-			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
+			sess, err := RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
 			if err != nil {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 			}

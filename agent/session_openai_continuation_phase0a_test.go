@@ -72,7 +72,7 @@ func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
 		Client:  srv.Client(),
 	})
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "off",
 		testOnly:                    testConfig{metaFS: afero.NewMemMapFs()},

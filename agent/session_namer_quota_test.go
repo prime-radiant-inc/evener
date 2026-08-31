@@ -40,8 +40,8 @@ func (h *namerQuotaHarness) callCount() int {
 const namerQuotaSwitchProvider = "anthropic"
 
 // namerQuotaSwitchTarget resolves the one cross-provider ref these tests use.
-// The target configures its own cheap model, so whether the namer runs after
-// the switch turns on quota state alone rather than on an unconfigured namer.
+// The target configures its own cheap model so the switch also exercises
+// explicit cross-provider naming while quota state controls whether it runs.
 func namerQuotaSwitchTarget(ref string) (*provider.Profile, error) {
 	name, model, ok := strings.Cut(ref, "/")
 	if !ok || name != namerQuotaSwitchProvider {

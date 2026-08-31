@@ -66,7 +66,7 @@ func restoredSessionWithResumeHook(t *testing.T, adapter *fakeAdapter) *Session 
 	client.Register(adapter)
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
-		NewOpenAIProfile("gpt-5.2"),
+		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		meta,
 		RestoreSessionConfig{

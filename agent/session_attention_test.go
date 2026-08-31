@@ -471,26 +471,28 @@ func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T
 	var releaseFinalizerOnce sync.Once
 	t.Cleanup(func() { releaseFinalizerOnce.Do(func() { close(releaseFinalizer) }) })
 	recoveryErr := make(chan error, 1)
-	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
-		controller := root.delegateController
-		lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
-		controller.mu.Lock()
-		var claim *delegateSettlementClaim
-		for _, candidate := range controller.settlementClaims {
-			if candidate != nil && candidate.lease == lease {
-				claim = candidate
-				break
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(*subagent) {
+			controller := root.delegateController
+			lease := delegateLease{delegateID: fixture.delegateID, generation: 1}
+			controller.mu.Lock()
+			var claim *delegateSettlementClaim
+			for _, candidate := range controller.settlementClaims {
+				if candidate != nil && candidate.lease == lease {
+					claim = candidate
+					break
+				}
 			}
+			controller.mu.Unlock()
+			if claim == nil {
+				recoveryErr <- errors.New("terminal runner published without its exact settlement claim")
+			} else {
+				recoveryErr <- controller.RequireFinalizationRecovery(claim)
+			}
+			close(finalStatePublished)
+			<-releaseFinalizer
 		}
-		controller.mu.Unlock()
-		if claim == nil {
-			recoveryErr <- errors.New("terminal runner published without its exact settlement claim")
-		} else {
-			recoveryErr <- controller.RequireFinalizationRecovery(claim)
-		}
-		close(finalStatePublished)
-		<-releaseFinalizer
-	}
+	})
 	releaseProviderOnce.Do(func() { close(releaseProvider) })
 	<-finalStatePublished
 	if err := <-recoveryErr; err != nil {
@@ -548,7 +550,9 @@ progressDrained:
 	releaseFinalizerOnce.Do(func() { close(releaseFinalizer) })
 	<-oldDone
 	<-stop.progress
-	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = nil
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = nil
+	})
 	for i := range 2 {
 		evidence, err := collectDelegateReconcileEvidence(fixture.stateDir, controller.ReconcileRequirements())
 		if err != nil {

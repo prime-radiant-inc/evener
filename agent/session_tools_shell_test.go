@@ -610,7 +610,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -619,7 +619,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	}
 	t.Cleanup(func() { parent.Close() })
 
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	child, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -705,7 +705,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(adapter)
 
-	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	parent, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -714,7 +714,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}
 	t.Cleanup(func() { parent.Close() })
 
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+	child, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -1383,7 +1383,7 @@ func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
