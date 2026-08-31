@@ -41,7 +41,7 @@ func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 		Arguments: json.RawMessage(`{"task":"ping","agent_type":"subagent","isolation":"worktree",` +
 			`"sandbox":"off","sandbox_net":true,"reasoning_effort":"low","delegation_allowance":0}`),
 	}
-	res := prepareToolCall(call, rt, []string{"delegate"}, "delegate", "")
+	res := prepareToolCall(call, rt, []string{"delegate"}, "delegate", "communicate", "")
 	// sandbox_net is no longer in the schema, so it must be dropped — not
 	// cause a prevalidation error. The oneOf constraint is gone.
 	if res.PrevalErr != "" {

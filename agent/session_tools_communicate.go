@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
@@ -259,6 +260,47 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 		len(out.Artifacts) > 0
 }
 
+// defaultEnvelopeKeys are the output-envelope keys the default communicate
+// schema declares — and the only keys the documented-defaults fill may add.
+// Kept as one constant so the shape predicate and the fill cannot drift apart.
+var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
+
+// communicateEnvelopeFor reports whether t is the session's result tool with
+// its default output envelope, returning that envelope schema when it is.
+// This is the single owner of the fill's two gates (issue #627):
+//   - identity: only the result tool gets the fill. A same-shaped schema on
+//     any other registered tool (an MCP or plugin tool) must keep failing
+//     loudly on keys the model was required to choose.
+//   - exact shape: properties and required must each be precisely
+//     defaultEnvelopeKeys — a custom output schema (a delegate result_schema
+//     installed via WithCommunicateOutputSchema, or a WithAllowedDecisions
+//     superset) keeps failing loudly.
+//
+// Returning the envelope it validated (rather than a bool the caller
+// re-derives) is what keeps the check and the fill from diverging.
+func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[string]any, bool) {
+	if t == nil || t.Definition.Name != resultToolName {
+		return nil, false
+	}
+	props, _ := t.Definition.Parameters["properties"].(map[string]any)
+	envelope, _ := props["output"].(map[string]any)
+	outProps, _ := envelope["properties"].(map[string]any)
+	if outProps == nil {
+		return nil, false
+	}
+	required := communicateSchemaStringSlice(envelope["required"])
+	if !stringSetsEqual(outProps, required, defaultEnvelopeKeys...) {
+		return nil, false
+	}
+	return envelope, true
+}
+
+// usesDefaultCommunicateOutputEnvelope reports whether def's `output` property
+// is exactly the default envelope DefCommunicateNamed builds: properties and
+// required are each precisely {message, data, artifacts} — no more, no fewer.
+// A superset (WithAllowedDecisions adds an enum-constrained `decision`) or a
+// differently-shaped schema is a custom envelope, whose required keys the
+// model was expected to choose.
 func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
@@ -266,14 +308,21 @@ func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 	if outProps == nil {
 		return false
 	}
-	for _, name := range []string{"message", "data", "artifacts"} {
-		if _, ok := outProps[name]; !ok {
+	required := communicateSchemaStringSlice(output["required"])
+	return stringSetsEqual(outProps, required, defaultEnvelopeKeys...)
+}
+
+// stringSetsEqual reports whether the schema's property names and required
+// names are each exactly the wanted set (as sets: same members, same count).
+func stringSetsEqual(props map[string]any, required []string, want ...string) bool {
+	if len(props) != len(want) || len(required) != len(want) {
+		return false
+	}
+	for _, name := range want {
+		if _, ok := props[name]; !ok {
 			return false
 		}
-	}
-	required := communicateSchemaStringSlice(output["required"])
-	for _, name := range []string{"message", "data", "artifacts"} {
-		if !communicateSchemaContains(required, name) {
+		if !slices.Contains(required, name) {
 			return false
 		}
 	}
@@ -297,8 +346,61 @@ func communicateSchemaStringSlice(v any) []string {
 	}
 }
 
-func communicateSchemaContains(values []string, want string) bool {
-	return slices.Contains(values, want)
+// fillCommunicateEnvelope fills a present default-envelope `output` object's
+// missing message/data/artifacts keys with their documented empty defaults
+// ("" / {} / []). It mutates args in place on the working copy the caller
+// owns, and never overwrites an existing key. Only communicateEnvelopeFor's
+// envelope — the default one — may be passed here; a custom output schema
+// must keep failing loudly on keys the model was required to choose.
+func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
+	raw, isMap := args["output"].(map[string]any)
+	if !isMap {
+		return nil
+	}
+	props, _ := envelope["properties"].(map[string]any)
+	var changes []repair.Change
+	for _, key := range defaultEnvelopeKeys {
+		if _, present := raw[key]; present {
+			continue
+		}
+		prop, ok := props[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		v, ok := envelopeZeroValue(prop)
+		if !ok {
+			continue
+		}
+		raw[key] = v
+		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output", Detail: "filled " + key})
+	}
+	return changes
+}
+
+// envelopeZeroValue returns the zero-value instance of an envelope property's
+// declared type — the value a missing key is filled with. It returns ok=false
+// for anything that is not a plain scalar, object, or array, and for
+// enum-constrained properties: a zero value is never a value the model chose,
+// so an enum field must stay absent and be reported as missing rather than
+// silently sent as an invalid choice.
+func envelopeZeroValue(prop map[string]any) (any, bool) {
+	if _, hasEnum := prop["enum"]; hasEnum {
+		return nil, false
+	}
+	typ, _ := prop["type"].(string)
+	switch typ {
+	case "string":
+		return "", true
+	case "boolean":
+		return false, true
+	case "integer", "number":
+		return float64(0), true
+	case "object":
+		return map[string]any{}, true
+	case "array":
+		return []any{}, true
+	}
+	return nil, false
 }
 
 func hasMeaningfulRawOutput(raw any) bool {

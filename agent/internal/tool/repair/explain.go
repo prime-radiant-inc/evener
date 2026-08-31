@@ -74,7 +74,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		// error instead of a missing one. Attribute the branch here too.
 		ctx := newBranchCtx(params, args, containerPath)
 		if constraintKeyword != "" {
-			if specific := constraintMessage(toolName, fullPath, containerSchema, field, constraintKeyword, args, instanceLocation); specific != "" {
+			if specific := constraintMessage(toolName, containerSchema, fullPath, field, constraintKeyword, args, instanceLocation); specific != "" {
 				return specific + ctx.wrongBranchTail(args)
 			}
 		}
@@ -425,10 +425,10 @@ func actionExample(params map[string]any, selectorName, actionValue string, acti
 // present field whose schema rejected it: the field's display path, the
 // constraint name, its limit, and the actual value/length. Returns "" when
 // the keyword is not one of the recognized constraints (maxLength,
-// minLength, minItems, maxItems, enum) or when the schema/value shape
-// doesn't match the keyword, so the caller falls back to the generic
+// minLength, minItems, maxItems, enum, required) or when the schema/value
+// shape doesn't match the keyword, so the caller falls back to the generic
 // "wrong type or value" message.
-func constraintMessage(toolName, displayPath string, containerSchema map[string]any, field, keyword string, args map[string]any, instanceLocation string) string {
+func constraintMessage(toolName string, containerSchema map[string]any, displayPath string, field, keyword string, args map[string]any, instanceLocation string) string {
 	fieldSchema, _ := schemaProps(containerSchema)[field].(map[string]any)
 	if fieldSchema == nil {
 		return ""
@@ -471,8 +471,42 @@ func constraintMessage(toolName, displayPath string, containerSchema map[string]
 			return ""
 		}
 		return fmt.Sprintf("%s: argument %q is not one of the allowed values: %s. Value is %q.", toolName, displayPath, strings.Join(allowed, ", "), fmt.Sprint(value))
+	case "required":
+		// The field itself is present but its object value is missing required
+		// properties (the issue #627 shape: communicate's output object without
+		// its nested message/data/artifacts). Name them rather than reporting
+		// the whole object as a wrong type or value, and show the accepted
+		// shape, resolved from the field's own schema (the container it lives
+		// in), never from a same-named top-level property.
+		inst, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		missing := missingRequired(fieldSchema, inst)
+		if len(missing) == 0 {
+			return ""
+		}
+		for i, name := range missing {
+			missing[i] = fmt.Sprintf("%s.%s", displayPath, name)
+		}
+		return fmt.Sprintf("%s: argument %q is missing required properties: %s.\nExample: %s",
+			toolName, displayPath, strings.Join(missing, ", "), exampleForField(containerSchema, field))
 	}
 	return ""
+}
+
+// exampleForField renders a minimal example naming just the failing field,
+// with its nested required shape expanded (issue #627: the example must show
+// the accepted output envelope, not a bare {}). containerSchema is the schema
+// of the object holding field — the example resolves field's shape there, so
+// a nested field never picks up a same-named top-level property's schema.
+func exampleForField(containerSchema map[string]any, field string) string {
+	props := schemaProps(containerSchema)
+	if prop, ok := props[field].(map[string]any); ok {
+		typ, _ := prop["type"].(string)
+		return fmt.Sprintf("{%q: %s}", field, exampleValue(prop, typ))
+	}
+	return exampleObject(containerSchema, true)
 }
 
 // resolveInstanceValue walks a JSON-Pointer-style path (e.g.
@@ -583,10 +617,8 @@ func resolveSchemaErrorContainer(params, args map[string]any, instanceLocation s
 		// container — find its first missing required property.
 		item := schemas[n]
 		itemInst, _ := insts[n].(map[string]any)
-		for _, r := range requiredNames(item) {
-			if _, present := itemInst[r]; !present {
-				return item, formatPath(segs), r, false, true
-			}
+		if missing := missingRequired(item, itemInst); len(missing) > 0 {
+			return item, formatPath(segs), missing[0], false, true
 		}
 		return nil, "", "", false, false
 	}
@@ -851,18 +883,55 @@ func requiredList(params map[string]any) []string {
 }
 
 func minimalExample(params map[string]any) string {
-	props := schemaProps(params)
-	req := append([]string(nil), asStringSlice(params["required"])...)
+	return exampleObject(params, true)
+}
+
+// exampleObject renders an object schema's required properties as
+// "name: placeholder" pairs, sorted alphabetically. expandNested also
+// expands an object property that itself declares required keys one level
+// deep (issue #627: communicate's output example must show the accepted
+// envelope, not a bare {}).
+//
+// The required list is copied before sorting — a schema's "required" value
+// may be a []string held by reference (DefCommunicateNamed builds it that
+// way, and asStringSlice returns such a slice as-is), so sorting in place
+// would corrupt the shared schema for every later message and every
+// registry clone that shares it.
+func exampleObject(schema map[string]any, expandNested bool) string {
+	props := schemaProps(schema)
+	req := append([]string(nil), asStringSlice(schema["required"])...)
 	sort.Strings(req)
 	parts := make([]string, 0, len(req))
-	for _, r := range req {
+	for _, name := range req {
 		typ := ""
-		if p, ok := props[r].(map[string]any); ok {
+		if p, ok := props[name].(map[string]any); ok {
 			typ, _ = p["type"].(string)
 		}
-		parts = append(parts, fmt.Sprintf("%q: %s", r, examplePlaceholder(typ)))
+		placeholder := examplePlaceholder(typ)
+		if expandNested {
+			placeholder = exampleValue(props[name], typ)
+		}
+		parts = append(parts, fmt.Sprintf("%q: %s", name, placeholder))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// exampleValue renders a property's placeholder: examplePlaceholder for
+// scalars, or (for an object property that declares its own required list)
+// the nested shape via exampleObject, one level deep.
+func exampleValue(prop any, typ string) string {
+	placeholder := examplePlaceholder(typ)
+	if typ != "object" {
+		return placeholder
+	}
+	p, ok := prop.(map[string]any)
+	if !ok {
+		return placeholder
+	}
+	if len(asStringSlice(p["required"])) == 0 {
+		return placeholder
+	}
+	return exampleObject(p, false)
 }
 
 func examplePlaceholder(typ string) string {
