@@ -19,7 +19,7 @@ var protocolDefaults = map[string]Transport{
 }
 
 // nonChatPatterns identifies live listing ids that are not text models
-// (spec §5); one list, replacing nonChatModelSubstrings and skipOpenAIModel.
+// (spec §5); the one list every listing filter reads, via IsChatModelID.
 var nonChatPatterns = []string{"embedding", "whisper", "tts", "dall-e", "moderation", "audio", "transcribe", "image", "realtime", "davinci", "babbage", "sora"}
 
 // IsChatModelID reports whether a live listing id names a text model.
