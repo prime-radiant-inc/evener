@@ -277,6 +277,28 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
+// SessionsDirListable reports whether dir's sessions subdirectory can be
+// listed — the same gate ListSessionMetas applies before reading any metas
+// (a missing directory counts as listable: the list is simply empty). A
+// caller deciding whether a session EXISTS under dir via a targeted read
+// (rather than the full list) uses this to skip the same projects the list
+// path skips, so the two paths cannot disagree about which projects hold
+// sessions.
+//
+// The check opens the directory rather than listing it: opening fails with
+// the same permission error a full listing would fail on, at O(1) instead
+// of O(entries). A caller only needs the boolean; the one observable
+// divergence — a readable regular file named "sessions", which opens fine
+// but lists as ENOTDIR — yields "no session here" on both paths anyway.
+func SessionsDirListable(fs afero.Fs, dir string) bool {
+	f, err := fs.Open(filepath.Join(dir, sessionsSubdir))
+	if err == nil {
+		_ = f.Close()
+		return true
+	}
+	return os.IsNotExist(err)
+}
+
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
 // atomic rename and compact JSON (no indentation).
 func SaveSessionMeta(dir string, meta SessionMeta) error {

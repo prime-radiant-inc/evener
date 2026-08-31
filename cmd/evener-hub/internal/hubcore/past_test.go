@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -607,13 +609,7 @@ func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
 		t.Fatal("expected Find to surface the newly persisted session")
 	}
 	results := idx.Search("fts-probe-needle", 10, 0)
-	found := false
-	for _, e := range results {
-		if e.ID == foldedID {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
 		t.Fatalf("Search did not surface the probe-folded session %s (results: %d entries)", foldedID, len(results))
 	}
 }
@@ -634,8 +630,11 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 		}
 	}
 	const dupID = "02wMz5Txv8Vo4rqb3QYZuV"
-	writeMeta(t, projA, schema.SessionMeta{ID: dupID, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
-	writeMeta(t, projB, schema.SessionMeta{ID: dupID, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	// Different names, identical timestamps: byID and i.all must both keep
+	// the LAST project's row, not just agree on cardinality — a first-row
+	// i.all flaps against byID's last row every UpdateMeta/Rebuild round.
+	writeMeta(t, projA, schema.SessionMeta{ID: dupID, Name: "from-a", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	writeMeta(t, projB, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
@@ -644,13 +643,16 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 	if all := idx.All(); len(all) != 1 {
 		t.Fatalf("index holds %d entries for one session id, want 1 (one row per id, last project wins)", len(all))
 	}
+	if all := idx.All(); all[0].Meta.Name != "from-b" {
+		t.Fatalf("i.all kept %q, want the LAST project's row %q", all[0].Meta.Name, "from-b")
+	}
 
 	// Steady state: repeated UpdateMeta (RefreshOne's path) + Rebuild rounds
 	// must not fire onChange — nothing on disk is changing.
 	fired := 0
 	idx.SetOnChange(func() { fired++ })
 	for round := 0; round < 3; round++ {
-		idx.UpdateMeta(dupID, schema.SessionMeta{ID: dupID, UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+		idx.UpdateMeta(dupID, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
 		if _, err := idx.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
@@ -667,6 +669,12 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 // or Find would fold a session Rebuild keeps dropping — flapping the index
 // and firing onChange every 60s cycle on unchanged disk.
 func fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	sessions := filepath.Join(proj, "sessions")
