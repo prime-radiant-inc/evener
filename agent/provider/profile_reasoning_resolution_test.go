@@ -58,8 +58,10 @@ func TestProfile_DefaultReasoningEffortFromTheRegistry(t *testing.T) {
 	if got := mustResolve(t, r, "openai/gpt-5.5").DefaultReasoningEffort(); got != "" {
 		t.Fatalf("gpt-5.5 DefaultReasoningEffort() = %q, want empty (no source states one)", got)
 	}
-	// A hand-written value means what it says whatever its casing, and the
-	// disable aliases reach the request rule as the canonical off.
+	// The config layers are vocabulary-checked at parse time, so these
+	// spellings can only arrive from a live listing, which is not. The
+	// accessor normalizes them so a gateway's casing or disable alias still
+	// means what it says by the time the request rule reads it.
 	for written, want := range map[string]string{"High": "high", "OFF": "none", "none": "none"} {
 		p := mustResolve(t, r, "work/glm-5")
 		res := p.Resolved()

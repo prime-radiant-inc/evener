@@ -140,6 +140,10 @@ func TestParseConfig_Rejects(t *testing.T) {
 		"bad reasoning control":    "[providers.x.models.m]\nreasoning_controls = [\"levels\"]\n",
 		"effort off":               "[providers.x.models.m]\neffort_values = [\"off\"]\n",
 		"effort empty entry":       "[providers.x.models.m]\neffort_values = [\"\"]\n",
+		"default effort typo":      "[providers.x]\ndefault_effort = \"ultra\"\n",
+		"default effort typo row":  "[providers.x.models.m]\ndefault_effort = \"ultra\"\n",
+		"default effort alias":     "[providers.x.models.m]\ndefault_effort = \"off\"\n",
+		"default effort casing":    "[providers.x.models.m]\ndefault_effort = \"High\"\n",
 		"top-level exact model":    "[models.\"gpt-5\"]\ncontext_window = 1\n",
 		"unterminated env ref":     "[providers.x]\napi_key = \"${OPEN\"\n",
 		"bad env name in header":   "[providers.x]\ncredential_headers = { \"Authorization\" = \"Bearer ${1X}\" }\n",
@@ -352,5 +356,28 @@ reasoning_summary = "detailed"
 	}
 	if l.Providers["azure"].Models["gpt-5*"].ID != "gpt-5*" {
 		t.Fatal("row ID must equal its key, globs included")
+	}
+}
+
+// Every level the session vocabulary accepts is a legal default_effort, on a
+// provider row and a model row alike; a typo is a parse refusal, so it can
+// never reach a provider the way an unvalidated one would (the clamp passes an
+// unrankable level through untouched).
+func TestParseConfig_DefaultEffortVocabulary(t *testing.T) {
+	for _, level := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		l, err := ParseConfig([]byte("[providers.x]\ndefault_effort = \"" + level + "\"\n[providers.x.models.m]\ndefault_effort = \"" + level + "\"\n"))
+		if err != nil {
+			t.Fatalf("default_effort = %q: %v", level, err)
+		}
+		if got := l.Providers["x"].Caps.DefaultEffort; got == nil || *got != level {
+			t.Fatalf("provider default_effort = %v, want %q", got, level)
+		}
+		if got := l.Providers["x"].Models["m"].Caps.DefaultEffort; got == nil || *got != level {
+			t.Fatalf("row default_effort = %v, want %q", got, level)
+		}
+	}
+	_, err := ParseConfig([]byte("[providers.x]\ndefault_effort = \"ultra\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "default_effort") || !strings.Contains(err.Error(), "xhigh") {
+		t.Fatalf("a typo must be refused by name and list the vocabulary: %v", err)
 	}
 }

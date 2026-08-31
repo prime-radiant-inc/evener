@@ -87,3 +87,25 @@ func TestShapeRequest_DoesNotMutateInput(t *testing.T) {
 		t.Fatal("ShapeRequest must not write through the caller's pointers")
 	}
 }
+
+// registry validates default_effort against its own copy of the effort
+// vocabulary, because llm imports registry and cannot be imported back. This
+// is the seam that keeps the two lists honest: every level a session accepts
+// must parse as a default, and a value the session would reject must not.
+func TestDefaultEffortVocabularyMatchesTheSessionVocabulary(t *testing.T) {
+	for _, level := range append(ReasoningEffortVocabulary(), ReasoningEffortNone) {
+		if err := ValidateReasoningEffort(level); err != nil {
+			t.Fatalf("fixture: %q is not a session level: %v", level, err)
+		}
+		if _, err := registry.ParseConfig([]byte("[providers.x]\ndefault_effort = \"" + level + "\"\n")); err != nil {
+			t.Errorf("default_effort = %q: %v", level, err)
+		}
+	}
+	// The disable aliases normalize to "none" before they reach a session, so
+	// they are not levels; nor is a retired or misspelled tier.
+	for _, bad := range []string{"off", "null", "false", "0", "ultra", "High", ""} {
+		if _, err := registry.ParseConfig([]byte("[providers.x]\ndefault_effort = \"" + bad + "\"\n")); err == nil {
+			t.Errorf("default_effort = %q parsed, want a refusal", bad)
+		}
+	}
+}

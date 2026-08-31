@@ -57,6 +57,14 @@ var (
 	reasoningSummaries    = map[string]bool{"none": true, "auto": true, "detailed": true}
 	imageDetails          = map[string]bool{"original": true, "high": true, "low": true, "omit": true}
 	reasoningControlNames = map[string]bool{"effort": true, "budget_tokens": true, "toggle": true}
+	// effortLevels is what a row may state as its default_effort: evener's six
+	// tiers plus the off level. It restates llm.ReasoningEffortVocabulary and
+	// llm.ReasoningEffortNone because llm imports registry and not the other
+	// way round; the duplication buys a typo caught at parse time instead of
+	// one that rides a request to the provider, since an unrankable level
+	// passes the clamp through untouched. llm's own registry_shape_test pins
+	// the two lists against each other.
+	effortLevels = map[string]bool{"none": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 )
 
 var providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -357,6 +365,7 @@ func validateCaps(c Caps, where string) error {
 		check("reasoning_field", c.ReasoningField, reasoningFields),
 		check("reasoning_summary", c.ReasoningSummary, reasoningSummaries),
 		check("image_detail", c.ImageDetail, imageDetails),
+		check("default_effort", c.DefaultEffort, effortLevels),
 	} {
 		if e != nil {
 			return e

@@ -407,10 +407,9 @@ Load rules, enforced with errors that name the instance and key:
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
   validated against their vocabularies; `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
-  non-empty, and `"off"` is rejected. `default_effort` is **not** checked
-  against the vocabulary — it is normalized when the profile reads it, and a
-  value outside the vocabulary survives the clamp and reaches the provider,
-  unlike the same typo in `--reasoning-effort`, which is rejected at load.
+  non-empty, and `"off"` is rejected. `default_effort` must be one of the six
+  tiers or `none` — the clamp passes an unrankable level straight through, so
+  a typo that parsed would ride the request to the provider.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
   blocks another. **This is a behavior change:** an unset variable in

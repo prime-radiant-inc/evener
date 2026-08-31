@@ -1696,7 +1696,11 @@ Rules, enforced at load with errors that name the instance and key:
   `reasoning_field`, `host_rule`, `image_detail` are validated against their
   vocabularies; `reasoning_controls` entries must be `effort`,
   `budget_tokens`, or `toggle`
-- `effort_values` entries non-empty; `"off"` rejected
+- `effort_values` entries non-empty; `"off"` rejected. `default_effort` is
+  checked against the effort vocabulary (the six tiers plus `none`), which
+  `registry` restates rather than importing from `llm` — `llm` imports
+  `registry`, and the clamp passes an unrankable level through untouched, so
+  an unchecked typo would reach the provider
 - `$ENV` expansion in `api_key`, `credential_headers`, and `vars` uses
   today's `$NAME` / `${NAME}` / `$$` rules and happens at resolve time, so one
   instance's missing variable never blocks another. An unset variable in
