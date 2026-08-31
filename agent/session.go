@@ -725,6 +725,11 @@ type Session struct {
 	restoredTranscriptHeader transcript.Header
 	restoredTranscript       []transcript.Entry
 
+	// restoredTranscriptOpened is the ok flag RestoredTranscript reports:
+	// whether restore opened a transcript, captured at the open so a later
+	// refresh cannot flip it. Guarded by s.mu.
+	restoredTranscriptOpened bool
+
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
 
@@ -1787,22 +1792,26 @@ func (s *Session) TranscriptPath() string {
 
 // setRestoredTranscript installs the final restore-time transcript view. It
 // runs once, at the end of restore construction, with the entry list that any
-// delegate-delivery replay already refreshed from disk.
-func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry) {
+// delegate-delivery replay already refreshed from disk. opened reports
+// whether restore opened a transcript at all, independent of the entry
+// slice's emptiness.
+func (s *Session) setRestoredTranscript(header transcript.Header, entries []transcript.Entry, opened bool) {
 	s.mu.Lock()
 	s.restoredTranscriptHeader = header
 	s.restoredTranscript = entries
+	s.restoredTranscriptOpened = opened
 	s.mu.Unlock()
 }
 
 // RestoredTranscript returns the header and decoded entry list this resume
 // validated, for a caller (serve's app-identity projection) that would
-// otherwise re-read the transcript file. ok is false unless this session was
-// constructed by restore with a transcript; the slice aliases retained state
-// and must be treated as read-only.
+// otherwise re-read the transcript file. ok is true exactly when restore
+// opened a transcript, including a header-only one; the slice aliases
+// retained state and must be treated as read-only.
 func (s *Session) RestoredTranscript() (transcript.Header, []transcript.Entry, bool) {
 	s.mu.Lock()
 	header, entries := s.restoredTranscriptHeader, s.restoredTranscript
+	opened := s.restoredTranscriptOpened
 	s.mu.Unlock()
-	return header, entries, entries != nil
+	return header, entries, opened
 }

@@ -688,6 +688,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
+	// ok flag for RestoredTranscript; captured at the open so the refresh
+	// below can't flip it.
+	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		var openErr error
@@ -698,6 +701,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
 		}
+		restoredTranscriptOpened = openErr == nil
 	}
 	defer func() {
 		if !restoreComplete && resumeTranscript != nil {
@@ -1071,7 +1075,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// setRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
 	// final entry list the file holds.
-	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries)
+	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
