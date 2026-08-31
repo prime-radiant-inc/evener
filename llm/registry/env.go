@@ -80,6 +80,55 @@ func ScanConfigValue(value string) (refs []string, literal string, err error) {
 	return refs, lit.String(), nil
 }
 
+// CheckCredentialHeaderValue holds the secrets boundary both authoring
+// surfaces apply to a credential header before it is written (spec §11.2):
+// every whitespace-separated token is either a run of $VARIABLE references or
+// a bare auth scheme word, and at least one is a reference. That refuses a
+// value with no reference at all and a key smuggled beside one
+// ("Bearer sk-live-abc$X"), which a bare "contains a $" check accepts.
+//
+// The rule is deliberately stricter than providers.toml's own grammar, which
+// takes any syntactically valid value: a key typed into a form or an argv is
+// a key that leaked, so the file may hold shapes neither surface will author.
+// No refusal echoes the value, which may hold the secret it refused.
+func CheckCredentialHeaderValue(value string) error {
+	referenced := false
+	for token := range strings.FieldsSeq(value) {
+		refs, literal, err := ScanConfigValue(token)
+		switch {
+		case err != nil:
+			return err
+		case len(refs) == 0 && isAuthSchemeWord(token):
+			// A scheme name carries no secret.
+		case len(refs) > 0 && literal == "":
+			referenced = true
+		default:
+			return errors.New("only an auth scheme word may be literal; the value itself must be a $VARIABLE reference, never a literal secret")
+		}
+	}
+	if !referenced {
+		return errors.New("the value must reference a $VARIABLE, never a literal secret")
+	}
+	return nil
+}
+
+// isAuthSchemeWord reports whether a literal token is an HTTP auth scheme
+// name (Bearer, Basic, Token, ...). Letters only: a token carrying digits,
+// dashes, or underscores has the shape of a key, and a key is never literal
+// in a credential header.
+func isAuthSchemeWord(token string) bool {
+	if token == "" {
+		return false
+	}
+	for i := range len(token) {
+		c := token[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // checkEnvRefs validates the $ENV syntax of a config value at load time;
 // what names the field in the error.
 func checkEnvRefs(value, what string) error {

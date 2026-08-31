@@ -3,6 +3,7 @@ package registry
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,51 @@ func TestScanConfigValue(t *testing.T) {
 		if _, _, err := ScanConfigValue(bad); err == nil {
 			t.Errorf("ScanConfigValue(%q) must report the syntax error", bad)
 		}
+	}
+}
+
+// CheckCredentialHeaderValue is the one rule both authoring surfaces apply to
+// a credential header: at least one $VARIABLE reference, and no literal text
+// beside it but an auth scheme word (spec §11.2).
+func TestCheckCredentialHeaderValue(t *testing.T) {
+	for _, value := range []string{
+		"$PORTKEY_KEY",
+		"${PORTKEY_KEY}",
+		"Bearer $PORTKEY_KEY",
+		"Bearer ${PORTKEY_KEY}",
+		"Basic ${A}${B}",
+	} {
+		if err := CheckCredentialHeaderValue(value); err != nil {
+			t.Errorf("CheckCredentialHeaderValue(%q) = %v, want accepted", value, err)
+		}
+	}
+	for _, tt := range []struct {
+		name   string
+		value  string
+		want   string
+		secret string
+	}{
+		{"no reference at all", "Bearer literal-secret", "$VARIABLE", "literal-secret"},
+		{"nothing at all", "", "$VARIABLE", ""},
+		{"a key glued to a reference", "Bearer sk-live-abc$X", "$VARIABLE", "sk-live-abc"},
+		{"a key as its own word", "Bearer sk-live-abc $X", "$VARIABLE", "sk-live-abc"},
+		{"a literal that is not a scheme word", "key=$K", "$VARIABLE", "key="},
+		{"an unterminated reference", "Bearer ${TOKEN", "unterminated", ""},
+		{"an invalid variable name", "Bearer ${1BAD}", "invalid environment variable name", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckCredentialHeaderValue(tt.value)
+			if err == nil {
+				t.Fatalf("CheckCredentialHeaderValue(%q) = nil, want refused", tt.value)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("CheckCredentialHeaderValue(%q) = %v, want an error mentioning %q", tt.value, err, tt.want)
+			}
+			// The value may hold a secret, so no refusal may echo it.
+			if tt.secret != "" && strings.Contains(err.Error(), tt.secret) {
+				t.Fatalf("the refusal echoed the value: %v", err)
+			}
+		})
 	}
 }
 

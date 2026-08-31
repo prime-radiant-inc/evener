@@ -214,6 +214,7 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 		name   string
 		params appwire.InstanceCreateParams
 		want   string
+		wire   bool
 	}{
 		{
 			name:   "invalid instance name",
@@ -226,9 +227,42 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 			want:   "unknown base provider",
 		},
 		{
+			wire:   true,
 			name:   "literal secret in a credential header",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-literal"},
 			want:   "$VARIABLE",
+		},
+		{
+			// A bare "contains a $" check takes this: the key rides in the
+			// literal text beside the reference (spec §11.2).
+			wire:   true,
+			name:   "a literal secret smuggled beside a reference",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-live-abc$X"},
+			want:   "$VARIABLE",
+		},
+		{
+			wire:   true,
+			name:   "a literal secret as its own word",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer sk-live-abc $X"},
+			want:   "$VARIABLE",
+		},
+		{
+			wire:   true,
+			name:   "unterminated variable reference in a credential header",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${TOKEN"},
+			want:   "unterminated",
+		},
+		{
+			wire:   true,
+			name:   "invalid variable name in a credential header",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${1BAD}"},
+			want:   "invalid environment variable name",
+		},
+		{
+			wire:   true,
+			name:   "a credential header that is not NAME=VALUE",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization $PORTKEY_KEY"},
+			want:   "NAME=VALUE",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -236,6 +270,15 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 			err := f.ctl.Create(tt.params)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Create = %v, want an error mentioning %q", err, tt.want)
+			}
+			// A credential header the form got wrong is the caller's to fix,
+			// so the pane is told which field, not handed a bare error.
+			var wire appwire.WireError
+			if tt.wire && (!errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams) {
+				t.Fatalf("Create = %v, want an InvalidParams wire error", err)
+			}
+			if strings.Contains(err.Error(), "sk-live-abc") || strings.Contains(err.Error(), "sk-literal") {
+				t.Fatalf("the refusal echoed the value: %v", err)
 			}
 			if _, err := os.Stat(f.tomlPath); !os.IsNotExist(err) {
 				t.Fatalf("a rejected create wrote providers.toml (stat err=%v)", err)
@@ -498,14 +541,10 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "unterminated variable reference in a credential header",
-			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${TOKEN"},
-			want:   "credential_headers",
-		},
-		{
-			name:   "invalid variable name in a credential header",
-			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer ${1BAD}"},
-			want:   "credential_headers",
+			// Var NAMES are checked by hand; their values are the parser's.
+			name:   "unterminated variable reference in a var value",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Vars: map[string]string{"REGION": "${TOKEN"}},
+			want:   "vars.REGION",
 		},
 		{
 			// The word the form itself used to show.

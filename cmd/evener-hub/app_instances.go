@@ -164,6 +164,27 @@ func validVarNames(vars map[string]string) error {
 	return nil
 }
 
+// credentialHeaderFrom reads the form's single NAME=VALUE credential header.
+// The value must reference a $VARIABLE and carry no literal secret beside it:
+// one rule, registry.CheckCredentialHeaderValue, shared with
+// `evener providers add`, so neither authoring surface writes a key the other
+// would refuse (spec §11.2). The refusal names the header, never its value.
+func credentialHeaderFrom(field string) (map[string]string, error) {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return nil, nil
+	}
+	name, value, ok := strings.Cut(field, "=")
+	name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+	if !ok || name == "" {
+		return nil, appwire.InvalidParams("credential header must be NAME=VALUE, as in Authorization=Bearer $PORTKEY_KEY")
+	}
+	if err := registry.CheckCredentialHeaderValue(value); err != nil {
+		return nil, appwire.InvalidParams(fmt.Sprintf("credential header %s: %v", name, err))
+	}
+	return map[string]string{name: value}, nil
+}
+
 // refuseWhenBroken stops every write while there is no registry to write
 // against: a providers.toml that does not load (the hub has no way to rewrite
 // a file it could not read without destroying what the user wrote — spec §10,
@@ -194,8 +215,9 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if _, ok := c.reg.Get().Provider(base); !ok {
 		return fmt.Errorf("unknown base provider %q", params.Base)
 	}
-	if params.CredentialHeader != "" && !strings.Contains(params.CredentialHeader, "$") {
-		return errors.New("credential header must reference a $VARIABLE, never a literal secret")
+	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
+	if err != nil {
+		return err
 	}
 	if err := validVarNames(params.Vars); err != nil {
 		return err
@@ -222,9 +244,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if v := strings.TrimSpace(params.APIKeyEnv); v != "" {
 		p.APIKeyEnv = []string{v}
 	}
-	if k, v, ok := strings.Cut(params.CredentialHeader, "="); ok && strings.TrimSpace(k) != "" {
-		p.CredentialHeaders = map[string]string{strings.TrimSpace(k): strings.TrimSpace(v)}
-	}
+	p.CredentialHeaders = credentialHeaders
 	l.Providers[name] = p
 	if err := c.writeLoadable(l); err != nil {
 		return err
