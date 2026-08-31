@@ -84,8 +84,11 @@
    * that StackHost's blanket host padding is gone (see that rule's comment):
    * footer-less panes (welcome, settings, spawn, doc) dock nothing of their
    * own, so their scroll padding carries the inset. env() is 0 on desktop,
-   * where this resolves to plain --space-4. */
-  padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+   * where this resolves to plain --space-4. The inset yields when the on-screen
+   * keyboard covers the home-indicator band (useKeyboardInset's
+   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
+   * full inset when the keyboard is closed and plain --space-4 when open. */
+  padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
 }
 
 .footer {
@@ -97,8 +100,11 @@
    * under the input). The footer's own chrome fills the home-indicator band
    * while this padding keeps the composer controls above it - the same
    * recipe StackHost's top bar uses at the top edge. env() is 0 on desktop,
-   * where this resolves to plain --space-3. */
-  padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+   * where this resolves to plain --space-3. The inset yields when the on-screen
+   * keyboard covers the home-indicator band (useKeyboardInset's
+   * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
+   * full inset when the keyboard is closed and plain --space-3 when open. */
+  padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
   border-top: 1px solid var(--edge);
 }
 
