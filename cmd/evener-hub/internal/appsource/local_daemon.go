@@ -90,16 +90,31 @@ func (s *LocalDaemonSource) ID() string {
 	return s.sourceID
 }
 
-func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {
+func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
 	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return nil, err
+		return appwire.Ref{}, err
 	}
 	threadID := entry.ThreadID
 	if entry.SessionID != "" {
 		threadID = entry.SessionID
 	}
-	key := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
+	ref, err := appwire.ParseRef(localDaemonWorkspaceRef(s.sourceID, entry, threadID))
+	if err != nil {
+		return appwire.Ref{}, appwire.SessionUnavailable("local daemon returned an empty workspace ref")
+	}
+	return ref, nil
+}
+
+func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionLease, error) {
+	if ref.SourceID != s.sourceID || ref.String() == "" {
+		return nil, appwire.SessionUnavailable("invalid relay session ref")
+	}
+	_, err := s.entryForReadRef(ref.String(), "")
+	if err != nil {
+		return nil, err
+	}
+	key := ref.String()
 
 	s.relayMu.Lock()
 	session := s.relaySessions[key]
@@ -158,6 +173,16 @@ func (s *LocalDaemonSource) AcquireRelaySession(params appwire.ThreadReadParams)
 	return lease, nil
 }
 
+// acquireRelaySession preserves the old parameter-based source call sites while
+// keeping canonical resolution separate from relay session acquisition.
+func (s *LocalDaemonSource) acquireRelaySession(params appwire.ThreadReadParams) (RelaySessionLease, error) {
+	ref, err := s.ResolveRelaySession(params)
+	if err != nil {
+		return nil, err
+	}
+	return s.AcquireRelaySession(ref)
+}
+
 func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	out := appwire.ThreadListResponse{}
 	for _, entry := range s.liveEntries() {
@@ -171,7 +196,7 @@ func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParam
 
 func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	if params.Subscribe {
-		lease, err := s.AcquireRelaySession(params)
+		lease, err := s.acquireRelaySession(params)
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -508,7 +533,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	handoff := pending.handoff
 	var err error
 	if lease == nil {
-		lease, err = s.AcquireRelaySession(params)
+		lease, err = s.acquireRelaySession(params)
 		if err != nil {
 			return nil, err
 		}
