@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -87,8 +86,18 @@ func (e *httpBaseError) Error() string {
 }
 
 // Provider returns the provider that produced the error.
-func (e *httpBaseError) Provider() string        { return e.provider }
-func (e *httpBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+func (e *httpBaseError) Provider() string { return e.provider }
+
+// withProvider returns a copy of the base attributed to name, unwrapping to
+// the original error it was copied from. The value receiver is the copy;
+// original keeps errors.Is(copy, original) true, so a caller holding the
+// error a scripted adapter or a failed turn produced still recognizes the
+// re-attributed one, and the original's own cause stays reachable through it.
+func (e httpBaseError) withProvider(name string, original error) httpBaseError {
+	e.provider = strings.TrimSpace(name)
+	e.cause = original
+	return e
+}
 
 // Protocol returns the protocol id stamped by ClassifyHTTPError, or "".
 func (e *httpBaseError) Protocol() string { return e.protocol }
@@ -177,6 +186,59 @@ type serverError struct{ httpBaseError }
 // to a more specific error type. It defaults to retryable. Its category is [KindUnknown].
 type unknownHTTPError struct{ httpBaseError }
 
+// copyWithProvider implementations. Each returns a new error of its own
+// concrete type so errors.As finds the copy, never the original with a stale
+// provider. One line apiece because the base carries every field;
+// TestEveryProviderAttributedErrorCopies fails if a type is added without one.
+
+func (e *invalidRequestError) copyWithProvider(name string) error {
+	return &invalidRequestError{e.withProvider(name, e)}
+}
+
+func (e *authenticationError) copyWithProvider(name string) error {
+	return &authenticationError{e.withProvider(name, e)}
+}
+
+func (e *accessDeniedError) copyWithProvider(name string) error {
+	return &accessDeniedError{e.withProvider(name, e)}
+}
+
+func (e *notFoundError) copyWithProvider(name string) error {
+	return &notFoundError{e.withProvider(name, e)}
+}
+
+func (e *requestTimeoutError) copyWithProvider(name string) error {
+	return &requestTimeoutError{e.withProvider(name, e)}
+}
+
+func (e *responseHeaderTimeoutError) copyWithProvider(name string) error {
+	return &responseHeaderTimeoutError{e.withProvider(name, e)}
+}
+
+func (e *contextLengthError) copyWithProvider(name string) error {
+	return &contextLengthError{e.withProvider(name, e)}
+}
+
+func (e *contentFilterError) copyWithProvider(name string) error {
+	return &contentFilterError{e.withProvider(name, e)}
+}
+
+func (e *rateLimitError) copyWithProvider(name string) error {
+	return &rateLimitError{e.withProvider(name, e)}
+}
+
+func (e *serverError) copyWithProvider(name string) error {
+	return &serverError{e.withProvider(name, e)}
+}
+
+func (e *unknownHTTPError) copyWithProvider(name string) error {
+	return &unknownHTTPError{e.withProvider(name, e)}
+}
+
+func (e *quotaExceededError) copyWithProvider(name string) error {
+	return &quotaExceededError{httpBaseError: e.withProvider(name, e), usageLimitResetsAt: e.usageLimitResetsAt}
+}
+
 // extractErrorCode attempts to find an error code from a raw API response body.
 // Supports OpenAI ({"error":{"code":"..."}}) and Anthropic ({"error":{"type":"..."}}) formats.
 func extractErrorCode(raw any) string {
@@ -195,39 +257,51 @@ func extractErrorCode(raw any) string {
 	return ""
 }
 
-// providerSetter is implemented by errors whose provider name can be
-// rewritten in place. The protocol packages use it so an error carries the
-// INSTANCE that produced it rather than the wire vocabulary its classifier
-// happened to stamp — an in-band Responses failure classified as "openai"
-// becomes the caller's own instance name (spec §7.5).
-type providerSetter interface {
-	setProvider(string)
+// providerCopier is implemented by errors that can return a COPY of
+// themselves attributed to another provider. The protocol packages use it so
+// an error carries the INSTANCE that produced it rather than the wire
+// vocabulary its classifier happened to stamp — an in-band Responses failure
+// classified as "openai" becomes the caller's own instance name (spec §7.5).
+//
+// It copies rather than restamping in place because an error is a shared
+// value: it is wrapped, joined, stored on a turn record, and re-served by
+// scripted adapters. Two dispatches on one client — a session's own turn and
+// its namer goroutine — held the same instance and raced, one reading the
+// provider while the other wrote it.
+type providerCopier interface {
+	error
+	Provider() string
+	copyWithProvider(string) error
 }
 
-// RewriteErrorProvider rewrites err's provider name in place if the error
-// (or any error in its Unwrap chain) supports it. Returns err unchanged
-// otherwise. Safe to call on nil. Thin wrappers should call this on every
-// error they forward so failures aren't misattributed to the inner adapter.
+// RewriteErrorProvider returns err attributed to provider: a copy of the same
+// concrete type, leaving the error it was given untouched. Returns err itself
+// when it carries no provider attribution to rewrite. Safe to call on nil.
+// Thin wrappers should call this on every error they forward so failures
+// aren't misattributed to the inner adapter.
 //
-// Errors whose original Provider() is empty are left alone. This protects
-// errors that intentionally have no provider attribution — most importantly
-// AbortError (user-driven cancellation) and NoObjectGeneratedError
-// (response-shape failure that isn't provider-specific). Restamping these
-// would change "context canceled" into "ollama error: context canceled",
-// which is wrong.
+// Errors whose Provider() is empty are left alone. This protects errors that
+// intentionally have no provider attribution — most importantly AbortError
+// (user-driven cancellation) and NoObjectGeneratedError (response-shape
+// failure that isn't provider-specific). Restamping these would change
+// "context canceled" into "ollama error: context canceled", which is wrong.
+//
+// Only the error itself is rewritten, not one buried in a foreign wrapper:
+// a wrapper this package does not own cannot be rebuilt around the copy, and
+// reaching in to restamp the shared inner value is the mutation this exists
+// to avoid. Nothing wraps before a rewrite point today — the one wrapper in
+// the stream path (transport.FatalStreamError) is unwrapped by the runner
+// before the terminal error is emitted.
 func RewriteErrorProvider(err error, provider string) error {
 	if err == nil {
 		return nil
 	}
-	var ps providerSetter
-	if !errors.As(err, &ps) {
+	//nolint:errorlint // deliberate: only the error itself is rewritten, never one inside a wrapper this package cannot rebuild (see above)
+	pc, ok := err.(providerCopier)
+	if !ok || pc.Provider() == "" {
 		return err
 	}
-	if getter, ok := ps.(interface{ Provider() string }); ok && getter.Provider() == "" {
-		return err
-	}
-	ps.setProvider(provider)
-	return err
+	return pc.copyWithProvider(provider)
 }
 
 // ErrorFromHTTPStatus maps an HTTP status code to the corresponding Error

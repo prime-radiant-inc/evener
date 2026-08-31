@@ -30,8 +30,16 @@ func (e *nonHTTPBaseError) Error() string {
 
 // Provider returns the provider this error is attributed to, or the empty
 // string when it has no provider attribution (e.g. user cancellation).
-func (e *nonHTTPBaseError) Provider() string        { return e.provider }
-func (e *nonHTTPBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+func (e *nonHTTPBaseError) Provider() string { return e.provider }
+
+// withProvider returns a copy of the base attributed to name, unwrapping to
+// original; see httpBaseError.withProvider for why the rewrite copies and
+// why the copy wraps.
+func (e nonHTTPBaseError) withProvider(name string, original error) nonHTTPBaseError {
+	e.provider = strings.TrimSpace(name)
+	e.cause = original
+	return e
+}
 
 // StatusCode returns 0; these errors are not HTTP failures.
 func (e *nonHTTPBaseError) StatusCode() int { return 0 }
@@ -79,6 +87,32 @@ type UnsupportedToolChoiceError struct{ nonHTTPBaseError }
 // caller routes to its next model instead of re-POSTing a request that cannot
 // succeed.
 type UnsupportedEndpointError struct{ nonHTTPBaseError }
+
+// copyWithProvider implementations; see the http ones in errors.go.
+
+func (e *AbortError) copyWithProvider(name string) error {
+	return &AbortError{e.withProvider(name, e)}
+}
+
+func (e *StreamError) copyWithProvider(name string) error {
+	return &StreamError{e.withProvider(name, e)}
+}
+
+func (e *InvalidToolCallError) copyWithProvider(name string) error {
+	return &InvalidToolCallError{e.withProvider(name, e)}
+}
+
+func (e *UnsupportedToolChoiceError) copyWithProvider(name string) error {
+	return &UnsupportedToolChoiceError{e.withProvider(name, e)}
+}
+
+func (e *UnsupportedEndpointError) copyWithProvider(name string) error {
+	return &UnsupportedEndpointError{e.withProvider(name, e)}
+}
+
+func (e *NoObjectGeneratedError) copyWithProvider(name string) error {
+	return &NoObjectGeneratedError{nonHTTPBaseError: e.withProvider(name, e), RawText: e.RawText}
+}
 
 // NewAbortError reports a user-initiated cancellation. cause is the underlying
 // error (typically context.Canceled); it is exposed via Unwrap so errors.Is(err,

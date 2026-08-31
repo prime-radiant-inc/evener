@@ -74,13 +74,18 @@ func FuzzClassify(f *testing.F) {
 			t.Fatalf("non-llm.Error classified as permanent: %v", err)
 		}
 		streamErr := NewStreamError("old", msg, nil)
-		RewriteErrorProvider(streamErr, " new ")
+		restamped := RewriteErrorProvider(streamErr, " new ")
 		var e Error
-		if !errors.As(streamErr, &e) {
-			t.Fatalf("stream error does not implement llm.Error: %v", streamErr)
+		if !errors.As(restamped, &e) {
+			t.Fatalf("stream error does not implement llm.Error: %v", restamped)
 		}
 		if e.Provider() != "new" {
 			t.Fatalf("non-HTTP provider stamp not applied: provider=%q", e.Provider())
+		}
+		// The stamp is a copy; the error handed in keeps its own attribution.
+		var orig Error
+		if !errors.As(streamErr, &orig) || orig.Provider() != "old" {
+			t.Fatalf("the rewritten error mutated its input: provider=%q", orig.Provider())
 		}
 		if Classify(classifyResidualError{status: 408}) != ErrorClassRetryable {
 			t.Fatal("non-retryable 408 must classify retryable by status")
