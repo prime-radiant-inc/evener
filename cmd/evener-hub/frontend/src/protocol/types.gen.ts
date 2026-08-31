@@ -933,6 +933,15 @@ export interface NavigationInvalidationTarget {
   revision?: number;
 }
 
+export interface NavigationJobSummary {
+  job_id: string;
+  job_type: string;
+  status: string;
+  command?: string;
+  task?: string;
+  reason?: string;
+}
+
 export interface NavigationManifest {
   generation_id: string;
   revision: number;
@@ -1074,6 +1083,8 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  running_jobs?: NavigationJobSummary[];
+  completed_jobs?: NavigationJobSummary[];
   children: NavigationSessionSummary[];
 }
 

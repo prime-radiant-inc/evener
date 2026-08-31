@@ -944,6 +944,33 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 	}
 }
 
+func TestBuildTreeDoesNotClusterSessionWithJobs(t *testing.T) {
+	now := time.Now()
+	metas := make([]schema.SessionMeta, 0, 4)
+	for i := range 4 {
+		metas = append(metas, schema.SessionMeta{
+			ID:        "01JOB" + string(rune('A'+i)),
+			Name:      "repeatable work",
+			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener-jobs"},
+		})
+	}
+	tree := buildTree(metas, []LiveEntry{{
+		PID: 1, SessionID: metas[0].ID, Status: appwire.ThreadStatusIdle,
+		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
+	}})
+	project := projectByName(t, tree, "evener-jobs")
+	sessions := allSessions(project)
+	if len(sessions) != 4 {
+		t.Fatalf("sessions = %d, want four unclustered rows", len(sessions))
+	}
+	for _, session := range sessions {
+		if session.Kind == "cluster" {
+			t.Fatalf("session with active job was hidden in cluster %q", session.Title)
+		}
+	}
+}
+
 func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	// A live/needs-you member must keep all repeated-title sessions un-clustered
 	// so live signal is never hidden behind a fold.

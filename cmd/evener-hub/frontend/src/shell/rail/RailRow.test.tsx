@@ -14,7 +14,9 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
+  CompletedJobsFoldRailNode,
   InactiveFoldRailNode,
+  JobRailNode,
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
@@ -151,6 +153,20 @@ function overflowRailNode(count: number): OverflowRailNode {
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
   return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
+}
+
+function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
+  return {
+    id: "job:parent:job-1",
+    kind: "job",
+    job: { job_id: "job-1", job_type: "shell", status: "running", row_id: "job:parent:job-1", ...overrides },
+    active: true,
+    children: [],
+  };
+}
+
+function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
+  return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -321,6 +337,14 @@ describe("activityGloss", () => {
       ),
     ).toBe("2 subagents working · fix/thing");
   });
+
+  test("reports active jobs alongside active subagents", () => {
+    const session = apiNode({ children: [apiNode({ state: "active" })] });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    expect(activityGloss(session)).toBe("1 subagent working · 1 job running");
+  });
 });
 
 describe("loading row", () => {
@@ -411,6 +435,24 @@ describe("inactive-subagent fold row", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(css).toMatch(/\.signal\s*\{[^}]*width:\s*6px;[^}]*margin-left:\s*-10px;/);
+  });
+});
+
+describe("job rows", () => {
+  test("renders an active job label and green status", () => {
+    render(<RailRow node={jobRailNode({ command: "go test ./..." })} info={info()} actions={actions()} />);
+    expect(screen.getByText("go test ./...")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-job-status").className.split(" ")).toContain(railStyles.activityAlive);
+  });
+
+  test("renders a separate completed-jobs disclosure", () => {
+    const toggle = vi.fn();
+    render(
+      <RailRow node={completedJobsFoldRailNode(3)} info={info({ hasChildren: true, toggle })} actions={actions()} />,
+    );
+    expect(screen.getByText("Completed jobs (3)")).toBeTruthy();
+    fireEvent.click(screen.getByText("Completed jobs (3)"));
+    expect(toggle).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -572,6 +614,16 @@ describe("session row", () => {
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("2 subagents working · fix/thing");
+  });
+
+  test("shows an active job on a quiet session as green working activity", () => {
+    const session = apiNode({ state: "idle" });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").className.split(" ")).toContain(railStyles.activityAlive);
   });
 
   test("keeps a quiet row without active descendants one line", () => {

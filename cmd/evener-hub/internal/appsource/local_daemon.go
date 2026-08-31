@@ -56,6 +56,9 @@ type LocalDaemonEntry struct {
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
+	// CompletedJobs carries the recent terminal non-agent jobs into the same
+	// typed diagnostics snapshot for local compatibility consumers.
+	CompletedJobs []appwire.EvenerJobInfo
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -874,8 +877,11 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
-	if !item.ReadOnlyAlias && len(item.RunningJobs) > 0 {
-		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(item.RunningJobs)}
+	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
+		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))
+		jobs = append(jobs, item.RunningJobs...)
+		jobs = append(jobs, item.CompletedJobs...)
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(jobs)}
 	}
 	if item.ReadOnlyAlias {
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}

@@ -30,11 +30,12 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					continue
 				}
 				entry := appsource.LocalDaemonEntry{
-					Entry:       item.Entry,
-					SessionID:   item.SessionID,
-					Status:      item.Status,
-					PendingAsk:  item.PendingAsk,
-					RunningJobs: item.RunningJobs,
+					Entry:         item.Entry,
+					SessionID:     item.SessionID,
+					Status:        item.Status,
+					PendingAsk:    item.PendingAsk,
+					RunningJobs:   item.RunningJobs,
+					CompletedJobs: item.CompletedJobs,
 				}
 				entries = append(entries, entry)
 				// In-process descendants are addressed as their own AppWire

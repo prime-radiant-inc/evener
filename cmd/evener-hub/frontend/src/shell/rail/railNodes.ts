@@ -5,7 +5,7 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationJobSummary, NavigationSessionSummary } from "../../protocol/types.gen";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -18,6 +18,10 @@ export interface RailSession extends NavigationSessionSummary {
   model?: string;
   children: RailSession[];
   project_key?: string;
+}
+
+export interface RailJob extends NavigationJobSummary {
+  row_id: string;
 }
 
 export interface RailProject {
@@ -61,9 +65,15 @@ export interface SessionRailNode extends WidgetTreeNode {
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
   //
-  // Its current subagents, followed by at most one InactiveFoldRailNode
-  // holding the finished ones (see splitChildren).
-  children: (SessionRailNode | InactiveFoldRailNode)[];
+  // Its current subagents and jobs, followed by independent inactive-subagent
+  // and completed-job folds when either has rows (see splitChildren).
+  children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[];
+}
+
+export interface JobRailNode extends WidgetTreeNode {
+  kind: "job";
+  job: RailJob;
+  active: boolean;
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -95,6 +105,12 @@ export interface InactiveFoldRailNode extends WidgetTreeNode {
   kind: "inactiveFold";
   count: number;
   children: (SessionRailNode | OverflowRailNode)[];
+}
+
+export interface CompletedJobsFoldRailNode extends WidgetTreeNode {
+  kind: "completedJobsFold";
+  count: number;
+  children: JobRailNode[];
 }
 
 export interface OverflowPage {
@@ -147,7 +163,14 @@ export function catalogOverflowNode(
   return overflowNode(id, remaining, [{ catalog, offset, limit }]);
 }
 
-export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode | OverflowRailNode;
+export type RailNode =
+  | SessionRailNode
+  | JobRailNode
+  | ProjectRailNode
+  | LoadingRailNode
+  | InactiveFoldRailNode
+  | CompletedJobsFoldRailNode
+  | OverflowRailNode;
 
 // The rows a given list has hidden. Each caller passes the tiers it actually
 // renders: an active project's inline list shows Current+Recent (the archived
@@ -223,6 +246,30 @@ function inactiveFoldId(parentRowID: string): string {
   return `inactive:${parentRowID}`;
 }
 
+function completedJobsFoldId(parentRowID: string): string {
+  return `completed-jobs:${parentRowID}`;
+}
+
+function toJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
+  const rowID = `job:${parent.row_id}:${job.job_id}`;
+  return {
+    id: rowID,
+    kind: "job",
+    job: { ...job, row_id: rowID },
+    active: false,
+    children: [],
+  };
+}
+
+function activeJobNode(parent: RailSession, job: NavigationJobSummary): JobRailNode {
+  return { ...toJobNode(parent, job), active: true };
+}
+
+function subagentIsCurrent(child: RailSession): boolean {
+  const activity = activeWorkSummary(child);
+  return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
+}
+
 // Splits one parent's children into the rows that render inline and the
 // single fold node carrying the rest. Both sides keep their incoming order,
 // and the fold always lands last, so a parent's live work stays at the top of
@@ -235,27 +282,44 @@ function inactiveFoldId(parentRowID: string): string {
 // "Inactive subagents" for rows that are neither inactive-in-that-sense nor
 // subagents. A cluster is already a disclosure; its members are ordinary
 // top-level sessions (parity-m3-sidebar-tree.md §3).
-function splitChildren(parent: RailSession, isExpanded: IsExpanded): (SessionRailNode | InactiveFoldRailNode)[] {
+function splitChildren(
+  parent: RailSession,
+  isExpanded: IsExpanded,
+): (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] {
   const current: SessionRailNode[] = [];
   const inactive: SessionRailNode[] = [];
   if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
   for (const child of parent.children) {
-    (CURRENT_SUBAGENT_STATES.has(child.state) ? current : inactive).push(toSessionNode(child, isExpanded));
+    (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
   const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
-  if (inactiveCount === 0) return current;
-  const id = inactiveFoldId(parent.row_id);
-  const omitted = overflowNode(id, parent.more_subagents ?? 0);
-  return [
+  const children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] = [
     ...current,
-    {
+    ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
+  ];
+  if (inactiveCount > 0) {
+    const id = inactiveFoldId(parent.row_id);
+    const omitted = overflowNode(id, parent.more_subagents ?? 0);
+    children.push({
       id,
       kind: "inactiveFold",
       count: inactiveCount,
       expanded: isExpanded(id, false),
       children: [...inactive, ...omitted],
-    },
-  ];
+    });
+  }
+  const completedJobs = parent.completed_jobs ?? [];
+  if (completedJobs.length > 0) {
+    const id = completedJobsFoldId(parent.row_id);
+    children.push({
+      id,
+      kind: "completedJobsFold",
+      count: completedJobs.length,
+      expanded: isExpanded(id, false),
+      children: completedJobs.map((job) => toJobNode(parent, job)),
+    });
+  }
+  return children;
 }
 
 function toSessionNode(n: RailSession, isExpanded: IsExpanded): SessionRailNode {
@@ -319,11 +383,28 @@ export function needsYouDescendantCount(node: RailSession): number {
   );
 }
 
+export interface ActiveWorkSummary {
+  workingSubagents: number;
+  runningJobs: number;
+}
+
+export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
+  let workingSubagents = 0;
+  let runningJobs = (node.running_jobs ?? []).length;
+  for (const child of node.children) {
+    const childActivity = activeWorkSummary(child);
+    workingSubagents += (child.state === "active" ? 1 : 0) + childActivity.workingSubagents;
+    runningJobs += childActivity.runningJobs;
+  }
+  return { workingSubagents, runningJobs };
+}
+
+export function runningJobCount(node: RailSession): number {
+  return activeWorkSummary(node).runningJobs;
+}
+
 export function workingDescendantCount(node: RailSession): number {
-  return node.children.reduce(
-    (count, child) => count + (child.state === "active" ? 1 : 0) + workingDescendantCount(child),
-    0,
-  );
+  return activeWorkSummary(node).workingSubagents;
 }
 
 // A session "wants you" either directly (its own state) or transitively (a
