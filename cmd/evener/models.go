@@ -65,7 +65,7 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	r, _, err := loadRegistryForCLI(stderr)
+	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func runModelsInspect(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() != 1 {
 		return errors.New("usage: evener models inspect <instance/model>")
 	}
-	r, _, err := loadRegistryForCLI(stderr)
+	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
 	}

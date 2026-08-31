@@ -20,10 +20,10 @@ func loadCLIRegistry(extra ...registry.Option) (*registry.Registry, *credentials
 	return cmdutil.LoadRegistry(opts...)
 }
 
-// loadRegistryForCLI is loadCLIRegistry plus the notices a command announces
-// once: the registry's load warnings and its stray OAuth records (spec §9.5,
-// §14.1).
-func loadRegistryForCLI(stderr io.Writer) (*registry.Registry, *credentials.Store, error) {
+// loadCLIRegistryWithNotices is loadCLIRegistry plus the notices a command
+// announces once: the registry's load warnings and its stray OAuth records
+// (spec §9.5, §14.1).
+func loadCLIRegistryWithNotices(stderr io.Writer) (*registry.Registry, *credentials.Store, error) {
 	r, store, err := loadCLIRegistry()
 	if err != nil {
 		return nil, nil, err

@@ -212,7 +212,7 @@ func TestModelsOldSchemaIsTheFlagDayError(t *testing.T) {
 
 // TestModelsListOldSchemaIsTheFlagDayError is
 // TestModelsOldSchemaIsTheFlagDayError's sibling for the `list` subcommand:
-// `evener models list` shares loadRegistryForCLI with `inspect`, so an
+// `evener models list` shares loadCLIRegistryWithNotices with `inspect`, so an
 // old-schema providers.toml must fail it the same way (spec §14.1).
 func TestModelsListOldSchemaIsTheFlagDayError(t *testing.T) {
 	modelsTestEnv(t)

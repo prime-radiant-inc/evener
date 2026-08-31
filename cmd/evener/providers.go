@@ -84,7 +84,7 @@ func runProvidersList(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	r, store, err := loadRegistryForCLI(stderr)
+	r, store, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func runProvidersProbe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	r, _, err := loadRegistryForCLI(stderr)
+	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
 	}
@@ -438,7 +438,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 		entry.APIKeyEnv = []string{v}
 	}
 
-	r, _, err := loadRegistryForCLI(stderr)
+	r, _, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
 		return err
 	}
