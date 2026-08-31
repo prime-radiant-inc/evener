@@ -31,7 +31,11 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // the scripted tree (12 projects x 10 sessions) overflows it several times
 // over - the exact condition the bug needed.
 const VIEWPORT = { width: 1400, height: 900 };
-const MOBILE_VIEWPORT = { width: 390, height: 844 };
+// An iPhone-sized window WITH mobile + touch emulation - without mobile the
+// page is a fine-pointer desktop window; without touch, (pointer: coarse)
+// never matches and the tap-target floors this guard exists to measure are
+// styled out of the page.
+const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
 async function measure(cdpEndpoint, vitePort) {
   const page = await connectPage(cdpEndpoint);
@@ -57,6 +61,25 @@ async function measureMobileSidebar(cdpEndpoint, vitePort) {
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureMobileSidebar())"));
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
+// The mobile rail is the session list a phone user taps through: every
+// interactive element in it must meet the platform's 44px tap floor. Measured
+// in the same emulated-phone context as measureMobileSidebar (a second page,
+// so the assertion is independent of the sidebar geometry checks).
+async function measureTapTargets(cdpEndpoint, vitePort) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, MOBILE_VIEWPORT);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
+    await evaluate(send, "window.settledShell");
+    await waitForFonts(send);
+    return JSON.parse(await evaluate(send, "JSON.stringify(window.measureTapTargets())"));
   } finally {
     await clearViewportOverride(send);
     page.close();
@@ -97,6 +120,24 @@ function assertResult(result) {
   if (result.leaks.length > 0) {
     failures.push(
       `elements escape the viewport's bottom edge: ${result.leaks.map((l) => `${l.selector} bottom=${l.bottom.toFixed(1)}`).join("; ")}`,
+    );
+  }
+  return failures;
+}
+
+function assertTapTargets(result) {
+  const failures = [];
+  // Harness sanity: the full tree really rendered before "no offenders" means
+  // anything (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
+  if (result.measured < 120) {
+    failures.push(`expected the session list's interactive elements in the page, measured only ${result.measured}`);
+  }
+  if (result.offenders.length > 0) {
+    const counts = new Map();
+    for (const o of result.offenders) counts.set(o.selector, (counts.get(o.selector) ?? 0) + 1);
+    const summary = [...counts.entries()].map(([selector, count]) => `${count}x ${selector}`).join("; ");
+    failures.push(
+      `${result.offenders.length} interactive elements in the mobile session list are under the ${result.min}px tap floor: ${summary}`,
     );
   }
   return failures;
@@ -196,12 +237,14 @@ async function main() {
     }
     const result = await measure(cdpEndpoint, vitePort);
     const mobileResult = await measureMobileSidebar(cdpEndpoint, vitePort);
-    const failures = [...assertResult(result), ...assertMobileResult(mobileResult)];
+    const tapResult = await measureTapTargets(cdpEndpoint, vitePort);
+    const failures = [...assertResult(result), ...assertMobileResult(mobileResult), ...assertTapTargets(tapResult)];
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
-          `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobileResult.panelBody.scrollHeight}px in ${mobileResult.panelBody.clientHeight}px)`,
+          `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobileResult.panelBody.scrollHeight}px in ${mobileResult.panelBody.clientHeight}px); ` +
+          `${tapResult.measured} mobile tap targets all >= ${tapResult.min}px`,
       );
     } else {
       for (const failure of failures) console.error(`shellguard FAIL: ${failure}`);
@@ -213,6 +256,10 @@ async function main() {
       }
       console.error(`railBody: ${JSON.stringify(result.railBody)}`);
       console.error(`mobile sidebar: ${JSON.stringify(mobileResult)}`);
+      console.error("sub-floor tap targets in the mobile session list:");
+      for (const o of tapResult.offenders.slice(0, 20)) {
+        console.error(`  ${o.selector} ${JSON.stringify(o.box)}`);
+      }
       console.error(`experiments: ${JSON.stringify(result.experiments)}`);
       console.error("positioned elements under the rail:");
       for (const el of result.positioned ?? []) {

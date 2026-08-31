@@ -2,6 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Mirrors index.html's viewport meta: without width=device-width, the
+         guard's mobile:true emulation lays the page out at Chrome's 980px
+         fallback viewport, the (max-width: 899px) mobile shell never matches,
+         and every mobile measurement is of a desktop page scaled down. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>shell height guard</title>
   </head>
   <body>

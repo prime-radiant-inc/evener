@@ -52,9 +52,26 @@
    * descendants of `.actions`) measured ~47x32, under the tap floor even
    * though `.railRow` itself already reaches it. min-height, not height, so
    * each button's own desktop sizing (owned by widgets/menu /
-   * widgets/iconbutton, not this file) stays untouched everywhere else. */
+   * widgets/iconbutton, not this file) stays untouched everywhere else.
+   *
+   * min-width joins min-height (shellguard tap-target measurement, 390px
+   * mobile viewport): the "..." trigger's own height was already floored by
+   * menu.module.css's 899px block, but NOTHING floored its width - with the
+   * flush-right padding override below it rendered 23px wide on a phone. */
   .actions button {
+    min-width: var(--tap-min);
     min-height: var(--tap-min);
+  }
+
+  /* The wider box would leave the "..." glyph flush LEFT (the desktop
+   * flush-right override below zeroes the trigger's right padding): a 44px
+   * target with its glyph at one edge reads as misaligned and moves the
+   * visual affordance away from the row's trailing edge. Under touch the
+   * glyph centres in the tap box instead. Scoped to the menu trigger so a
+   * project row's "+" IconButton keeps its own centering. */
+  .actions button[aria-haspopup="menu"] {
+    padding: 0;
+    justify-content: center;
   }
 }
 

@@ -438,6 +438,32 @@ describe("inactive-subagent fold row", () => {
   });
 });
 
+describe("touch tap floor (RailRow.module.css, pointer: coarse)", () => {
+  // shellguard's tap-target pass measures these in a real phone context; these
+  // source assertions pin the rules themselves (jsdom evaluates no cascade).
+  function coarseBlock(): string {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const block = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
+    expect(block).not.toBeNull();
+    return block![1]!;
+  }
+
+  test("row action buttons meet the 44px floor in BOTH dimensions", () => {
+    const rule = coarseBlock().match(/\.actions button\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("min-width: var(--tap-min)");
+    expect(rule![1]).toContain("min-height: var(--tap-min)");
+  });
+
+  test("the widened menu trigger centres its glyph instead of hugging an edge", () => {
+    const rule = coarseBlock().match(/\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("padding: 0");
+    expect(rule![1]).toContain("justify-content: center");
+  });
+});
+
 describe("job rows", () => {
   test("renders an active job label and green status", () => {
     render(<RailRow node={jobRailNode({ command: "go test ./..." })} info={info()} actions={actions()} />);
@@ -1651,9 +1677,14 @@ describe("shared right slot (RailRow.module.css)", () => {
     // revealed menu right-justifies to the timestamp's own edge (and the
     // shared cell narrows to the glyph's real width). Scoped by attribute
     // so a project row's "+" IconButton keeps its own square geometry.
-    const justifyRule = ruleFor('.actions button[aria-haspopup="menu"]');
+    //
+    // Anchored to the TOP-LEVEL rule (column 0): the same selector also
+    // appears inside @media (pointer: coarse), where the widened tap target
+    // centres the glyph instead - that override is the tap-floor describe's
+    // own assertion above, not this one's.
+    const justifyRule = /\n\.actions button\[aria-haspopup="menu"\]\s*\{([^}]*)\}/.exec(CSS);
     expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
-    expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
+    expect(justifyRule![1]).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });
 
   // The signal dot keeps a FIXED width and refuses to flex: its outdent

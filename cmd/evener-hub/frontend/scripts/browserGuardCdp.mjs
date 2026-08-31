@@ -329,11 +329,25 @@ export async function applyViewport(send, viewport) {
     30000,
     "Emulation.setDeviceMetricsOverride"
   );
+  // Metrics mobile:true alone does NOT flip the pointer media features; touch
+  // emulation is what makes (pointer: coarse)/(hover: none) match, the same
+  // combination DevTools' device toolbar applies. Without it the page renders
+  // its fine-pointer rules and every coarse-gated tap floor is invisible.
+  if (viewport.touch) {
+    await withTimeout(
+      send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }),
+      30000,
+      "Emulation.setTouchEmulationEnabled"
+    );
+  }
 }
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
   await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(() => {});
+  await withTimeout(send("Emulation.setTouchEmulationEnabled", { enabled: false }), 30000, "Emulation.setTouchEmulationEnabled").catch(
+    () => {}
+  );
 }
 
 /**
