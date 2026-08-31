@@ -9,11 +9,11 @@ import (
 
 // The two bodies below are the verbatim wire shapes captured on 2026-08-31
 // from live completions that answered 200 with no reply text (issue #715):
-// openrouter/minimax/minimax-m2.7 and lunaroute/glm-5.2-vision. Every key the
-// provider sent is kept — that is the point of the fixture, since it shows
-// there is no further text-bearing field the decoder could be missing — and
-// only the chain-of-thought prose is shortened, to a string that still breaks
-// off mid-sentence exactly as the captured one did.
+// openrouter/minimax/minimax-m2.7 and lunaroute/glm-5.2-vision. Every message
+// and choice key the provider sent is kept verbatim — that is the point of the
+// fixture, since it shows there is no further text-bearing field the decoder
+// could be missing. Usage/billing side fields (cost, system_fingerprint) are
+// dropped, and the chain-of-thought prose is shortened to a stand-in string.
 //
 // Both requests capped output at 64 tokens. Both models spent all 64 on
 // reasoning and were cut off (`finish_reason: "length"`) before emitting a
