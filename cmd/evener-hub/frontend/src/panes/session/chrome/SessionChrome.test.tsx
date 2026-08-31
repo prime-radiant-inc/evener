@@ -13,6 +13,7 @@ import type {
   ThreadReadResponse,
 } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
+import { installMobileViewport } from "../../../shell/testing/mobileViewport";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
@@ -21,7 +22,6 @@ import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
-import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";

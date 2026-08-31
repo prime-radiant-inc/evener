@@ -1651,7 +1651,10 @@ describe("shared right slot (RailRow.module.css)", () => {
     // revealed menu right-justifies to the timestamp's own edge (and the
     // shared cell narrows to the glyph's real width). Scoped by attribute
     // so a project row's "+" IconButton keeps its own square geometry.
-    const justifyRule = ruleFor('.actions button[aria-haspopup="menu"]');
+    // Matches BOTH popup types (aria-haspopup), so the session row's
+    // mobile drawer trigger (aria-haspopup="dialog") keeps the same
+    // desktop-equivalent geometry on a phone-width rail.
+    const justifyRule = ruleFor(".actions button[aria-haspopup]");
     expect(justifyRule, "the row must right-justify the menu trigger's glyph").not.toBeNull();
     expect(justifyRule).toMatch(/padding:\s*0\s+0\s+0\s+var\(--space-2\)/);
   });

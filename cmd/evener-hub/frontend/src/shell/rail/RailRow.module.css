@@ -137,8 +137,11 @@
  * on the leading side) puts it at the timestamp's own right edge and
  * shrinks the trigger - and with it the shared cell - to the glyph's real
  * width. Scoped by attribute so a project row's "+" IconButton keeps its
- * own square geometry. */
-.actions button[aria-haspopup="menu"] {
+ * own square geometry. Matches BOTH popup types: the session row's ⋯ menu
+ * opens a `role="menu"` popover (aria-haspopup="menu") on desktop and a
+ * bottom-Sheet `role="dialog"` (aria-haspopup="dialog") on mobile - the
+ * geometry must hold on both sides of the breakpoint. */
+.actions button[aria-haspopup] {
   padding: 0 0 0 var(--space-2);
 }
 

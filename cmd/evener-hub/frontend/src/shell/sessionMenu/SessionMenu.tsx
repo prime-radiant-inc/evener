@@ -10,9 +10,19 @@
 // confirm leaves the dialog open with the confirm button re-enabled; only
 // success closes it. Slash-command actions (goal/aside/compact/clear) are
 // deliberately NOT here - the command palette owns those.
-import { type ChangeEvent, useState } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { Button, Dialog, Input, isSeparator, Menu, type MenuEntry, menuTriggerClassName, Sheet } from "../../widgets";
+import {
+  Button,
+  Dialog,
+  Input,
+  isSeparator,
+  Menu,
+  type MenuEntry,
+  menuTriggerClassName,
+  menuTriggerKeyDown,
+  Sheet,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import { useIsMobile } from "../useIsMobile";
@@ -99,6 +109,12 @@ export function SessionMenu({
   // identity don't change across the breakpoint.
   const isMobile = useIsMobile();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // A breakpoint flip unmounts the drawer mid-interaction with no onClose;
+  // without this reset, re-entering mobile would re-render it open with no
+  // click. (The desktop half needs no mirror: Menu closes itself on resize.)
+  useEffect(() => {
+    if (!isMobile) setDrawerOpen(false);
+  }, [isMobile]);
 
   // confirm runs a dialog-confirmed action: busy-lock the confirm button
   // against double-submit, close ONLY on success (a rejection was already
@@ -198,6 +214,7 @@ export function SessionMenu({
             aria-haspopup="dialog"
             aria-expanded={drawerOpen}
             onClick={() => setDrawerOpen((open) => !open)}
+            onKeyDown={(event) => menuTriggerKeyDown(event, () => setDrawerOpen(true))}
           >
             {triggerContent}
           </button>

@@ -58,6 +58,33 @@ export function menuTriggerClassName(variant: MenuVariant): string {
   return variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
 }
 
+/** The trigger keydown contract, shared by Menu's own trigger and the same
+ * external triggers menuTriggerClassName styles. Consume-then-stop: every key
+ * this handler gives a MEANING to must stop there, never also reach an
+ * ancestor that might independently react to the same keypress (e.g. a Tree
+ * row's own onKeyDown - see shell/rail/RailRow.tsx). ArrowDown/ArrowUp mean
+ * "open", so they're stopped whether or not this press is what opens (callers
+ * pass an idempotent `open`). Enter/Space get stopPropagation only, never
+ * preventDefault: the browser's own native <button> activation (a click, via
+ * onClick) is what opens for those two, and preventDefault would suppress
+ * that default action entirely, breaking it. */
+export function menuTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>, open: () => void): void {
+  switch (event.key) {
+    case "ArrowDown":
+    case "ArrowUp":
+      event.preventDefault();
+      event.stopPropagation();
+      open();
+      break;
+    case "Enter":
+    case " ":
+      event.stopPropagation();
+      break;
+    default:
+      break;
+  }
+}
+
 export interface MenuProps {
   /** Visible content of the trigger button Menu renders (its own aria and
    * open/close wiring - see this task's report for why the trigger isn't
@@ -236,33 +263,12 @@ export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: M
     else openMenu();
   }
 
-  // Consume-then-stop, mirroring handleMenuKeyDown's own Escape precedent
-  // below: every key this handler gives a MEANING to must stop there,
-  // never also reach an ancestor that might independently react to the
-  // same keypress (e.g. a Tree row's own onKeyDown - see
-  // shell/rail/RailRow.tsx). ArrowDown/ArrowUp open the menu, so they're
-  // stopped whether or not this particular press is what actually opened
-  // it (openMenu() is idempotent-guarded by `!isOpen`, but the KEY's
-  // meaning - "this is this trigger's open shortcut" - holds regardless).
-  // Enter/Space get stopPropagation only, never preventDefault: the
-  // browser's own native <button> activation (a click, via onClick) is
-  // what actually opens the menu for those two, and preventDefault would
-  // suppress that default action entirely, breaking it.
+  // The semantics live in menuTriggerKeyDown (shared with external triggers);
+  // openMenu is already idempotent-guarded by `!isOpen`.
   function handleTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    switch (event.key) {
-      case "ArrowDown":
-      case "ArrowUp":
-        event.preventDefault();
-        event.stopPropagation();
-        if (!isOpen) openMenu();
-        break;
-      case "Enter":
-      case " ":
-        event.stopPropagation();
-        break;
-      default:
-        break;
-    }
+    menuTriggerKeyDown(event, () => {
+      if (!isOpen) openMenu();
+    });
   }
 
   function handleMenuKeyDown(event: KeyboardEvent<HTMLUListElement>) {

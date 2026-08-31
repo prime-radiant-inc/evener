@@ -762,10 +762,22 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     triggerBox.bottom <= paneBox.bottom + 1;
   trigger.click();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  // SessionMenu swaps the popover for a bottom-Sheet drawer below 899px
+  // (SessionMenu.tsx's isMobile branch). The drawer's items are plain buttons,
+  // not role="menuitem", and the dialog's aria-labelledby is a React-generated
+  // title id (not the trigger's id), so find the surface by its item labels.
   const menu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).find(
     (candidate) => candidate.getAttribute("aria-labelledby") === trigger.id,
   );
-  const verbosityItem = Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []).find(
+  const dialog = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find((candidate) => {
+    const labels = ["Details", "Rename", "Shut down"];
+    const text = candidate.textContent ?? "";
+    return labels.every((label) => text.includes(label));
+  });
+  const surface = menu ?? dialog;
+  const isMenu = surface?.getAttribute("role") === "menu";
+  const itemSelector = isMenu ? '[role="menuitem"]' : "button";
+  const verbosityItem = Array.from(surface?.querySelectorAll<HTMLElement>(itemSelector) ?? []).find(
     (item) => item.textContent?.trim() === "Verbosity…",
   );
   if (!verbosityItem) throw new Error("Session actions did not expose pane-only Verbosity…");
