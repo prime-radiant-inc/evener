@@ -1,0 +1,307 @@
+package appserver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+type decodedWebSocketTraceRecord struct {
+	Timestamp  string  `json:"timestamp"`
+	Connection string  `json:"connection"`
+	Event      string  `json:"event"`
+	Direction  string  `json:"direction"`
+	Bytes      *int    `json:"bytes"`
+	Frame      *string `json:"frame"`
+	Error      string  `json:"error"`
+}
+
+type failingTraceWriteCloser struct {
+	err error
+}
+
+func (w failingTraceWriteCloser) Write([]byte) (int, error) { return 0, w.err }
+func (w failingTraceWriteCloser) Close() error              { return nil }
+
+func TestNewWebSocketTraceCreatesPrivateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	trace, err := NewWebSocketTrace(path)
+	if err != nil {
+		t.Fatalf("NewWebSocketTrace: %v", err)
+	}
+	if err := trace.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat trace: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("trace permissions = %04o, want 0600", got)
+	}
+}
+
+func TestNewWebSocketTraceRefusesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	if err := os.WriteFile(path, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+
+	trace, err := NewWebSocketTrace(path)
+	if err == nil {
+		trace.Close() //nolint:errcheck // failure cleanup
+		t.Fatal("NewWebSocketTrace succeeded for an existing file")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read existing file: %v", readErr)
+	}
+	if string(got) != "keep me" {
+		t.Fatalf("existing file = %q, want unchanged content", got)
+	}
+}
+
+func TestWebSocketTraceRecordsPerConnectionFrameDetails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	trace, err := NewWebSocketTrace(path)
+	if err != nil {
+		t.Fatalf("NewWebSocketTrace: %v", err)
+	}
+	trace.now = func() time.Time {
+		return time.Date(2026, time.August, 31, 21, 0, 0, 123456789, time.UTC)
+	}
+
+	observer := trace.Observer("conn-9")
+	observer.RecordRecv([]byte(`{ "method": "ping" }`))
+	observer.RecordSend([]byte(`{"id":9,"result":{}}`))
+	if err := trace.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	records := readWebSocketTraceRecords(t, path)
+	if len(records) != 2 {
+		t.Fatalf("record count = %d, want 2: %+v", len(records), records)
+	}
+	wantTimestamp := "2026-08-31T21:00:00.123456789Z"
+	wantFrames := []struct {
+		direction string
+		bytes     int
+		frame     string
+	}{
+		{direction: "browser_to_hub", bytes: 20, frame: `{ "method": "ping" }`},
+		{direction: "hub_to_browser", bytes: 20, frame: `{"id":9,"result":{}}`},
+	}
+	for i, want := range wantFrames {
+		got := records[i]
+		if got.Timestamp != wantTimestamp || got.Connection != "conn-9" || got.Event != "frame" || got.Direction != want.direction {
+			t.Errorf("record %d identity = %+v, want timestamp=%q connection=conn-9 event=frame direction=%q", i, got, wantTimestamp, want.direction)
+		}
+		if got.Bytes == nil || *got.Bytes != want.bytes {
+			t.Errorf("record %d bytes = %v, want %d", i, got.Bytes, want.bytes)
+		}
+		if got.Frame == nil || *got.Frame != want.frame {
+			t.Errorf("record %d frame = %v, want %q", i, got.Frame, want.frame)
+		}
+	}
+}
+
+func TestWebSocketTraceRecordsConnectionLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	trace, err := NewWebSocketTrace(path)
+	if err != nil {
+		t.Fatalf("NewWebSocketTrace: %v", err)
+	}
+	trace.now = func() time.Time {
+		return time.Date(2026, time.August, 31, 21, 5, 0, 0, time.UTC)
+	}
+
+	trace.ConnectionOpened("conn-4")
+	trace.ConnectionClosed("conn-4", errors.New("peer vanished"))
+	if err := trace.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	records := readWebSocketTraceRecords(t, path)
+	if len(records) != 2 {
+		t.Fatalf("record count = %d, want 2: %+v", len(records), records)
+	}
+	if got := records[0]; got.Connection != "conn-4" || got.Event != "open" || got.Direction != "" || got.Bytes != nil || got.Frame != nil || got.Error != "" {
+		t.Errorf("open record = %+v, want lifecycle-only conn-4 open", got)
+	}
+	if got := records[1]; got.Connection != "conn-4" || got.Event != "close" || got.Error != "peer vanished" || got.Direction != "" || got.Bytes != nil || got.Frame != nil {
+		t.Errorf("close record = %+v, want conn-4 close with error", got)
+	}
+}
+
+func TestWebSocketTraceCloseReportsWriteFailure(t *testing.T) {
+	want := errors.New("disk full")
+	trace := &WebSocketTrace{
+		file: failingTraceWriteCloser{err: want},
+		now:  time.Now,
+	}
+
+	trace.ConnectionOpened("conn-1")
+	if err := trace.Close(); !errors.Is(err, want) {
+		t.Fatalf("Close error = %v, want write failure %v", err, want)
+	}
+}
+
+func TestServeWebSocketTraceSeparatesConnections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	trace, err := NewWebSocketTrace(path)
+	if err != nil {
+		t.Fatalf("NewWebSocketTrace: %v", err)
+	}
+	server := NewServer(ServerConfig{
+		ServerName:     "test-server",
+		Version:        "test",
+		SourceID:       "local",
+		WebSocketTrace: trace,
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+
+	ctx := context.Background()
+	url := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	first := dialTraceWebSocket(ctx, t, url, httpServer.Client())
+	second := dialTraceWebSocket(ctx, t, url, httpServer.Client())
+	requests := []string{
+		`{"id":41,"method":"initialize","params":{"protocolVersion":"evener-appwire-v3"}}`,
+		`{"id":42,"method":"initialize","params":{"protocolVersion":"evener-appwire-v3"}}`,
+	}
+	for i, conn := range []*websocket.Conn{first, second} {
+		if err := conn.Write(ctx, websocket.MessageText, []byte(requests[i])); err != nil {
+			t.Fatalf("connection %d write: %v", i, err)
+		}
+		if _, _, err := conn.Read(ctx); err != nil {
+			t.Fatalf("connection %d read: %v", i, err)
+		}
+	}
+	if err := first.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+	if err := second.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("close second: %v", err)
+	}
+	httpServer.Close()
+	if err := trace.Close(); err != nil {
+		t.Fatalf("close trace: %v", err)
+	}
+
+	records := readWebSocketTraceRecords(t, path)
+	byConnection := make(map[string][]decodedWebSocketTraceRecord)
+	for _, record := range records {
+		byConnection[record.Connection] = append(byConnection[record.Connection], record)
+	}
+	if len(byConnection) != 2 {
+		t.Fatalf("traced connections = %d, want 2: %+v", len(byConnection), records)
+	}
+	seenRequests := make(map[string]bool)
+	for connection, connectionRecords := range byConnection {
+		var sawOpen, sawClose, sawOutbound bool
+		for _, record := range connectionRecords {
+			switch {
+			case record.Event == "open":
+				sawOpen = true
+			case record.Event == "close":
+				sawClose = true
+			case record.Event == "frame" && record.Direction == "hub_to_browser":
+				sawOutbound = true
+			case record.Event == "frame" && record.Direction == "browser_to_hub" && record.Frame != nil:
+				seenRequests[*record.Frame] = true
+			}
+		}
+		if !sawOpen || !sawClose || !sawOutbound {
+			t.Errorf("connection %q records = %+v, want open, outbound frame, and close", connection, connectionRecords)
+		}
+	}
+	for _, request := range requests {
+		if !seenRequests[request] {
+			t.Errorf("missing exact inbound request %q in trace", request)
+		}
+	}
+}
+
+func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	trace, err := NewWebSocketTrace(path)
+	if err != nil {
+		t.Fatalf("NewWebSocketTrace: %v", err)
+	}
+	server := NewServer(ServerConfig{
+		ServerName:     "test-server",
+		Version:        "test",
+		SourceID:       "local",
+		WebSocketTrace: trace,
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+
+	ctx := context.Background()
+	conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
+	request := []byte(`{"id":51,"method":"initialize","params":{"protocolVersion":"evener-appwire-v3"}}`)
+	if err := conn.Write(ctx, websocket.MessageText, request); err != nil {
+		t.Fatalf("write initialize: %v", err)
+	}
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatalf("read initialize response: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	conn.CloseNow()
+	httpServer.Close()
+	if err := trace.Close(); err != nil {
+		t.Fatalf("close trace: %v", err)
+	}
+
+	records := readWebSocketTraceRecords(t, path)
+	if len(records) < 4 {
+		t.Fatalf("records = %+v, want open, inbound, outbound, and close", records)
+	}
+	if got := records[len(records)-1]; got.Event != "close" {
+		t.Fatalf("final record = %+v, want close", got)
+	}
+}
+
+func dialTraceWebSocket(ctx context.Context, t *testing.T, url string, client *http.Client) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: client})
+	if err != nil {
+		t.Fatalf("dial %s: %v", url, err)
+	}
+	return conn
+}
+
+func readWebSocketTraceRecords(t *testing.T, path string) []decodedWebSocketTraceRecord {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	var records []decodedWebSocketTraceRecord
+	for _, line := range bytesLines(data) {
+		var record decodedWebSocketTraceRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode trace line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func bytesLines(data []byte) [][]byte {
+	return bytes.FieldsFunc(data, func(r rune) bool { return r == '\n' })
+}

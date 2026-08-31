@@ -118,20 +118,36 @@ func (g *webSocketReadGate) finishPing(attempt *webSocketPingAttempt) bool {
 }
 
 func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !s.beginWebSocket() {
+		http.Error(w, "server is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endWebSocket()
+
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "") //nolint:errcheck // connection cleanup; close error is not actionable
 
-	transport := webSocketTransport(appwire.NewWSTransport(ws))
+	connectionID := fmt.Sprintf("conn-%d", serverConnSeq.Add(1))
+	var observer appwire.FrameObserver
+	if s.cfg.WebSocketTrace != nil {
+		s.cfg.WebSocketTrace.ConnectionOpened(connectionID)
+		defer s.cfg.WebSocketTrace.ConnectionClosed(connectionID, nil)
+		observer = s.cfg.WebSocketTrace.Observer(connectionID)
+	}
+	transport := webSocketTransport(appwire.NewObservedWSTransport(ws, observer))
 	if s.wrapWebSocketTransport != nil {
 		transport = s.wrapWebSocketTransport(transport)
 	}
 	ctx, cancel := context.WithCancel(r.Context())
-	conn := s.NewConnection(fmt.Sprintf("conn-%d", serverConnSeq.Add(1)))
+	conn := s.NewConnection(connectionID)
 	conn.setCancel(cancel)
 	s.registerConnection(conn)
+	if s.webSocketShutdownStarted() {
+		cancel()
+	}
 	defer func() {
 		cancel()
 		s.unregisterConnection(conn)
@@ -141,14 +157,17 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	if writeTimeout == 0 {
 		writeTimeout = webSocketWriteTimeout
 	}
-	go func() {
+	var transportLoops sync.WaitGroup
+	transportLoops.Go(func() {
 		defer cancel()
 		runWebSocketSendLoopWithTimeout(ctx, transport, conn.send, writeTimeout)
-	}()
+	})
 	go conn.runWorker(ctx)
 
 	gate := newWebSocketReadGate()
-	go runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, keepalivePongTimeout, s.keepaliveTickerFactory(keepalivePingInterval), s.keepaliveDecision)
+	transportLoops.Go(func() {
+		runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, keepalivePongTimeout, s.keepaliveTickerFactory(keepalivePingInterval), s.keepaliveDecision)
+	})
 
 	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
 	// The receive loop returned, so the queue's only producer has stopped —
@@ -157,6 +176,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	// cancel/unregister above still runs afterward; cancel is idempotent.
 	cancel()
 	conn.purgeRequestQueue()
+	transportLoops.Wait()
 }
 
 // runWebSocketReceiveLoop keeps only transport concerns: park in Recv

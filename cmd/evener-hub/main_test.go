@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -87,6 +89,130 @@ func TestRunMainHelpReturnsNil(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Usage: evener-hub") {
 		t.Fatalf("help output missing usage:\n%s", stderr.String())
+	}
+}
+
+func TestParseHubOptionsAcceptsAppWireTracePath(t *testing.T) {
+	var stderr bytes.Buffer
+	opts, err := parseHubOptions([]string{"-appwire-trace", "/tmp/hub-appwire.jsonl"}, &stderr)
+	if err != nil {
+		t.Fatalf("parseHubOptions: %v, stderr=%s", err, stderr.String())
+	}
+	if opts.appwireTrace != "/tmp/hub-appwire.jsonl" {
+		t.Fatalf("appwire trace path = %q, want /tmp/hub-appwire.jsonl", opts.appwireTrace)
+	}
+}
+
+func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	t.Setenv("EVENER_PROVIDERS_CONFIG", filepath.Join(root, "config", "evener", "providers.toml"))
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", filepath.Join(root, "config", "evener", "credentials.toml"))
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.RunDir = filepath.Join(root, "run")
+	cfg.StateGlob = filepath.Join(root, "projects", "*")
+	cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
+	cfg.HubStateRoot = filepath.Join(root, "hub")
+	cfg.PluginAutoUpgrade = false
+	if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
+		t.Fatalf("create hub state root: %v", err)
+	}
+
+	ctx := t.Context()
+	deps := mainDeps{
+		loadRegistry:    hermeticRegistryLoader,
+		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		ensureDirs:      func() error { return nil },
+		acquireLock:     func(string) (func(), error) { return func() {}, nil },
+		newToken:        func() (string, error) { return "hub-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: func(context.Context, hubHTTPServer, hubShutdowner) error { return nil },
+	}
+	return root, cfg, deps
+}
+
+func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+
+	tracePath := filepath.Join(root, "hub-appwire.jsonl")
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-appwire-trace", tracePath, "-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	info, err := os.Stat(tracePath)
+	if err != nil {
+		t.Fatalf("stat AppWire trace: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("trace permissions = %04o, want 0600", got)
+	}
+	if output := stderr.String(); !strings.Contains(output, tracePath) || !strings.Contains(output, "raw") || !strings.Contains(output, "sensitive") {
+		t.Errorf("trace startup diagnostic must name the path and warn that raw payloads are sensitive:\n%s", output)
+	}
+}
+
+func TestRunMainAppWireTraceCapturesRPCConnection(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+	ctx := t.Context()
+	var web *WebServer
+	var transport *appwire.WSTransport
+	var rpcServer *httptest.Server
+	serveErr := errors.New("serve failed")
+	deps.afterWeb = func(created *WebServer) { web = created }
+	deps.serve = func(context.Context, hubHTTPServer, hubShutdowner) error {
+		if web == nil {
+			t.Fatal("serve reached before WebServer construction")
+		}
+		rpcServer = httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
+		var err error
+		transport, err = appwire.DialWebSocket(ctx, "ws"+rpcServer.URL[len("http"):], rpcServer.Client())
+		if err != nil {
+			rpcServer.Close()
+			t.Fatalf("dial traced RPC: %v", err)
+		}
+		client := appwire.NewClient(transport)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			transport.Close() //nolint:errcheck // failure cleanup
+			rpcServer.Close()
+			t.Fatalf("initialize traced RPC: %v", err)
+		}
+		return serveErr
+	}
+
+	tracePath := filepath.Join(root, "hub-appwire.jsonl")
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-appwire-trace", tracePath, "-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); !errors.Is(err, serveErr) {
+		t.Fatalf("runMain error = %v, want %v; stderr=%s", err, serveErr, stderr.String())
+	}
+	transport.Close() //nolint:errcheck // the server-side drain may already have closed it
+	rpcServer.Close()
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read AppWire trace: %v", err)
+	}
+	output := string(data)
+	for _, want := range []string{`"event":"open"`, `"event":"close"`, `"direction":"browser_to_hub"`, `"direction":"hub_to_browser"`, `initialize`} {
+		if !strings.Contains(output, want) {
+			t.Errorf("AppWire trace missing %q:\n%s", want, output)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if got := lines[len(lines)-1]; !strings.Contains(got, `"event":"close"`) {
+		t.Fatalf("final trace record = %s, want close after serve failure", got)
 	}
 }
 

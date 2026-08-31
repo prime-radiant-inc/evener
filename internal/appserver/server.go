@@ -19,6 +19,9 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// WebSocketTrace records raw data frames and lifecycle events for each
+	// accepted connection. Nil keeps tracing disabled.
+	WebSocketTrace *WebSocketTrace
 	// Navigation is absent until a server supports navigation HTTP resources.
 	Navigation *appwire.NavigationCapability
 	// NavigationCapability is evaluated for every initialize request. It lets a
@@ -67,6 +70,9 @@ type Server struct {
 	cfg                    ServerConfig
 	router                 *Router
 	subs                   *Subscriptions
+	webSocketHandlers      int
+	webSocketShuttingDown  bool
+	webSocketDrained       chan struct{}
 	keepaliveTickerFactory func(time.Duration) webSocketKeepaliveTicker
 	keepaliveDecision      func(bool)
 	// requestQueueCapacity is requestQueueCap, overridable by tests that
@@ -112,6 +118,7 @@ func NewServer(cfg ServerConfig) *Server {
 		router:                 NewRouter(),
 		subs:                   NewSubscriptions(),
 		conns:                  map[string]*Connection{},
+		webSocketDrained:       make(chan struct{}),
 		keepaliveTickerFactory: newRealWebSocketKeepaliveTicker,
 		requestQueueCapacity:   requestQueueCap,
 		slowReadStallThreshold: slowReadCapStallAdvisory,
@@ -119,6 +126,59 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
 	return s
+}
+
+// Shutdown stops accepting AppWire WebSockets, cancels every active
+// connection, and waits for their handlers to finish.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.webSocketShuttingDown {
+		s.webSocketShuttingDown = true
+		if s.webSocketHandlers == 0 {
+			close(s.webSocketDrained)
+		}
+	}
+	connections := make([]*Connection, 0, len(s.conns))
+	for _, conn := range s.conns {
+		connections = append(connections, conn)
+	}
+	drained := s.webSocketDrained
+	s.mu.Unlock()
+	for _, conn := range connections {
+		conn.cancelContext()
+	}
+
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) beginWebSocket() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.webSocketShuttingDown {
+		return false
+	}
+	s.webSocketHandlers++
+	return true
+}
+
+func (s *Server) endWebSocket() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webSocketHandlers--
+	if s.webSocketShuttingDown && s.webSocketHandlers == 0 {
+		close(s.webSocketDrained)
+	}
+}
+
+func (s *Server) webSocketShutdownStarted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.webSocketShuttingDown
 }
 
 func (s *Server) Router() *Router {

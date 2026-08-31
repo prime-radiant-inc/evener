@@ -337,6 +337,73 @@ then verifies health; see
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
 
+### Trace browser AppWire traffic
+
+Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag
+records every AppWire data frame on each browser `/rpc` connection:
+
+```bash
+trace_dir="$(mktemp -d)"
+trace_file="$trace_dir/hub-appwire.jsonl"
+evener hub --config "$hub_config" --appwire-trace "$trace_file"
+```
+
+The hub creates `trace_file` with mode `0600` and refuses to overwrite an
+existing path. Omit the flag during normal operation; tracing is off by default.
+
+Each JSONL record contains a UTC `timestamp`, a process-local `connection`
+(`conn-N`), and an `event` (`open`, `frame`, or `close`). Frame records also
+contain a hub-relative `direction` (`browser_to_hub` or `hub_to_browser`), the
+exact `bytes` count, and the complete raw JSON `frame`. The trace covers AppWire
+data frames, not WebSocket ping, pong, or close control frames. It excludes the
+hub's separate connections to Evener daemons.
+
+The raw frames can contain prompts, transcripts, paths, tool arguments, and
+credentials entered through Settings. Keep the file private, inspect it before
+sharing it, and never commit it. Stop the traced hub after reproducing the issue,
+then analyze or share that single file.
+
+For a compact first pass, list each frame's connection, direction, size, request
+ID, and method:
+
+```bash
+jq -r '
+  select(.event == "frame") as $record
+  | ($record.frame | fromjson) as $frame
+  | [$record.connection, $record.direction, $record.bytes,
+     ($frame.id // "-"), ($frame.method // "response")]
+  | @tsv
+' "$trace_file"
+```
+
+To find the connections and message types producing the most traffic, aggregate
+frame counts and bytes before inspecting individual payloads:
+
+```bash
+jq -s -r '
+  [ .[]
+    | select(.event == "frame")
+    | . + {message: (.frame | fromjson)}
+  ]
+  | group_by([.connection, .direction, (.message.method // "response")])
+  | map({
+      connection: .[0].connection,
+      direction: .[0].direction,
+      method: (.[0].message.method // "response"),
+      frames: length,
+      bytes: (map(.bytes) | add)
+    })
+  | sort_by(-.bytes)
+  | .[]
+  | [.connection, .direction, .method, .frames, .bytes]
+  | @tsv
+' "$trace_file"
+```
+
+The columns are connection, direction, method (or `response`), frame count, and
+total bytes, ordered by total bytes. Use the process-local connection ID to
+correlate an `open` record, its frames, and the final `close` record.
+
 ## Browser and TUI
 
 Browser: visit the authorization URL logged at startup. It sets the auth
