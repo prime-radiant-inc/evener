@@ -958,8 +958,8 @@ func (s *Server) registerAppWireHandlers() {
 }
 
 func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	data := []appwire.Thread{s.appThread()}
 	s.mu.RLock()
+	data := []appwire.Thread{s.appThreadLocked()}
 	ids := make([]string, 0, len(s.appDescendants))
 	for id := range s.appDescendants {
 		ids = append(ids, id)
@@ -1912,6 +1912,11 @@ func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListPara
 // jobs.jsonl read, or the session's own mutex.
 func (s *Server) appThread() appwire.Thread {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appThreadLocked()
+}
+
+func (s *Server) appThreadLocked() appwire.Thread {
 	status := s.status
 	sourceID := s.appSourceID
 	threadID := s.appThreadID
@@ -1920,7 +1925,6 @@ func (s *Server) appThread() appwire.Thread {
 	turnReserved := strings.TrimSpace(s.appReservedTurnID) != ""
 	envelope := s.appEnvelope
 	activeTurnID := s.appActiveTurnID
-	s.mu.RUnlock()
 
 	if sourceID == "" {
 		sourceID = "local"
@@ -1976,7 +1980,7 @@ func (s *Server) appThread() appwire.Thread {
 			ContextUsed:           metrics.Used,
 			ContextWindow:         metrics.Window,
 			ContextRemaining:      metrics.Remaining,
-			Capabilities:          s.appCapabilities(status.State, processing),
+			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
 			Diagnostics:           diagnostics,
 			Queue:                 queue,
 			PendingMutations:      pendingMutations,
@@ -2110,6 +2114,10 @@ func cloneServerInt64(value *int64) *int64 {
 func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.appCapabilitiesLocked(state, processing)
+}
+
+func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.ThreadCapabilities {
 	// Status-dependent capabilities derive from the status this thread PUBLISHES,
 	// not assembled again from the fields behind it. Clear additionally requires
 	// its handler and state gate to report that the action is currently safe.
