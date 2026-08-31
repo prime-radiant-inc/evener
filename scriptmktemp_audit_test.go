@@ -58,12 +58,11 @@ func mktempEscapesTMPDIR(call string) bool {
 // of work. Removing an entry after fixing its script is the intended lifecycle —
 // the list should only ever get shorter.
 var mktempAllowedScripts = map[string]bool{
-	"e2e-cover.sh":           true,
-	"fuzz-bisect.sh":         true,
-	"fuzz-gap-check.sh":      true,
-	"fuzz-oracle-audit.sh":   true,
-	"fuzz-registry-check.sh": true,
-	"fuzz-triage.sh":         true,
+	"e2e-cover.sh":         true,
+	"fuzz-bisect.sh":       true,
+	"fuzz-gap-check.sh":    true,
+	"fuzz-oracle-audit.sh": true,
+	"fuzz-triage.sh":       true,
 }
 
 // scriptShellFiles returns every .sh file under scripts/, recursively. The

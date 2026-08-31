@@ -11,7 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -158,8 +161,52 @@ type probeFile struct {
 	Prompt  string            `yaml:"prompt"`
 	Fixture fixtureSpec       `yaml:"fixture"`
 	Expect  expectSpec        `yaml:"expect"`
-	Metrics map[string]any    `yaml:"metrics"`
+	Metrics metricsSpec       `yaml:"metrics"`
 	Skip    map[string]string `yaml:"skip,omitempty"`
+}
+
+// metricsSpec is the validated form of a probe manifest's `metrics:` block
+// (#187: the block was previously parsed into an untyped map that nothing
+// read). Each field names a runner-computed metric the probe wants reported
+// on its result; maxToolCalls is a manifest-local threshold.
+type metricsSpec struct {
+	MaxToolCalls                      int  `yaml:"max_tool_calls"`
+	WantsInvestigativeCallCount       bool `yaml:"wants_investigative_call_count"`
+	WantsRepeatedReadOrGrepCount      bool `yaml:"wants_repeated_read_or_grep_count"`
+	WantsToolRoundOfFirstTestRun      bool `yaml:"wants_tool_round_of_first_test_run"`
+	WantsToolRoundOfFirstSourceEdit   bool `yaml:"wants_tool_round_of_first_source_edit"`
+	WantsPrematureFixBeforeRedTestFlg bool `yaml:"wants_premature_fix_before_red_test_flag"`
+}
+
+// metricYAMLKeys is the closed set of keys a manifest's metrics block may
+// carry, derived from metricsSpec's field tags so the set cannot drift from
+// the struct. Anything else fails at load time instead of silently dropping
+// into a map nobody reads.
+var metricYAMLKeys = func() []string {
+	t := reflect.TypeFor[metricsSpec]()
+	keys := make([]string, 0, t.NumField())
+	for f := range t.Fields() {
+		if key, _, _ := strings.Cut(f.Tag.Get("yaml"), ","); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}()
+
+// UnmarshalYAML decodes the metrics block strictly: unknown keys are a
+// load-time error so a typo'd metric name can never parse into dead state.
+func (m *metricsSpec) UnmarshalYAML(node *yaml.Node) error {
+	var raw map[string]any
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	for key := range raw {
+		if !slices.Contains(metricYAMLKeys, key) {
+			return fmt.Errorf("unknown metric %q (known: %s)", key, strings.Join(metricYAMLKeys, ", "))
+		}
+	}
+	type plain metricsSpec
+	return node.Decode((*plain)(m))
 }
 
 type fixtureSpec struct {
@@ -195,15 +242,30 @@ type runConfig struct {
 	systemPromptAppend []string
 	build              bool
 	repetitions        int
+	maxRounds          int
 	timeout            time.Duration
 	postTurnWait       time.Duration
 	reasoningEffort    string
 	clearOpenAIAPIKey  bool
 }
 
+// defaultMaxRounds is the runner's round cap when --max-rounds is not given.
+// It preserves the limit the runner hardcoded before the flag existed (#187).
+const defaultMaxRounds = 80
+
 func runSuite(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfg := runConfig{}
+	systemPromptAppend := defineRunFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg.systemPromptAppend = []string(systemPromptAppend)
+	return runSuiteWithConfig(cfg)
+}
+
+func defineRunFlags(fs *flag.FlagSet, cfg *runConfig) cmdutil.StringSliceFlag {
+	var systemPromptAppend cmdutil.StringSliceFlag
 	fs.StringVar(&cfg.model, "model", defaultModel(), "provider/model")
 	fs.StringVar(&cfg.fastCheapModel, "fast-cheap-model", "", "provider/model or bare model for Evener auxiliary side calls")
 	fs.StringVar(&cfg.harness, "harness", "cli", "execution harness: cli or live")
@@ -211,20 +273,23 @@ func runSuite(args []string) error {
 	fs.StringVar(&cfg.probeFilter, "probe", "all", "probe id or all")
 	fs.StringVar(&cfg.outDir, "out", "", "result directory")
 	fs.StringVar(&cfg.evenerBin, "evener-bin", "", "evener binary to run")
-	var systemPromptAppend cmdutil.StringSliceFlag
 	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 	fs.BoolVar(&cfg.build, "build", false, "build a fresh evener binary before running")
 	fs.IntVar(&cfg.repetitions, "repetitions", 1, "repetitions per probe")
+	fs.IntVar(&cfg.maxRounds, "max-rounds", defaultMaxRounds, "tool rounds the probe session may run per input (passed to evener)")
 	fs.DurationVar(&cfg.timeout, "timeout", 8*time.Minute, "timeout per probe repetition")
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfg.systemPromptAppend = []string(systemPromptAppend)
+	return systemPromptAppend
+}
+
+func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.repetitions < 1 {
 		return errors.New("--repetitions must be >= 1")
+	}
+	if cfg.maxRounds < 1 {
+		return errors.New("--max-rounds must be >= 1")
 	}
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
@@ -368,9 +433,239 @@ type probeResult struct {
 	ModelToolCounts     map[string]int `json:"model_tool_counts,omitempty"`
 	CanonicalToolCounts map[string]int `json:"canonical_tool_counts,omitempty"`
 	ToolErrors          map[string]int `json:"tool_errors,omitempty"`
+	Metrics             map[string]any `json:"metrics,omitempty"`
 	Findings            []finding      `json:"findings"`
 	DurationMS          int64          `json:"duration_ms"`
 	Error               string         `json:"error,omitempty"`
+}
+
+// probeMetrics holds the phase-discipline metrics the runner computes from
+// a run's transcripts (#187). They exist so a caller comparing prompting
+// arms reads them out of result.json instead of hand-reading transcripts.
+// Rounds are 1-based tool rounds of the ROOT session (assistant turns with
+// at least one tool call; delegate/subagent sessions are excluded); zero
+// means "never".
+type probeMetrics struct {
+	InvestigativeCallCount    int
+	RepeatedReadOrGrepCount   int
+	FirstTestRunRound         int
+	FirstSourceEditRound      int
+	PrematureFixBeforeRedTest bool
+}
+
+// wireNameToCanonical maps provider-visible wire names back to the
+// canonical tool names the registry uses. Transcripts persist the names the
+// provider emitted, and OpenAI and Gemini rename tools before the model sees
+// grep→grep_files, glob→find_files; shell→run_shell_command, grep→grep_search,
+// list_dir→list_directory). Anthropic, Kimi, GLM, and the openai-compatible
+// providers keep canonical names, which the identity mapping covers.
+var wireNameToCanonical = map[string]string{
+	// OpenAI (responses API)
+	"exec_command": "shell",
+	"grep_files":   "grep",
+	"find_files":   "glob",
+	// Gemini
+	"run_shell_command": "shell",
+	"grep_search":       "grep",
+	"list_directory":    "list_dir",
+}
+
+// canonicalToolCallName resolves a transcript tool-call name to its
+// canonical registry name. Wire names map through wireNameToCanonical;
+// already-canonical and unknown names pass through.
+func canonicalToolCallName(name string) string {
+	if canonical, ok := wireNameToCanonical[name]; ok {
+		return canonical
+	}
+	return name
+}
+
+// classifyToolCall classifies one canonical tool call for the phase metrics:
+// investigative reads/searches, test runs, and source edits. Classification
+// is structural (canonical tool name plus full argument JSON), never
+// assistant prose.
+func classifyToolCall(canonical, argsJSON string) (isInvestigative, isTestRun, isSourceEdit bool) {
+	switch canonical {
+	case "read_file", "list_dir", "grep", "glob":
+		return true, false, false
+	case "write_file", "edit_file", "apply_patch":
+		return false, false, true
+	case "shell":
+		return false, isTestCommand(argsJSON), false
+	default:
+		return false, false, false
+	}
+}
+
+// isTestCommand reports whether a shell call runs a test suite. It inspects
+// the full raw JSON arguments object (never the truncated preview, and never
+// assistant prose — a textual "go test" mention in prose does not reach this
+// function). A `cd pkg && go test ...` compound or `FOO=1 go test ...`
+// env-prefixed invocation counts; `go vet` does not (tests only).
+func isTestCommand(argsJSON string) bool {
+	decoded := struct {
+		Command string `json:"command"`
+	}{}
+	if err := json.Unmarshal([]byte(argsJSON), &decoded); err != nil {
+		return false
+	}
+	cmd := decoded.Command
+	for segment := range strings.SplitSeq(cmd, "&&") {
+		segment = strings.TrimSpace(segment)
+		// Strip leading env VAR=VALUE assignments.
+		for strings.Contains(segment, "=") {
+			head, rest, hasRest := strings.Cut(segment, " ")
+			if !hasRest || !strings.Contains(head, "=") {
+				break
+			}
+			segment = strings.TrimSpace(rest)
+		}
+		if segment == "go test" || strings.HasPrefix(segment, "go test ") {
+			return true
+		}
+	}
+	return false
+}
+
+// computeProbeMetrics walks the ROOT session's transcript (delegate and
+// subagent sessions share the state dir but run their own rounds, so they are
+// excluded the same way rootSessionID excludes them) and computes the
+// phase-discipline metrics. Rounds are 1-based tool rounds: assistant turns
+// that carry at least one tool call. Zero means "never".
+func computeProbeMetrics(stateDir string) (probeMetrics, error) {
+	var m probeMetrics
+	rootID, err := rootSessionID(stateDir)
+	if err != nil {
+		// No root meta means no session ran (e.g. a skipped probe): there is
+		// nothing to compute, which is not an error. The zero-valued metrics
+		// say "never" for every round, exactly as a no-run should.
+		return m, nil //nolint:nilerr // absent root session is a classified no-run state, not a metrics failure
+	}
+	seenReadTargets := map[string]bool{}
+	tr, err := runnerReadTranscript(stateDir, rootID, doctor.TranscriptOpts{})
+	if err != nil {
+		return m, err
+	}
+	round := 0
+	for _, turn := range tr.Turns {
+		if turn.Kind != string(schema.TurnAssistant) || len(turn.ToolCalls) == 0 {
+			continue
+		}
+		round++
+		for _, call := range turn.ToolCalls {
+			canonical := canonicalToolCallName(call.Name)
+			isInvestigative, isTestRun, isSourceEdit := classifyToolCall(canonical, call.Arguments)
+			if isInvestigative {
+				m.InvestigativeCallCount++
+				if key := readRepeatKey(canonical, call.Arguments); key != "" {
+					if seenReadTargets[key] {
+						m.RepeatedReadOrGrepCount++
+					}
+					seenReadTargets[key] = true
+				}
+			}
+			if isTestRun && m.FirstTestRunRound == 0 {
+				m.FirstTestRunRound = round
+			}
+			if isSourceEdit && m.FirstSourceEditRound == 0 {
+				m.FirstSourceEditRound = round
+			}
+		}
+	}
+	// Premature fix: the first source edit landed before the first test run
+	// — including the never-ran-a-test case. The RED-then-fix discipline the
+	// metric measures is violated either way.
+	m.PrematureFixBeforeRedTest = m.FirstSourceEditRound > 0 &&
+		(m.FirstTestRunRound == 0 || m.FirstSourceEditRound < m.FirstTestRunRound)
+	return m, nil
+}
+
+// readRepeatKey builds the repeat-tracking key for an investigative call:
+// the canonical tool shape plus the discriminating argument values (path or
+// pattern, and offset where the tool takes one). Two calls count as a
+// repeat only when they read the same thing the same way — a read_file of
+// a.go is not a repeat of a list_dir of a.go, and page 2 of a file is not a
+// repeat of page 1.
+func readRepeatKey(canonical, argsJSON string) string {
+	var decoded struct {
+		FilePath string `json:"file_path"`
+		Path     string `json:"path"`
+		Pattern  string `json:"pattern"`
+		Offset   int    `json:"offset"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &decoded); err != nil {
+		return ""
+	}
+	var target string
+	switch canonical {
+	case "grep":
+		target = decoded.Pattern + "\x00" + decoded.Path
+	case "glob":
+		target = decoded.Pattern
+	default:
+		if decoded.FilePath != "" {
+			target = decoded.FilePath
+		} else {
+			target = decoded.Path
+		}
+	}
+	if target == "" {
+		return ""
+	}
+	return canonical + "\x00" + target + "\x00" + strconv.Itoa(decoded.Offset)
+}
+
+// applyProbeMetrics computes the phase metrics for a run and reports on the
+// result exactly the metrics the probe's manifest asked for. Unrequested
+// metrics stay unreported so a result reflects its probe's declared scope.
+// A transcript that cannot be read is surfaced as a finding (the run may
+// still pass its expectations, but the missing metrics are never silently
+// dropped).
+func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string) {
+	m, err := computeProbeMetrics(stateDir)
+	if err != nil {
+		res.Findings = append(res.Findings, finding{
+			Category: "infra",
+			Title:    "phase metrics unavailable",
+			Detail:   err.Error(),
+		})
+		return
+	}
+	if res.Metrics == nil {
+		res.Metrics = map[string]any{}
+	}
+	if probe.Metrics.WantsInvestigativeCallCount {
+		res.Metrics["investigative_call_count"] = m.InvestigativeCallCount
+	}
+	if probe.Metrics.WantsRepeatedReadOrGrepCount {
+		res.Metrics["repeated_read_or_grep_count"] = m.RepeatedReadOrGrepCount
+	}
+	if probe.Metrics.WantsToolRoundOfFirstTestRun {
+		res.Metrics["tool_round_of_first_test_run"] = m.FirstTestRunRound
+	}
+	if probe.Metrics.WantsToolRoundOfFirstSourceEdit {
+		res.Metrics["tool_round_of_first_source_edit"] = m.FirstSourceEditRound
+	}
+	if probe.Metrics.WantsPrematureFixBeforeRedTestFlg {
+		res.Metrics["premature_fix_before_red_test_flag"] = m.PrematureFixBeforeRedTest
+	}
+	// max_tool_calls is the manifest's budget for total tool calls in the
+	// root session (#187: it was previously parsed and ignored). Exceeding
+	// it is churn, not task failure: a finding, so the run reports the
+	// overage instead of silently passing.
+	if probe.Metrics.MaxToolCalls > 0 {
+		total := 0
+		for _, n := range res.ModelToolCounts {
+			total += n
+		}
+		if total > probe.Metrics.MaxToolCalls {
+			res.Findings = append(res.Findings, finding{
+				Category: "churn",
+				Title:    "tool call budget exceeded",
+				Detail:   fmt.Sprintf("calls=%d budget=%d", total, probe.Metrics.MaxToolCalls),
+			})
+		}
+	}
 }
 
 type finding struct {
@@ -443,6 +738,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
 		res.ModelToolCounts = counts
 	}
+	// Phase-discipline metrics (#187): computed from the same transcripts
+	// the counts above already walk, reported per the probe's metrics block.
+	applyProbeMetrics(&res, probe, stateDir)
 	if err != nil {
 		res.Error = err.Error()
 		category, status := classifyProbeError(err, ctx.Err(), stderr.String())
@@ -487,7 +785,7 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 		"--state-dir", res.StateDir,
 		"--reasoning-effort", cfg.reasoningEffort,
 		"--context-strategy", "compact",
-		"--max-rounds", "80",
+		"--max-rounds", strconv.Itoa(cfg.maxRounds),
 		"--no-project-prompts",
 		"--verbose",
 		probe.Prompt,
@@ -538,15 +836,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		return err
 	}
 
-	sessCfg := agent.SessionConfig{
-		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(80),
-		StateDir:              res.StateDir,
-		NoProjectPrompts:      true,
-		SystemPromptAppend:    cfg.systemPromptAppend,
-		NonInteractive:        true,
-		ContextStrategy:       "compact",
-		ResolveProfile:        cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
-	}
+	sessCfg := buildLiveSessionConfig(cfg, res.StateDir)
+	sessCfg.ResolveProfile = cmdutil.BuildResolveProfile(provCfg, hasProvConfig)
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
@@ -594,6 +885,20 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	timer := time.NewTimer(cfg.postTurnWait)
 	defer timer.Stop()
 	return runLiveKickLoop(ctx, timer.C, kicks, sess, stdout)
+}
+
+// buildLiveSessionConfig is the live harness's session-config seam. The
+// round cap derives from the runner's --max-rounds flag, not a hardcoded
+// value, so the documented flag is authoritative in both harnesses (#187).
+func buildLiveSessionConfig(cfg runConfig, stateDir string) agent.SessionConfig {
+	return agent.SessionConfig{
+		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+		StateDir:              stateDir,
+		NoProjectPrompts:      true,
+		SystemPromptAppend:    cfg.systemPromptAppend,
+		NonInteractive:        true,
+		ContextStrategy:       "compact",
+	}
 }
 
 func trySubmitLiveKick(kicks chan<- liveKick, kick liveKick) {
@@ -707,6 +1012,32 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 	return nil
 }
 
+// walkTranscripts calls fn with every session transcript under stateDir in
+// session-file order. It returns the first error from fn or from reading a
+// transcript. Both the tool-count aggregation and the phase metrics walk
+// the same transcripts in the same order through this single enumeration.
+func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
+	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(matches)
+	for _, path := range matches {
+		id, ok := strings.CutSuffix(filepath.Base(path), ".transcript.jsonl")
+		if !ok || id == "" {
+			continue
+		}
+		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
+		if err != nil {
+			return err
+		}
+		if err := fn(tr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func materializeFixture(workDir string, fixture fixtureSpec) error {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return err
@@ -777,24 +1108,14 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 
 func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 	counts := map[string]int{}
-	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
-	if err != nil {
-		return counts, err
-	}
-	sort.Strings(matches)
-	for _, path := range matches {
-		name := filepath.Base(path)
-		id, ok := strings.CutSuffix(name, ".transcript.jsonl")
-		if !ok || id == "" {
-			continue
-		}
-		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
-		if err != nil {
-			return counts, err
-		}
+	err := walkTranscripts(stateDir, func(tr doctor.TranscriptResult) error {
 		for tool, n := range transcriptToolCounts(tr) {
 			counts[tool] += n
 		}
+		return nil
+	})
+	if err != nil {
+		return counts, err
 	}
 	return counts, nil
 }
