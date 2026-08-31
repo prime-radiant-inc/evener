@@ -313,11 +313,15 @@ func authSummary(auth appwire.AuthStatusResponse) string {
 	return summary
 }
 
+// authProviderForStatus is the instance the status pane asks about: the
+// session's own, or nothing when it has no profile. Nothing means the hub's
+// normalizeAuthProvider picks the default — one definition of it, on the side
+// that owns the registry, the same rule authProviderArg follows for /auth.
+// Naming an instance here instead is what let the pane report a different one
+// than /auth answered for, and naming "openai" client-side is what once made
+// /logout delete the platform API key while reporting an OAuth sign-out.
 func authProviderForStatus(detail hubSessionDetail) string {
-	if provider := strings.TrimSpace(detail.Profile); provider != "" {
-		return provider
-	}
-	return "openai"
+	return strings.TrimSpace(detail.Profile)
 }
 
 func hubErrorReason(err error) string {

@@ -772,10 +772,10 @@ func TestCovAuthProviderForStatus(t *testing.T) {
 		t.Fatalf("got %q, want 'anthropic'", got)
 	}
 
-	// Default.
+	// No profile: name nothing, so the hub picks its own default.
 	detail = hubSessionDetail{}
-	if got := authProviderForStatus(detail); got != "openai" {
-		t.Fatalf("got %q, want 'openai'", got)
+	if got := authProviderForStatus(detail); got != "" {
+		t.Fatalf("got %q, want empty (the hub's normalizeAuthProvider decides)", got)
 	}
 }
 
