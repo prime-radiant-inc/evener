@@ -382,13 +382,7 @@ func (p *Profile) CheapProvider() string {
 // that issue a cheap completion route on this pair so the cheap model can live
 // on a different instance than the main model.
 func (p *Profile) CheapModelRef() (provider, model string) {
-	if p == nil {
-		return "", ""
-	}
-	if model := p.ConfiguredCheapModel(); model != "" {
-		return p.CheapProvider(), model
-	}
-	return p.ID(), p.Model()
+	return p.CheapProvider(), p.CheapModel()
 }
 
 // CheapModelRefString returns the configured cheap model as a WithCheapModel ref
