@@ -1,11 +1,10 @@
-package openai
+package responses
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/llm"
 )
@@ -13,10 +12,10 @@ import (
 // Some Responses-API gateways (lunaroute fronting GLM, observed live) stream
 // reasoning as raw reasoning_text events on the reasoning item's content
 // rather than as OpenAI's reasoning_summary events. The decoder must surface
-// those as reasoning deltas so the UI shows the model thinking instead of
-// nothing for minutes at a time. Two parts are sent so the part separator is
+// those as reasoning deltas or the UI shows nothing for minutes at a time
+// while the model thinks. Two parts are sent so the part separator is
 // asserted too.
-func TestAdapter_Stream_EmitsReasoningTextDeltas(t *testing.T) {
+func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	var sse strings.Builder
 	for _, ev := range []string{
 		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`,
@@ -29,11 +28,8 @@ func TestAdapter_Stream_EmitsReasoningTextDeltas(t *testing.T) {
 	} {
 		sse.WriteString("data: " + ev + "\n\n")
 	}
-	a, _ := responsesEndpointServer(t, sse.String())
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	stream, err := a.Stream(ctx, llm.Request{Model: "glm-5.3", Messages: []llm.Message{llm.User("hi")}})
+	srv, _ := server(t, 200, sse.String())
+	stream, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), liveRes(srv, openaiCaps))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -54,7 +50,9 @@ func TestAdapter_Stream_EmitsReasoningTextDeltas(t *testing.T) {
 // encrypted_content) must still land in the settled message as a thinking
 // part, or the transcript loses everything the model thought. Parts are
 // joined with the same blank line the stream emits between them, so the
-// settled text reads like the live view.
+// settled text reads like the live view. Replay is unaffected:
+// toResponsesInput sends a reasoning item back only when it has
+// encrypted_content, so the raw text never returns to this API.
 func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) {
 	var out []any
 	if err := json.Unmarshal([]byte(`[

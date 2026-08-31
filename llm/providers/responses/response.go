@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
@@ -74,11 +75,19 @@ func responseContentFromOutputItems(out []any) []llm.ContentPart {
 		case "reasoning":
 			id, _ := item["id"].(string)
 			encryptedContent, _ := item["encrypted_content"].(string)
-			if encryptedContent != "" {
+			// OpenAI returns reasoning as encrypted_content plus summaries;
+			// gateways that expose the raw thinking put reasoning_text parts
+			// in content instead. On this path the raw text feeds display and
+			// the transcript; toResponsesInput replays a reasoning item only
+			// when it has encrypted_content, so the text never returns to
+			// this API.
+			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
+			if encryptedContent != "" || text != "" {
 				content = append(content, llm.ContentPart{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
 						ID:               id,
+						Text:             text,
 						EncryptedContent: encryptedContent,
 						Summary:          parseReasoningSummary(item["summary"]),
 					},
