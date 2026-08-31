@@ -649,7 +649,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
-									"description": "IDs of existing tasks (or earlier tasks in this same add array, which get sequential IDs) this one depends on. Optional.",
+								"description": "IDs of existing tasks (or earlier tasks in this same add array, which get sequential IDs) this one depends on. Optional.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},

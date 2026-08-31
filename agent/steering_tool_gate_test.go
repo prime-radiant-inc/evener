@@ -262,7 +262,7 @@ func TestTasksDoneReminderUsesTheRenamedResultToolAtTheCallSite(t *testing.T) {
 	env := s.currentEnv()
 
 	appendArgs, _ := json.Marshal(map[string]any{
-		"add":  []map[string]any{{"type": "implement", "description": "only task", "prompt": "p"}},
+		"add": []map[string]any{{"type": "implement", "description": "only task", "prompt": "p"}},
 	})
 	if res := s.reg.ExecuteCall(ctx, env, llm.ToolCallData{ID: "t1", Name: "task_list", Arguments: appendArgs}); res.IsError {
 		t.Fatalf("append: %s", res.Output)

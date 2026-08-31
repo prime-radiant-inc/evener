@@ -193,8 +193,8 @@ func auxGoalTaskExact(t *testing.T) {
 	registerTaskTools(reg, newToolDeps(s))
 	h := reg.Get("task_list").Exec
 	for _, args := range []map[string]any{
-		{"add":[]any{"bad"}},
-		{"update":[]any{"bad"}},
+		{"add": []any{"bad"}},
+		{"update": []any{"bad"}},
 		{"action": "unknown"},
 	} {
 		if _, err := h(context.Background(), nil, args); err == nil {
