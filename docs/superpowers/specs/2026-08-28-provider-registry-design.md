@@ -752,22 +752,24 @@ the merge order of §4.1 applies to them.
   transport's own behaviors are enumerated in §9.5.
 - **Anthropic**: `CacheTTL`, `WebSearch = true`, and the corrections to
   upstream: `claude-sonnet-4-5` and `claude-sonnet-4-5-20250929` pinned to
-  `context_window = 200000` (models.dev says 1000000; Anthropic's
-  context-window page, fetched 2026-08-28, lists 1M only for Opus 4.6+,
-  Sonnet 4.6+, Sonnet 5, Fable 5, Mythos, says Sonnet 4.5 is 200k, and says
-  "no beta header" for the 1M models; models.dev already has Opus 4.5 and
-  Haiku 4.5 at 200000; the same Sonnet 4.5 rows on gateways are left to
-  those gateways' live listings). **`[1m]` rows** where the base row's window
-  is not the 1M one: `claude-sonnet-4-5[1m]`, `claude-sonnet-4-5-20250929[1m]`,
-  `claude-opus-4-5[1m]`, and `claude-opus-4-5-20251101[1m]`, each `alias_of`
-  and `wire_id` naming the base row and `context_window = 1000000`. Only the
-  Opus 4.5 pair carries `headers = { anthropic-beta =
-  "context-1m-2025-08-07" }`: Sonnet 4.5's 1M window went GA (verified live
-  2026-08-31 — `/v1/models` reports `max_input_tokens = 1000000` with and
-  without the beta, and `/messages` accepts a headerless request), so its
-  rows send no header and the live test in §13 pins that. The 4.6+ rows are 1M
-  natively, so `claude-opus-4-6[1m]` is not a row and a saved ref spelled
-  that way fails to resolve (flag day, §14.1).
+  `context_window = 1000000`, agreeing with models.dev. Anthropic's
+  context-window page, fetched 2026-08-28, said Sonnet 4.5 was 200k and the
+  rows were pinned down to match; live verification on 2026-08-31 overrode
+  that — `/v1/models` reports `max_input_tokens = 1000000` for both spellings
+  with and without the `context-1m-2025-08-07` beta, so the 1M window is GA
+  and the pin now records it. models.dev already has Opus 4.5 and Haiku 4.5
+  at 200000; the same Sonnet 4.5 rows on gateways are left to those gateways'
+  live listings. **`[1m]` rows** where the base row's window is not the 1M
+  one: `claude-opus-4-5[1m]` and `claude-opus-4-5-20251101[1m]`, each
+  `alias_of` and `wire_id` naming the base row, `context_window = 1000000`,
+  and `headers = { anthropic-beta = "context-1m-2025-08-07" }` — Opus 4.5's
+  1M is still a beta opt-in (`/v1/models` reports 200000 for it either way).
+  `claude-sonnet-4-5[1m]` and `claude-sonnet-4-5-20250929[1m]` survive as
+  **pure alias rows** — no window, no header — solely to keep the `[1m]`
+  spelling resolvable and fold it onto the base row (§7, `canonicalModelID`);
+  the live test in §13 pins that they still resolve and are accepted. The
+  4.6+ rows are 1M natively, so `claude-opus-4-6[1m]` is not a row and a
+  saved ref spelled that way fails to resolve (flag day, §14.1).
   Two Mythos rows models.dev lacks under `anthropic`: `claude-mythos-5` with
   `alias_of = "azure/claude-mythos-5"` (facts only; the transport stays
   `anthropic`'s, §4.2), and `claude-mythos-preview` with `context_window`,
@@ -1969,7 +1971,8 @@ error types is removed; `Provider()` returns the instance name and a new
   and the exact header set without org/project),
   `anthropic/claude-sonnet-4-5` and `anthropic/claude-sonnet-4-5[1m]`
   (asserting `budget` shape, no always-on; the `[1m]` row also `WireID`,
-  window 1000000, and beta header), `anthropic/claude-opus-4-6[1m]`
+  window 1000000 reached through the alias fold, and no beta header),
+  `anthropic/claude-opus-4-6[1m]`
   (asserting it is unknown: synthesized row, wire id verbatim, `model not
   in catalog`), `anthropic/claude-haiku-4-5` (`budget`),
   `anthropic/claude-opus-4-6` with

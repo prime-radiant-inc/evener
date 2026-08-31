@@ -63,7 +63,7 @@
     "web_search": true
   },
   "provenance": {
-    "ContextWindow": "overlay/row",
+    "ContextWindow": "alias",
     "Cost": "alias",
     "Family": "alias",
     "InputModalities": "alias",

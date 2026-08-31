@@ -1215,14 +1215,19 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 	}
 }
 
-func TestAnthropicProfile_ContextWindow_Default200K(t *testing.T) {
+// Sonnet 4.5's window is 1M on the base row itself (GA, verified live
+// 2026-08-31), dated spelling included — no [1m] suffix needed to get it.
+func TestAnthropicProfile_ContextWindow_Sonnet45Is1M(t *testing.T) {
 	t.Parallel()
 	p := newAnthropicProfile("claude-sonnet-4-5-20250929")
-	if p.ContextWindowSize() != 200_000 {
-		t.Errorf("expected 200000, got %d", p.ContextWindowSize())
+	if p.ContextWindowSize() != 1_000_000 {
+		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
 	}
 }
 
+// On Sonnet 4.5 the [1m] row is a pure alias now, so this pins what the alias
+// still buys: the ref resolves (1M, reaching it through the alias fold from
+// the base row) and the model string keeps the suffix for canonicalModelID.
 func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
 	t.Parallel()
 	p := newAnthropicProfile("claude-sonnet-4-5[1m]")
@@ -1237,22 +1242,24 @@ func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
 
 func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
 	t.Parallel()
-	// Start at 200K, switch to 1M model.
-	orig := newAnthropicProfile("claude-sonnet-4-5")
+	// Start at 200K, switch to 1M model. Opus 4.5 is the pair whose [1m] alias
+	// still moves the window; Sonnet 4.5 is 1M on its base row, so it no longer
+	// exercises the switch.
+	orig := newAnthropicProfile("claude-opus-4-5")
 	if orig.ContextWindowSize() != 200_000 {
 		t.Fatalf("orig context: got %d, want 200000", orig.ContextWindowSize())
 	}
 
-	upgraded := orig.WithModel("claude-sonnet-4-5[1m]")
+	upgraded := orig.WithModel("claude-opus-4-5[1m]")
 	if upgraded.ContextWindowSize() != 1_000_000 {
 		t.Fatalf("upgraded context: got %d, want 1000000", upgraded.ContextWindowSize())
 	}
-	if upgraded.Model() != "claude-sonnet-4-5[1m]" {
+	if upgraded.Model() != "claude-opus-4-5[1m]" {
 		t.Fatalf("upgraded model: got %q", upgraded.Model())
 	}
 
 	// Switch back to 200K.
-	downgraded := upgraded.WithModel("claude-sonnet-4-5")
+	downgraded := upgraded.WithModel("claude-opus-4-5")
 	if downgraded.ContextWindowSize() != 200_000 {
 		t.Fatalf("downgraded context: got %d, want 200000", downgraded.ContextWindowSize())
 	}

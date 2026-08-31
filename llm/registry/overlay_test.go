@@ -98,28 +98,34 @@ func TestCuratedOverlay_Transports(t *testing.T) {
 func TestCuratedOverlay_AnthropicRows(t *testing.T) {
 	l := loadOverlay(t)
 	a := l.Providers["anthropic"]
-	// Every [1m] row aliases its base row and pins the 1M window. Only the
-	// Opus 4.5 pair still opts in with the beta header; Sonnet 4.5's 1M window
-	// is GA (verified live 2026-08-31), so its rows must send no beta header —
-	// a stale opt-in reintroduced here would ride every [1m] request.
+	// Every [1m] row aliases its base row; what each carries beyond that
+	// differs. Opus 4.5's 1M is still a beta opt-in, so those rows pin the
+	// window and the header themselves. Sonnet 4.5's 1M is GA and lives on the
+	// base row, so its [1m] rows are pure aliases — a window or a header
+	// reappearing on them means the GA fold silently regressed.
 	for _, id := range []string{"claude-sonnet-4-5[1m]", "claude-sonnet-4-5-20250929[1m]", "claude-opus-4-5[1m]", "claude-opus-4-5-20251101[1m]"} {
 		row, ok := a.Models[id]
 		base := strings.TrimSuffix(id, "[1m]")
-		if !ok || row.AliasOf != base || row.WireID != base || row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1000000 {
+		if !ok || row.AliasOf != base || row.WireID != base {
 			t.Errorf("%s: %+v", id, row)
 			continue
 		}
-		want := "context-1m-2025-08-07"
 		if strings.HasPrefix(id, "claude-sonnet-4-5") {
-			want = ""
+			if row.Caps.ContextWindow != nil || row.Headers["anthropic-beta"] != "" {
+				t.Errorf("%s must be a pure alias, got window %d and anthropic-beta %q",
+					id, ip(row.Caps.ContextWindow), row.Headers["anthropic-beta"])
+			}
+			continue
 		}
-		if got := row.Headers["anthropic-beta"]; got != want {
-			t.Errorf("%s: anthropic-beta = %q, want %q", id, got, want)
+		if row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1000000 || row.Headers["anthropic-beta"] != "context-1m-2025-08-07" {
+			t.Errorf("%s: %+v", id, row)
 		}
 	}
+	// Both Sonnet 4.5 spellings are 1M (GA, verified live 2026-08-31). The
+	// [1m] aliases above inherit the window from here.
 	for _, id := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929"} {
-		if cw := a.Models[id].Caps.ContextWindow; cw == nil || *cw != 200000 {
-			t.Errorf("%s must be pinned to 200000", id)
+		if cw := a.Models[id].Caps.ContextWindow; cw == nil || *cw != 1000000 {
+			t.Errorf("%s must be pinned to 1000000, got %d", id, ip(a.Models[id].Caps.ContextWindow))
 		}
 	}
 	if a.Models["claude-mythos-5"].AliasOf != "azure/claude-mythos-5" {

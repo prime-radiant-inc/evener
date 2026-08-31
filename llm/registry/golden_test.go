@@ -189,7 +189,7 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"anthropic-sonnet-4-5", "anthropic/claude-sonnet-4-5", nil, func(t *testing.T, res Resolved) {
-			if sp(res.Caps.ThinkingShape) != "budget" || res.Caps.ThinkingAlwaysOn != nil || ip(res.Caps.ContextWindow) != 200000 {
+			if sp(res.Caps.ThinkingShape) != "budget" || res.Caps.ThinkingAlwaysOn != nil || ip(res.Caps.ContextWindow) != 1000000 {
 				t.Errorf("%+v", res.Caps)
 			}
 		}},

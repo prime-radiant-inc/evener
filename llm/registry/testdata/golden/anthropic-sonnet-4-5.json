@@ -28,7 +28,7 @@
     "caps": {}
   },
   "caps": {
-    "context_window": 200000,
+    "context_window": 1000000,
     "max_output_tokens": 64000,
     "tools": true,
     "structured_output": true,

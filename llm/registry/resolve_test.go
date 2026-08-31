@@ -147,7 +147,9 @@ func TestResolve_LiveSitsBetweenOverlayAndConfig(t *testing.T) {
 func TestResolve_AliasSeeding(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"AZURE_RESOURCE_NAME": "contoso"}, "[providers.azure.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
 	res := mustResolve(t, r, "anthropic/claude-sonnet-4-5[1m]")
-	if *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
+	// The [1m] row is a pure alias: its 1M window arrives through the alias
+	// fold from the base row, not from an override on the row itself.
+	if *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "alias" || *res.Caps.MaxOutputTokens != 64000 || res.Provenance["MaxOutputTokens"] != "alias" {
 		t.Fatalf("[1m]: %v %v", res.Caps.ContextWindow, res.Provenance)
 	}
 	// Sonnet 4.5's 1M window is GA, so the [1m] row resolves with no beta header.

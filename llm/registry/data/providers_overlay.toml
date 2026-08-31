@@ -97,25 +97,25 @@ default_model = "claude-opus-5"
 cheap_model = "claude-haiku-4-5"
 web_search = true
 
-# Sonnet 4.5 is 200k; models.dev says 1M (Anthropic's context-window page,
-# 2026-08-28, lists 1M only for Opus 4.6+, Sonnet 4.6+, and Claude 5).
+# Sonnet 4.5 is 1M, and its 1M is GA. Verified live 2026-08-31: /v1/models
+# reports max_input_tokens = 1000000 for both spellings with and without the
+# retired context-1m beta, and /messages accepts a headerless request.
 [providers.anthropic.models."claude-sonnet-4-5"]
-context_window = 200000
+context_window = 1000000
 [providers.anthropic.models."claude-sonnet-4-5-20250929"]
-context_window = 200000
+context_window = 1000000
 
-# [1m] rows give a 1M window the base row does not. Sonnet 4.5's is GA
-# (verified live 2026-08-31: /v1/models reports max_input_tokens = 1000000
-# with and without the beta, and /messages accepts a headerless request), so
-# its rows carry no header; Opus 4.5 still opts in with anthropic-beta.
+# [1m] rows give a 1M window the base row does not. Sonnet 4.5's base rows now
+# carry it themselves, so its two [1m] rows are pure aliases: they stay only to
+# keep the [1m] spelling resolvable and fold it onto the base row
+# (canonicalModelID, agent/session_model_call.go). Opus 4.5's 1M is still a
+# beta opt-in, so those rows keep both the window and the header.
 [providers.anthropic.models."claude-sonnet-4-5[1m]"]
 alias_of = "claude-sonnet-4-5"
 wire_id = "claude-sonnet-4-5"
-context_window = 1000000
 [providers.anthropic.models."claude-sonnet-4-5-20250929[1m]"]
 alias_of = "claude-sonnet-4-5-20250929"
 wire_id = "claude-sonnet-4-5-20250929"
-context_window = 1000000
 [providers.anthropic.models."claude-opus-4-5[1m]"]
 alias_of = "claude-opus-4-5"
 wire_id = "claude-opus-4-5"
