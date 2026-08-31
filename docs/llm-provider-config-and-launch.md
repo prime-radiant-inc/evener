@@ -357,7 +357,9 @@ Claude (Opus 4.6/4.7/4.8, Sonnet 4.6, and the 5 family, Fable 5 included)
 states `high`, which is what Anthropic runs when the effort is omitted; the
 budget-shaped Claude 4.5 generation, Gemini 2.5, and the zai/qwen thinking
 toggles move from their provider's dynamic default to `medium`. Pass
-`--reasoning-effort none` to send no reasoning control at all.
+`--reasoning-effort none` to turn thinking off — on the wire for a model
+whose ladder lists an off level (gpt-5.1 and later), and as "no reasoning
+control at all" on every other model.
 
 **Ollama and local-model context windows.** The bundled per-model catalog
 (8192 for `llama3.1`, tag-stripping) is gone; every live-only model on

@@ -145,7 +145,7 @@ func TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits(t *testing.T) {
 
 	req := s.buildModelRequest(p, "sys", []llm.Message{llm.User("hi")}, nil, "")
 	if req.ReasoningEffort != nil {
-		t.Fatalf("ReasoningEffort = %q, want nil (an unconfigured effort is never filled in)", *req.ReasoningEffort)
+		t.Fatalf("ReasoningEffort = %q, want nil (the default reaches reasoning models only)", *req.ReasoningEffort)
 	}
 }
 

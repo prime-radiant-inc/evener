@@ -621,7 +621,7 @@ Model-level mapping:
 | `cost.{input,output,cache_read,cache_write,tiers[]}` | `Cost` |
 | `tool_call`, `structured_output` | `Tools`, `StructuredOutput` |
 | `reasoning` | `Reasoning` |
-| `reasoning_options[].type` (a list; 752 rows carry two or three, 1237 text rows carry an empty list) | `ReasoningControls` as the set of types present, models.dev spelling (`effort`, `budget_tokens`, `toggle`); the `effort` entry's `values` → `EffortValues` with `none` dropped (evener's `none` clears the setting); values outside evener's vocabulary (`default`, `null`, one descending ladder) are kept verbatim; `ClampReasoningEffort` skips entries it cannot rank and passes the request through, as today (`llm/types.go:699-733`) |
+| `reasoning_options[].type` (a list; 752 rows carry two or three, 1237 text rows carry an empty list) | `ReasoningControls` as the set of types present, models.dev spelling (`effort`, `budget_tokens`, `toggle`); the `effort` entry's `values` → `EffortValues` verbatim, `none` included — it is models.dev's name for the off level, and a row that lists it is one the user can turn thinking off on (§8.4); values outside evener's vocabulary (`default`, `null`, one descending ladder) are kept verbatim; `ClampReasoningEffort` skips entries it cannot rank and passes the request through, as today (`llm/types.go:699-733`) |
 | no models.dev field | `DefaultEffort` — models.dev states nothing about what a model does when the effort is omitted, so every value is curated (§6.2) or live (the Codex backend's `default_reasoning_level`) |
 | `temperature: false` | `Sampling = false`, a fact (so alias rows inherit it); the builder then omits the protocol's temperature and top-p paths (`temperature`/`top_p` on the OpenAI protocols and anthropic, `generationConfig.temperature`/`generationConfig.topP` on google) regardless of `Fields` |
 | `modalities.input` | `InputModalities` |
@@ -783,7 +783,12 @@ the merge order of §4.1 applies to them.
   4.6 takes the adaptive body; this covers the rows on `anthropic`, `azure`,
   `azure-cognitive-services`, both Vertex providers, every `amazon-bedrock`
   spelling, and any alias of them). `"*gemini-3*"` →
-  `multimodal_tool_results = true`.
+  `multimodal_tool_results = true`. `default_effort = "high"` on each
+  adaptive Claude generation (4.6, 4.7, 4.8 and the 5 family), two globs
+  apiece because OpenRouter spells the versions with dots where Anthropic
+  uses dashes and `matchGlob` matches literal substrings. This is a fixed
+  list, not a rule: **a new adaptive Claude id ships at the `medium` fallback
+  of §7.4 until a glob for it is added here.**
 - **Google** (`google`, `google-vertex`, `google-vertex-anthropic`):
   `WebSearch = true` on all three (Anthropic's Vertex page lists the web
   search tool as supported).
@@ -1036,10 +1041,14 @@ fallback alike:
 - A model that does not reason (`Reasoning = false`) never gets an effort,
   whatever is configured.
 - An explicit off (`none`, and the disable aliases that normalize to it) is
-  carried only when the row's `EffortValues` lists an off level; otherwise
-  the field is omitted. It is never replaced by a default. The adapters send
-  nothing for it in any case (§8.4), so today it always means "no reasoning
-  control on the wire".
+  carried on every reasoning model, never replaced by a default and never
+  clamped into a thinking tier. Which models can be told off, and how, is the
+  adapters' call (§8.4): they send the off value where the row's
+  `EffortValues` lists an off level and the dialect has one, and omit the
+  control otherwise. Carrying it rather than dropping it is also what keeps
+  an off distinguishable from "nothing configured", without which a
+  mandatory-thinking row's builder default reads an off as unset and switches
+  thinking back on.
 - A configured effort is clamped to `EffortValues`.
 - Nothing configured: the row's own `DefaultEffort`, else `medium`, clamped.
 
@@ -1351,12 +1360,22 @@ the dialects that had one.
 | `chat-template` | `chat_template_kwargs: <ChatTemplateKwargs>` (omitted when empty) | same |
 | `string-thinking` | `thinking: <wire>` | `thinking: "medium"` clamped to `EffortValues` (today's default) |
 
-`none` sends nothing on every dialect.
+An explicit `none` is the user turning thinking off. On the `openai` (and
+default) dialect it sends `reasoning_effort: none` and on `openrouter`
+`reasoning: {effort: none}`, in both cases only when the row's `EffortValues`
+lists an off level (gpt-5.1 and later; the `openai` dialect also needs the
+row to be effort-capable). No other dialect has a value that says off, so the
+control is omitted. In every case the off returns before the
+`ThinkingAlwaysOn` column above: each shape there switches thinking ON, which
+would invert the user's stated intent.
 
 **openai-responses.** `reasoning: {effort: <wire>}` when an effort is set and
-the row is effort-capable; `reasoning.summary` from `ReasoningSummary`
-(omitted at `none`); with `ThinkingAlwaysOn` and no effort, `reasoning:
-{summary: …}` alone, as today's lite handling (`responses.go:145-151`).
+the row is effort-capable; `reasoning.summary` from `ReasoningSummary`; with
+`ThinkingAlwaysOn` and no effort, `reasoning: {summary: …}` alone, as today's
+lite handling (`responses.go:145-151`). An explicit `none` sends
+`{effort: none}` on a row that lists the off level and is effort-capable, and
+otherwise drops the reasoning object whole — summary included, so a
+mandatory-thinking row does not keep reasoning on.
 `include: [reasoning.encrypted_content]` accompanies every `reasoning`
 object when `Fields["include"]` is on.
 
@@ -1367,13 +1386,18 @@ adaptive}` plus `display` from `ThinkingDisplay`, sent whenever
 `output_config.effort` only when the caller set an effort; `budget` →
 `thinking: {type: enabled, budget_tokens}` from the existing effort→budget
 table, only when an effort is set; `budget+effort` (Opus 4.5, Kimi K3) →
-both. Unset shape → no thinking object.
+both. Unset shape → no thinking object, and so does an explicit `none`:
+no Claude row states an off effort level, so there is no value that says off
+here, and keeping the always-on adaptive body would switch thinking on
+against the user's intent.
 
 **google.** Effort → `thinkingConfig` as today; `none` sends no
 `thinkingConfig`.
 
-The `none` effort clears the control on every protocol; nothing is ever sent
-to force thinking off. A `thinking_levels` map (today's per-model level →
+The off therefore reaches the wire on exactly the rows that state they
+accept one, and is omitted everywhere else — never inverted into thinking-on
+(amended 2026-08-30, Jesse: it must be possible to explicitly send a "turn
+reasoning off"). A `thinking_levels` map (today's per-model level →
 wire-string table) is not needed: a wire-spelled `EffortValues` ladder under
 `ClampReasoningEffort` reproduces it, because below-range requests raise to
 the lowest supported value and the top tier resolves to the model's own

@@ -303,8 +303,14 @@ effort-capability rather than a separately configured
 | `chat-template` | `chat_template_kwargs: <ChatTemplateKwargs>` (omitted when empty) | same |
 | `string-thinking` | `thinking: <wire>` | `thinking: "medium"` clamped to `EffortValues` |
 
-`none` sends nothing on every dialect, on every protocol — nothing ever
-forces thinking off on the wire.
+An explicit `none` is the user turning thinking off. The `openai` (and
+default) dialect sends `reasoning_effort: none`, `openrouter` sends
+`reasoning: {effort: none}`, and the Responses builder sends
+`reasoning: {effort: none}` — each only where the model's `effort_values`
+lists the off level (gpt-5.1 and later). Every other dialect and the
+anthropic and google protocols have no value that says off, so they omit the
+control. An off never falls through to the `ThinkingAlwaysOn` column: those
+shapes switch thinking on, which would invert what the user asked for.
 
 **anthropic.** `ThinkingShape` picks one of three bodies: `adaptive` →
 `thinking: {type: adaptive}` plus `display`, sent whenever `ThinkingAlwaysOn`
@@ -401,8 +407,10 @@ Load rules, enforced with errors that name the instance and key:
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
   validated against their vocabularies; `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
-  non-empty, and `"off"` is rejected. `default_effort` takes any level plus
-  the disable aliases, normalized when the profile reads it.
+  non-empty, and `"off"` is rejected. `default_effort` is **not** checked
+  against the vocabulary — it is normalized when the profile reads it, and a
+  value outside the vocabulary survives the clamp and reaches the provider,
+  unlike the same typo in `--reasoning-effort`, which is rejected at load.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
   blocks another. **This is a behavior change:** an unset variable in
@@ -643,7 +651,7 @@ primary request and every fallback:
 | configured | model | on the request |
 |---|---|---|
 | anything | `reasoning = false` | nothing |
-| an explicit off | any reasoning model | nothing, unless the model's ladder lists an off level; never replaced by a default |
+| an explicit off | any reasoning model | `none`, never replaced by a default and never clamped into a tier; the builder sends it on a model whose ladder lists an off level and omits the control otherwise |
 | a level | any reasoning model | that level, clamped to the model's ladder |
 | nothing | a model that states a `default_effort` | that default, clamped |
 | nothing | any other reasoning model | `medium`, clamped |
@@ -654,8 +662,9 @@ otherwise, which is why adaptive Claude's rows state `default_effort =
 omitted, and taking `medium` instead would be a silent downgrade. Rows whose
 provider default was dynamic (Gemini 2.5, the budget-shaped Claude 4.5
 generation, the zai and qwen thinking toggles) do move to `medium`. Set
-`--reasoning-effort none` to send no reasoning control at all and let the
-provider decide.
+`--reasoning-effort none` to turn thinking off: on a model whose ladder lists
+the off level that reaches the wire, and on any other model it means no
+reasoning control at all, so the provider decides.
 
 **Per-model clamping.** Each resolved row advertises the levels it supports
 (`EffortValues` → `Profile.ReasoningEffortLevels()`), so an over-range
