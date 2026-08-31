@@ -130,8 +130,10 @@ func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 	if !sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
 		t.Fatal("session namer should enable from active model")
 	}
-	if sessionNamerEnabled(NewOpenAIProfile("")) {
-		t.Fatal("session namer should remain disabled without a model")
+	// A registry profile always resolves a model (default_model fills a blank
+	// ref), so "no model" means no profile at all.
+	if sessionNamerEnabled(nil) {
+		t.Fatal("session namer should remain disabled without a profile")
 	}
 	if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")) {
 		t.Fatal("session namer should enable when cheap model is configured")
