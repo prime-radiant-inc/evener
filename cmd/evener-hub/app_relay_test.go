@@ -86,6 +86,214 @@ func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
 	}
 }
 
+func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Millisecond
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	const (
+		rootRef  = "local:canonical-root"
+		childRef = "local:canonical-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	leaseClosed := make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+		closeHook:  func() { close(leaseClosed) },
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	idleDeletes := make(chan string, 2)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RelayHooks: hubcore.RelayLifecycleHooks{
+			AfterIdleDelete: func(threadID string) { idleDeletes <- threadID },
+		},
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls = %d, want one canonical listener", got)
+	}
+
+	if _, err := child.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: childRef}); err != nil {
+		t.Fatalf("child ThreadUnsubscribe: %v", err)
+	}
+	select {
+	case <-idleDeletes:
+	case <-time.After(time.Second):
+		t.Fatal("inactive child relay key was not retired while the root remained subscribed")
+	}
+	if got := lease.closeCallCount(); got != 0 {
+		t.Fatalf("lease closes after child retirement = %d, want 0 while root remains", got)
+	}
+
+	childAck := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Ref: childRef, ThreadID: "canonical-child", TurnID: "turn-child", ItemID: "item-child", Delta: "stale",
+			}),
+		},
+		Acknowledge: func() { close(childAck) },
+	}
+	<-childAck
+	select {
+	case notification := <-child.Notifications():
+		t.Fatalf("retired child route delivered notification %+v", notification)
+	default:
+	}
+
+	rootAck := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Ref: rootRef, ThreadID: "canonical-root", TurnID: "turn-root", ItemID: "item-root", Delta: "live",
+			}),
+		},
+		Acknowledge: func() { close(rootAck) },
+	}
+	if got := <-root.Notifications(); got.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("root notification method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+	}
+	<-rootAck
+
+	if _, err := root.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: rootRef}); err != nil {
+		t.Fatalf("root ThreadUnsubscribe: %v", err)
+	}
+	select {
+	case <-idleDeletes:
+	case <-time.After(time.Second):
+		t.Fatal("final relay key was not retired")
+	}
+	select {
+	case <-leaseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("final relay key retirement did not close its canonical lease")
+	}
+	if got := lease.closeCallCount(); got != 1 {
+		t.Fatalf("final lease closes = %d, want exactly 1", got)
+	}
+}
+
+func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) {
+	const (
+		rootRef  = "local:reconnect-root"
+		childRef = "local:reconnect-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+			ThreadID: "reconnect-root",
+			Ref:      rootRef,
+		}).Notification,
+		Acknowledge: func() { close(acknowledged) },
+	}
+	got := <-root.Notifications()
+	if got.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("root recovery method = %q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
+	}
+	<-acknowledged
+	select {
+	case extra := <-root.Notifications():
+		t.Fatalf("reconnect emitted extra root notification %+v", extra)
+	default:
+	}
+	select {
+	case extra := <-child.Notifications():
+		t.Fatalf("targeted reconnect resync reached child %+v", extra)
+	default:
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls after reconnect resync = %d, want one resumed canonical listener", got)
+	}
+}
+
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-delivery",
@@ -609,6 +817,90 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 	close(releaseIdle)
 }
 
+func TestHubRelayIdleRetirementYieldsToSubscriptionAtCaptureBoundary(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Millisecond
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	thread := appwire.Thread{
+		ID:     "thread-idle-subscribe",
+		Source: "local",
+		Evener: appwire.EvenerThread{Ref: "local:thread-idle-subscribe"},
+	}
+	lease := &scriptedRelaySessionLease{
+		readResult: appsource.RelayReadResult{
+			Response: appwire.ThreadReadResponse{Thread: thread},
+			Handoff:  &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{thread: thread, lease: lease}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	idleEntered := make(chan struct{})
+	releaseIdle := make(chan struct{})
+	var idleOnce sync.Once
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RelayHooks: hubcore.RelayLifecycleHooks{
+			IdleExit: func(string) {
+				idleOnce.Do(func() {
+					close(idleEntered)
+					<-releaseIdle
+				})
+			},
+		},
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	initial := dialHubRPC(t, hub)
+	if _, err := initial.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initial Initialize: %v", err)
+	}
+	if _, err := initial.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true}); err != nil {
+		t.Fatalf("initial ThreadRead: %v", err)
+	}
+	if _, err := initial.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: thread.Evener.Ref}); err != nil {
+		t.Fatalf("initial ThreadUnsubscribe: %v", err)
+	}
+	<-idleEntered
+
+	subscribeAtGate := make(chan struct{})
+	releaseSubscription := make(chan struct{})
+	var gateOnce sync.Once
+	appServer.SetBeforeSubscriptionGate(func() {
+		gateOnce.Do(func() {
+			close(subscribeAtGate)
+			<-releaseSubscription
+		})
+	})
+	rejoin := dialHubRPC(t, hub)
+	defer rejoin.Close()
+	if _, err := rejoin.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("rejoin Initialize: %v", err)
+	}
+	rejoinResult := make(chan error, 1)
+	go func() {
+		_, err := rejoin.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: thread.Evener.Ref, Subscribe: true})
+		rejoinResult <- err
+	}()
+	<-subscribeAtGate
+	close(releaseIdle)
+	close(releaseSubscription)
+	if err := <-rejoinResult; err != nil {
+		t.Fatalf("rejoin ThreadRead: %v", err)
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls = %d, want the boundary subscription to retain the existing listener", got)
+	}
+	if got := lease.closeCallCount(); got != 0 {
+		t.Fatalf("lease closes = %d, want 0 after boundary subscription wins revalidation", got)
+	}
+	initial.Close()
+}
+
 func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	blockedThread := appwire.Thread{
 		ID:     "thread-blocked",
@@ -762,6 +1054,120 @@ func TestHubRelayStaleRelayKeyReleaseDoesNotAffectReplacement(t *testing.T) {
 		t.Fatalf("replacement command owners after stale release = %d, want 1", got)
 	}
 	replacementRead.finish(false)
+}
+
+func TestHubRelayRemapMovesDownstreamAndTargetRouteOwnership(t *testing.T) {
+	previousInterval := hubRelayIdleInterval
+	hubRelayIdleInterval = time.Millisecond
+	t.Cleanup(func() { hubRelayIdleInterval = previousInterval })
+
+	const (
+		downstreamRef = "local:remap-downstream"
+		oldTargetRef  = "local:authoritative-old"
+		newTargetRef  = "local:authoritative-new"
+	)
+	canonicalOld := appwire.Ref{SourceID: "local", ThreadID: "canonical-old"}
+	canonicalNew := appwire.Ref{SourceID: "local", ThreadID: "canonical-new"}
+	newLease := func(targetRef string) *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readFunc: func(appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				return appsource.RelayReadResult{
+					Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID: "remap-downstream", Source: "local",
+						Evener: appwire.EvenerThread{Ref: targetRef},
+					}},
+					Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+				}, nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	oldLease := newLease(oldTargetRef)
+	oldClosed := make(chan struct{})
+	oldLease.closeHook = func() { close(oldClosed) }
+	newLeaseValue := newLease(newTargetRef)
+	var resolveMu sync.Mutex
+	resolved := canonicalOld
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+			if ref == canonicalOld {
+				return oldLease, nil
+			}
+			return newLeaseValue, nil
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
+		t.Fatalf("old ThreadRead: %v", err)
+	}
+	resolveMu.Lock()
+	resolved = canonicalNew
+	resolveMu.Unlock()
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
+	}); err != nil {
+		t.Fatalf("replacement ThreadRead: %v", err)
+	}
+
+	staleAck := make(chan struct{})
+	newLeaseValue.deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Ref: oldTargetRef, ThreadID: "authoritative-old", TurnID: "turn-old", ItemID: "item-old", Delta: "stale",
+			}),
+		},
+		Acknowledge: func() { close(staleAck) },
+	}
+	<-staleAck
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("stale remap route delivered notification %+v", got)
+	default:
+	}
+
+	liveAck := make(chan struct{})
+	newLeaseValue.deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Ref: newTargetRef, ThreadID: "authoritative-new", TurnID: "turn-new", ItemID: "item-new", Delta: "live",
+			}),
+		},
+		Acknowledge: func() { close(liveAck) },
+	}
+	if got := <-client.Notifications(); got.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("replacement route method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+	}
+	<-liveAck
+	select {
+	case <-oldClosed:
+	case <-time.After(time.Second):
+		t.Fatal("remapped canonical handle did not retire after its stale command released")
+	}
+	if got := oldLease.closeCallCount(); got != 1 {
+		t.Fatalf("old remapped lease closes = %d, want 1", got)
+	}
+	if got := newLeaseValue.closeCallCount(); got != 0 {
+		t.Fatalf("replacement lease closes = %d, want 0", got)
+	}
 }
 
 func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
@@ -1069,21 +1475,26 @@ type scriptedRelaySessionLease struct {
 
 	readResult  appsource.RelayReadResult
 	readErr     error
+	readFunc    func(appwire.ThreadReadParams) (appsource.RelayReadResult, error)
 	readHook    func()
 	deliveries  chan appsource.RelayDelivery
 	listenErr   error
+	closeHook   func()
 	readCalls   int
 	listenCalls int
 	closeCalls  int
 }
 
-func (l *scriptedRelaySessionLease) Read(context.Context, appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+func (l *scriptedRelaySessionLease) Read(_ context.Context, params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
 	l.mu.Lock()
 	l.readCalls++
-	result, err, hook := l.readResult, l.readErr, l.readHook
+	result, err, readFunc, hook := l.readResult, l.readErr, l.readFunc, l.readHook
 	l.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if readFunc != nil {
+		return readFunc(params)
 	}
 	return result, err
 }
@@ -1098,7 +1509,11 @@ func (l *scriptedRelaySessionLease) Listen(context.Context) (<-chan appsource.Re
 func (l *scriptedRelaySessionLease) Close() {
 	l.mu.Lock()
 	l.closeCalls++
+	hook := l.closeHook
 	l.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 func (l *scriptedRelaySessionLease) readCallCount() int {
@@ -1111,6 +1526,12 @@ func (l *scriptedRelaySessionLease) listenCallCount() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.listenCalls
+}
+
+func (l *scriptedRelaySessionLease) closeCallCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closeCalls
 }
 
 type recordingRelayHandoff struct {

@@ -3851,6 +3851,137 @@ func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(
 	}
 }
 
+func TestHubRelayKeyStopKeepsCanonicalSiblingAndListener(t *testing.T) {
+	const (
+		rootRef  = "local:stop-root"
+		childRef = "local:stop-child"
+	)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: make(chan appsource.RelayDelivery),
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(rootRef)
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("initial relay acquisitions = %d, want one canonical handle", got)
+	}
+
+	relays.stopRelay(childRef)
+	if got := lease.closeCallCount(); got != 0 {
+		t.Fatalf("lease closes after child-key stop = %d, want 0 while root remains", got)
+	}
+	read(childRef)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("relay acquisitions after child rebind = %d, want existing canonical handle", got)
+	}
+	if got := lease.listenCallCount(); got != 1 {
+		t.Fatalf("RelaySession Listen calls after child rebind = %d, want one retained listener", got)
+	}
+	relays.stopRelay(rootRef)
+	relays.stopRelay(childRef)
+}
+
+func TestHubRelayCanonicalStopRetiresOnlyNamedHandle(t *testing.T) {
+	canonicalA := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-a"}
+	canonicalB := appwire.Ref{SourceID: "local", ThreadID: "stop-canonical-b"}
+	newLease := func() *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+				ref, err := appwire.ParseRef(params.Ref)
+				if err != nil {
+					return appsource.RelayReadResult{}, err
+				}
+				return appsource.RelayReadResult{
+					Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID: ref.ThreadID, Source: ref.SourceID,
+						Evener: appwire.EvenerThread{Ref: params.Ref},
+					}},
+					Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+				}, nil
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	leaseA := newLease()
+	leaseB := newLease()
+	source := &relaySessionTestSource{
+		resolveRelay: func(params appwire.ThreadReadParams) (appwire.Ref, error) {
+			if params.Ref == canonicalB.String() {
+				return canonicalB, nil
+			}
+			return canonicalA, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+			if ref == canonicalB {
+				return leaseB, nil
+			}
+			return leaseA, nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	read := func(ref string) {
+		t.Helper()
+		result, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+		if err != nil {
+			t.Fatalf("readThread(%q): %v", ref, err)
+		}
+		result.finish(false)
+	}
+	read(canonicalA.String())
+	read(canonicalB.String())
+
+	relays.stopCanonicalRelay(canonicalA)
+	if got := leaseA.closeCallCount(); got != 1 {
+		t.Fatalf("named canonical lease closes = %d, want 1", got)
+	}
+	if got := leaseB.closeCallCount(); got != 0 {
+		t.Fatalf("unrelated canonical lease closes = %d, want 0", got)
+	}
+	read(canonicalB.String())
+	if got := leaseB.listenCallCount(); got != 1 {
+		t.Fatalf("unrelated canonical listener starts = %d, want retained single listener", got)
+	}
+	if got := source.acquireCallCount(); got != 2 {
+		t.Fatalf("acquisitions after unrelated read = %d, want two original canonical handles", got)
+	}
+	relays.stopCanonicalRelay(canonicalB)
+}
+
 func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFreshStart(t *testing.T) {
 	const threadID = "th_request_canceled_initializing"
 	initialRelease := make(chan struct{})

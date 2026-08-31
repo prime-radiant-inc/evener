@@ -24,6 +24,9 @@ type hubRelayHandle struct {
 	canonical   appwire.Ref
 	relayKeys   map[string]*relayKeyState
 	routes      map[string]*relayKeyState
+	// commandOwners includes commands whose relay-key generation was remapped
+	// while they were in flight, so the displaced handle cannot close early.
+	commandOwners int
 }
 
 type relayKeyState struct {
@@ -200,6 +203,7 @@ type hubRelayFunctions struct {
 	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
 	startRelayForThread func(context.Context, appwire.Thread) error
 	stopRelay           func(string)
+	stopCanonicalRelay  func(appwire.Ref)
 	relayCommandCount   func(string) int
 }
 
@@ -363,63 +367,77 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					type idleCandidate struct {
 						relayKey string
 						state    *relayKeyState
+						commands int
 					}
 					relayMu.Lock()
 					active := canonicalRelays[handle.canonical] == handle
 					candidates := make([]idleCandidate, 0, len(handle.relayKeys))
-					for relayKey, state := range handle.relayKeys {
-						if relayedThreads[relayKey] != handle || state.commands != 0 {
-							active = false
-							break
+					if active {
+						for relayKey, state := range handle.relayKeys {
+							if relayedThreads[relayKey] == handle && state.commands == 0 {
+								candidates = append(candidates, idleCandidate{
+									relayKey: relayKey,
+									state:    state,
+									commands: state.commands,
+								})
+							}
 						}
-						candidates = append(candidates, idleCandidate{relayKey: relayKey, state: state})
+						if len(handle.relayKeys) == 0 && handle.commandOwners == 0 {
+							delete(canonicalRelays, handle.canonical)
+							active = false
+						}
 					}
 					relayMu.Unlock()
 					if !active {
-						continue
+						return
 					}
-					idle := true
+					idleCandidates := candidates[:0]
 					for _, candidate := range candidates {
-						if server.SubscriberCount(candidate.relayKey) != 0 {
-							idle = false
-							break
+						if server.SubscriberCount(candidate.relayKey) == 0 {
+							idleCandidates = append(idleCandidates, candidate)
 						}
 					}
-					if !idle {
+					if len(idleCandidates) == 0 {
 						continue
 					}
 					if cfg.RelayHooks.IdleExit != nil {
 						cfg.RelayHooks.IdleExit(handle.canonical.ThreadID)
 					}
-					for _, candidate := range candidates {
-						if server.SubscriberCount(candidate.relayKey) != 0 {
-							idle = false
-							break
+					revalidated := idleCandidates[:0]
+					for _, candidate := range idleCandidates {
+						if server.SubscriberCount(candidate.relayKey) == 0 {
+							revalidated = append(revalidated, candidate)
 						}
 					}
-					if !idle {
+					if len(revalidated) == 0 {
 						continue
 					}
 					relayMu.Lock()
-					retired := canonicalRelays[handle.canonical] == handle && len(candidates) == len(handle.relayKeys)
-					if retired {
-						for _, candidate := range candidates {
-							if relayedThreads[candidate.relayKey] != handle ||
-								handle.relayKeys[candidate.relayKey] != candidate.state ||
-								candidate.state.commands != 0 {
-								retired = false
-								break
+					removed := 0
+					if canonicalRelays[handle.canonical] == handle {
+						for _, candidate := range revalidated {
+							if relayedThreads[candidate.relayKey] == handle &&
+								handle.relayKeys[candidate.relayKey] == candidate.state &&
+								candidate.state.commands == candidate.commands {
+								removeStateRoutesLocked(handle, candidate.state)
+								delete(handle.relayKeys, candidate.relayKey)
+								delete(relayedThreads, candidate.relayKey)
+								removed++
 							}
 						}
 					}
+					retired := canonicalRelays[handle.canonical] == handle &&
+						len(handle.relayKeys) == 0 && handle.commandOwners == 0
 					if retired {
-						removeRelayHandleLocked(handle)
+						delete(canonicalRelays, handle.canonical)
 					}
 					relayMu.Unlock()
-					if retired {
+					for range removed {
 						if cfg.RelayHooks.AfterIdleDelete != nil {
 							cfg.RelayHooks.AfterIdleDelete(handle.canonical.ThreadID)
 						}
+					}
+					if retired {
 						return
 					}
 				case delivery, ok := <-deliveries:
@@ -528,13 +546,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			bindStateRouteLocked(handle, relayKey, state)
 			state.commands++
+			handle.commandOwners++
 			return state
 		}
 		releaseRelayKey := func(handle *hubRelayHandle, state *relayKeyState) func() {
 			return func() {
 				relayMu.Lock()
-				if relayedThreads[relayKey] == handle && handle.relayKeys[relayKey] == state && state.commands > 0 {
+				if state.commands > 0 && handle.commandOwners > 0 {
 					state.commands--
+					handle.commandOwners--
 				}
 				relayMu.Unlock()
 			}
@@ -1218,9 +1238,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return nil
 	}
-	stopRelay := func(key string) {
+	stopCanonicalRelay := func(ref appwire.Ref) {
 		relayMu.Lock()
-		handle := relayedThreads[key]
+		handle := canonicalRelays[ref]
 		if handle != nil {
 			removeRelayHandleLocked(handle)
 			finishHandleLocked(handle, context.Canceled)
@@ -1228,6 +1248,32 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		relayMu.Unlock()
 		if handle != nil {
 			closeRelayHandle(handle)
+		}
+	}
+	stopRelay := func(relayKey string) {
+		var closeHandle *hubRelayHandle
+		relayMu.Lock()
+		handle := relayedThreads[relayKey]
+		if handle != nil && handle.canonical == (appwire.Ref{}) {
+			removeRelayHandleLocked(handle)
+			finishHandleLocked(handle, context.Canceled)
+			closeHandle = handle
+		} else if handle != nil {
+			state := handle.relayKeys[relayKey]
+			if state != nil && relayedThreads[relayKey] == handle {
+				removeStateRoutesLocked(handle, state)
+				delete(handle.relayKeys, relayKey)
+				delete(relayedThreads, relayKey)
+			}
+			if len(handle.relayKeys) == 0 {
+				removeRelayHandleLocked(handle)
+				finishHandleLocked(handle, context.Canceled)
+				closeHandle = handle
+			}
+		}
+		relayMu.Unlock()
+		if closeHandle != nil {
+			closeRelayHandle(closeHandle)
 		}
 	}
 	relayCommandCount := func(key string) int {
@@ -1250,6 +1296,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		startTurn:           startTurn,
 		startRelayForThread: startRelayForThread,
 		stopRelay:           stopRelay,
+		stopCanonicalRelay:  stopCanonicalRelay,
 		relayCommandCount:   relayCommandCount,
 	}
 }
