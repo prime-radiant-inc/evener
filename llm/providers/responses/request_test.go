@@ -243,8 +243,17 @@ func TestReasoningObject_ExplicitOff(t *testing.T) {
 		openaiCaps(c)
 		c.EffortValues = []string{"none", "low", "high"}
 	})
-	if got := build(t, req, withOff)["reasoning"]; jsonOf(t, got) != jsonOf(t, map[string]any{"effort": "none"}) {
+	offBody := build(t, req, withOff)
+	if got := offBody["reasoning"]; jsonOf(t, got) != jsonOf(t, map[string]any{"effort": "none"}) {
 		t.Fatalf("reasoning = %s, want the explicit off on the wire", jsonOf(t, got))
+	}
+	// The encrypted-reasoning include rides the off object too, deliberately.
+	// It is inert when the model honors the off — there is no reasoning item
+	// to return — and it is the only thing that keeps replay working on a
+	// gateway that reasons anyway, which is not knowable in advance. A row
+	// that takes no include at all still drops it through Fields["include"].
+	if got := jsonOf(t, offBody["include"]); got != jsonOf(t, []string{encryptedReasoning}) {
+		t.Fatalf("include = %s, want the encrypted-reasoning include kept on an off request", got)
 	}
 	noOffLevel := resolved(func(c *registry.Caps) {
 		openaiCaps(c)
