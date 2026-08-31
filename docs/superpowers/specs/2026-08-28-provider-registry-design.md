@@ -587,16 +587,18 @@ https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1`), and
 Vertex's Claude rows under `google-vertex` (`npm:
 @ai-sdk/google-vertex/anthropic`, no `api`) resolve without curated rows.
 
-Row-level hiding (`Model.Hidden`, recomputed after merge and cleared when
-any layer or a same-provider alias import supplies a `protocol` or
-`transport` for the row): an `amazon-bedrock` row with no per-model
-override whose id, after the region prefix, does not start with
-`anthropic.` (the Messages endpoint serves Claude only, and the seven OpenAI
-rows without a Mantle override, such as `global.openai.gpt-5.6-sol`, would
-otherwise resolve to it); a `google-vertex` row whose id contains `/` and
-carries no per-model `api` (models.dev lists `openai/gpt-oss-*-maas` without
-the MaaS template); and every row of a `Hidden` provider. Rows whose
-`modalities.output` lacks `text` are dropped outright, not hidden.
+Row-level hiding (`Model.Hidden`, recomputed after merge and cleared when any
+layer or a same-provider alias import supplies a `protocol` or `transport`
+for the row): an `amazon-bedrock` row with no per-model override that
+carries a region prefix (hidden regardless of what follows it, such as
+`global.openai.gpt-5.6-sol` or even `global.anthropic.claude-sonnet-5`,
+since the Mantle endpoint serves only the six unprefixed Claude ids) or,
+unprefixed, does not start with `anthropic.` (the seven OpenAI rows without
+a Mantle override would otherwise resolve to the Messages endpoint); a
+`google-vertex` row whose id contains `/` and carries no per-model `api`
+(models.dev lists `openai/gpt-oss-*-maas` without the MaaS template);
+and every row of a `Hidden` provider. Rows whose `modalities.output` lacks
+`text` are dropped outright, not hidden.
 
 **Base URL convention.** models.dev base URLs include the version segment
 (`…/v1`, `…/anthropic/v1`, `…/paas/v4`; DeepSeek's `https://api.deepseek.com`
