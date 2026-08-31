@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -664,6 +665,67 @@ func fuzzScenarioPastIndex_SearchRepairsStaleFTS(t *testing.T) {
 	}
 	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
 		t.Fatalf("FTS did not surface the repaired session %s (results: %d entries)", sessionID, len(results))
+	}
+}
+
+// fuzzScenarioPastIndex_FailedPublishMarksFTSStale pins the other half of the
+// repair contract: a publish whose FTS write fails (a fold's or rebuild's
+// rebuildFTS losing its SQLITE_BUSY race) must leave i.fts false — not
+// stale-but-marked-healthy — or Search's staleness gate cannot see the loss.
+// The gate only detects what failed publishes admit to.
+func fuzzScenarioPastIndex_FailedPublishMarksFTSStale(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             sessionID,
+		UpdatedAt:      time.Unix(1_700_000_000, 0).UTC(),
+		OriginalPrompt: "fts-failed-publish-needle",
+	})
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Break the db for the next publish, then fold a second session through
+	// Find: the fold's rebuildFTS fails, and publishAndSignal must mark the
+	// mirror stale rather than leave the pre-fold healthy flag standing.
+	origOpen := idx.openDB
+	idx.mu.Lock()
+	idx.openDB = func(_, _ string) (*sql.DB, error) { return nil, errors.New("db unavailable") }
+	idx.mu.Unlock()
+	const foldedID = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             foldedID,
+		UpdatedAt:      time.Unix(1_700_000_100, 0).UTC(),
+		OriginalPrompt: "fts-failed-fold-needle",
+	})
+	if _, ok := idx.Find(foldedID); !ok {
+		t.Fatal("expected Find to surface the newly persisted session")
+	}
+	idx.mu.Lock()
+	ftsMarkedStale := !idx.fts
+	idx.openDB = origOpen
+	idx.mu.Unlock()
+	if !ftsMarkedStale {
+		t.Fatal("a failed publish left i.fts true; Search's staleness gate cannot detect the loss")
+	}
+
+	// Restore the db; the next Search must repair the mirror and surface
+	// the folded session through the FTS-only path.
+	results, ok := idx.searchFTS("fts-failed-fold-needle")
+	if ok && len(results) > 0 {
+		t.Fatalf("FTS unexpectedly served the folded session while stale (results: %d)", len(results))
+	}
+	if search := idx.Search("fts-failed-fold-needle", 10, 0); !slices.ContainsFunc(search, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatalf("Search did not serve the folded session while the mirror was stale (results: %d entries)", len(search))
+	}
+	results, ok = idx.searchFTS("fts-failed-fold-needle")
+	if !ok || !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatalf("FTS did not surface the folded session after the repair (ok=%v results: %d entries)", ok, len(results))
 	}
 }
 
