@@ -1641,9 +1641,14 @@ in `llm/providers/openai/adapter.go` and `responses.go` that moves behind the
 ## 10. `providers.toml`
 
 Same schema as the registry. Every key is optional except that an instance
-must end up with a protocol and a base URL after layering.
+must end up with a protocol and a base URL after layering. The file may
+declare `schema = 2` — the format version, stamped on everything the
+registry writes. Absent means 2 (files predate the field); `schema = 1` is
+refused as the pre-registry schema; any other value is refused as
+unsupported (amended 2026-08-31).
 
 ```toml
+schema  = 2
 default = "groq"
 
 [providers.groq]                        # name matches a registry id → inherits it
@@ -2152,15 +2157,20 @@ building the new packages beside the old ones and cutting over last.
 
 ### 14.1 Flag day
 
-There is no migration code. After upgrading, a user does the following
-once, and the release notes and the load-error pointer say so:
+Migration is one command: `evener migrate` converts an old-schema
+`providers.toml` in place, keeping the original beside it as
+`providers.toml.pre-registry`, mapping each instance to its registry
+provider, and recording every dropped field as a `# migrate:` comment
+(amended 2026-08-31; the decision as first taken shipped no migration
+code). A user who prefers to rewrite by hand does the following once, and
+the release notes and the load-error pointer say so:
 
 - **`providers.toml`**: an old-schema file (`[instances.*]`, `type`,
   `api_style`, `quirks`, `compat`) fails to load. The CLI exits with the
   pointer; the hub starts with implicit instances only, shows the error as
   a diagnostic, launches sessions against the implicit set, and refuses
-  instance writes until the file is fixed (§10, §11.3). The user edits,
-  deletes, or moves the file aside by hand. Most users need no file at all
+  instance writes until the file is fixed (§10, §11.3). The user runs
+  `evener migrate`, or edits, deletes, or moves the file aside by hand. Most users need no file at all
   afterwards: every provider on the implicit list (§6.2) exists from its
   key, and `*_BASE_URL` variables cover proxies. A gateway or a custom-named
   instance is re-created with `evener providers add … --api-key-env NAME`

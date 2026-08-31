@@ -1,5 +1,7 @@
 // Command evener-migrate migrates user data to the final evener layout. It is
 // invoked as `evener migrate` (see cmd/evener); this package holds its logic.
+// Besides moving files, it converts a pre-registry providers.toml found at
+// the final config location to the current schema (convert.go).
 //
 // It handles three source generations:
 //
