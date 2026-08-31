@@ -362,7 +362,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		warnings = append(warnings, "model not in catalog")
 	}
 	if row.Hidden {
-		warnings = append(warnings, "hidden: row has no transport on this provider")
+		warnings = append(warnings, "hidden: this provider does not serve this row")
 	}
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")

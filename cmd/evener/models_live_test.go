@@ -462,10 +462,11 @@ const (
 // get-foundation-model-availability reports it AUTHORIZED and AVAILABLE. The
 // two namespaces are simply different — inference-profile ids address
 // bedrock-runtime's InvokeModel/Converse path, which spec §1 puts out of
-// scope, while bedrock-mantle serves the flat catalog above. Spec §9.3's
-// global-routing paragraph is what needs re-deciding; until it is, the global
-// leg is pinned offline only, and sending it would only burn a request on a
-// 404 every run.
+// scope, while bedrock-mantle serves the flat catalog above. Spec §9.3 now
+// records that, and the §6.1 converter marks the region-prefixed rows Hidden,
+// so the global leg is pinned offline only: it still resolves, keeps its
+// prefix verbatim, and sending it would only burn a request on a 404 every
+// run.
 //
 // Gated like TestLiveSmoke, plus the two AWS variables the row is built from,
 // without which no request can be assembled at all. Run with:

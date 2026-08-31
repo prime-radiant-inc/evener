@@ -25,7 +25,8 @@
     "wire_id": "global.anthropic.claude-opus-5",
     "family": "claude-opus",
     "surface": "anthropic",
-    "caps": {}
+    "caps": {},
+    "hidden": true
   },
   "caps": {
     "context_window": 1000000,
@@ -93,8 +94,11 @@
     "WebSearch": "overlay/glob:*anthropic.*",
     "model": "row:global.anthropic.claude-opus-5"
   },
-  "default_model": "global.anthropic.claude-opus-5",
-  "cheap_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "warnings": [
+    "hidden: this provider does not serve this row"
+  ],
+  "default_model": "anthropic.claude-opus-5",
+  "cheap_model": "anthropic.claude-haiku-4-5",
   "credential_source": "env:AWS_BEARER_TOKEN_BEDROCK",
   "pruned_fields": [
     "container",

@@ -323,6 +323,82 @@ func TestLoad_RowHidden(t *testing.T) {
 	}
 }
 
+// TestLoad_BedrockProfileRowsHiddenButResolvable pins spec §9.3's ruling on
+// Bedrock's inference-profile ids. bedrock-mantle serves the six unprefixed
+// Claude ids its own /v1/models catalog lists; the `global.`/`us.`/`eu.`/
+// `jp.`/`au.`/`apac.` spellings address bedrock-runtime, which §1 puts out of
+// scope, so a request for one 404s at the endpoint. They stay in the catalog
+// for metadata and still resolve when a reference names one explicitly —
+// resolution is strict but honest, and the endpoint's 404 tells the truth —
+// but they are hidden, which is what keeps them out of `evener models list`
+// (which filters on the resolved row's Hidden).
+func TestLoad_BedrockProfileRowsHiddenButResolvable(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": "bt"}, "")
+
+	for _, id := range []string{"global.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5", "eu.anthropic.claude-opus-5", "jp.anthropic.claude-sonnet-5", "au.anthropic.claude-sonnet-5"} {
+		res, err := r.Resolve("amazon-bedrock/" + id)
+		if err != nil {
+			t.Fatalf("%s: a hidden row must still resolve when named: %v", id, err)
+		}
+		if !res.Model.Hidden {
+			t.Fatalf("%s: profile rows must be hidden from listings", id)
+		}
+		if res.WireID != id {
+			t.Fatalf("%s: wire id %q, want the id verbatim", id, res.WireID)
+		}
+		if res.Transport.BaseURL != "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1" {
+			t.Fatalf("%s: base URL %q", id, res.Transport.BaseURL)
+		}
+	}
+
+	// The ids Mantle actually serves stay visible.
+	for _, id := range []string{"anthropic.claude-sonnet-5", "anthropic.claude-opus-5", "anthropic.claude-fable-5"} {
+		res, err := r.Resolve("amazon-bedrock/" + id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if res.Model.Hidden {
+			t.Fatalf("%s: the unprefixed ids Mantle serves must stay listed", id)
+		}
+	}
+
+	// The rows stay in the catalog: hiding is a listing filter, not a delete.
+	ids, err := r.CatalogModelIDs("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(ids, "global.anthropic.claude-sonnet-5") {
+		t.Fatal("a hidden row must stay in the catalog for metadata")
+	}
+}
+
+// TestLoad_CuratedDefaultsAreNotHidden pins the invariant the Bedrock profile
+// ruling exposed: a provider's curated default_model / cheap_model is what a
+// profile picks when nothing is configured, so naming a hidden row there
+// hands every such session a reference the provider does not serve. Rows the
+// catalog lacks are left alone — those synthesize by design (spec §7.3).
+func TestLoad_CuratedDefaultsAreNotHidden(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	for _, id := range sortedKeys(r.curated) {
+		rec := r.curated[id]
+		for _, pick := range []struct{ what, model string }{
+			{"default_model", rec.head.DefaultModel},
+			{"cheap_model", rec.head.CheapModel},
+		} {
+			if pick.model == "" {
+				continue
+			}
+			row, ok := rec.head.Models[pick.model]
+			if !ok {
+				continue
+			}
+			if row.Hidden {
+				t.Errorf("providers.%s: %s = %q names a hidden row", id, pick.what, pick.model)
+			}
+		}
+	}
+}
+
 func TestLoad_UserLayerTriState(t *testing.T) {
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
 	dir := t.TempDir()

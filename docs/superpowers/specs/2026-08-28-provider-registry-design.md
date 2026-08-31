@@ -1509,17 +1509,33 @@ dedicated client and is not supported here. So:
   marks the Sonnet 5, Haiku 4.5, Sonnet 4.6, Opus 4.5, and Opus 4.6 rows
   `structured_output: true` at the row level, which the layer-3 glob beats
   under §4.1's merge order; the Mantle OpenAI rows keep their own values).
-- **Global vs regional routing** is expressed in the model id, not the
-  host: `bedrock-mantle` hosts are regional (AWS lists fourteen,
-  `bedrock-mantle.<region>.api.aws`), and AWS's cross-Region inference
-  routes a request whose model is a `global.`, `us.`, `eu.`, `jp.`, or
-  `au.` inference-profile id across the profile's regions. models.dev lists
-  those rows (`global.anthropic.claude-opus-5`, `us.anthropic.claude-fable-5`,
-  …) alongside the in-region ids (`anthropic.claude-opus-5`), so
-  `bedrock/global.anthropic.claude-opus-5` resolves to its own row and sends
-  that id verbatim; §7.2's prefix strip only serves ids the catalog lacks.
-  Jesse verified the global profile live on 2026-08-28; no `Warnings` entry
-  is attached to profile ids.
+- **Inference-profile ids are not served on this endpoint** (corrected
+  2026-08-31 from live evidence). `bedrock-mantle` hosts are regional
+  (`bedrock-mantle.<region>.api.aws`), and the endpoint serves exactly the
+  ids its own catalog lists: `GET
+  https://bedrock-mantle.{region}.api.aws/v1/models` answers 200 with six
+  Claude ids, all unprefixed —
+  `anthropic.claude-{fable-5,haiku-4-5,opus-4-7,opus-4-8,opus-5,sonnet-5}`.
+  A request naming a `global.`, `us.`, `eu.`, `jp.`, `au.`, or `apac.`
+  inference-profile id answers `404 not_found_error` ("The model
+  'global.anthropic.claude-sonnet-5' does not exist"), even though `aws
+  bedrock list-inference-profiles` reports that same profile ACTIVE and
+  SYSTEM_DEFINED in the account and region the request was made from, and
+  `get-foundation-model-availability` reports it AUTHORIZED and AVAILABLE.
+  The namespaces are simply different: inference-profile ids address
+  bedrock-runtime's `InvokeModel`/`Converse` path, which §1 puts out of
+  scope. models.dev lists the profile rows regardless, so the §6.1 converter
+  marks every region-prefixed `amazon-bedrock` row `Hidden`: the row stays in
+  the catalog for metadata and still resolves when a reference names one
+  explicitly — carrying a `hidden: this provider does not serve this row`
+  warning, so the endpoint's own 404 remains the truth — but it is out of
+  `evener models list`. The provider's `default_model` and `cheap_model` are
+  unprefixed for the same reason. §7.2's prefix strip only serves ids the
+  catalog lacks.
+  *Historical note:* Jesse verified the global profile live on 2026-08-28,
+  three days before the readings above, and that note predates this finding.
+  Which path that verification took is an open question flagged for the human
+  partner; nothing in this design now depends on the answer.
 - **OpenAI-shaped models**: models.dev marks nine rows
   `@ai-sdk/amazon-bedrock/mantle` with `api:
   https://bedrock-mantle.${AWS_REGION}.api.aws/v1` (gpt-oss) or `…/openai/v1`

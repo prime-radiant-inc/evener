@@ -337,7 +337,16 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 	// Row-level hiding rules (spec §6.1).
 	switch providerID {
 	case "amazon-bedrock":
-		if !hasOverride && !strings.HasPrefix(stripRegionPrefix(m.ID), "anthropic.") {
+		// bedrock-mantle serves the unprefixed Claude ids its own /v1/models
+		// catalog lists (spec §9.3). Everything else here is hidden: a
+		// non-Claude row without a Mantle override has no transport evener
+		// can reach it through, and a `global.`/`us.`/`eu.`/`jp.`/`au.`/
+		// `apac.` inference-profile id addresses bedrock-runtime, which §1
+		// puts out of scope, so the Mantle endpoint answers not_found_error
+		// for it. Hidden keeps both kinds out of listings while leaving them
+		// in the catalog for metadata and resolvable when named.
+		stripped := stripRegionPrefix(m.ID)
+		if !hasOverride && (stripped != m.ID || !strings.HasPrefix(stripped, "anthropic.")) {
 			m.Hidden = true
 		}
 	case "google-vertex":

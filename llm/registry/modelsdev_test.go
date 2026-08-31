@@ -175,8 +175,13 @@ func TestFromModelsDev_ModelLevel(t *testing.T) {
 	if p["amazon-bedrock"].Models["anthropic.claude-opus-5"].Hidden {
 		t.Fatalf("Claude bedrock rows must not be hidden")
 	}
-	if p["amazon-bedrock"].Models["us.anthropic.claude-fable-5"].Hidden {
-		t.Fatalf("region-prefixed Claude rows must not be hidden")
+	// spec §9.3: bedrock-mantle serves unprefixed ids only, so the
+	// inference-profile spellings are hidden from listings even though they
+	// are Claude rows and still resolve when named.
+	for _, id := range []string{"us.anthropic.claude-fable-5", "global.anthropic.claude-sonnet-5", "eu.anthropic.claude-opus-5", "jp.anthropic.claude-sonnet-5", "au.anthropic.claude-sonnet-5"} {
+		if !p["amazon-bedrock"].Models[id].Hidden {
+			t.Fatalf("%s: region-prefixed Claude rows must be hidden", id)
+		}
 	}
 
 	vc := p["google-vertex"].Models["claude-opus-5"]

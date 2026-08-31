@@ -59,8 +59,8 @@
   "warnings": [
     "model not in catalog"
   ],
-  "default_model": "global.anthropic.claude-opus-5",
-  "cheap_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "default_model": "anthropic.claude-opus-5",
+  "cheap_model": "anthropic.claude-haiku-4-5",
   "synthesized": true,
   "credential_source": "env:AWS_BEARER_TOKEN_BEDROCK",
   "pruned_fields": [

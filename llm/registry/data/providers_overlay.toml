@@ -317,8 +317,10 @@ auth = "header"
 auth_header = "x-api-key"
 models_endpoint = "-"
 count_tokens_endpoint = "-"
-default_model = "global.anthropic.claude-opus-5"
-cheap_model = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Unprefixed on purpose (spec §9.3): bedrock-mantle serves only the ids its own
+# /v1/models catalog lists, so a `global.`-prefixed default would 404.
+default_model = "anthropic.claude-opus-5"
+cheap_model = "anthropic.claude-haiku-4-5"
 
 # The Messages endpoint lacks structured outputs and web search; the Mantle
 # OpenAI rows keep their own values.
