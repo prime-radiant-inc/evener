@@ -491,9 +491,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
       .catch(() => undefined);
   }, [locationFailed, locationRef, locationResource]);
   const isMobile = useIsMobile();
-  // iOS Safari half of the keyboard fix: keeps --keyboard-inset current so the
-  // mobile .shell padding-bottom (AppShell.module.css) rides the composer up
-  // with the on-screen keyboard. Harmless on desktop, where the inset stays 0.
+  // Keeps --keyboard-inset current for the mobile .shell rule; see
+  // useKeyboardInset.ts's header for the why.
   useKeyboardInset();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own

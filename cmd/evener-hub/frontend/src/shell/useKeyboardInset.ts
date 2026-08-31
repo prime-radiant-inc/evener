@@ -31,8 +31,14 @@ export function useKeyboardInset(): void {
     // Guard covers both null (stubbed) and undefined (jsdom, old browsers).
     if (!vv) return undefined;
     const root = document.documentElement;
+    let lastValue: string | null = null;
     const apply = (): void => {
-      root.style.setProperty(VAR_NAME, `${keyboardInset(vv, window.innerHeight)}px`);
+      // Scroll events fire per-frame with an almost-always-unchanged value;
+      // only a real change earns the style recalc.
+      const next = `${keyboardInset(vv, window.innerHeight)}px`;
+      if (next === lastValue) return;
+      lastValue = next;
+      root.style.setProperty(VAR_NAME, next);
     };
     apply();
     vv.addEventListener("resize", apply);
