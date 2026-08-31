@@ -385,7 +385,7 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 		{
 			name: "without_events",
 			args: watchArgs{Target: runtimeMessageAliasCaller, EventFilter: &watchEventFilter{ToolName: "read_file"}},
-			want: "event_filter requires events",
+			want: "event_filter requires events naming assistant.tool",
 		},
 		{
 			name: "wrong_event",
@@ -450,8 +450,8 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 		Events: []string{"communicate", "job.notification"},
 		Every:  2,
 	})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
-		t.Fatalf("error = %v, want every requires exactly one watched event kind", err)
+	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
+		t.Fatalf("error = %v, want every requires events naming exactly one kind", err)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
@@ -459,8 +459,8 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 
 	// every>1 with zero events should also fail (no event to throttle).
 	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
-		t.Fatalf("bare every with no events: error = %v, want every requires exactly one watched event kind", err)
+	if err == nil || !strings.Contains(err.Error(), "every with no events has nothing to fire on") {
+		t.Fatalf("bare every with no events: error = %v, want every with no events has nothing to fire on", err)
 	}
 
 	// every:1 reads as unset, so bare every:1 is a watch with no condition.

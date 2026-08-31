@@ -153,7 +153,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 
 	// Every with multiple events → error.
 	err = validateWatchEventArgs(watchArgs{Events: []string{"assistant.tool", "communicate"}, Every: 2})
-	if err == nil || !strings.Contains(err.Error(), "every requires exactly one") {
+	if err == nil || !strings.Contains(err.Error(), "every requires events naming exactly one kind") {
 		t.Fatalf("every multi: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 
 	// Event filter without events → error.
 	err = validateWatchEventArgs(watchArgs{EventFilter: &watchEventFilter{}})
-	if err == nil || !strings.Contains(err.Error(), "event_filter requires events") {
+	if err == nil || !strings.Contains(err.Error(), "event_filter requires events naming assistant.tool") {
 		t.Fatalf("event_filter no events: %v", err)
 	}
 
