@@ -73,7 +73,7 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 	}
 	client.Use(apiLogger)
 
-	sess, err := NewSession(client, resolveClientProfile(t, client, "openai/gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, resolveClientProfile(t, client, "openai/gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{

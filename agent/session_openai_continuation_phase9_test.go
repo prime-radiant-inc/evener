@@ -141,7 +141,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 	dispatch := registryClientAt(t, dir, instances, []string{"openai"})
 	client := registryClientAt(t, dir, instances, nil, &phase9PlanningOpenAIAdapter{inner: dispatch})
 
-	sess, err := NewSession(client, resolveClientProfile(t, client, "openai/gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, resolveClientProfile(t, client, "openai/gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{

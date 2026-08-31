@@ -84,7 +84,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	client := registryClientAt(t, dir, map[string]registry.Provider{"openai": openaiInstance(srv.URL)}, []string{"openai"})
 	profile := resolveClientProfile(t, client, "openai/gpt-5.4")
 
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, withTestSessionNamer(client, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: dir,
 	})
 	if err != nil {
