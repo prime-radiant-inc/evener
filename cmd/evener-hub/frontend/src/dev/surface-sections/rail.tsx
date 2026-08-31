@@ -84,7 +84,22 @@ const PROJECT_RESOURCE: NavigationProjectResource = {
   revision: 1,
   key: "proj_evener",
   current: {
-    sessions: [session({ ref: "ref_proj_1", title: "Add the surfaces gallery", state: "active" })],
+    sessions: [
+      session({
+        ref: "ref_proj_1",
+        title: "Add the surfaces gallery",
+        state: "active",
+        running_jobs: [
+          {
+            job_id: "job_running_1",
+            job_type: "shell",
+            status: "running",
+            command: "go build ./... && go test ./internal/migrate/...",
+            intent: "Building the tree before running the migration tests",
+          },
+        ],
+      }),
+    ],
     remaining: 0,
   },
   recent: { sessions: [], remaining: 0 },

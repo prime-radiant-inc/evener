@@ -528,11 +528,14 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	startedAt := time.Now().UTC()
 	endedAt := startedAt.Add(time.Second)
 	const jobID = "job_status_projection"
+	const intent = "Running the test suite to find the failure"
 	if err := sess.jobManager.store.Append(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
+		Command:          "go test ./...",
+		Intent:           intent,
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &startedAt,
@@ -562,6 +565,9 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		job.Reason != "exit_nonzero" || job.TranscriptRef != shellTranscriptRef(jobID) ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
+	}
+	if job.Intent != intent {
+		t.Fatalf("job intent = %q, want %q", job.Intent, intent)
 	}
 }
 

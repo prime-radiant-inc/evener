@@ -37,6 +37,22 @@ const toolIntentDescription = "Describe what you expect to learn or accomplish f
 // keep the two values in sync by comment.)
 const maxToolArgumentBytes = 2 * 1024 * 1024
 
+// ctxIntentKey is the context key carrying a tool call's `intent` argument
+// past the registry's strip point (see ExecuteCall): handlers that want it —
+// the shell tool, stamping it onto the job record — read it with IntentFromContext.
+type ctxIntentKey struct{}
+
+// IntentFromContext returns the tool call's `intent` argument threaded onto
+// ctx by the registry, or "" when the call carried none. It exists so a
+// handler can still see intent after the registry removed it from args.
+func IntentFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	intent, _ := ctx.Value(ctxIntentKey{}).(string)
+	return intent
+}
+
 func WithIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
 	if params == nil {
@@ -675,7 +691,14 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	if name != "read_file" {
+		intent, _ := args["intent"].(string)
 		delete(args, "intent")
+		// The handler can no longer see intent in args — but the shell tool
+		// stamps it onto the job record (so job surfaces can show why the
+		// model said it is running the command), so keep it reachable on ctx.
+		if strings.TrimSpace(intent) != "" {
+			ctx = context.WithValue(ctx, ctxIntentKey{}, intent)
+		}
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)

@@ -884,6 +884,11 @@ type EvenerJobInfo struct {
 	FromWatch        bool   `json:"fromWatch,omitempty"`
 	Background       bool   `json:"background,omitempty"`
 	Command          string `json:"command,omitempty"`
+	// Intent is the tool call's `intent` argument (see WithIntentParameter):
+	// the model's own one-line statement of why the command is being run.
+	// Captured on the job record at launch so job surfaces (the sidebar rail,
+	// the activity panel) can show it alongside the command.
+	Intent           string `json:"intent,omitempty"`
 	ParentDelegateID string `json:"parentDelegateId,omitempty"`
 	DelegateID       string `json:"delegateId,omitempty"`
 	Task             string `json:"task,omitempty"`

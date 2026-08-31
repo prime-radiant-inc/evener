@@ -141,7 +141,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefShell(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			shellArgs, err := parseShellToolArgs(args)
+			shellArgs, err := parseShellToolArgs(ctx, args)
 			if err != nil {
 				return "", err
 			}
@@ -276,7 +276,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	return nil
 }
 
-func parseShellToolArgs(args map[string]any) (shellArgs, error) {
+func parseShellToolArgs(ctx context.Context, args map[string]any) (shellArgs, error) {
 	mode, err := parseShellMode(args)
 	if err != nil {
 		return shellArgs{}, err
@@ -284,8 +284,11 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		Mode:        mode,
-		Background:  mode == shellModeBackground,
+		// The registry stripped intent from args before dispatch; recover it
+		// from the exec context (see tool.IntentFromContext).
+		Intent:     tool.IntentFromContext(ctx),
+		Mode:       mode,
+		Background: mode == shellModeBackground,
 		// WorkingDir is the raw model-supplied cwd, if any; "" means omitted. It is
 		// resolved (relative paths joined against env.WorkingDirectory(), validated
 		// against the sandbox root) by resolveShellWorkingDir before dispatch, which

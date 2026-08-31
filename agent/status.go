@@ -45,6 +45,7 @@ type JobStatusInfo struct {
 	OutputBytes      int64  `json:"output_bytes"`
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	Command          string `json:"command,omitempty"`
+	Intent           string `json:"intent,omitempty"`
 	Task             string `json:"task,omitempty"`
 }
 
@@ -406,6 +407,7 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 			OutputBytes:      rec.OutputBytes,
 			ExitCode:         rec.ExitCode,
 			Command:          rec.Command,
+			Intent:           rec.Intent,
 			Task:             rec.Task,
 		})
 	}
