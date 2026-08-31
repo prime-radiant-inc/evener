@@ -1,8 +1,9 @@
 package launchconfig
 
 import (
+	"cmp"
 	"maps"
-	"sort"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -69,13 +70,9 @@ func (p CredentialsPanel) Init() tea.Cmd { return nil }
 // emitted whenever the provider changes from one row to the next, so the rows
 // are sorted by (provider, name) first or a provider gets two headers.
 func buildPanelRows(instances []appwire.InstanceEntry) []panelRow {
-	ordered := make([]appwire.InstanceEntry, len(instances))
-	copy(ordered, instances)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].ProviderID != ordered[j].ProviderID {
-			return ordered[i].ProviderID < ordered[j].ProviderID
-		}
-		return ordered[i].Name < ordered[j].Name
+	ordered := slices.Clone(instances)
+	slices.SortStableFunc(ordered, func(a, b appwire.InstanceEntry) int {
+		return cmp.Or(cmp.Compare(a.ProviderID, b.ProviderID), cmp.Compare(a.Name, b.Name))
 	})
 	var rows []panelRow
 	seenProvider := ""
