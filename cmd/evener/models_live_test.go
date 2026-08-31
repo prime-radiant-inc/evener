@@ -355,22 +355,35 @@ func liveRequest(t *testing.T, client *http.Client, method, url string, body map
 	return resp.StatusCode, raw
 }
 
-// liveModelIDs reads the OpenAI-shaped {"data":[{"id":…}]} listing every
-// protocol here uses (Anthropic's /models has the same shape).
+// liveModelIDs reads a models listing in either shape the protocols here
+// answer with: the OpenAI-shaped {"data":[{"id":…}]} (Anthropic's /models
+// matches it) and Gemini's {"models":[{"name":"models/…"}]}, whose ids carry
+// a "models/" prefix no reference outside that listing uses. Reading only the
+// first shape made every Gemini listing look empty, which quietly skipped
+// both the live-layer enrichment and the id-resolves check for the row.
 func liveModelIDs(body []byte) []string {
 	var listing struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &listing); err != nil {
 		return nil
 	}
-	ids := make([]string, 0, len(listing.Data))
-	for _, m := range listing.Data {
-		if m.ID != "" && registry.IsChatModelID(m.ID) {
-			ids = append(ids, m.ID)
+	ids := make([]string, 0, len(listing.Data)+len(listing.Models))
+	add := func(id string) {
+		if id != "" && registry.IsChatModelID(id) {
+			ids = append(ids, id)
 		}
+	}
+	for _, m := range listing.Data {
+		add(m.ID)
+	}
+	for _, m := range listing.Models {
+		add(strings.TrimPrefix(m.Name, "models/"))
 	}
 	sort.Strings(ids)
 	return ids
