@@ -3383,10 +3383,10 @@ func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 }
 
 // Disable aliases are accepted at session construction and behave as the
-// explicit off, which in evener means the request carries no reasoning
-// control at all and the provider's own default applies (spec §8.4). The
-// point of the test is that "off" stays off: it is not rejected, and it is
-// not filled in with the medium default every unconfigured session gets.
+// explicit off: gpt-5.2's ladder lists a none level (gpt-5.1+ family), so the
+// alias normalizes to "none" and rides the request as that level rather than
+// being rejected or filled in with the medium default every unconfigured
+// session gets. The Responses builder puts it on the wire from there.
 func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -3421,8 +3421,8 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("no requests recorded")
 	}
-	if reqs[0].ReasoningEffort != nil {
-		t.Fatalf("ReasoningEffort = %q, want no reasoning control on the request", *reqs[0].ReasoningEffort)
+	if reqs[0].ReasoningEffort == nil || *reqs[0].ReasoningEffort != "none" {
+		t.Fatalf("ReasoningEffort = %v, want the explicit none level on the request", reqs[0].ReasoningEffort)
 	}
 }
 

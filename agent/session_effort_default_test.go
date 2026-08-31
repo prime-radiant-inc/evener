@@ -23,15 +23,18 @@ func TestResolveRequestEffort(t *testing.T) {
 		want         *string
 	}{
 		{"non-reasoning model gets nothing even when configured", "high", false, []string{}, "", nil},
-		{"explicit none omits the field when the model has no off level", "none", true, levels, "", nil},
-		{"explicit none is sent when the model lists it", "none", true, withNone, "", str("none")},
-		{"a mixed-case configured off is still an off", "None", true, levels, "", nil},
+		// The off is carried whatever the ladder holds; which models can be
+		// told off on the wire, and how, is the adapters' call (spec §8.4).
+		{"explicit none is carried when the model has no off level", "none", true, levels, "", str("none")},
+		{"explicit none is carried when the model lists it", "none", true, withNone, "", str("none")},
+		{"a mixed-case configured off is still an off", "None", true, levels, "", str("none")},
 		{"a ladder-cased off level still carries the explicit off", "none", true, []string{"None", "low", "high"}, "", str("none")},
-		{"a stored disable alias is still an off", "off", true, levels, "", nil},
+		{"a stored disable alias is still an off", "off", true, levels, "", str("none")},
+		{"an off is never clamped into a thinking tier", "none", true, []string{"high", "max"}, "", str("none")},
 		{"configured effort is clamped", "xhigh", true, levels, "", str("high")},
 		{"unset uses the model's stated default", "", true, levels, "high", str("high")},
-		{"a model default of none is held to the same off rule", "", true, levels, "none", nil},
-		{"a model default of none is sent when the model lists it", "", true, withNone, "none", str("none")},
+		{"a model default of none is held to the same off rule", "", true, levels, "none", str("none")},
+		{"a model default of none is carried when the model lists it", "", true, withNone, "none", str("none")},
 		{"unset falls back to medium", "", true, levels, "", str("medium")},
 		{"fallback medium is clamped to the model's levels", "", true, []string{"high", "max"}, "", str("high")},
 		{"unset with unknown levels still sends medium", "", true, nil, "", str("medium")},
@@ -83,10 +86,21 @@ func TestBuildModelRequest_AppliesRequestEffortRule(t *testing.T) {
 			want:       "high",
 		},
 		{
-			name:       "explicit none is never overridden by the default",
+			// The explicit off rides the request as "none" whatever the
+			// model's ladder says. It is never replaced by the default, and
+			// the adapters need it distinguishable from "nothing configured":
+			// a mandatory-thinking row's backstop fires on the latter, which
+			// would switch thinking on against the user's stated intent.
+			name:       "explicit none rides the request as the off sentinel",
 			profile:    reasoningProfile("glm-5.3", registry.Caps{EffortValues: []string{"low", "medium", "high"}}),
 			configured: "none",
-			want:       "",
+			want:       "none",
+		},
+		{
+			name:       "an always-on row with no ladder still carries the explicit off",
+			profile:    reasoningProfile("minimax-m2.7", registry.Caps{ReasoningControls: []string{"toggle"}, ThinkingAlwaysOn: new(true)}),
+			configured: "off",
+			want:       "none",
 		},
 		{
 			name:       "a model declared non-reasoning gets no default",

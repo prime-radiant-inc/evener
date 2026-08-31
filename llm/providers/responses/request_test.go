@@ -229,3 +229,29 @@ func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
 		t.Fatalf("err = %v provider = %v, want %q", err, ok, res.Instance)
 	}
 }
+
+// An explicit off means the user turned thinking off. Where the model's
+// ladder lists an off level the request says so on the wire; where it does
+// not, the reasoning object is dropped entirely — including the summary a
+// mandatory-thinking row would otherwise still carry, which would leave
+// thinking on against the user's stated intent.
+func TestReasoningObject_ExplicitOff(t *testing.T) {
+	none := llm.ReasoningEffortNone
+	req := userReq("hi")
+	req.ReasoningEffort = &none
+	withOff := resolved(func(c *registry.Caps) {
+		openaiCaps(c)
+		c.EffortValues = []string{"none", "low", "high"}
+	})
+	if got := build(t, req, withOff)["reasoning"]; jsonOf(t, got) != jsonOf(t, map[string]any{"effort": "none"}) {
+		t.Fatalf("reasoning = %s, want the explicit off on the wire", jsonOf(t, got))
+	}
+	noOffLevel := resolved(func(c *registry.Caps) {
+		openaiCaps(c)
+		c.ThinkingAlwaysOn = new(true)
+		c.EffortValues = []string{"low", "high"}
+	})
+	if got, ok := build(t, req, noOffLevel)["reasoning"]; ok {
+		t.Fatalf("reasoning = %s, want no reasoning object for a model with no off level", jsonOf(t, got))
+	}
+}

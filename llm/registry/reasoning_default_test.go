@@ -83,3 +83,26 @@ func TestResolve_DefaultEffortFromLiveListing(t *testing.T) {
 		t.Fatalf("live default effort: %v %q", res.Caps.DefaultEffort, res.Provenance["DefaultEffort"])
 	}
 }
+
+// The off level is a real tier: a model that lists it can be told to stop
+// reasoning, and the adapters need the ladder to say so before they put an
+// off on the wire. Dropping it in the converter would make the explicit off
+// unreachable for every cataloged model that accepts one (gpt-5.1 and later).
+func TestResolve_OffLevelSurvivesTheConverter(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	for _, ref := range []string{"openai/gpt-5.1", "openai/gpt-5.6", "openrouter/openai/gpt-5.5"} {
+		res := mustResolve(t, r, ref)
+		if !res.Caps.EffortOffCapable() {
+			t.Errorf("%s: effort_values = %v, want the off level listed", ref, res.Caps.EffortValues)
+		}
+		if res.Caps.EffortValues[0] != "none" {
+			t.Errorf("%s: effort_values = %v, want none first (models.dev order)", ref, res.Caps.EffortValues)
+		}
+	}
+	// A model with no off level says so, and the ladder it does state is
+	// unaffected.
+	claude := mustResolve(t, r, "anthropic/claude-opus-4-6")
+	if claude.Caps.EffortOffCapable() {
+		t.Errorf("claude-opus-4-6: effort_values = %v, want no off level", claude.Caps.EffortValues)
+	}
+}

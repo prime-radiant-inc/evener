@@ -90,11 +90,17 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 // adaptive → {type: adaptive} plus display, sent when ThinkingAlwaysOn or
 // an effort is set, plus output_config.effort only for a caller effort;
 // budget → {type: enabled, budget_tokens} only for an effort;
-// budget+effort → both. none clears the effort; an unset shape sends
-// nothing.
+// budget+effort → both. An explicit off sends no thinking object at all,
+// always-on adaptive rows included: no Claude row lists an off effort level,
+// so there is no value that says "off" here, and keeping the always-on body
+// would switch thinking on against the user's stated intent. An unset shape
+// sends nothing.
 func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) int {
+	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
+		return 0
+	}
 	effort := ""
-	if req.ReasoningEffort != nil && *req.ReasoningEffort != "none" {
+	if req.ReasoningEffort != nil {
 		effort = *req.ReasoningEffort
 	}
 	switch registry.StringValue(caps.ThinkingShape) {

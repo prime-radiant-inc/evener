@@ -300,11 +300,10 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 	for _, ro := range mm.ReasoningOptions {
 		c.ReasoningControls = append(c.ReasoningControls, ro.Type)
 		if ro.Type == "effort" {
-			for _, v := range ro.Values {
-				if v != "none" {
-					c.EffortValues = append(c.EffortValues, v)
-				}
-			}
+			// "none" is kept: it is models.dev's name for the off level, and
+			// a row that lists it is one the user can actually turn thinking
+			// off on (spec §8.4). It has no rank, so the clamp skips it.
+			c.EffortValues = append(c.EffortValues, ro.Values...)
 		}
 	}
 	if len(mm.Modalities.Input) > 0 {

@@ -106,6 +106,16 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 // no controls and no Reasoning verdict (an unknown model) is capable too,
 // so an explicit effort still reaches the wire as it did before the
 // registry.
+// EffortOffCapable reports whether the row's ladder lists the explicit off
+// level, i.e. whether the model can be told to stop reasoning at all (spec
+// §8.4). Only such a row gets an off on the wire; on any other the control is
+// omitted, because no value would say "off" to it.
+func (c Caps) EffortOffCapable() bool {
+	return slices.ContainsFunc(c.EffortValues, func(l string) bool {
+		return strings.EqualFold(strings.TrimSpace(l), "none")
+	})
+}
+
 func (c Caps) EffortCapable() bool {
 	if slices.Contains(c.ReasoningControls, "effort") {
 		return true

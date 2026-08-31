@@ -133,8 +133,11 @@ func TestFromModelsDev_ModelLevel(t *testing.T) {
 	}
 
 	gpt55 := p["openai"].Models["gpt-5.5"]
-	if !reflect.DeepEqual(gpt55.Caps.EffortValues, []string{"low", "medium", "high", "xhigh"}) {
-		t.Fatalf("gpt-5.5 must drop 'none' from effort values, got %v", gpt55.Caps.EffortValues)
+	// The off level is carried through verbatim: it is what tells the
+	// adapters this model can be turned off (spec §8.4). opus-5 above states
+	// no off level and stays a ladder of thinking tiers only.
+	if !reflect.DeepEqual(gpt55.Caps.EffortValues, []string{"none", "low", "medium", "high", "xhigh"}) {
+		t.Fatalf("gpt-5.5 effort values = %v, want the off level kept", gpt55.Caps.EffortValues)
 	}
 	if gpt55.Caps.Cost == nil || gpt55.Caps.Cost.Input != 5 || len(gpt55.Caps.Cost.Tiers) != 1 || gpt55.Caps.Cost.Tiers[0].InputTokensAbove != 272000 {
 		t.Fatalf("gpt-5.5 cost/tiers = %+v", gpt55.Caps.Cost)

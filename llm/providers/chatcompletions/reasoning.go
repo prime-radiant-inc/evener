@@ -8,9 +8,10 @@ import (
 // applyThinkingFormat writes the reasoning control in the row's dialect
 // (spec §8.4, the table kept verbatim from openaicompat's
 // applyThinkingFormat). The effort arrives already clamped by ShapeRequest;
-// none sends nothing on every dialect; ThinkingAlwaysOn with no effort
-// sends the enable object, or medium on the two dialects that carry a
-// default effort.
+// an explicit off reaches the wire only on the two dialects that have a value
+// for it, and only for a model whose ladder lists the off level;
+// ThinkingAlwaysOn with no effort sends the enable object, or medium on the
+// two dialects that carry a default effort.
 func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Caps) {
 	if caps.Reasoning != nil && !*caps.Reasoning {
 		return
@@ -20,7 +21,25 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 	if explicit {
 		wire = *req.ReasoningEffort
 	}
+	format := registry.StringValue(caps.ThinkingFormat)
+	capable := caps.EffortCapable()
 	if wire == "none" {
+		// The user turned thinking off. Only these two dialects have a value
+		// that says so, and only a model whose ladder lists the off level
+		// accepts one; everywhere else the control is omitted. Returning here
+		// is what keeps the mandatory-thinking backstop below from switching
+		// thinking back on against the user's stated intent — every shape in
+		// the table switches it ON.
+		if caps.EffortOffCapable() {
+			switch format {
+			case "", "openai":
+				if capable {
+					body["reasoning_effort"] = wire
+				}
+			case "openrouter":
+				body["reasoning"] = map[string]any{"effort": wire}
+			}
+		}
 		return
 	}
 	alwaysOn := registry.BoolValue(caps.ThinkingAlwaysOn)
@@ -30,8 +49,7 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		}
 		wire = llm.ClampReasoningEffort("medium", caps.EffortValues)
 	}
-	capable := caps.EffortCapable()
-	switch registry.StringValue(caps.ThinkingFormat) {
+	switch format {
 	case "", "openai":
 		if capable {
 			body["reasoning_effort"] = wire

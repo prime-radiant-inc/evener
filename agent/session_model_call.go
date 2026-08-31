@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"strings"
 	"time"
 
@@ -840,15 +839,14 @@ func resolveRequestEffort(configured string, supportsReasoning bool, levels []st
 		effort = defaultReasoningEffort
 	}
 	if effort == llm.ReasoningEffortNone {
-		// Off, whether the user or the model's data said so: sent (as the
-		// canonical lowercase "none") only where the model's ladder lists an
-		// off level in any case, otherwise the field stays out.
-		if slices.ContainsFunc(levels, func(l string) bool {
-			return strings.EqualFold(l, llm.ReasoningEffortNone)
-		}) {
-			return &effort
-		}
-		return nil
+		// Off, whether the user or the model's data said so, carried as the
+		// canonical lowercase "none" whatever the model's ladder holds. The
+		// adapters decide the wire: the dialects with a real off value send
+		// it for a model whose ladder lists the off level, everything else
+		// omits the control. Carrying it rather than returning nil is what
+		// keeps a mandatory-thinking row's backstop from reading the off as
+		// "nothing configured" and switching thinking back on.
+		return &effort
 	}
 	v := llm.ClampReasoningEffort(effort, levels)
 	return &v

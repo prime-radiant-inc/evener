@@ -138,15 +138,25 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 }
 
 // reasoningObject is spec §8.4 for openai-responses: effort when set and
-// the row is effort-capable, summary from ReasoningSummary (omitted at
-// none), and with ThinkingAlwaysOn and no effort the summary alone. nil
-// means no reasoning object; none sends nothing.
+// the row is effort-capable, summary from ReasoningSummary, and with
+// ThinkingAlwaysOn and no effort the summary alone. nil means no reasoning
+// object.
 func reasoningObject(req llm.Request, caps registry.Caps) map[string]any {
 	if caps.Reasoning != nil && !*caps.Reasoning {
 		return nil
 	}
+	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
+		// The user turned thinking off. A model whose ladder lists the off
+		// level is told so; on any other the whole object goes, summary
+		// included, so a mandatory-thinking row does not keep reasoning on
+		// against the user's stated intent.
+		if caps.EffortOffCapable() && caps.EffortCapable() {
+			return map[string]any{"effort": *req.ReasoningEffort}
+		}
+		return nil
+	}
 	out := map[string]any{}
-	if req.ReasoningEffort != nil && *req.ReasoningEffort != "none" && caps.EffortCapable() {
+	if req.ReasoningEffort != nil && caps.EffortCapable() {
 		out["effort"] = *req.ReasoningEffort
 	}
 	summary := registry.StringValue(caps.ReasoningSummary)

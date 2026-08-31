@@ -7,20 +7,32 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// An explicit off must never invert into thinking-on. Every dialect below
-// switches thinking ON in one shape or another, so an off carries nothing at
-// all and the provider's own default applies (spec §8.4: none clears the
-// control on every protocol, and nothing is ever sent to force thinking off).
-// The request rule upstream already decided that an off reaches the adapter
-// only where the model has an off level to be cleared.
-func TestApplyThinkingFormat_ExplicitNoneSendsNothing(t *testing.T) {
+// offReq is a request carrying the explicit off the agent sends when the user
+// turned thinking off.
+func offReq() llm.Request {
 	none := llm.ReasoningEffortNone
 	req := userReq("hi")
 	req.ReasoningEffort = &none
-	for _, format := range []string{
-		"", "openai", "openrouter", "zai", "deepseek", "qwen", "qwen-chat-template",
-		"chat-template", "together", "string-thinking",
-	} {
+	return req
+}
+
+// A model whose ladder lists the off level can be told to stop thinking, and
+// two dialects have a wire shape that says so. On the rest the off has no
+// spelling, so the request carries nothing and the provider's default applies.
+func TestApplyThinkingFormat_ExplicitOffOnTheWire(t *testing.T) {
+	cases := map[string]map[string]any{
+		"":                   {"reasoning_effort": "none"},
+		"openai":             {"reasoning_effort": "none"},
+		"openrouter":         {"reasoning": map[string]any{"effort": "none"}},
+		"zai":                nil,
+		"deepseek":           nil,
+		"together":           nil,
+		"qwen":               nil,
+		"qwen-chat-template": nil,
+		"chat-template":      nil,
+		"string-thinking":    nil,
+	}
+	for format, want := range cases {
 		t.Run(format, func(t *testing.T) {
 			res := resolved(func(c *registry.Caps) {
 				c.Reasoning = new(true)
@@ -31,21 +43,47 @@ func TestApplyThinkingFormat_ExplicitNoneSendsNothing(t *testing.T) {
 				}
 				c.ChatTemplateKwargs = map[string]any{"enable_thinking": true}
 			})
-			body := build(t, req, res)
-			for _, k := range []string{"reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs"} {
-				if v, ok := body[k]; ok {
-					t.Fatalf("explicit off put %s = %#v on the wire", k, v)
-				}
+			got := reasoningKeys(build(t, offReq(), res))
+			if want == nil {
+				want = map[string]any{}
+			}
+			if jsonOf(t, got) != jsonOf(t, want) {
+				t.Fatalf("got %s want %s", jsonOf(t, got), jsonOf(t, want))
 			}
 		})
 	}
 }
 
-// The mandatory-thinking backstop on the "openai" dialect: with no effort on
-// the request the format emits its medium default, and when the row takes no
-// effort control the backstop has no field to ride and the body stays empty —
-// a known gap pinned here so it cannot change silently. Such a model still
-// thinks; it is the provider that decides how much.
+// A model whose ladder has no off level cannot be told to stop, so the request
+// carries nothing — and, critically, the explicit off must not fall through to
+// the mandatory-thinking backstop, which would switch thinking ON against the
+// user's stated intent. openrouter/minimax/minimax-m2.7 is the shape that
+// makes it concrete: reasoning = true, toggle-only controls, always-on, no
+// ladder, the openrouter dialect.
+func TestApplyThinkingFormat_ExplicitOffNeverSwitchesThinkingOn(t *testing.T) {
+	for _, format := range []string{"", "openai", "openrouter", "zai", "deepseek", "together", "qwen", "qwen-chat-template", "chat-template", "string-thinking"} {
+		t.Run(format, func(t *testing.T) {
+			res := resolved(func(c *registry.Caps) {
+				c.Reasoning = new(true)
+				c.ReasoningControls = []string{"toggle"}
+				c.ThinkingAlwaysOn = new(true)
+				if format != "" {
+					c.ThinkingFormat = new(format)
+				}
+				c.ChatTemplateKwargs = map[string]any{"enable_thinking": true}
+			})
+			if got := reasoningKeys(build(t, offReq(), res)); len(got) != 0 {
+				t.Fatalf("explicit off put %s on the wire for a model with no off level", jsonOf(t, got))
+			}
+		})
+	}
+}
+
+// The mandatory-thinking backstop on the "openai" dialect still fires for a
+// request that reaches the adapter with no effort at all: the format emits its
+// medium default. When the row takes no effort control the backstop has no
+// field to ride and the body stays empty — a known gap pinned here so it
+// cannot change silently.
 func TestApplyThinkingFormat_MandatoryBackstopNeedsAnEffortField(t *testing.T) {
 	alwaysOn := func(controls ...string) registry.Resolved {
 		return resolved(func(c *registry.Caps) {
@@ -58,10 +96,18 @@ func TestApplyThinkingFormat_MandatoryBackstopNeedsAnEffortField(t *testing.T) {
 	if body := build(t, userReq("hi"), alwaysOn("effort")); body["reasoning_effort"] != "medium" {
 		t.Fatalf("body = %#v, want the medium backstop on the openai dialect", body)
 	}
-	body := build(t, userReq("hi"), alwaysOn("toggle"))
-	for _, k := range []string{"reasoning_effort", "reasoning", "thinking"} {
+	if got := reasoningKeys(build(t, userReq("hi"), alwaysOn("toggle"))); len(got) != 0 {
+		t.Fatalf("a row that takes no effort has no field for the backstop to ride, got %s", jsonOf(t, got))
+	}
+}
+
+// reasoningKeys narrows a built body to the reasoning-related keys.
+func reasoningKeys(body map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs"} {
 		if v, ok := body[k]; ok {
-			t.Fatalf("a row that takes no effort has no field for the backstop to ride, got %s = %#v", k, v)
+			out[k] = v
 		}
 	}
+	return out
 }

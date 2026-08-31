@@ -21,10 +21,10 @@ func TestRestoreSession_SanitizesReasoningEffort(t *testing.T) {
 		persisted  string
 		wantEffort string // "" means no reasoning control reaches the request
 	}{
-		// An explicit off clears the control (spec §8.4); a level survives
+		// A disable alias canonicalizes to the off level; a level survives
 		// its casing; garbage is dropped and the session takes the default
 		// every unconfigured session gets (medium, on gpt-5.2's ladder).
-		{name: "disable alias canonicalizes to the off level", persisted: "OFF", wantEffort: ""},
+		{name: "disable alias canonicalizes to the off level", persisted: "OFF", wantEffort: "none"},
 		{name: "mixed-case level canonicalizes", persisted: "High", wantEffort: "high"},
 		{name: "garbage falls back to the default", persisted: "ultra", wantEffort: "medium"},
 	}

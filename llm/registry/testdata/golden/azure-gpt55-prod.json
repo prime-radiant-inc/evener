@@ -39,6 +39,7 @@
       "effort"
     ],
     "effort_values": [
+      "none",
       "low",
       "medium",
       "high",

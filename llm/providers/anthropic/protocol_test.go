@@ -65,7 +65,10 @@ func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
 		{"budget", "budget", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, nil},
 		{"budget without effort", "budget", "", false, "", nil, nil},
 		{"budget+effort", "budget+effort", "", false, "high", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("high"))}, "high"},
-		{"none clears everything", "adaptive", "summarized", true, "none", map[string]any{"type": "adaptive", "display": "summarized"}, nil},
+		// An explicit off means the user turned thinking off, so it must not
+		// fall through to the always-on body: no thinking object at all.
+		{"none clears everything, always-on included", "adaptive", "summarized", true, "none", nil, nil},
+		{"none clears the budget shape too", "budget+effort", "", false, "none", nil, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
