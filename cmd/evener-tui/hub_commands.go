@@ -688,8 +688,8 @@ func sessionEffortLevels(levels []string) []string {
 
 // effortChoices lists what /effort accepts for a reasoning session: the
 // model's ladder plus the always-settable explicit off. The session stores
-// "none" and the request builder sends it only where the model's ladder
-// lists an off level, omitting the field otherwise.
+// "none" and carries it on every request; the adapters are what put an off on
+// the wire, and only for a model whose ladder lists an off level.
 func effortChoices(levels []string) []string {
 	for _, l := range levels {
 		if strings.EqualFold(l, string(llm.ReasoningEffortNone)) {

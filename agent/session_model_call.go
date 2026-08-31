@@ -814,8 +814,14 @@ const defaultReasoningEffort = "medium"
 //     reasoning=false) never gets an effort, even if one is configured;
 //     ClampReasoningEffort would pass it through an empty level list and the
 //     provider would 400.
-//   - An explicit off ("none") is sent only when the model lists it as a
-//     level (gpt-5.1+, GLM behind lunaroute); otherwise the field is omitted.
+//   - An explicit off ("none") is carried on every reasoning model, never
+//     replaced by a default and never clamped into a tier. Which models can
+//     be told off, and how it is spelled, is the adapters' call (spec §8.4):
+//     they send it where the row's ladder lists an off level and the dialect
+//     has a value for one, and omit the control otherwise. Carrying it is
+//     also what keeps it distinguishable from "nothing configured", without
+//     which a mandatory-thinking row's builder default reads an off as unset
+//     and switches thinking back on.
 //   - A configured effort is clamped to the model's levels so loop-detector
 //     escalation, the --reasoning-effort flag, and the UI selector never send
 //     a tier the model rejects.
