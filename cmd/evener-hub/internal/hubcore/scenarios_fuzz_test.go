@@ -101,6 +101,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_FindFoldsProbedEntry,
 		fuzzScenarioPastIndex_FindFoldWritesFTS,
 		fuzzScenarioPastIndex_FindMissDoesNotRebuild,
+		fuzzScenarioPastIndex_FindRepairsStaleFTS,
 		fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss,
 		fuzzScenarioPastIndex_FindProbeKeepsLastProject,
 		fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir,

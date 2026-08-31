@@ -722,6 +722,18 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 		return PastEntry{}, false
 	}
 	if e, ok := i.findCached(sessionID); ok {
+		// The FTS mirror can be stale after a fold's or rebuild's
+		// rebuildFTS lost a SQLITE_BUSY race — the entry is in memory but
+		// search would miss it. i.fts is the staleness signal; a cache-hit
+		// Find is the cheapest repair point, so re-publish. The fingerprint
+		// gate makes the redundant publish a no-op for onChange.
+		i.mu.RLock()
+		ftsStale := i.dbPath != "" && !i.fts
+		i.mu.RUnlock()
+		if ftsStale {
+			all := i.All()
+			i.publishAndSignal(all)
+		}
 		return e, true
 	}
 	if sessionID == "" || i.stateGlob == "" {
