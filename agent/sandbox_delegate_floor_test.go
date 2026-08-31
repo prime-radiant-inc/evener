@@ -117,7 +117,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	for _, net := range []*bool{new(false), new(true)} {
 		if _, err := buildDelegateSandboxPolicy("off", net, sandbox.ModeOff, true); err == nil {
 			t.Errorf("sandbox=off with an explicit sandbox_net (%v) must be refused", *net)
-		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+		} else if !strings.Contains(err.Error(), "invalid_request:") || !strings.Contains(err.Error(), "applies no network confinement") {
 			t.Errorf("refusal must explain off applies no network confinement, got %v", err)
 		}
 	}
@@ -129,7 +129,7 @@ func TestBuildDelegateSandboxPolicy_OffWithNetRefused(t *testing.T) {
 	// refusal (the mode is present, so it does not hit the mode-absent guard).
 	if _, err := resolveDelegateSandboxRequest("off", new(false), sandbox.ModeOff, true); err == nil {
 		t.Error("resolveDelegateSandboxRequest must refuse an explicit sandbox=off + sandbox_net")
-	} else if !strings.Contains(err.Error(), `no effect with sandbox="off"`) {
+	} else if !strings.Contains(err.Error(), "applies no network confinement") {
 		t.Errorf("refusal must name the off+net contradiction, got %v", err)
 	}
 }

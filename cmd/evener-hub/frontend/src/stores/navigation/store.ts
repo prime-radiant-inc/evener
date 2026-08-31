@@ -215,7 +215,9 @@ function jobs(value: unknown): boolean {
         string(candidate.status) &&
         optional(candidate.command, string) &&
         optional(candidate.task, string) &&
-        optional(candidate.reason, string),
+        optional(candidate.reason, string) &&
+        optional(candidate.intent, string) &&
+        optional(candidate.full_command, string),
     )
   );
 }

@@ -93,6 +93,32 @@ func taskStateEntry(t *testing.T, state []taskToolStateEntry, id int) taskToolSt
 	return taskToolStateEntry{}
 }
 
+func TestTaskTool_UpdateNotesOnlyKeepsStatus(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "note-me", Type: "implement", Prompt: "do it"}})
+
+	res := h.update(t, map[string]any{"id": 1, "notes": "progress note"})
+	if res.Err != nil {
+		t.Fatalf("notes-only update: %v", res.Err)
+	}
+	state := decodeTaskToolState(t, res)
+	entry := taskStateEntry(t, state, 1)
+	if entry.Status != taskpkg.TaskOpen {
+		t.Fatalf("notes-only update changed status to %q, want open", entry.Status)
+	}
+	// A follow-up status-bearing update on the same task still works — the
+	// empty-status sentinel must not wedge the task.
+	res = h.update(t, map[string]any{"id": 1, "status": "done"})
+	if res.Err != nil {
+		t.Fatalf("status update after notes-only: %v", res.Err)
+	}
+	state = decodeTaskToolState(t, res)
+	entry = taskStateEntry(t, state, 1)
+	if entry.Status != taskpkg.TaskDone {
+		t.Fatalf("status update did not apply: %q", entry.Status)
+	}
+}
+
 func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 	t.Run("notes-only reassertion is not a start", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "investigate", Prompt: "inspect"}})

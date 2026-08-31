@@ -331,6 +331,51 @@ func TestShellDetachedRejectsInvalidCwdBeforeDetach(t *testing.T) {
 	}
 }
 
+// TestShellToolIntentLandsOnJobRecord: the tool call's `intent` argument is
+// captured on the shell job record, so job surfaces (the sidebar rail, the
+// activity panel) can show why the model said it is running the command. The
+// registry strips intent from args before handlers run and threads it onto
+// ctx (tool.IntentFromContext) at the strip point, so parseShellToolArgs can
+// read it back.
+func TestShellToolIntentLandsOnJobRecord(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	// TRIPWIRE: starting a background shell job returns as soon as the job
+	// is recorded (see TestShellToolBackgroundReturnsJobID); this normally
+	// returns in well under a second, so 30s only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
+		ID:   "c-intent",
+		Name: "shell",
+		Arguments: json.RawMessage(
+			`{"command":"sleep 30","mode":"background","intent":"Running the suite to find the failure"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+
+	jobs := s.jobManager.list(listFilter{})
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+	if got := jobs[0].Intent; got != "Running the suite to find the failure" {
+		t.Fatalf("job record Intent = %q, want the tool call's intent", got)
+	}
+}
+
 func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -462,7 +507,7 @@ func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 
 func TestParseShellToolArgsClampsSmallMaxRuntime(t *testing.T) {
 	t.Parallel()
-	args, err := parseShellToolArgs(map[string]any{
+	args, err := parseShellToolArgs(context.Background(), map[string]any{
 		"command":        "sleep 30",
 		"max_runtime_ms": float64(1),
 	})
@@ -972,7 +1017,7 @@ func TestParseShellToolArgsMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseShellToolArgs(tt.args)
+			got, err := parseShellToolArgs(context.Background(), tt.args)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Fatalf("error = %v, want %q", err, tt.wantErr)
@@ -988,7 +1033,7 @@ func TestParseShellToolArgsMode(t *testing.T) {
 
 func TestParseShellToolArgsRejectsNegativeMaxRuntime(t *testing.T) {
 	t.Parallel()
-	if _, err := parseShellToolArgs(map[string]any{
+	if _, err := parseShellToolArgs(context.Background(), map[string]any{
 		"command":        "echo hi",
 		"max_runtime_ms": -1,
 	}); err == nil {

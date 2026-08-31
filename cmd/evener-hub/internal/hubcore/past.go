@@ -138,7 +138,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var all []PastEntry
 	byID := make(map[string]PastEntry)
 	skipped := make(map[string]string)
 	for _, project := range matches {
@@ -159,36 +158,29 @@ func (i *PastIndex) Rebuild() (bool, error) {
 			}
 			indexed[m.ID] = true
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
-			all = append(all, pe)
 			byID[m.ID] = pe
 		}
 		reportUnlistedMetas(i.fs, project, indexed, skipped)
 	}
 	i.reportSkips(skipped)
+	// i.all derives from byID (one row per id, the LAST project's row for a
+	// session present in several projects) rather than accumulating per
+	// project: appending as the loop scanned would keep the FIRST project's
+	// row while byID keeps the LAST's, leaving the replace-one-row writers
+	// below (UpdateMeta, foldOne) and the next Rebuild fighting over the
+	// duplicate forever, firing onChange every tick on unchanged disk.
+	all := make([]PastEntry, 0, len(byID))
+	for _, pe := range byID {
+		all = append(all, pe)
+	}
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
-	i.fts = false
 	i.mu.Unlock()
-	if i.dbPath != "" {
-		if err := i.rebuildFTS(all); err == nil {
-			i.mu.Lock()
-			i.fts = true
-			i.mu.Unlock()
-		}
-	}
-	fp := contentFingerprint(all)
-	i.mu.Lock()
-	changed := fp != i.fingerprint
-	i.fingerprint = fp
-	i.mu.Unlock()
-	if changed && i.onChange != nil {
-		i.onChange()
-	}
-	return changed && i.onChange != nil, nil
+	return i.publishAndSignal(all), nil
 }
 
 // maxReportedSkips bounds how many individual unindexable paths one Rebuild
@@ -321,23 +313,46 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
 	i.byID[id] = pe
 	fresh := make([]PastEntry, 0, len(i.all))
-	removed := false
 	for _, e := range i.all {
-		if !removed && e.ID == id {
-			removed = true
-			continue
+		if e.ID != id {
+			fresh = append(fresh, e)
 		}
-		fresh = append(fresh, e)
 	}
-	pos := sort.Search(len(fresh), func(k int) bool { return !sessionMetaLess(fresh[k].Meta, meta) })
-	fresh = append(fresh, PastEntry{})
-	copy(fresh[pos+1:], fresh[pos:])
-	fresh[pos] = pe
+	fresh = insertSorted(fresh, pe)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
 	i.mu.Unlock()
+	return i.publishAndSignal(all)
+}
 
+// insertSorted returns a new slice with pe inserted at its sorted position
+// (per sessionMetaLess). Callers own the lock; the input slice must not be
+// aliased by anything a concurrent reader still holds (allocate-then-swap,
+// see UpdateMeta's doc).
+func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
+	pos := sort.Search(len(entries), func(k int) bool { return !sessionMetaLess(entries[k].Meta, pe.Meta) })
+	entries = append(entries, PastEntry{})
+	copy(entries[pos+1:], entries[pos:])
+	entries[pos] = pe
+	return entries
+}
+
+// publishAndSignal mirrors a freshly-swapped index snapshot into the FTS
+// index and the content fingerprint, firing onChange when the content
+// actually changed. all must be an immutable snapshot of i.all taken under
+// the lock (rebuildFTS and contentFingerprint run unlocked). The bool is
+// Rebuild/UpdateMeta's contract: whether content changed AND a registered
+// onChange fired for it.
+func (i *PastIndex) publishAndSignal(all []PastEntry) bool {
 	if i.dbPath != "" {
+		// Mark the mirror stale BEFORE attempting the write, so any failed
+		// publish (a fold's or rebuild's rebuildFTS losing its SQLITE_BUSY
+		// race, or the db being briefly unwritable) leaves i.fts false and
+		// Search's staleness gate can repair it. Only a successful write
+		// flips it back true below.
+		i.mu.Lock()
+		i.fts = false
+		i.mu.Unlock()
 		if err := i.rebuildFTS(all); err == nil {
 			i.mu.Lock()
 			i.fts = true
@@ -397,6 +412,20 @@ func (i *PastIndex) All() []PastEntry {
 // in-memory scan preserves substring matches.
 func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 	if strings.TrimSpace(q) != "" {
+		// Search is FTS's only consumer, so a stale mirror (a fold's or
+		// rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
+		// briefly unwritable) is observable only here — and this is the
+		// repair point: re-publish the current snapshot so the FTS path
+		// serves every indexed id again. While the mirror stays broken
+		// every Search re-attempts the full FTS write; the first success
+		// flips i.fts and the repair stops. The fingerprint gate keeps
+		// the redundant publish from firing onChange.
+		i.mu.RLock()
+		ftsStale := i.dbPath != "" && !i.fts
+		i.mu.RUnlock()
+		if ftsStale {
+			i.publishAndSignal(i.All())
+		}
 		if fts, ok := i.searchFTS(q); ok {
 			mem := i.searchMemoryMatches(q)
 			return i.mergeSearchResults(fts, mem, limit, offset)
@@ -719,10 +748,12 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	if _, err := i.Rebuild(); err != nil {
+	entry, found := i.probeOne(sessionID)
+	if !found {
 		return PastEntry{}, false
 	}
-	return i.findCached(sessionID)
+	i.foldOne(entry)
+	return entry, true
 }
 
 func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
@@ -730,4 +761,68 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 	defer i.mu.RUnlock()
 	e, ok := i.byID[sessionID]
 	return e, ok
+}
+
+// probeOne looks for one session's meta across every project the glob
+// matches, reading only that session's meta.json per project — the same file
+// and decode Rebuild's list path reads — instead of decoding every meta on
+// disk. Like Rebuild's byID map, a session present in several projects
+// resolves to the LAST project in glob order.
+//
+// A miss here is not proof the session does not exist: a corrupt meta file,
+// a sessions dir that cannot be listed, or an invalid project id skip that
+// project silently — the same paths Rebuild skips (and reports); the 60s
+// rebuild tick remains the authority for those. Find's miss path only needs
+// to surface a session persisted after the last index (the
+// fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss contract).
+func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
+	matches, err := filepath.Glob(i.stateGlob)
+	if err != nil {
+		return PastEntry{}, false
+	}
+	var found PastEntry
+	for _, project := range matches {
+		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			continue
+		}
+		// Rebuild's gate, shared rather than copied: ListSessionMetas skips
+		// a project whose sessions dir cannot be listed (a traversable but
+		// unlistable dir fails the list while reading a meta by its known
+		// path still succeeds — without the gate, Find would fold a session
+		// Rebuild keeps dropping, flapping the index every cycle). The
+		// OS fs matches the filesystem LoadSessionMeta below reads through;
+		// PastIndex.fs is a different seam (FTS scaffolding).
+		if !schema.SessionsDirListable(afero.NewOsFs(), project) {
+			continue
+		}
+		meta, err := schema.LoadSessionMeta(project, sessionID)
+		if err != nil {
+			continue
+		}
+		found = PastEntry{ID: sessionID, Meta: meta, StateDir: project}
+	}
+	return found, found.ID != ""
+}
+
+// foldOne inserts a probed entry into the in-memory index with the same
+// allocate-then-swap discipline and publish tail as UpdateMeta (the sorted
+// slice Rebuild may still be reading must not be mutated in place); the one
+// difference is that it inserts an id the index has never seen, where
+// UpdateMeta replaces an existing one.
+func (i *PastIndex) foldOne(entry PastEntry) {
+	i.mu.Lock()
+	if _, ok := i.byID[entry.ID]; ok {
+		// A concurrent Rebuild indexed it first; its entry is at least as
+		// fresh as the probe's (both read the same file), so keep it.
+		i.mu.Unlock()
+		return
+	}
+	i.byID[entry.ID] = entry
+	fresh := make([]PastEntry, 0, len(i.all)+1)
+	fresh = append(fresh, i.all...)
+	fresh = insertSorted(fresh, entry)
+	i.all = fresh
+	all := append([]PastEntry(nil), i.all...)
+	i.mu.Unlock()
+	i.publishAndSignal(all)
 }

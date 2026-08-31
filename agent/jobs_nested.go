@@ -541,6 +541,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			JobID:            rec.JobID,
 			Type:             rec.Type,
 			Command:          rec.Command,
+			Intent:           rec.Intent,
 			Task:             rec.Task,
 			Description:      rec.Description,
 			ParentSessionID:  rec.ParentSessionID,

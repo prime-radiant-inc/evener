@@ -770,7 +770,10 @@ func validateWatchEventArgs(a watchArgs) error {
 	}
 	if a.Every > 0 {
 		if len(a.Events) != 1 {
-			return errors.New("invalid_request: every requires exactly one watched event kind")
+			if len(a.Events) == 0 {
+				return errors.New(`invalid_request: every requires events naming exactly one kind (e.g. events ["communicate"], every 3); every with no events has nothing to fire on`)
+			}
+			return errors.New(`invalid_request: every requires events naming exactly one kind, not several (e.g. events ["communicate"], every 3)`)
 		}
 		if a.Events[0] == "*" {
 			return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
@@ -778,7 +781,7 @@ func validateWatchEventArgs(a watchArgs) error {
 	}
 	if a.EventFilter != nil {
 		if len(a.Events) == 0 {
-			return errors.New("invalid_request: event_filter requires events")
+			return errors.New(`invalid_request: event_filter requires events naming assistant.tool (e.g. events ["assistant.tool"], event_filter {"tool_name":"read_file","status":"ok"}); event_filter with no events has nothing to filter`)
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
@@ -1413,6 +1416,35 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 		Target:   key.Target,
 		Watching: false,
 	}, nil
+}
+
+// watchConfigByIDWithFlushLocked resolves a watch config by ID, including
+// detached terminal-flush configs. Callers must hold jm.mu.
+func (jm *jobManager) watchConfigByIDWithFlushLocked(watchID string) (*watchConfig, bool) {
+	if _, cfg, ok := jm.watchConfigByIDLocked(watchID); ok {
+		return cfg, true
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID {
+			return cfg, true
+		}
+	}
+	return nil, false
+}
+
+// watchReceiverIdentity looks a watch up by ID ignoring session visibility —
+// unlike hasWatchID, which returns the visibility verdict. Returns the watch's
+// receiver identity so a session holding a receiver-keyed watch it cannot see
+// can decide, from tree topology, whether it may route that watch's clear to
+// the receiver.
+func (jm *jobManager) watchReceiverIdentity(watchID string) (receiverSessionID, receiverDelegateID string, found bool) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg, found := jm.watchConfigByIDWithFlushLocked(watchID)
+	if !found || cfg == nil {
+		return "", "", false
+	}
+	return cfg.receiverSessionID, cfg.receiverDelegateID, true
 }
 
 func (jm *jobManager) hasWatchID(watchID string) (bool, error) {
@@ -2062,16 +2094,21 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
+	sort.SliceStable(entries, watchListEntryLess(entries))
+	return entries
+}
+
+// watchListEntryLess orders watch rows by (Source, ID) — the shared ordering
+// for every receiver-keyed watch projection.
+func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
+	return func(i, j int) bool {
 		if entries[i].Source != entries[j].Source {
 			return entries[i].Source < entries[j].Source
 		}
 		return entries[i].ID < entries[j].ID
-	})
-	return entries
+	}
 }
 
-//nolint:unused // retained for the evenerfuzz restore/clear-history state-machine owner.
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
@@ -2094,12 +2131,7 @@ func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverD
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].Source != entries[j].Source {
-			return entries[i].Source < entries[j].Source
-		}
-		return entries[i].ID < entries[j].ID
-	})
+	sort.SliceStable(entries, watchListEntryLess(entries))
 	return entries
 }
 

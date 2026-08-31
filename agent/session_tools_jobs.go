@@ -206,6 +206,29 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 			res, err = ownerRes, ownerErr
 			break
 		}
+		// #655: the watch may still live in this manager keyed to another
+		// session's receiver (hasWatchID reports the visibility verdict, not
+		// presence), or in a descendant's manager the receiver-path above did
+		// not cover. Either way the clear is authorized by topology — the
+		// receiver must be this session's own delegate or a descendant of it —
+		// never by source labels: a source delegate must not be able to clear
+		// its ancestor's watch on it, and a sibling must not clear another
+		// sibling's.
+		if receiverSession, receiverDelegate, ok := s.receiverWatchAnywhereByID(a.WatchID); ok {
+			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverDelegate) {
+				receiver := receiverDelegate
+				if receiver == "" {
+					receiver = "session " + receiverSession
+				}
+				return "", fmt.Errorf("invalid_request: watch %s delivers to %s, which this session may not clear", a.WatchID, receiver)
+			}
+			holder := s.jobManagerHoldingWatch(a.WatchID)
+			if holder == nil {
+				holder = jm
+			}
+			res, err = holder.clearReceiverWatchByID(a.WatchID, receiverSession, receiverDelegate)
+			break
+		}
 		res, err = jm.clearWatchByID(a.WatchID)
 	case "list":
 		return marshalWatchListResult(s.watchListToolResultWithDescendantReceivers(jm.watchListToolResult()), maxChars)
@@ -241,7 +264,6 @@ func (s *Session) configureStableWatchOnSource(sourcePublic string, binding dele
 	}
 	return binding.runtime.jobManager.configureWatch(a)
 }
-
 func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bool, error) {
 	if s == nil || !strings.HasPrefix(a.Target, "job_") {
 		return watchResult{}, false, nil
@@ -314,11 +336,101 @@ func (s *Session) clearStableReceiverWatchByID(watchID string) (watchResult, boo
 	return watchResult{}, false, nil
 }
 
+// receiverWatchAnywhereByID finds a watch's receiver identity across this
+// session's own manager and the watch-source sessions, ignoring visibility.
+// Returns ok=false when no manager holds the watch.
+func (s *Session) receiverWatchAnywhereByID(watchID string) (receiverSessionID, receiverDelegateID string, found bool) {
+	if s == nil || watchID == "" {
+		return "", "", false
+	}
+	if s.jobManager != nil {
+		if receiverSession, receiverDelegate, ok := s.jobManager.watchReceiverIdentity(watchID); ok {
+			return receiverSession, receiverDelegate, true
+		}
+	}
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder == nil || holder.jobManager == nil || holder.jobManager == s.jobManager {
+			continue
+		}
+		if receiverSession, receiverDelegate, ok := holder.jobManager.watchReceiverIdentity(watchID); ok {
+			return receiverSession, receiverDelegate, true
+		}
+	}
+	return "", "", false
+}
+
+// jobManagerHoldingWatch returns the manager (of this session or the watch
+// source sessions) that currently holds the watch, or nil when none does.
+func (s *Session) jobManagerHoldingWatch(watchID string) *jobManager {
+	if s == nil || watchID == "" {
+		return nil
+	}
+	holders := make([]*jobManager, 0, 2)
+	if s.jobManager != nil {
+		holders = append(holders, s.jobManager)
+	}
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder != nil && holder.jobManager != nil && holder.jobManager != s.jobManager {
+			holders = append(holders, holder.jobManager)
+		}
+	}
+	for _, holder := range holders {
+		if _, _, found := holder.watchReceiverIdentity(watchID); found {
+			return holder
+		}
+	}
+	return nil
+}
+
 func (s *Session) stableWatchSourceSessions() []*Session {
 	if s == nil || s.delegateController == nil {
 		return s.liveDescendantSessions()
 	}
 	return s.delegateController.watchSourceSessions()
+}
+
+// liveWatchesDeliveringToDelegate returns the armed watches that deliver to a
+// delegate and the members of the subtree rooted at it, keyed by receiver
+// identity — the #655 inventory. The stopper (parent) session is always a
+// member of stableWatchSourceSessions(), and the parent-source watch an
+// observer child installs lives in that same manager
+// (configureStableWatchOnSource), so one scan covers it without
+// double-reporting. Receiver keys come from the durable descriptors, readable
+// before, during, and after a stop. Managers are deduped per delegate: two
+// live sessions can share one job manager, and a naive per-session append
+// would double every row.
+//
+// Boundary: the scan covers managers whose runtimes are currently live
+// (stableWatchSourceSessions), plus the stopper's own. A subtree member whose
+// owning session is not live (a cold, idle descendant that no live runtime
+// registers) is not scanned — a watch held only in that member's cold manager
+// is not reported. The receiver key itself is durable, so watches held in any
+// live manager (including the stopper's) that deliver to a cold member ARE
+// reported.
+func (s *Session) liveWatchesDeliveringToDelegate(delegateID string) []watchListEntry {
+	if s == nil || delegateID == "" || s.delegateController == nil {
+		return nil
+	}
+	receiverKeys := s.delegateController.subtreeReceiverKeysForDelegate(delegateID)
+	if len(receiverKeys) == 0 {
+		return nil
+	}
+	var entries []watchListEntry
+	seenManagers := make(map[*jobManager]struct{})
+	for _, holder := range s.stableWatchSourceSessions() {
+		if holder == nil || holder.jobManager == nil {
+			continue
+		}
+		if _, scanned := seenManagers[holder.jobManager]; scanned {
+			continue
+		}
+		seenManagers[holder.jobManager] = struct{}{}
+		for childDelegateID, childSessionID := range receiverKeys {
+			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(childSessionID, childDelegateID)...)
+		}
+	}
+	sort.SliceStable(entries, watchListEntryLess(entries))
+	return entries
 }
 
 func (s *Session) liveDescendantSessions() []*Session {
@@ -915,6 +1027,12 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if err != nil {
 		return "", err
 	}
+	// #655: report the watches that survive this stop and keep delivering to
+	// the stopped delegate subtree. One read, taken at result time — after the
+	// wait/timeout decision — so the reported set is the current one on every
+	// path (settled, timed out, or request-and-return). The inventory covers
+	// the subtree, not just the target, because a subtree stop leaves
+	// descendant watches live too.
 	executeDelegateCancelPlan(cancelPlan)
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		return "", err
@@ -923,7 +1041,9 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if maxWaitMS > 0 {
 		completed = waitForDelegateStopDone(ctx, s, result.done, clampJobBlockTimeout(maxWaitMS))
 	}
+	live := s.liveWatchesDeliveringToDelegate(delegateID)
 	stop := stableDelegateStopResult(result, completed, actor.describe())
+	stop.LiveWatches = live
 	if completed {
 		populateDelegateStopEvidence(&stop, s, delegateID)
 	}
@@ -1220,6 +1340,12 @@ type jobStopResult struct {
 	NotResumableReason string                      `json:"not_resumable_reason,omitempty"`
 	ScratchPath        string                      `json:"scratch_path,omitempty"`
 	Worktree           *delegateWorktreeToolResult `json:"worktree,omitempty"`
+	// LiveWatches is the #655 provenance: watches that survive this stop and
+	// keep delivering to the stopped delegate (receiver-keyed). Reported on
+	// every delegate stop — admission-time as well as settle-time — because
+	// the parent otherwise has no way to learn they exist. Empty for a shell
+	// job_stop or a delegate with no surviving watches.
+	LiveWatches []watchListEntry `json:"live_watches,omitempty"`
 }
 
 // formatJobStop renders a job_stop result as a single plain-text line matching the
@@ -1267,6 +1393,20 @@ func formatJobStop(out jobStopResult) string {
 	if out.Worktree != nil {
 		fmt.Fprintf(&b, "\nworktree: path=%s, branch=%s, head=%s, %d commits ahead, dirty=%t",
 			out.Worktree.Path, out.Worktree.Branch, out.Worktree.HeadSHA, out.Worktree.Ahead, out.Worktree.Dirty)
+	}
+	if n := len(out.LiveWatches); n > 0 {
+		fmt.Fprintf(&b, "\nlive watches: %d still armed and delivering to this delegate", n)
+		for i, row := range out.LiveWatches {
+			if i >= 5 {
+				fmt.Fprintf(&b, "\n  +%d more (see live_watches in state)", n-i)
+				break
+			}
+			detail := row.Condition
+			if detail == "" {
+				detail = "no condition"
+			}
+			fmt.Fprintf(&b, "\n  %s · source=%s · %s · clear it (job_watch operation=\"clear\" watch_id=%s)", row.ID, row.Source, detail, row.ID)
+		}
 	}
 	return b.String()
 }
@@ -1781,7 +1921,11 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	}
 	statuses := make([]jobstore.Status, 0, len(values))
 	for _, value := range values {
-		status := jobstore.Status(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		status := jobstore.Status(s)
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
@@ -1849,10 +1993,48 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
+	if err := rejectWatchTriggerFieldsOnNonCreate(args, a); err != nil {
+		return watchArgs{}, err
+	}
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
 	}
 	return a, nil
+}
+
+// watchTriggerFieldNames lists the arguments that select what a created watch
+// fires on, in the DefJobWatch property order. They are meaningful only for
+// operation="create"; list/inspect/clear take only watch_id, so a trigger field
+// beside them was previously parsed and then silently ignored.
+var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter"}
+
+// rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
+// trigger field the call actually supplied alongside a non-create operation.
+// Omitting all of them stays valid: create on a granted cross-session source
+// (parent) watches all bounded public events, and list/inspect/clear need none.
+// Nullable trigger fields (progress_interval_ms, every — schema type
+// ["integer","null"]) with a null value count as omitted, matching how
+// shellIntArg decodes them everywhere else: a client serializing optional
+// fields as null is not arming a trigger.
+func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error {
+	if a.Operation == "create" {
+		return nil
+	}
+	var supplied []string
+	for _, name := range watchTriggerFieldNames {
+		value, ok := args[name]
+		if !ok || value == nil {
+			continue
+		}
+		supplied = append(supplied, name)
+	}
+	if len(supplied) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"invalid_request: trigger fields apply only to operation=\"create\"; %s supplied with operation=%q — set operation=\"create\" to arm a watch, or drop %s to %s",
+		strings.Join(supplied, ", "), a.Operation, strings.Join(supplied, ", "), a.Operation,
+	)
 }
 
 func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
@@ -1947,7 +2129,11 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 	}
 	types := make([]jobstore.JobType, 0, len(values))
 	for _, value := range values {
-		jobType := jobstore.JobType(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		jobType := jobstore.JobType(s)
 		switch jobType {
 		case jobstore.JobShell, jobstore.JobType(delegateResourceType):
 			types = append(types, jobType)

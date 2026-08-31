@@ -558,6 +558,7 @@ func (n jobNotification) isWatch() bool {
 
 type createShellOpts struct {
 	Command     string
+	Intent      string
 	Description string
 }
 
@@ -895,6 +896,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Type:             jobstore.JobShell,
 		Status:           jobstore.StatusRunning,
 		Command:          opts.Command,
+		Intent:           opts.Intent,
 		Description:      opts.Description,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
@@ -927,6 +929,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,

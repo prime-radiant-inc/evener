@@ -95,7 +95,7 @@ func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
 			Kind:  "session",
 			State: "idle",
 			RunningJobs: []appwire.EvenerJobInfo{{
-				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...", Intent: "Running the package tests to find the failure",
 			}},
 			CompletedJobs: []appwire.EvenerJobInfo{{
 				JobID: "job-completed", JobType: "shell", Status: "completed", Command: "go fmt ./...",
@@ -114,8 +114,74 @@ func TestNavigationProjectionCarriesActiveAndCompletedJobs(t *testing.T) {
 	if len(row.RunningJobs) != 1 || row.RunningJobs[0].JobID != "job-running" || row.RunningJobs[0].Command != "go test ./..." {
 		t.Fatalf("running jobs = %+v", row.RunningJobs)
 	}
+	if got := row.RunningJobs[0].Intent; got != "Running the package tests to find the failure" {
+		t.Fatalf("running job intent = %q", got)
+	}
 	if len(row.CompletedJobs) != 1 || row.CompletedJobs[0].JobID != "job-completed" || row.CompletedJobs[0].Status != "completed" {
 		t.Fatalf("completed jobs = %+v", row.CompletedJobs)
+	}
+}
+
+func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
+	long := strings.Repeat("a", 600)
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: long, Intent: "intent text",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	job := resource.Current.Sessions[0].RunningJobs[0]
+	if job.Command == long {
+		t.Fatal("command must be truncated for the row label")
+	}
+	if got, want := len([]rune(job.Command)), maxNavigationLabelRunes; got != want {
+		t.Fatalf("truncated command runes=%d, want %d", got, want)
+	}
+	if job.FullCommand != long {
+		t.Fatalf("full_command = %q, want the untruncated command", job.FullCommand)
+	}
+}
+
+func TestNavigationJobSummaryOmitsFullCommandWhenLabelFits(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	job := resource.Current.Sessions[0].RunningJobs[0]
+	if job.FullCommand != "" {
+		t.Fatalf("full_command = %q, want empty when the command fits the label bound", job.FullCommand)
 	}
 }
 

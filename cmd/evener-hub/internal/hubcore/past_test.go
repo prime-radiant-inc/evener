@@ -1,10 +1,13 @@
 package hubcore
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
@@ -447,6 +451,370 @@ func fuzzScenarioPastIndex_FindWithMalformedGlob(t *testing.T) {
 	}
 	if got.ID != "" || got.StateDir != "" {
 		t.Errorf("expected zero PastEntry on miss, got %+v", got)
+	}
+}
+
+// fuzzScenarioPastIndex_FindMissDoesNotRebuild pins the cost contract the
+// probe exists for: a Find that misses must not decode every meta on disk.
+// The probe reads only the requested session's file; the observable proof is
+// that a DIFFERENT session's meta, persisted after the index was built, does
+// not enter the index via the miss (a full Rebuild would have indexed it).
+func fuzzScenarioPastIndex_FindMissDoesNotRebuild(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
+		UpdatedAt: time.Now(),
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// A second session lands on disk after the index was built.
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "02wMz5Txv2enqVTitaig6F",
+		UpdatedAt: time.Now(),
+	})
+
+	// A valid-shaped id, absent everywhere — minted rather than hand-typed
+	// so it cannot silently regress to an INVALID id (which returns at
+	// Find's ValidateSessionID guard and makes this scenario vacuous).
+	absent := hubtest.SessionID(t)
+	if _, ok := idx.Find(absent); ok {
+		t.Fatal("expected miss for a session that does not exist")
+	}
+	if _, ok := idx.findCached("02wMz5Txv2enqVTitaig6F"); ok {
+		t.Fatal("Find miss indexed an unrelated session; the miss path must not run a full rebuild")
+	}
+	if all := idx.All(); len(all) != 1 {
+		t.Fatalf("index holds %d entries after a Find miss, want the 1 it was built with", len(all))
+	}
+}
+
+// fuzzScenarioPastIndex_FindProbeKeepsLastProject pins the probe's
+// multi-project resolution: Rebuild's byID map keeps the LAST project in
+// glob order for a session present in several projects, and the probe must
+// agree so a probe-folded entry matches what the next Rebuild would produce.
+func fuzzScenarioPastIndex_FindProbeKeepsLastProject(t *testing.T) {
+	root := t.TempDir()
+	projA := filepath.Join(root, "projects", "project-a-0123456789")
+	projB := filepath.Join(root, "projects", "project-b-0123456789")
+	for _, p := range []string{projA, projB} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMeta(t, projA, schema.SessionMeta{
+		ID:             "02wMz5Txv8Vo4rqb3QYZuV",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "from project a",
+	})
+	writeMeta(t, projB, schema.SessionMeta{
+		ID:             "02wMz5Txv8Vo4rqb3QYZuV",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "from project b",
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	got, ok := idx.Find("02wMz5Txv8Vo4rqb3QYZuV")
+	if !ok {
+		t.Fatal("expected the probe to find the session")
+	}
+	if got.StateDir != projB {
+		t.Fatalf("StateDir = %q, want the last project in glob order %q", got.StateDir, projB)
+	}
+	if got.Meta.OriginalPrompt != "from project b" {
+		t.Fatalf("OriginalPrompt = %q, want the last project's meta", got.Meta.OriginalPrompt)
+	}
+	// The fold must agree with what a full Rebuild produces for the same id.
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, ok := idx.findCached("02wMz5Txv8Vo4rqb3QYZuV")
+	if !ok || rebuilt.StateDir != projB || rebuilt.Meta.OriginalPrompt != "from project b" {
+		t.Fatalf("probe and rebuild disagree: probe=%+v rebuilt=%+v ok=%v", got, rebuilt, ok)
+	}
+}
+
+// fuzzScenarioPastIndex_FindFoldsProbedEntry pins the fold: a session the
+// probe surfaces must enter the sorted index (All/Find see it afterward) and
+// fire onChange exactly once for the content delta — the same gating a full
+// Rebuild applies.
+func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
+		UpdatedAt: time.Unix(1_700_000_000, 0).UTC(),
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "02wMz5Txv2enqVTitaig6F",
+		UpdatedAt: time.Unix(1_700_000_100, 0).UTC(),
+	})
+	entry, ok := idx.Find("02wMz5Txv2enqVTitaig6F")
+	if !ok {
+		t.Fatal("expected Find to surface the newly persisted session")
+	}
+	if entry.StateDir != proj {
+		t.Fatalf("StateDir = %q, want %q", entry.StateDir, proj)
+	}
+	if all := idx.All(); len(all) != 2 {
+		t.Fatalf("index holds %d entries after the probe fold, want 2", len(all))
+	}
+	if fired != 1 {
+		t.Fatalf("onChange fired %d times for the probe fold, want 1", fired)
+	}
+	// A second Find of the now-indexed id must be a pure cache hit: no
+	// further delta, no further fire.
+	if _, ok := idx.Find("02wMz5Txv2enqVTitaig6F"); !ok {
+		t.Fatal("expected the folded entry to be cached")
+	}
+	if fired != 1 {
+		t.Fatalf("onChange fired %d times after a cache-hit Find, want 1", fired)
+	}
+}
+
+// fuzzScenarioPastIndex_FindFoldWritesFTS pins the fold's FTS mirror on the
+// production configuration: the hub always runs NewPastIndexWithDB (main.go),
+// so a probe-folded session must land in the SQLite FTS index too, or search
+// would miss a session Find just surfaced until the next full Rebuild. The
+// assertion goes through searchFTS (the FTS-only path), not Search: Search
+// unions FTS with the in-memory scan, which would rescue the assertion even
+// if the fold never wrote FTS.
+func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second session lands on disk after the index was built, then Find
+	// folds it; Search must surface it through the FTS path.
+	const foldedID = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             foldedID,
+		UpdatedAt:      time.Unix(1_700_000_100, 0).UTC(),
+		OriginalPrompt: "fts-probe-needle",
+	})
+	if _, ok := idx.Find(foldedID); !ok {
+		t.Fatal("expected Find to surface the newly persisted session")
+	}
+	results, ok := idx.searchFTS("fts-probe-needle")
+	if !ok {
+		t.Fatal("FTS index unavailable after the fold; searchFTS must serve the folded row")
+	}
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatalf("FTS did not surface the probe-folded session %s (results: %d entries)", foldedID, len(results))
+	}
+}
+
+// fuzzScenarioPastIndex_SearchRepairsStaleFTS pins the repair path for a FTS
+// lost-update: when the FTS mirror is stale (a fold's or rebuild's rebuildFTS
+// lost its SQLITE_BUSY race, or the db was briefly unwritable), the in-memory
+// index still serves Find from cache — but search would miss the session. A
+// Search must notice i.fts is false and re-publish, so searchFTS serves every
+// indexed id again. Without the repair, staleness persisted until the next
+// full Rebuild (which itself could lose the same race).
+func fuzzScenarioPastIndex_SearchRepairsStaleFTS(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             sessionID,
+		UpdatedAt:      time.Unix(1_700_000_000, 0).UTC(),
+		OriginalPrompt: "fts-repair-needle",
+	})
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the lost-update: force the FTS mirror stale while the
+	// in-memory index stays populated.
+	idx.mu.Lock()
+	idx.fts = false
+	idx.mu.Unlock()
+	if results, ok := idx.searchFTS("fts-repair-needle"); ok && len(results) > 0 {
+		t.Fatalf("FTS unexpectedly served the session while stale (results: %d)", len(results))
+	}
+
+	// A Search must repair the mirror (and still serve the session from
+	// the in-memory scan while it does).
+	results := idx.Search("fts-repair-needle", 10, 0)
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
+		t.Fatalf("Search did not serve the session while the mirror was stale (results: %d entries)", len(results))
+	}
+	results, ok := idx.searchFTS("fts-repair-needle")
+	if !ok {
+		t.Fatal("FTS index still unavailable after the repair; Search must re-publish a stale mirror")
+	}
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
+		t.Fatalf("FTS did not surface the repaired session %s (results: %d entries)", sessionID, len(results))
+	}
+}
+
+// fuzzScenarioPastIndex_FailedPublishMarksFTSStale pins the other half of the
+// repair contract: a publish whose FTS write fails (a fold's or rebuild's
+// rebuildFTS losing its SQLITE_BUSY race) must leave i.fts false — not
+// stale-but-marked-healthy — or Search's staleness gate cannot see the loss.
+// The gate only detects what failed publishes admit to.
+func fuzzScenarioPastIndex_FailedPublishMarksFTSStale(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             sessionID,
+		UpdatedAt:      time.Unix(1_700_000_000, 0).UTC(),
+		OriginalPrompt: "fts-failed-publish-needle",
+	})
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Break the db for the next publish, then fold a second session through
+	// Find: the fold's rebuildFTS fails, and publishAndSignal must mark the
+	// mirror stale rather than leave the pre-fold healthy flag standing.
+	origOpen := idx.openDB
+	idx.mu.Lock()
+	idx.openDB = func(_, _ string) (*sql.DB, error) { return nil, errors.New("db unavailable") }
+	idx.mu.Unlock()
+	const foldedID = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             foldedID,
+		UpdatedAt:      time.Unix(1_700_000_100, 0).UTC(),
+		OriginalPrompt: "fts-failed-fold-needle",
+	})
+	if _, ok := idx.Find(foldedID); !ok {
+		t.Fatal("expected Find to surface the newly persisted session")
+	}
+	idx.mu.Lock()
+	ftsMarkedStale := !idx.fts
+	idx.openDB = origOpen
+	idx.mu.Unlock()
+	if !ftsMarkedStale {
+		t.Fatal("a failed publish left i.fts true; Search's staleness gate cannot detect the loss")
+	}
+
+	// Restore the db; the next Search must repair the mirror and surface
+	// the folded session through the FTS-only path.
+	results, ok := idx.searchFTS("fts-failed-fold-needle")
+	if ok && len(results) > 0 {
+		t.Fatalf("FTS unexpectedly served the folded session while stale (results: %d)", len(results))
+	}
+	if search := idx.Search("fts-failed-fold-needle", 10, 0); !slices.ContainsFunc(search, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatalf("Search did not serve the folded session while the mirror was stale (results: %d entries)", len(search))
+	}
+	results, ok = idx.searchFTS("fts-failed-fold-needle")
+	if !ok || !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatalf("FTS did not surface the folded session after the repair (ok=%v results: %d entries)", ok, len(results))
+	}
+}
+
+// fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs pins one row per
+// id in i.all when the same session id is persisted under two projects:
+// byID keeps the LAST project's entry, and i.all must agree. A duplicated
+// row made UpdateMeta's remove-all-rows filter and the next Rebuild fight
+// over the shape (2 rows → 1 → 2 …), firing onChange every cycle on
+// unchanged disk.
+func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
+	root := t.TempDir()
+	projA := filepath.Join(root, "projects", "project-a-0123456789")
+	projB := filepath.Join(root, "projects", "project-b-0123456789")
+	for _, p := range []string{projA, projB} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const dupID = "02wMz5Txv8Vo4rqb3QYZuV"
+	// Different names, identical timestamps: byID and i.all must both keep
+	// the LAST project's row, not just agree on cardinality — a first-row
+	// i.all flaps against byID's last row every UpdateMeta/Rebuild round.
+	writeMeta(t, projA, schema.SessionMeta{ID: dupID, Name: "from-a", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+	writeMeta(t, projB, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if all := idx.All(); len(all) != 1 {
+		t.Fatalf("index holds %d entries for one session id, want 1 (one row per id, last project wins)", len(all))
+	}
+	if all := idx.All(); all[0].Meta.Name != "from-b" {
+		t.Fatalf("i.all kept %q, want the LAST project's row %q", all[0].Meta.Name, "from-b")
+	}
+
+	// Steady state: repeated UpdateMeta (RefreshOne's path) + Rebuild rounds
+	// must not fire onChange — nothing on disk is changing.
+	fired := 0
+	idx.SetOnChange(func() { fired++ })
+	for range 3 {
+		idx.UpdateMeta(dupID, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
+		if _, err := idx.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fired != 0 {
+		t.Fatalf("onChange fired %d times over steady-state rounds on unchanged disk, want 0", fired)
+	}
+}
+
+// fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir pins the probe's
+// Rebuild-parity gate: a sessions dir that is traversable but not listable
+// makes Rebuild's ListSessionMetas fail (project skipped) while reading the
+// meta by its known path still succeeds. The probe must apply the same gate,
+// or Find would fold a session Rebuild keeps dropping — flapping the index
+// and firing onChange every 60s cycle on unchanged disk.
+func fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	sessions := filepath.Join(proj, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now()})
+	if err := os.Chmod(sessions, 0o311); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	defer func() { _ = os.Chmod(sessions, 0o755) }()
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Find must NOT surface the session Rebuild cannot list: the probe's
+	// gate must fail the same way the rebuild did.
+	if _, ok := idx.Find(sessionID); ok {
+		t.Fatal("Find surfaced a session whose sessions dir Rebuild cannot list; the probe must apply Rebuild's gate")
+	}
+	if all := idx.All(); len(all) != 0 {
+		t.Fatalf("index holds %d entries, want 0 (Rebuild skipped the project)", len(all))
 	}
 }
 

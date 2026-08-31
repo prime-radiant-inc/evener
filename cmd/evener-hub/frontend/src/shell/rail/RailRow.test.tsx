@@ -471,6 +471,35 @@ describe("job rows", () => {
     expect(screen.getByTestId("rail-row-job-status").className.split(" ")).toContain(railStyles.activityAlive);
   });
 
+  test("the tooltip shows the command and the tool call's intent", () => {
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "go test ./...",
+          intent: "Running the package tests to find the failure",
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle("go test ./... · Running the package tests to find the failure · running")).toBeTruthy();
+  });
+
+  test("the tooltip prefers the full command when the label was truncated", () => {
+    const long = "echo a".repeat(200);
+    render(
+      <RailRow
+        node={jobRailNode({
+          command: "echo a…",
+          full_command: long,
+        })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(

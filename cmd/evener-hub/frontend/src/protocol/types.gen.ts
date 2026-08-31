@@ -284,6 +284,7 @@ export interface EvenerJobInfo {
   fromWatch?: boolean;
   background?: boolean;
   command?: string;
+  intent?: string;
   parentDelegateId?: string;
   delegateId?: string;
   task?: string;
@@ -956,6 +957,8 @@ export interface NavigationJobSummary {
   command?: string;
   task?: string;
   reason?: string;
+  intent?: string;
+  full_command?: string;
 }
 
 export interface NavigationManifest {

@@ -57,7 +57,12 @@ func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args 
 	}
 	properties, _ := parameters["properties"].(map[string]any)
 	invalid := make([]string, 0, 2)
-	for _, field := range []string{"sandbox"} {
+	// sandbox_net is checked even though the combined-enum schema has no such
+	// property: a caller holding the old two-field contract who passes it must
+	// be refused, not silently dropped by argument repair — a dropped
+	// sandbox_net=false would launch the delegate with network enabled while
+	// the caller believes it disabled egress.
+	for _, field := range []string{"sandbox", "sandbox_net"} {
 		if _, supplied := args[field]; !supplied {
 			continue
 		}
@@ -68,6 +73,12 @@ func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args 
 	}
 	if len(invalid) == 0 {
 		return nil
+	}
+	if len(invalid) == 1 && invalid[0] == "sandbox_net" {
+		return newDelegateSandboxRequestError(
+			errors.New("invalid_request: sandbox_net is not a parameter on this surface; encode network isolation in the sandbox enum (e.g. sandbox=\"read-only+nonet\") and retry"),
+			"sandbox",
+		)
 	}
 	return newDelegateSandboxRequestError(
 		fmt.Errorf("invalid_request: delegate sandbox controls unavailable in this session: %s; omit every listed parameter", strings.Join(invalid, ", ")),
@@ -553,7 +564,7 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	// inherit short-circuit below) rather than drop the flag.
 	if requested == sandbox.ModeOff && sandboxNet != nil {
 		return nil, newDelegateSandboxRequestError(
-			errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`),
+			errors.New(`invalid_request: sandbox="off" applies no network confinement, so a +nonet request alongside it has nothing to disable; pass a non-off sandbox mode with the +nonet suffix or drop the suffix`),
 			"sandbox", "sandbox_net",
 		)
 	}
@@ -569,7 +580,7 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	}
 	if net && !parentNet {
 		return nil, newDelegateSandboxRequestError(
-			errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false"),
+			errors.New("invalid_request: requesting network on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; drop the +nonet suffix"),
 			"sandbox_net",
 		)
 	}

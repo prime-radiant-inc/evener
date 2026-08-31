@@ -1024,10 +1024,18 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 // TestTUITmuxE2E_CaptureStableDuringStream exercises CaptureStable under the
 // exact condition kata nxq6 reported the pane going blank above the composer:
 // a rapid burst of hub notifications re-rendering the pane in a tight loop,
-// no keypresses. Every CaptureStable() result taken during the burst must be
-// a complete frame — the session breadcrumb from the top of the pane and the
-// composer's key hints from the bottom, never one without the other — which
-// is the property a lone Capture() cannot promise.
+// no keypresses. Every capture taken during the burst must be a complete
+// frame — the session breadcrumb from the top of the pane and the composer's
+// key hints from the bottom, never one without the other — which is the
+// property a lone Capture() cannot promise.
+//
+// Stability alone cannot promise it either. Under CI load this test flaked as
+// a "stable" torn frame: the pane never settles during the flood, and two
+// consecutive captures agreed on a mid-write grid — 50 rows of streamed text,
+// no breadcrumb, no composer — for longer than the poll interval. The fix is
+// to require completeness evidence (all anchors present, including the
+// last-written footer) before accepting stability, which is what
+// CaptureStable's anchor arguments do.
 func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -1059,14 +1067,8 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 		wg.Wait()
 	})
 
-	for i := range 5 {
-		screen := app.CaptureStable()
-		if !strings.Contains(screen, "evener / session / live task") {
-			t.Fatalf("capture %d: CaptureStable returned a frame missing the session breadcrumb:\n%s", i, screen)
-		}
-		if !strings.Contains(screen, "enter send") {
-			t.Fatalf("capture %d: CaptureStable returned a frame missing the composer hints:\n%s", i, screen)
-		}
+	for range 5 {
+		app.CaptureStable("evener / session / live task", "enter send")
 	}
 }
 
@@ -1478,8 +1480,9 @@ func (a *tmuxTUI) CaptureHistory() string {
 	return normalizePane(string(out))
 }
 
-// CaptureStable returns Capture()'s output once two consecutive captures,
-// tuiE2EPollInterval apart, are byte-identical.
+// CaptureStable returns Capture()'s output once a frame that is BOTH complete
+// and stable is seen: it contains every want (completeness) and is
+// byte-identical to the capture one poll interval before it (stability).
 //
 // A single Capture() is a snapshot of tmux's OWN terminal-grid state, which
 // updates incrementally as bytes arrive from the pty — not a snapshot of what
@@ -1495,6 +1498,23 @@ func (a *tmuxTUI) CaptureHistory() string {
 // It self-heals on its own within milliseconds, which is exactly what makes
 // two matching captures a few ms apart trustworthy where one capture is not.
 //
+// NEITHER heuristic alone is sufficient — this is the lesson of the CI flake
+// that added the anchors:
+//   - Stability alone accepted a torn frame: during a continuous notification
+//     stream the pane never settles, and two consecutive captures agreed on a
+//     mid-write grid (all streamed text, no footer, no breadcrumb) for longer
+//     than the poll interval — a stall long enough to defeat the two-sample
+//     heuristic.
+//   - Anchors alone accept a partial repaint: tmux's grid is incremental, so a
+//     frame's extremes can still hold the PREVIOUS frame's content while the
+//     middle is being rewritten — both anchors present on a torn grid — and
+//     with no wants at all, completeness is vacuous.
+//
+// Pass wants drawn from the frame's extremes, including the composer's footer
+// hints (written last). The two conditions cover each other's failure modes;
+// a stalled mid-write carrying stale anchors for every want at once is the
+// one residual gap, and nothing short of synchronized-output mode closes it.
+//
 // Use this instead of a lone Capture() for any assertion that a substring is
 // ABSENT. WaitFor already retries until its wanted substrings appear, which
 // makes it self-correcting for POSITIVE assertions the same way — but its
@@ -1502,19 +1522,26 @@ func (a *tmuxTUI) CaptureHistory() string {
 // a complete frame, so a negative check (`strings.Contains(screen, unwanted)`
 // on that same screen) can still land mid-render and read an absence that
 // isn't real.
-func (a *tmuxTUI) CaptureStable() string {
+func (a *tmuxTUI) CaptureStable(wants ...string) string {
 	a.t.Helper()
 	deadline := time.Now().Add(tuiE2EWaitTimeout)
 	prev := a.Capture()
 	for time.Now().Before(deadline) {
 		time.Sleep(tuiE2EPollInterval)
 		cur := a.Capture()
-		if cur == prev {
+		complete := true
+		for _, want := range wants {
+			if !strings.Contains(cur, want) {
+				complete = false
+				break
+			}
+		}
+		if complete && cur == prev {
 			return cur
 		}
 		prev = cur
 	}
-	a.t.Fatalf("pane capture never stabilized within %s (still changing every %s — a real, ongoing render, not a capture race)\nlast capture:\n%s", tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
+	a.t.Fatalf("pane never rendered a complete, stable frame (missing %q) within %s — either the pane is still changing every %s (a real, ongoing render), or the wanted anchors never rendered\nlast capture:\n%s", wants, tuiE2EWaitTimeout, tuiE2EPollInterval, prev)
 	return ""
 }
 
