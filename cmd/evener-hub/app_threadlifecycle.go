@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -20,6 +21,13 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// threadStartDetachedTimeout bounds thread/start's admitted sequence once it
+// detaches from the connection context: it must comfortably cover the spawn's
+// rendezvous wait (30s default) plus the ReadThread and initial StartTurn
+// RPCs, while guaranteeing a wedged daemon cannot park the worker forever.
+// Var, not const, so tests can shrink the bound.
+var threadStartDetachedTimeout = 2 * time.Minute
 
 var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
@@ -145,11 +153,18 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	// connection's fate — a client that disconnects mid-sequence must still get
 	// a fully-formed thread (spawn + read + optional initial turn) that
 	// reconnect resync then discovers via thread/list, instead of an orphan
-	// half-progressed session. The spawned child was already detached from ctx
-	// (spawnDaemon deliberately uses exec.Command, not CommandContext); the
-	// shield covers the handler's own awaits: the rendezvous wait, ReadThread,
-	// and the initial StartTurn.
-	ctx = context.WithoutCancel(ctx)
+	// half-progressed session. What the sequence sheds is PEER-lifetime
+	// cancellation only (disconnect, keepalive failure); it must keep a
+	// lifecycle bound of its own, because WithoutCancel alone would leave a
+	// wedged sequence parked with no cancel path and would stall hub shutdown
+	// indefinitely. So the detachment is paired with an explicit deadline
+	// covering the rendezvous wait, ReadThread, and the initial StartTurn.
+	// The spawned child itself was already detached from ctx (spawnDaemon
+	// deliberately uses exec.Command, not CommandContext); the shield covers
+	// only the handler's own awaits.
+	detached, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
+	defer cancelDetached()
+	ctx = detached
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,
