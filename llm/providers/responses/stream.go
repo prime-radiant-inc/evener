@@ -47,6 +47,25 @@ func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 // response.completed payload's "output" field carries.
 func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
 
+// toolStateFor is the accumulated state for one function call: the entry
+// filed under call_id, else the one an earlier event filed under item_id,
+// else a fresh state keyed by call_id. The callers already resolved call_id
+// through itemToCallID, so an item_id hit here is a call the stream named by
+// item alone.
+func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string) *responsesToolState {
+	if st := acc.toolStates[callID]; st != nil {
+		return st
+	}
+	if itemID != "" {
+		if st := acc.toolStates[itemID]; st != nil {
+			return st
+		}
+	}
+	st := &responsesToolState{id: callID, name: name}
+	acc.toolStates[callID] = st
+	return st
+}
+
 // HandleOutputItemAdded pre-registers a function_call tool state from a
 // response.output_item.added event's item, keyed by whichever of
 // call_id/item_id are present. Non-function_call items are a no-op (the
@@ -109,17 +128,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if callID == "" || (delta == "" && name == "") {
 		return nil, "", false
 	}
-	st := acc.toolStates[callID]
-	if st == nil && itemID != "" {
-		st = acc.toolStates[itemID]
-		if st != nil {
-			callID = st.id
-		}
-	}
-	if st == nil {
-		st = &responsesToolState{id: callID, name: name}
-		acc.toolStates[callID] = st
-	}
+	st := acc.toolStateFor(callID, itemID, name)
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -147,17 +156,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	if callID == "" {
 		return nil, false
 	}
-	st := acc.toolStates[callID]
-	if st == nil && itemID != "" {
-		st = acc.toolStates[itemID]
-		if st != nil {
-			callID = st.id
-		}
-	}
-	if st == nil {
-		st = &responsesToolState{id: callID}
-		acc.toolStates[callID] = st
-	}
+	st := acc.toolStateFor(callID, itemID, "")
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
@@ -207,17 +206,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if callID == "" {
 		return item, nil, "", false
 	}
-	st := acc.toolStates[callID]
-	if st == nil && itemID != "" {
-		st = acc.toolStates[itemID]
-		if st != nil {
-			callID = st.id
-		}
-	}
-	if st == nil {
-		st = &responsesToolState{id: callID, name: name}
-		acc.toolStates[callID] = st
-	}
+	st := acc.toolStateFor(callID, itemID, name)
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
