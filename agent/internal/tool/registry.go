@@ -696,9 +696,10 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		// The handler can no longer see intent in args — but the shell tool
 		// stamps it onto the job record (so job surfaces can show why the
 		// model said it is running the command), so keep it reachable on ctx.
-		if strings.TrimSpace(intent) != "" {
-			ctx = context.WithValue(ctx, ctxIntentKey{}, intent)
-		}
+		// Set unconditionally: a nested call reusing a context that already
+		// carries a stale intent would otherwise inherit it when this call
+		// omits intent.
+		ctx = context.WithValue(ctx, ctxIntentKey{}, strings.TrimSpace(intent))
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)

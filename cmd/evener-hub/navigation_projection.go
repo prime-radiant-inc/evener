@@ -1079,16 +1079,22 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
 	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
 	for _, job := range jobs {
-		out = append(out, hubapi.NavigationJobSummary{
-			JobID:       job.JobID,
-			JobType:     job.JobType,
-			Status:      job.Status,
-			Command:     truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
-			FullCommand: truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes),
-			Task:        truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
-			Reason:      truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
-			Intent:      truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
-		})
+		summary := hubapi.NavigationJobSummary{
+			JobID:   job.JobID,
+			JobType: job.JobType,
+			Status:  job.Status,
+			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
+			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
+			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
+			Intent:  truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
+		}
+		// Emit FullCommand only when the label bound actually cut the
+		// command, so a short command isn't duplicated and a tooltip never
+		// shows less than the label.
+		if summary.Command != job.Command {
+			summary.FullCommand = truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes)
+		}
+		out = append(out, summary)
 	}
 	return out
 }

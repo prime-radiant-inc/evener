@@ -334,8 +334,9 @@ func TestShellDetachedRejectsInvalidCwdBeforeDetach(t *testing.T) {
 // TestShellToolIntentLandsOnJobRecord: the tool call's `intent` argument is
 // captured on the shell job record, so job surfaces (the sidebar rail, the
 // activity panel) can show why the model said it is running the command. The
-// registry strips intent from args before handlers run; execTool re-threads it
-// on ctx (ctxToolCallIntent) and parseShellToolArgs reads it back.
+// registry strips intent from args before handlers run and threads it onto
+// ctx (tool.IntentFromContext) at the strip point, so parseShellToolArgs can
+// read it back.
 func TestShellToolIntentLandsOnJobRecord(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
