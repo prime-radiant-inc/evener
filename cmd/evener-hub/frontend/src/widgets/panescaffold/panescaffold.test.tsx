@@ -185,7 +185,9 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // "a stylesheet assertion that matches its own comment" trap).
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
-  expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom))");
+  expect(footerRule).toContain(
+    "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
@@ -196,7 +198,9 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
-  expect(bodyRule).toContain("padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom))");
+  expect(bodyRule).toContain(
+    "padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
