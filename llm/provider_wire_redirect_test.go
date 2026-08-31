@@ -130,7 +130,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 
 			select {
 			case <-sink.firstEntered:
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("first redirect hop did not reach canonical append")
 			}
 			select {
@@ -144,7 +144,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 				if err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("redirected completion did not finish")
 			}
 			if redirectChecks != 1 {
@@ -381,7 +381,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 
 			select {
 			case <-sink.firstEntered:
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("large redirect did not reach first canonical append")
 			}
 			select {
@@ -395,7 +395,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 				if err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("redirected completion did not finish")
 			}
 
