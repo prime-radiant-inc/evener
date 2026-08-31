@@ -2,136 +2,128 @@
 
 ## Status
 
-Approved direction. This design follows the immediate root/child alias fanout fix in PR #686.
+Approved direction. This design follows the immediate root/child fanout fix in PR #686.
 
 ## Problem
 
-The hub currently keys `hubRelayHandle` by a downstream thread alias. A root session and its in-process descendants use different aliases, but `LocalDaemonSource` maps them to one owner-daemon `RelaySession`. The hub therefore creates several listeners over one upstream stream. Each listener sees every notification, and each handle must filter the stream before broadcasting.
-
-PR #686 stops duplicate delivery by filtering each handle. That repair is intentionally narrow. It leaves redundant listeners, acknowledgements, goroutines, and per-frame target decoding in place.
+The hub currently keys `hubRelayHandle` by the downstream `relayKey`. Root sessions and in-process read-only children have different relay keys, but `LocalDaemonSource` maps them to one owner-workspace relay session. The hub therefore creates several listeners over one upstream stream. PR #686 prevents duplicate delivery by filtering each handle, but redundant listeners, acknowledgements, goroutines, and target decoding remain.
 
 ## Goals
 
 1. Maintain one upstream listener per canonical relay session.
-2. Route each targeted notification once, using its authoritative `ref` first and `threadId` second.
-3. Preserve independent downstream subscriptions for root and child aliases.
-4. Preserve atomic snapshot-to-live handoff semantics for every alias read.
-5. Preserve reconnect, identity replacement, unsubscribe, and idle teardown behavior.
-6. Preserve local output-image enrichment with the target thread's metadata.
-7. Keep malformed or untargeted notifications observable without weakening targeted routing.
+2. Route each targeted notification once, using authoritative `ref` first and `threadId` second.
+3. Preserve independent downstream subscriptions and atomic snapshot-to-live handoffs for every relay key.
+4. Preserve reconnect, identity replacement, unsubscribe, and idle teardown behavior.
+5. Preserve local output-image enrichment with the target relay key's metadata.
+6. Preserve the visibility of malformed or untargeted notifications.
 
 ## Non-goals
 
-- Change the public AppWire protocol.
-- Merge root and child thread models.
+- Change the public AppWire protocol or merge root and child thread models.
 - Change Codex relay behavior. Codex does not implement `RelaySessionSource`.
 - Add payload-based client deduplication.
 
-## Current data flow
-
-For each alias read, `threadRelayTarget` derives a downstream key such as `local:root` or `local:child`. `newHubRelayFunctions` stores a handle under that key. Each handle acquires a lease and calls `Listen`.
-
-`LocalDaemonSource.AcquireRelaySession` instead keys the upstream actor by `WorkspaceRef`, so root and child leases share one `relaySession`. `relaySession.publishNotification` sends each notification to every listener. The hub then broadcasts once per alias handle.
-
-The immediate fix filters those per-handle deliveries. The canonical design removes the redundant handles and listeners.
-
 ## Design
 
-### 1. Give each lease a canonical key
+### 1. Resolve canonical identity before acquisition
 
-Extend `appsource.RelaySessionLease` with:
+Canonical identity belongs to the source. Reuse the existing comparable `appwire.Ref` instead of adding another string-key concept:
 
 ```go
-RelaySessionKey() string
+type RelaySessionSource interface {
+    ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
+    AcquireRelaySession(appwire.Ref) (RelaySessionLease, error)
+}
 ```
 
-`LocalDaemonSource` returns the canonical workspace ref already used by its `relaySessions` map. Test leases return an explicit key. An empty key falls back to the downstream relay key for defensive compatibility.
+`LocalDaemonSource.ResolveRelaySession` returns the owner workspace ref already produced by `localDaemonWorkspaceRef`. It rejects an empty ref. `AcquireRelaySession` accepts that resolved ref, so identity cannot change between hub installation and source acquisition.
 
-The hub may need to acquire a short-lived candidate lease before it knows the canonical key. If a handle already owns that key, the hub closes the candidate without calling `Listen` and uses the existing handle. Acquiring a lease is in-memory; connection establishment still happens only for the winning handle.
+The hub resolves without `relayMu`, installs or joins a canonical placeholder under `relayMu`, and only the winner acquires a lease and calls `Listen`. Concurrent root/child reads perform one acquisition and start one listener. Non-atomic sources keep their existing per-relay-key path.
 
-### 2. Key atomic handles canonically
+### 2. Reuse the relay-key registry
 
-For `RelaySessionSource` sources, `relayedThreads` uses the lease's canonical key. Non-atomic sources keep their current downstream key.
+Keep `relayedThreads` in its current role: downstream `relayKey` to `*hubRelayHandle`. Add only `canonicalRelays map[appwire.Ref]*hubRelayHandle` for acquisition deduplication. Several relay keys may point directly to one canonical handle.
 
-Each canonical handle owns:
+Each handle owns one lease/listener and current per-key state:
 
-- one lease and one upstream listener;
-- the source ID;
-- a set of downstream alias keys;
-- per-alias `appwire.Thread` metadata;
-- command ownership and readiness state.
+```go
+type relayKeyState struct {
+    commands int
+    thread   appwire.Thread
+}
+```
 
-A read still calls `handle.lease.Read` with the requested alias. The relay session's command gate serializes reads and preserves each read's snapshot/handoff cut. After the read, the handle records the authoritative response metadata under the downstream alias.
+A handle's `map[string]*relayKeyState` records the keys it currently owns. State pointer identity is the generation token: stale command releases and idle checks cannot modify a replacement state.
 
-### 3. Demultiplex once at fanout
+A read resolves its canonical ref, binds the requested relay key to the handle, and increments that key's command count. It calls the shared lease's `Read` with the original parameters. The existing `RelayHandoff` and `appserver.CaptureSubscriptionWithHandoff` `Prepare`/`Commit`/`Abort` lifecycle remains unchanged; canonicalization changes listener ownership, not the snapshot cut. A successful read records the authoritative response thread only if the key state is still current.
 
-The single fanout loop extracts the notification target:
+Identity remap atomically repoints `relayedThreads[relayKey]`, removes the old handle's state, and creates state on the new handle.
 
-1. valid `ref` wins;
-2. otherwise, nonempty `threadId` is combined with the source ID;
-3. malformed or untargeted payloads use the compatibility fallback below.
+### 3. Normalize routing keys, then demultiplex
 
-For a known target, the hub calls `server.Broadcast` exactly once under that downstream key. A client subscribed to root and child receives a root frame once and a child frame once.
+Replace the current boolean `relayNotificationTargets` predicate with `relayNotificationRoutingKey`, a key-returning Go counterpart to frontend `notificationRoutingKey`. Both use the same behavior table: a string `ref` has precedence; otherwise a string `threadId` is combined with the source ID; otherwise the frame is untargeted. Invalid JSON or wrong-typed routing fields are malformed.
 
-For malformed or untargeted payloads, the hub broadcasts once under every registered alias. This preserves the old visibility behavior for protocol-invalid frames while keeping the valid, cataloged path single-delivery.
+For a targeted frame, fanout converts the returned `appwire.Ref` to its relay key, verifies that `relayedThreads[relayKey]` still names this handle, copies that key's metadata, and calls `server.Broadcast` exactly once. A valid key unknown to this handle is not published by this listener.
 
-### 4. Keep alias metadata on the canonical handle
+For malformed or untargeted frames, fanout snapshots the handle's current relay keys and broadcasts once under each. This retains pre-refactor compatibility for subscribers that rely on protocol-invalid frames. The targeted path never scans all keys.
 
-The handle stores the latest `appwire.Thread` response per alias. Fanout uses the targeted alias's metadata for local output-image enrichment. If metadata is absent, it falls back to the canonical handle's last known thread, matching today's best-effort behavior.
+### 4. Enrich only from the routed key
 
-An identity remap moves the alias from its old canonical handle to the new one. The old handle no longer counts that alias during idle checks.
+Local output-image enrichment uses only the routed key state's `SessionID` and `CWD`. Missing metadata means best-effort enrichment is skipped; metadata from another key is never borrowed. Retiring inactive key state prevents a long-lived root from retaining historical children.
 
-### 5. Idle teardown spans aliases
+### 5. Retire inactive keys and handles
 
-A canonical handle remains live while either condition holds:
+A relay-key state remains live while either condition holds:
 
-- a command owns it;
-- any registered alias has downstream subscribers.
+- one of its reads owns a command reference;
+- `server.SubscriberCount(relayKey) > 0`.
 
-The idle check snapshots the alias set and sums `server.SubscriberCount(alias)`. When all counts reach zero, it removes the canonical handle, removes alias-to-canonical mappings, and closes the lease once.
+An idle check snapshots state pointers and command counts, releases hub locks, and queries subscriber counts. It removes each still-current state with neither owner nor subscriber. It short-circuits once an active key proves the handle cannot retire. The canonical handle retires only after no states remain; retirement deletes the exact canonical placeholder and closes the lease once.
 
-Unsubscribing one child cannot retire a root relay that still has subscribers. Removing the last alias subscriber allows the existing idle timer to retire the handle.
+Final removal revalidates `relayedThreads` ownership, state pointer identity, command counts, and subscriber counts. This preserves the existing subscribe-versus-idle race protection. Unsubscribing one child cannot retire a root relay that remains subscribed.
 
-### 6. Stop and recovery lookup
+### 6. Keep stop and recovery roles explicit
 
-Maintain `aliasToCanonical map[string]string`. `stopRelay` accepts either a canonical key or a downstream alias, preserving current test and recovery call sites.
+Existing alias-facing and test call sites continue to use `stopRelay(relayKey string)`, which resolves through `relayedThreads`. Internal canonical teardown is a separate helper accepting an `appwire.Ref` or handle. Neither function accepts both namespaces. Removal clears only relay keys still pointing to the retired handle.
 
-Reconnect remains owned by `relaySession`. A recovered canonical listener emits one resync notification through the demultiplexer. The notification's authoritative target selects the downstream alias; aliases that need snapshot replacement still follow their existing `evener/thread/resync` read path.
+Reconnect remains owned by `relaySession` under `2026-07-27-relay-recovery-thread-resync-design.md`. The only delta here is that one recovered canonical listener routes the existing typed `ThreadResyncParams` notification exactly once through `relayNotificationRoutingKey`; snapshot replacement continues through the established `evener/thread/resync` read path.
 
 ## Concurrency and lock order
 
-- Resolve/acquire the candidate lease without `relayMu`.
-- Hold `relayMu` only to install/find handles, update alias maps and metadata, and count command owners.
-- Never call `Listen`, `Read`, `Close`, `server.Broadcast`, or `server.SubscriberCount` while holding `relayMu`.
-- Snapshot aliases/metadata under `relayMu`, then perform routing and subscriber-count calls after unlocking.
-- Close losing candidate leases after unlocking.
-
-This keeps external callbacks outside the hub registry lock and preserves the existing appserver lock order.
+- Resolve source identity and call `AcquireRelaySession`, `Listen`, `Read`, and `Close` without hub locks.
+- `relayMu` protects canonical placeholder installation and `relayedThreads` ownership changes.
+- A handle mutex protects its key states, metadata, readiness, and command counts.
+- When both are required, acquire `relayMu` before a handle mutex; never hold two handle mutexes simultaneously.
+- Never call `server.Broadcast` or `server.SubscriberCount` while holding a hub lock.
+- Targeted routing copies one key's metadata. Only compatibility fanout and idle checks snapshot all keys.
 
 ## Failure handling
 
-- If candidate acquisition fails, no registry state changes.
-- If the winning handle fails before readiness, waiters may install their still-open candidate under the same canonical key.
-- If a target cannot be parsed, compatibility fanout keeps the frame visible.
-- If an alias remaps while an old handle is draining, handle identity checks prevent stale fanout from publishing as the new owner.
+- Resolution or winning acquisition failure leaves no relay-key state behind and wakes placeholder waiters with the error.
+- A later caller may replace a failed placeholder and retry acquisition.
+- Missing canonical refs are errors; there is no downstream-key fallback.
+- Malformed and untargeted frames retain compatibility fanout.
+- State identity checks prevent stale reads, idle checks, or draining handles from acting on a remapped relay key.
 
 ## Verification
 
-### Required deterministic tests
+Required deterministic tests:
 
-1. Root and child aliases acquire one canonical handle and one listener.
-2. A root+child client receives one root delta; a root-only client receives one.
-3. A root+child client receives one child delta; a root-only client receives none.
-4. Thread-ID-only reads route notifications by the authoritative response ref.
-5. Malformed and untargeted notifications retain compatibility fanout.
-6. Concurrent root/child reads install one canonical handle.
-7. Unsubscribing one alias keeps the handle alive while another alias is subscribed.
-8. Removing the final alias subscriber retires the handle and closes one lease.
-9. Reconnect emits one resync and resumes one upstream listener.
-10. Alias identity remap moves subscriber accounting to the new canonical handle.
-11. Target-specific image enrichment uses the correct alias metadata.
+1. Root and child relay keys resolve one canonical ref, acquire one lease, and start one listener.
+2. Root+child and root-only clients receive each root notification once.
+3. A root+child client receives each child notification once; a root-only client receives none.
+4. Thread-ID-only reads route by the authoritative response ref.
+5. Malformed and untargeted notifications remain visible under every current relay key.
+6. Routing-key behavior matches the frontend table; unknown/foreign valid keys are not published.
+7. Concurrent root/child reads install one handle and listener.
+8. Target-specific image enrichment uses only that relay key's metadata.
+9. An inactive child key retires while another key keeps the handle alive.
+10. Removing the final subscriber retires the handle and closes one lease.
+11. Reconnect emits one resync and resumes one upstream listener.
+12. Identity remap moves ownership and subscriber accounting; stale releases cannot affect the replacement.
+13. Relay-key and canonical stop paths retire the intended handle only.
 
-Run targeted tests red before implementation, then the hub/appsource race tests, full affected packages, vet, frontend gates, build, and lint.
+Run each new regression red before implementation, then the hub/appsource race tests, full affected packages, vet, frontend gates, build, and lint.
 
 ## Delivery
 
