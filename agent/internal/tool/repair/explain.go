@@ -150,16 +150,24 @@ func sentArrayExample(params, args map[string]any, containerPath string) string 
 	if _, sent := args[root]; !sent {
 		return minimalExample(params)
 	}
-	props := schemaProps(params)
-	arraySchema := schemaMap(props, root)
-	if arraySchema == nil || !schemaIsArray(arraySchema) {
-		return minimalExample(params)
-	}
-	item := schemaMap(arraySchema, "items")
+	item := arrayItemSchema(params, root)
 	if item == nil {
 		return minimalExample(params)
 	}
 	return fmt.Sprintf(`{%q: [%s]}`, root, minimalExample(item))
+}
+
+// arrayItemSchema returns the item schema of a declared array property, or
+// nil when the property is not a declared array or has no item schema.
+// Shared descent for the example renderers (sentArrayExample,
+// actionExample).
+func arrayItemSchema(params map[string]any, arrayName string) map[string]any {
+	props := schemaProps(params)
+	arraySchema := schemaMap(props, arrayName)
+	if arraySchema == nil || !schemaIsArray(arraySchema) {
+		return nil
+	}
+	return schemaMap(arraySchema, "items")
 }
 
 // branchCtx is the branch context for one explained error, computed once
@@ -433,13 +441,8 @@ func sentArgNames(selectorName string, args map[string]any) string {
 // Falls back to minimalExample(params) when the branch has no tagged array
 // or the array has no item schema.
 func actionExample(params map[string]any, selectorName, actionValue string, actionArrays []string) string {
-	props := schemaProps(params)
 	for _, arrayName := range actionArrays {
-		arraySchema := schemaMap(props, arrayName)
-		if arraySchema == nil {
-			continue
-		}
-		item := schemaMap(arraySchema, "items")
+		item := arrayItemSchema(params, arrayName)
 		if item == nil {
 			continue
 		}

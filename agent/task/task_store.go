@@ -590,9 +590,8 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 }
 
 func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
-	// Validate status values up front so a bad status doesn't half-apply.
-	// An empty status means "no change": the tool schema documents status
-	// as optional, so notes/deps/effort-only updates are legal.
+	// Validate status values up front so a bad status doesn't half-apply;
+	// empty status means "no change" (see TaskUpdate).
 	for _, u := range updates {
 		if u.Status == "" {
 			continue

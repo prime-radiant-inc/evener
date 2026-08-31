@@ -145,18 +145,17 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		// Presence-based dispatch: add and/or update arrays, either or both.
 		adds, _ := args["add"].([]any)
 		updates, _ := args["update"].([]any)
+		detail = renderTaskAppend(adds) + renderTaskUpdate(updates)
 		switch {
 		case len(adds) > 0 && len(updates) > 0:
 			desc = fmt.Sprintf("add %d, update %d tasks", len(adds), len(updates))
-			detail = renderTaskAppend(adds) + renderTaskUpdate(updates)
 		case len(adds) > 0:
 			desc = fmt.Sprintf("add %d tasks", len(adds))
-			detail = renderTaskAppend(adds)
 		case len(updates) > 0:
 			desc = fmt.Sprintf("update %d tasks", len(updates))
-			detail = renderTaskUpdate(updates)
 		default:
 			desc = "view tasks"
+			detail = ""
 		}
 		return desc, detail
 
