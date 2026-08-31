@@ -45,6 +45,19 @@ func withEffortLevels(p *provider.Profile, levels ...string) *provider.Profile {
 	return p.WithResolved(res)
 }
 
+const fallbackTestNamerProvider = "fallback-test-namer"
+
+func withFallbackTestNamer(client *llm.Client, profile *provider.Profile) *provider.Profile {
+	client.Register(&agenttest.ScriptedAdapter{Provider: fallbackTestNamerProvider, Responder: func(request llm.Request) llm.Response {
+		return llm.Response{
+			Provider: fallbackTestNamerProvider,
+			Model:    request.Model,
+			Message:  llm.Assistant(`{"name":"Fallback Test"}`),
+		}
+	}})
+	return provider.WithCheapModel(profile, fallbackTestNamerProvider+"/namer")
+}
+
 // kata cxw8: when the primary model returns a Permanent class error
 // (403/404/...) and ModelFallbacks is configured, the session must try each
 // fallback in order before giving up.
