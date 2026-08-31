@@ -499,6 +499,10 @@ func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAtt
 	if w.closed.Load() {
 		return errors.New("transcript writer is closed")
 	}
+	// One stat covers both facts (identity and size): fsync changes neither
+	// the size nor the mtime, so the post-sync re-stat the first draft carried
+	// was redundant — unlike writeSidecarAfterFullScan, whose second stat IS
+	// load-bearing (the scan truncated a crash tail between them).
 	info, err := w.file.Stat()
 	if err != nil {
 		return fmt.Errorf("stat transcript for sidecar: %w", err)
@@ -522,16 +526,12 @@ func (w *Writer) WriteSidecarFromWriter(path string, pending []SidecarPendingAtt
 		// The post-full-scan anchor refuses the same case.
 		return errors.New("transcript has no prefix before the checkpoint to anchor")
 	}
-	current, err := w.file.Stat()
-	if err != nil {
-		return fmt.Errorf("stat transcript after sync for sidecar: %w", err)
-	}
 	sidecar := ResumeSidecar{
 		Version:                 resumeSidecarVersion,
 		TranscriptFormatVersion: FormatVersion,
 		SessionID:               w.header.SessionID,
-		TranscriptSize:          current.Size(),
-		ValidBytes:              current.Size(),
+		TranscriptSize:          info.Size(),
+		ValidBytes:              info.Size(),
 		Offset:                  offset,
 		MaxSeq:                  w.checkpointPrefixSeq,
 		EntryCount:              w.checkpointPrefixCount,
