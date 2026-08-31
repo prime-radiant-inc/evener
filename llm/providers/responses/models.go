@@ -116,23 +116,6 @@ func codexReasoningEfforts(levels []codexReasoningLevel) []string {
 	return out
 }
 
-// skipOpenAIModel reports whether id names a non-text model (embeddings,
-// audio, image, moderation, ...) that this listing should not advertise.
-func skipOpenAIModel(id string) bool {
-	lower := strings.ToLower(id)
-	skip := []string{
-		"embedding", "dall-e", "whisper", "davinci", "babbage",
-		"tts", "audio", "realtime", "transcribe", "image",
-		"moderation", "sora",
-	}
-	for _, s := range skip {
-		if strings.Contains(lower, s) {
-			return true
-		}
-	}
-	return false
-}
-
 // firstPositiveInt returns the first positive argument, or 0 if none is
 // positive.
 func firstPositiveInt(values ...int) int {
@@ -162,12 +145,12 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
 		for _, e := range payload.Data {
-			if e.ID != "" && !skipOpenAIModel(e.ID) {
+			if registry.IsChatModelID(e.ID) {
 				rows = append(rows, e.row())
 			}
 		}
 		for _, e := range payload.Models {
-			if id := e.id(); id != "" && !skipOpenAIModel(id) {
+			if id := e.id(); registry.IsChatModelID(id) {
 				rows = append(rows, e.row())
 			}
 		}
