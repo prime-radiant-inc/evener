@@ -212,7 +212,7 @@ func TestExplainSchemaError_ArrayItemMissingRequiredField(t *testing.T) {
 	got := ExplainSchemaError("task_list", params, args, "updates/0", "")
 	want := "task_list: missing required argument \"id\" in updates[0].\n" +
 		"Required arguments in updates[0]: id (integer).\n" +
-		"Example: {\"action\": \"...\"}"
+		"Example: {\"updates\": [{\"id\": 0}]}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}

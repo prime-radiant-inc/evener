@@ -144,19 +144,19 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// req0 (expect max): create both tasks.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
 			},
 			// req1 (expect max, nothing in progress yet): start task 1.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2 (expect low, task 1 in progress): finish task 1 -> auto-advance starts task 2.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c3", `{"action":"update","updates":[{"id":1,"status":"done"}]}`)
+				return taskEffortToolCall("c3", `{"update":[{"id":1,"status":"done"}]}`)
 			},
 			// req3 (expect high, task 2 in progress): finish task 2.
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c4", `{"action":"update","updates":[{"id":2,"status":"done"}]}`)
+				return taskEffortToolCall("c4", `{"update":[{"id":2,"status":"done"}]}`)
 			},
 			// req4 (expect max again: no task in progress).
 			func(req llm.Request) llm.Response { return finalResponse("done") },
@@ -309,11 +309,11 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "updates", "ultra")
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
+				requireTaskEffortSchemaLevel(t, req, "update", "ultra")
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c2")
@@ -362,8 +362,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "tasks", "ultra")
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
+				requireTaskEffortSchemaLevel(t, req, "add", "ultra")
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
 			},
 			func(req llm.Request) llm.Response {
 				requireTaskHandlerError(t, req, "c1")
@@ -403,10 +403,10 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task 1 in progress with effort "inherit" -> session effort.
 			func(req llm.Request) llm.Response { return finalResponse("done") },
@@ -459,10 +459,10 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
+				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// req2: task low in progress, no escalation yet -> low.
 			func(req llm.Request) llm.Response { return finalResponse("still working") },

@@ -39,8 +39,7 @@ func TestTaskTool_AppendEmitsTaskUpdated(t *testing.T) {
 	registerTaskTools(reg, deps)
 
 	args, _ := json.Marshal(map[string]any{
-		"action": "append",
-		"tasks": []map[string]any{
+		"add": []map[string]any{
 			{"type": "implement", "description": "a", "prompt": "p"},
 		},
 	})
@@ -84,8 +83,7 @@ func TestTaskTool_UpdateToDoneEmitsTaskUpdated(t *testing.T) {
 	registerTaskTools(reg, deps)
 
 	args, _ := json.Marshal(map[string]any{
-		"action":  "update",
-		"updates": []map[string]any{{"id": 1, "status": "done"}},
+		"update": []map[string]any{{"id": 1, "status": "done"}},
 	})
 	res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: "c1", Name: "task_list", Arguments: args})
 	if res.IsError {
@@ -130,8 +128,7 @@ func TestTaskTool_UpdateToInProgressEmitsTaskUpdated(t *testing.T) {
 	registerTaskTools(reg, deps)
 
 	args, _ := json.Marshal(map[string]any{
-		"action":  "update",
-		"updates": []map[string]any{{"id": 2, "status": "in_progress"}},
+		"update": []map[string]any{{"id": 2, "status": "in_progress"}},
 	})
 	res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: "c1", Name: "task_list", Arguments: args})
 	if res.IsError {

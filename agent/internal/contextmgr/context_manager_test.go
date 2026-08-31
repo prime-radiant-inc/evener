@@ -257,7 +257,7 @@ func TestSummarizeToolResult_Delegate(t *testing.T) {
 }
 
 func TestSummarizeToolResult_TaskList(t *testing.T) {
-	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{"action":"view"}`))
+	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{}`))
 	want := "[task_list: view → 3 tasks]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)

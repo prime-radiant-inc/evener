@@ -41,7 +41,7 @@ func TestNamedBranch_NoAllocationsWhenTagOutsideEnum(t *testing.T) {
 		},
 		"required": []string{"action"},
 	}
-	args := map[string]any{"action": "view"}
+	args := map[string]any{}
 	// The container path must use the display form ("slices[0]", as
 	// resolveSchemaErrorContainer's formatPath renders it) — a JSON-Pointer
 	// form like "slices/0" parses as a single property name in

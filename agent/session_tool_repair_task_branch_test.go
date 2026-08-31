@@ -12,50 +12,66 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// Issue #626 regression: a task_list call with action "update" whose update
-// entries were placed in the append-branch "tasks" array (the exact argument
-// shape observed 17 times in session 034FsgXdyimiBvbubPlB4w) must be
-// rejected with an error that names the append branch the tasks[0]
-// requirement belongs to and points the caller at the "updates" array — not
-// the bare append-branch required list, which read as describing the update
-// call itself and sent the model into an unrecoverable retry loop. This
-// exercises the real prevalidation seam (prepareToolCall → Schema.Validate →
-// repair → ExplainSchemaError) with the real DefTaskList schema.
-func TestPrepareToolCall_TaskListUpdateCallerNamesAppendBranch(t *testing.T) {
+// The issue #626 failure family (update entries sent under the append
+// branch's "tasks" array, observed 17 times in a live session) is now
+// structurally unrepresentable: task_list has no action enum and no
+// tasks/updates arrays, so the old malformed shape cannot be formed. These
+// tests replace the #626 regression tests: they pin that the REMAINING
+// wrong-shape failure modes — old action-shaped calls and update entries in
+// the add array — fail with errors the repair layer can explain against the
+// new schema, through the real prevalidation seam.
+func TestPrepareToolCall_OldTaskListActionShapeRejected(t *testing.T) {
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
 		t.Fatalf("register task_list: %v", err)
 	}
 	rt := reg.Get("task_list")
 
-	// Exact shape from the live session: update entries in "tasks", including
-	// the fields the model added while following the old misdirecting error.
 	call := llm.ToolCallData{
-		ID:   "issue626",
+		ID:   "old-shape",
 		Name: "task_list",
-		Arguments: json.RawMessage(`{"action":"update","tasks":[{` +
-			`"depends_on":[],"id":1,"notes":"","reasoning_effort":"inherit",` +
-			`"status":"in_progress","type":"implement"}]}`),
+		// The retired action key, exactly as an old session (or a model that
+		// learned the pre-rework contract) would send it.
+		Arguments: json.RawMessage(`{"action":"update","updates":[{"id":1,"status":"done"}]}`),
 	}
 	res := prepareToolCall(call, rt, []string{"task_list"}, "task_list", "communicate", "")
 	if res.PrevalErr == "" {
-		t.Fatalf("expected prevalidation failure for update-shaped entries in tasks, got none (changes: %v)", res.Changes)
+		t.Fatalf("expected prevalidation failure for action-shaped call, got none (changes: %v)", res.Changes)
 	}
-	if !strings.Contains(res.PrevalErr, `for action "append"`) {
-		t.Fatalf("error must name the append branch the tasks[0] requirement belongs to: %q", res.PrevalErr)
-	}
-	if !strings.Contains(res.PrevalErr, `takes "updates"`) {
-		t.Fatalf("error must point an update caller at the updates array: %q", res.PrevalErr)
-	}
-	if !strings.Contains(res.PrevalErr, `"updates": [{`) {
-		t.Fatalf("error example must show the updates-array item shape: %q", res.PrevalErr)
+	if !strings.Contains(res.PrevalErr, "action") {
+		t.Fatalf("error must name the retired action argument: %q", res.PrevalErr)
 	}
 }
 
-// The same call through execTool must surface the branch-named error to the
-// model, and must not reach the handler's "update requires a non-empty
-// 'updates' array" — that handler error was the other half of the loop.
-func TestExecTool_TaskListUpdateCallerBranchNamed(t *testing.T) {
+// An update entry misfiled into the add array must fail validation with an
+// error that names the add item's requirements — the same explainability the
+// #626 fix established, carried to the new schema.
+func TestPrepareToolCall_UpdateEntryInAddArrayExplains(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
+		t.Fatalf("register task_list: %v", err)
+	}
+	rt := reg.Get("task_list")
+
+	call := llm.ToolCallData{
+		ID:   "misfiled",
+		Name: "task_list",
+		// An update-shaped entry (id + status) inside add, where the schema
+		// demands type/description/prompt.
+		Arguments: json.RawMessage(`{"add":[{"id":1,"status":"in_progress"}]}`),
+	}
+	res := prepareToolCall(call, rt, []string{"task_list"}, "task_list", "communicate", "")
+	if res.PrevalErr == "" {
+		t.Fatalf("expected prevalidation failure for update entry in add, got none (changes: %v)", res.Changes)
+	}
+	if !strings.Contains(res.PrevalErr, "add") || !strings.Contains(res.PrevalErr, "description") {
+		t.Fatalf("error must name the add item requirements: %q", res.PrevalErr)
+	}
+}
+
+// The same misfiled-entry call through execTool must surface the
+// schema-explained error to the model.
+func TestExecTool_TaskListMisfiledEntrySurfacesSchemaError(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
@@ -64,26 +80,20 @@ func TestExecTool_TaskListUpdateCallerBranchNamed(t *testing.T) {
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore {
-				return taskpkg.NewTaskStore(t.TempDir(), "issue626")
+				return taskpkg.NewTaskStore(t.TempDir(), "misfiled")
 			},
 			markUsed: func() {},
 		},
 	})
 	res := s.execTool(context.Background(), llm.ToolCallData{
-		ID:        "issue626-exec",
+		ID:        "misfiled-exec",
 		Name:      "task_list",
-		Arguments: json.RawMessage(`{"action":"update","tasks":[{"id":1,"status":"in_progress"}]}`),
+		Arguments: json.RawMessage(`{"add":[{"id":1,"status":"in_progress"}]}`),
 	}, "")
 	if !res.IsError {
-		t.Fatalf("expected error for update-shaped entries in tasks, got: %s", res.FullOutput)
+		t.Fatalf("expected error for update-shaped entry in add, got: %s", res.FullOutput)
 	}
-	if strings.Contains(res.FullOutput, "update requires a non-empty") {
-		t.Fatalf("error fell through to the handler's shape complaint instead of the branch-named schema error: %s", res.FullOutput)
-	}
-	if !strings.Contains(res.FullOutput, `for action "append"`) {
-		t.Fatalf("model-visible error must name the append branch: %s", res.FullOutput)
-	}
-	if !strings.Contains(res.FullOutput, `takes "updates"`) {
-		t.Fatalf("model-visible error must point the caller at updates: %s", res.FullOutput)
+	if !strings.Contains(res.FullOutput, "add[0]") || !strings.Contains(res.FullOutput, "description") {
+		t.Fatalf("model-visible error must name the add item requirements: %s", res.FullOutput)
 	}
 }

@@ -130,9 +130,36 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 			b.WriteString(tail)
 		}
 	} else {
-		fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
+		fmt.Fprintf(&b, "\nExample: %s", sentArrayExample(params, args, containerPath))
 	}
 	return b.String()
+}
+
+// sentArrayExample renders an example for a failure inside an array item the
+// caller actually sent: the array property with one minimal item template
+// ({"update": [{"id": 0}]}). A schema with no top-level required (presence-
+// based tools like task_list) otherwise renders a bare {}, which gives a
+// caller that just mis-shaped an array item no usable template. Falls back
+// to minimalExample when the failure is not in a sent array property or the
+// array has no item schema.
+func sentArrayExample(params, args map[string]any, containerPath string) string {
+	root := pathRootProperty(containerPath)
+	if root == "" {
+		return minimalExample(params)
+	}
+	if _, sent := args[root]; !sent {
+		return minimalExample(params)
+	}
+	props := schemaProps(params)
+	arraySchema := schemaMap(props, root)
+	if arraySchema == nil || !schemaIsArray(arraySchema) {
+		return minimalExample(params)
+	}
+	item := schemaMap(arraySchema, "items")
+	if item == nil {
+		return minimalExample(params)
+	}
+	return fmt.Sprintf(`{%q: [%s]}`, root, minimalExample(item))
 }
 
 // branchCtx is the branch context for one explained error, computed once

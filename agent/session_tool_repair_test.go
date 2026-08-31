@@ -174,7 +174,7 @@ func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
 		t.Fatalf("register task_list: %v", err)
 	}
 	call := llm.ToolCallData{ID: "inherit", Name: "task_list",
-		Arguments: json.RawMessage(`{"action":"append","tasks":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
+		Arguments: json.RawMessage(`{"add":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
 	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
 	if res.PrevalErr != "" {
 		t.Fatalf("inherit effort rejected: %s", res.PrevalErr)
@@ -199,15 +199,14 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 
 	t.Run("task_list update missing id", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c1", Name: "task_list",
-			Arguments: json.RawMessage(`{"action":"update","updates":[{"status":"done","notes":"x"}]}`)}
+			Arguments: json.RawMessage(`{"update":[{"status":"done","notes":"x"}]}`)}
 		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
-		// The Example shows the caller's own branch shape (issue #626 round 2,
-		// finding 3): a correctly-placed update call missing a required field
-		// gets the updates-array template, not the action-only one. (Main made
-		// status optional, so the same-branch case under test is missing id.)
-		want := "task_list: missing required argument \"id\" in updates[0].\n" +
-			"Required arguments in updates[0]: id (integer).\n" +
-			"Example: {\"action\": \"update\", \"updates\": [{\"id\": 0}]}"
+		// Same-branch case (issue #626 round 2, finding 3): a correctly-shaped
+		// update call missing the required id names the update[0] container and
+		// shows the update-array template.
+		want := "task_list: missing required argument \"id\" in update[0].\n" +
+			"Required arguments in update[0]: id (integer).\n" +
+			"Example: {\"update\": [{\"id\": 0}]}"
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
 		}
@@ -222,16 +221,15 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		}
 	})
 
-	// The RCA for issue #193 confirmed enum is a second, independently
-	// affected constraint class: an invalid task_list action produced the
-	// same misleading "has the wrong type or value" + "Required arguments:
-	// action (string)." pair, even though action was present. Verify it
-	// through the real DefTaskList schema, not a hand-built fixture.
-	t.Run("task_list action bogus enum value", func(t *testing.T) {
+	// A bogus status value inside a correctly-shaped update entry is the
+	// enum-constraint case (issue #193's RCA class): the error names the
+	// enum and the offending value, never a misleading required-arguments
+	// line. Verified through the real DefTaskList schema.
+	t.Run("task_list update bogus status enum value", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c4", Name: "task_list",
-			Arguments: json.RawMessage(`{"action":"bogus"}`)}
+			Arguments: json.RawMessage(`{"update":[{"id":1,"status":"bogus"}]}`)}
 		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
-		want := "task_list: argument \"action\" is not one of the allowed values: view, append, update. Value is \"bogus\"."
+		want := "task_list: argument \"update[0].status\" is not one of the allowed values: open, in_progress, done, cancelled. Value is \"bogus\"."
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
 		}
