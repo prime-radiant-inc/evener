@@ -159,7 +159,14 @@ func (i *PastIndex) Rebuild() (bool, error) {
 			}
 			indexed[m.ID] = true
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
-			all = append(all, pe)
+			// byID keeps the LAST project's row for a session present in
+			// several projects; i.all must agree (one row per id) or the
+			// replace-one-row writers below (UpdateMeta, foldOne) and the
+			// next Rebuild would fight over the duplicate forever, firing
+			// onChange every tick on unchanged disk.
+			if _, seen := byID[m.ID]; !seen {
+				all = append(all, pe)
+			}
 			byID[m.ID] = pe
 		}
 		reportUnlistedMetas(i.fs, project, indexed, skipped)
@@ -741,10 +748,10 @@ func (i *PastIndex) findCached(sessionID string) (PastEntry, bool) {
 // resolves to the LAST project in glob order.
 //
 // A miss here is not proof the session does not exist: a corrupt meta file,
-// an unlistable sessions dir, or an invalid project id skip that project
-// silently — the same paths Rebuild skips (and reports); the 60s rebuild
-// tick remains the authority for those. Find's miss path only needs to
-// surface a session persisted after the last index (the
+// a sessions dir that cannot be listed, or an invalid project id skip that
+// project silently — the same paths Rebuild skips (and reports); the 60s
+// rebuild tick remains the authority for those. Find's miss path only needs
+// to surface a session persisted after the last index (the
 // fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss contract).
 func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 	matches, err := filepath.Glob(i.stateGlob)
@@ -754,6 +761,14 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 	var found PastEntry
 	for _, project := range matches {
 		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+			continue
+		}
+		// The same gate Rebuild applies (ListSessionMetas lists the sessions
+		// dir; a dir that is traversable but not listable makes ReadDir fail
+		// there while reading the meta by its known path here still
+		// succeeds). Without it, Find would fold a session Rebuild keeps
+		// dropping, flapping the index and firing onChange every cycle.
+		if _, err := afero.ReadDir(i.fs, filepath.Join(project, "sessions")); err != nil {
 			continue
 		}
 		meta, err := schema.LoadSessionMeta(project, sessionID)
