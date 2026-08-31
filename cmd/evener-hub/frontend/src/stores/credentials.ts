@@ -77,22 +77,37 @@ export interface CredentialsStoreState {
   testCredentials(provider: string): Promise<AuthTestResponse>;
 }
 
-function applyList(resp: InstanceListResponse): void {
-  credentialsStore.setState({
+// listState normalizes one instance/list answer into the store's own always-
+// present shape. Every reader of the listing goes through it, so a field
+// added to InstanceListResponse is defaulted in exactly one place.
+type ListState = Pick<
+  CredentialsStoreState,
+  "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
+>;
+
+function listState(resp: InstanceListResponse): ListState {
+  return {
     instances: resp.instances,
     availableProviders: resp.availableProviders,
     diagnostics: resp.diagnostics ?? [],
     userLayer: resp.userLayer ?? "",
     writesRefused: resp.writesRefused ?? false,
-  });
+  };
+}
+
+// emptyListState is the listing state before anything has been fetched, and
+// the state resetCredentialsStoreForTests returns to. A function, not a
+// shared literal: each caller gets its own arrays.
+function emptyListState(): ListState {
+  return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
+}
+
+function applyList(resp: InstanceListResponse): void {
+  credentialsStore.setState(listState(resp));
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
-  instances: [],
-  availableProviders: [],
-  diagnostics: [],
-  userLayer: "",
-  writesRefused: false,
+  ...emptyListState(),
   loading: false,
   error: null,
 
@@ -101,14 +116,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
-      set({
-        instances: resp.instances,
-        availableProviders: resp.availableProviders,
-        diagnostics: resp.diagnostics ?? [],
-        userLayer: resp.userLayer ?? "",
-        writesRefused: resp.writesRefused ?? false,
-        loading: false,
-      });
+      set({ ...listState(resp), loading: false });
     } catch (err) {
       set({ loading: false, error: errorText(err) });
     }
@@ -244,13 +252,5 @@ export function resetCredentialsStoreForTests(): void {
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({
-    instances: [],
-    availableProviders: [],
-    diagnostics: [],
-    userLayer: "",
-    writesRefused: false,
-    loading: false,
-    error: null,
-  });
+  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
 }
