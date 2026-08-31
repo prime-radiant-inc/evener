@@ -288,6 +288,42 @@ func TestWatchArgsFromToolArgsRejectsTriggerFieldsOnNonCreateOperations(t *testi
 	}
 }
 
+// TestWatchArgsFromToolArgsTreatsNullTriggerFieldsAsOmitted pins the nullable-
+// trigger-field contract (roborev review on PR #736): progress_interval_ms and
+// every are schema-typed ["integer","null"], and shellIntArg decodes null as
+// omitted everywhere else — a non-create call serializing optional fields as
+// null is not arming a trigger and must not be rejected.
+func TestWatchArgsFromToolArgsTreatsNullTriggerFieldsAsOmitted(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string]map[string]any{
+		"list with null progress_interval_ms": {
+			"operation":            "list",
+			"progress_interval_ms": nil,
+		},
+		"list with null every": {
+			"operation": "list",
+			"every":     nil,
+		},
+		"inspect with both null": {
+			"operation":            "inspect",
+			"watch_id":             "watch_x",
+			"progress_interval_ms": nil,
+			"every":                nil,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, err := watchArgsFromToolArgs(args)
+			if err != nil {
+				t.Fatalf("watchArgsFromToolArgs rejected null trigger field: %v", err)
+			}
+			if a.ProgressIntervalMS != 0 || a.Every != 0 {
+				t.Fatalf("null trigger field decoded nonzero: %+v", a)
+			}
+		})
+	}
+}
+
 // TestWatchArgsFromToolArgsAcceptsTriggerFieldsOnCreate pins the flip side of the
 // rejection above: every trigger field stays valid on create, so the new guard
 // cannot start rejecting legitimate installs.

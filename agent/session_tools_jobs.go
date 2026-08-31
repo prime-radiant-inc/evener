@@ -2012,15 +2012,21 @@ var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "e
 // trigger field the call actually supplied alongside a non-create operation.
 // Omitting all of them stays valid: create on a granted cross-session source
 // (parent) watches all bounded public events, and list/inspect/clear need none.
+// Nullable trigger fields (progress_interval_ms, every — schema type
+// ["integer","null"]) with a null value count as omitted, matching how
+// shellIntArg decodes them everywhere else: a client serializing optional
+// fields as null is not arming a trigger.
 func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error {
 	if a.Operation == "create" {
 		return nil
 	}
 	var supplied []string
 	for _, name := range watchTriggerFieldNames {
-		if _, ok := args[name]; ok {
-			supplied = append(supplied, name)
+		value, ok := args[name]
+		if !ok || value == nil {
+			continue
 		}
+		supplied = append(supplied, name)
 	}
 	if len(supplied) == 0 {
 		return nil
