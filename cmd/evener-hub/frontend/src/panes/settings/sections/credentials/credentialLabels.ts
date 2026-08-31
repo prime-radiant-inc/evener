@@ -119,16 +119,18 @@ export function groupByProvider(instances: InstanceEntry[]): InstanceProviderGro
   return groups;
 }
 
+// ENDPOINT_FAILURE_MESSAGE is both the endpoint_failure status's own words
+// and what an unrecognized status falls back to, so it is named once.
+const ENDPOINT_FAILURE_MESSAGE =
+  "The provider endpoint could not be reached. Check the endpoint and network connection.";
 const CREDENTIAL_TEST_MESSAGES: Record<string, string> = {
   success: "Credentials verified.",
   missing: "No credentials are configured for this instance. Add a key or sign in first.",
   auth_rejected: "The provider rejected these credentials. Replace the key or sign in again.",
-  endpoint_failure: "The provider endpoint could not be reached. Check the endpoint and network connection.",
+  endpoint_failure: ENDPOINT_FAILURE_MESSAGE,
   configuration_failure: "Provider configuration could not be loaded. Check the instance settings.",
   unsupported: "This provider does not support harmless credential verification.",
 };
-const ENDPOINT_FAILURE_MESSAGE =
-  "The provider endpoint could not be reached. Check the endpoint and network connection.";
 
 export function safeCredentialTestResult(provider: string, response: AuthTestResponse): AuthTestResponse {
   const message = CREDENTIAL_TEST_MESSAGES[response.status];
