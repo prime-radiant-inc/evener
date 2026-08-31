@@ -185,6 +185,39 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	}
 }
 
+// TestResolve_Opus45OneMStillBeta pins Opus 4.5's [1m] rows as beta-gated,
+// unlike Sonnet 4.5's [1m] rows above (TestResolve_AliasSeeding), which
+// became plain GA aliases. Live evidence against api.anthropic.com on
+// 2026-08-31 showed GET /v1/models still reporting a 200k context window
+// for Opus 4.5 both with and without the context-1m beta header (unlike
+// Sonnet 4.5, which flipped to 1M both ways), so the overlay
+// (data/providers_overlay.toml) deliberately keeps both Opus [1m] rows'
+// own context_window = 1000000 override and their anthropic-beta header,
+// rather than folding the window onto the base row as a pure alias. A
+// future edit that flips Opus 4.5 to GA must fail this test until someone
+// deliberately updates it.
+func TestResolve_Opus45OneMStillBeta(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	for _, tc := range []struct{ ref, wantWireID string }{
+		{"anthropic/claude-opus-4-5[1m]", "claude-opus-4-5"},
+		{"anthropic/claude-opus-4-5-20251101[1m]", "claude-opus-4-5-20251101"},
+	} {
+		res := mustResolve(t, r, tc.ref)
+		if res.WireID != tc.wantWireID {
+			t.Fatalf("%s: WireID = %q, want %q", tc.ref, res.WireID, tc.wantWireID)
+		}
+		// The window is the row's own curated override, not an alias fold
+		// (contrast Sonnet's now-GA rows, whose ContextWindow provenance is
+		// "alias" per TestResolve_AliasSeeding).
+		if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" {
+			t.Fatalf("%s: ContextWindow = %v, provenance %q", tc.ref, res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+		}
+		if res.Headers["anthropic-beta"] != "context-1m-2025-08-07" {
+			t.Fatalf("%s: anthropic-beta header = %q, want the beta still gating this window", tc.ref, res.Headers["anthropic-beta"])
+		}
+	}
+}
+
 func TestResolve_TransportAssembly(t *testing.T) {
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global", "AWS_REGION": "us-east-1"}, "")
 	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
