@@ -121,6 +121,13 @@ func convertProvidersConfig(src []byte) ([]byte, []string, error) {
 		if inst.Type == "openai" && inst.APIStyle == "chat-completions" {
 			protocol = "openai-chat"
 		}
+		// An old kimi-family instance pointed at the coding endpoint is the
+		// coding plan whatever its type said (§14.1: KIMI_API_KEY's meaning
+		// moved there at the flag day).
+		if (inst.Type == "kimi" || inst.Type == "kimi-anthropic") && strings.Contains(inst.BaseURL, "api.kimi.com/coding") {
+			target = oldTypeTarget["kimi-anthropic"]
+			protocol = target.protocol
+		}
 		for dropped, present := range map[string]bool{
 			"quirks": inst.Quirks != "",
 			"compat": len(inst.Compat) > 0,
@@ -153,7 +160,12 @@ func convertProvidersConfig(src []byte) ([]byte, []string, error) {
 		switch {
 		case inst.APIKey == "":
 			if inst.BaseURL != "" {
-				if env, ok := vendorKeyEnv[target.base]; ok {
+				// Old openai + chat-completions + base_url was the
+				// "openai-compatible" family: it never inherited a vendor
+				// key, so none is invented for it here.
+				if inst.Type == "openai" && inst.APIStyle == "chat-completions" {
+					notes = append(notes, fmt.Sprintf("%s: no key carried over (the old schema inherited none here); set api_key_env or credential_headers if the gateway needs one", name))
+				} else if env, ok := vendorKeyEnv[target.base]; ok {
 					// See vendorKeyEnv: base_url instances no longer inherit.
 					fmt.Fprintf(&b, "api_key_env = [%q]\n", env)
 					notes = append(notes, fmt.Sprintf("%s: wrote api_key_env = [%q] — base_url instances no longer inherit the vendor key", name, env))

@@ -273,3 +273,50 @@ func TestExecuteSkipsNewSchemaProvidersConfig(t *testing.T) {
 		t.Fatal("no backup may appear for a new-schema file")
 	}
 }
+
+func TestConvertOldConfig_KimiCodingEndpointMapsToKimiForCoding(t *testing.T) {
+	// An old type = "kimi" instance pointed at the coding endpoint is the
+	// coding plan, whatever its type said: kimi-for-coding, KIMI_API_KEY.
+	src := []byte("[instances.kimi]\ntype = \"kimi\"\nbase_url = \"https://api.kimi.com/coding/v1\"\n")
+	out, _, err := convertProvidersConfig(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := registry.ParseConfig(out)
+	if err != nil {
+		t.Fatalf("converted file must load: %v\n%s", err, out)
+	}
+	p := l.Providers["kimi"]
+	if p.Base != "kimi-for-coding" {
+		t.Fatalf("base = %q, want kimi-for-coding", p.Base)
+	}
+	if len(p.APIKeyEnv) != 1 || p.APIKeyEnv[0] != "KIMI_API_KEY" {
+		t.Fatalf("api_key_env = %v, want [KIMI_API_KEY]", p.APIKeyEnv)
+	}
+}
+
+func TestConvertOldConfig_OpenAICompatGatewayGetsNoInjectedKey(t *testing.T) {
+	// Old openai + chat-completions + base_url was the "openai-compatible"
+	// family: it inherited no vendor key, so the converter must not invent one.
+	src := []byte("[instances.gw]\ntype = \"openai\"\napi_style = \"chat-completions\"\nbase_url = \"http://localhost:8892/v1\"\n")
+	out, notes, err := convertProvidersConfig(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := registry.ParseConfig(out)
+	if err != nil {
+		t.Fatalf("converted file must load: %v\n%s", err, out)
+	}
+	if got := l.Providers["gw"].APIKeyEnv; len(got) != 0 {
+		t.Fatalf("api_key_env = %v, want none injected", got)
+	}
+	found := false
+	for _, n := range notes {
+		if strings.Contains(n, "gw") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the credential question must surface as a note: %v", notes)
+	}
+}
