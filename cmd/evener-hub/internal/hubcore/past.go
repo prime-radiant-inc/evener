@@ -138,7 +138,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var all []PastEntry
 	byID := make(map[string]PastEntry)
 	skipped := make(map[string]string)
 	for _, project := range matches {
@@ -159,19 +158,21 @@ func (i *PastIndex) Rebuild() (bool, error) {
 			}
 			indexed[m.ID] = true
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
-			// byID keeps the LAST project's row for a session present in
-			// several projects; i.all must agree (one row per id) or the
-			// replace-one-row writers below (UpdateMeta, foldOne) and the
-			// next Rebuild would fight over the duplicate forever, firing
-			// onChange every tick on unchanged disk.
-			if _, seen := byID[m.ID]; !seen {
-				all = append(all, pe)
-			}
 			byID[m.ID] = pe
 		}
 		reportUnlistedMetas(i.fs, project, indexed, skipped)
 	}
 	i.reportSkips(skipped)
+	// i.all derives from byID (one row per id, the LAST project's row for a
+	// session present in several projects) rather than accumulating per
+	// project: appending as the loop scanned would keep the FIRST project's
+	// row while byID keeps the LAST's, leaving the replace-one-row writers
+	// below (UpdateMeta, foldOne) and the next Rebuild fighting over the
+	// duplicate forever, firing onChange every tick on unchanged disk.
+	all := make([]PastEntry, 0, len(byID))
+	for _, pe := range byID {
+		all = append(all, pe)
+	}
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
@@ -763,12 +764,14 @@ func (i *PastIndex) probeOne(sessionID string) (PastEntry, bool) {
 		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
 			continue
 		}
-		// The same gate Rebuild applies (ListSessionMetas lists the sessions
-		// dir; a dir that is traversable but not listable makes ReadDir fail
-		// there while reading the meta by its known path here still
-		// succeeds). Without it, Find would fold a session Rebuild keeps
-		// dropping, flapping the index and firing onChange every cycle.
-		if _, err := afero.ReadDir(i.fs, filepath.Join(project, "sessions")); err != nil {
+		// Rebuild's gate, shared rather than copied: ListSessionMetas skips
+		// a project whose sessions dir cannot be listed (a traversable but
+		// unlistable dir fails the list while reading a meta by its known
+		// path still succeeds — without the gate, Find would fold a session
+		// Rebuild keeps dropping, flapping the index every cycle). The
+		// OS fs matches the filesystem LoadSessionMeta below reads through;
+		// PastIndex.fs is a different seam (FTS scaffolding).
+		if !schema.SessionsDirListable(afero.NewOsFs(), project) {
 			continue
 		}
 		meta, err := schema.LoadSessionMeta(project, sessionID)
