@@ -67,7 +67,7 @@ func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 	et := editTool(t)
 	call := llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_str":"a","new_string":"b"}`)}
-	res := prepareToolCall(call, et, []string{"edit_file"}, "edit_file", "")
+	res := prepareToolCall(call, et, []string{"edit_file"}, "edit_file", "communicate", "")
 	if res.PrevalErr != "" {
 		t.Fatalf("unexpected prevalErr: %s", res.PrevalErr)
 	}
@@ -85,7 +85,7 @@ func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 
 func TestPrepareToolCall_UnknownTool(t *testing.T) {
 	call := llm.ToolCallData{ID: "c1", Name: "reed_file", Arguments: json.RawMessage(`{}`)}
-	res := prepareToolCall(call, nil, []string{"read_file", "edit_file"}, "reed_file", "")
+	res := prepareToolCall(call, nil, []string{"read_file", "edit_file"}, "reed_file", "communicate", "")
 	if res.PrevalErr == "" {
 		t.Fatal("expected prevalErr for unknown tool")
 	}
@@ -97,7 +97,7 @@ func TestPrepareToolCall_EmptyArgsValidForNoRequiredTool(t *testing.T) {
 	_ = reg.Register(regTool(def)) // regTool: helper building a RegisteredTool with a no-op Exec (see below)
 	res := prepareToolCall(
 		llm.ToolCallData{ID: "c1", Name: "list_dir", Arguments: json.RawMessage(``)},
-		reg.Get("list_dir"), []string{"list_dir"}, "list_dir", "")
+		reg.Get("list_dir"), []string{"list_dir"}, "list_dir", "communicate", "")
 	if res.PrevalErr != "" {
 		t.Fatalf("empty args rejected: %s", res.PrevalErr)
 	}
@@ -107,7 +107,7 @@ func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
 	et := editTool(t)
 	call := llm.ToolCallData{Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)}
-	res := prepareToolCall(call, et, []string{"edit_file"}, "edit_file", "")
+	res := prepareToolCall(call, et, []string{"edit_file"}, "edit_file", "communicate", "")
 	if res.Call.ID == "" {
 		t.Fatal("expected synthesized ID")
 	}
@@ -120,7 +120,7 @@ func TestPrepareToolCall_TruncatedByLength(t *testing.T) {
 	et := editTool(t)
 	truncated := json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"unterminat`)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file", Arguments: truncated},
-		et, []string{"edit_file"}, "edit_file", llm.FinishReasonLength)
+		et, []string{"edit_file"}, "edit_file", "communicate", llm.FinishReasonLength)
 	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, "truncated") {
 		t.Fatalf("want truncation error, got: %q", res.PrevalErr)
 	}
@@ -137,7 +137,7 @@ func TestPrepareToolCall_TruncatedBeforeAnyArgs(t *testing.T) {
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(``)},
-		et, []string{"edit_file"}, "edit_file", llm.FinishReasonLength)
+		et, []string{"edit_file"}, "edit_file", "communicate", llm.FinishReasonLength)
 	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, "truncated") {
 		t.Fatalf("want truncation error, got: %q", res.PrevalErr)
 	}
@@ -150,7 +150,7 @@ func TestPrepareToolCall_LengthStopEmptyArgsNoRequired(t *testing.T) {
 	_ = reg.Register(regTool(tool.DefListDir()))
 	res := prepareToolCall(
 		llm.ToolCallData{ID: "c1", Name: "list_dir", Arguments: json.RawMessage(``)},
-		reg.Get("list_dir"), []string{"list_dir"}, "list_dir", llm.FinishReasonLength)
+		reg.Get("list_dir"), []string{"list_dir"}, "list_dir", "communicate", llm.FinishReasonLength)
 	if res.PrevalErr != "" {
 		t.Fatalf("empty args rejected: %s", res.PrevalErr)
 	}
@@ -162,7 +162,7 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)},
-		et, []string{"edit_file"}, "edit_file", llm.FinishReasonLength)
+		et, []string{"edit_file"}, "edit_file", "communicate", llm.FinishReasonLength)
 	if res.PrevalErr != "" {
 		t.Fatalf("valid args must execute: %q", res.PrevalErr)
 	}
@@ -175,7 +175,7 @@ func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
 	}
 	call := llm.ToolCallData{ID: "inherit", Name: "task_list",
 		Arguments: json.RawMessage(`{"action":"append","tasks":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
-	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
 	if res.PrevalErr != "" {
 		t.Fatalf("inherit effort rejected: %s", res.PrevalErr)
 	}
@@ -200,7 +200,7 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 	t.Run("task_list update missing id", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c1", Name: "task_list",
 			Arguments: json.RawMessage(`{"action":"update","updates":[{"status":"done","notes":"x"}]}`)}
-		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
 		// The Example shows the caller's own branch shape (issue #626 round 2,
 		// finding 3): a correctly-placed update call missing a required field
 		// gets the updates-array template, not the action-only one. (Main made
@@ -216,7 +216,7 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 	t.Run("ask_user accepts a long question header", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c2", Name: "ask_user",
 			Arguments: json.RawMessage(`{"questions":[{"header":"way too long for a chip label","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
-		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
+		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "communicate", "")
 		if res.PrevalErr != "" {
 			t.Fatalf("long header was rejected: %s", res.PrevalErr)
 		}
@@ -230,7 +230,7 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 	t.Run("task_list action bogus enum value", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c4", Name: "task_list",
 			Arguments: json.RawMessage(`{"action":"bogus"}`)}
-		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
 		want := "task_list: argument \"action\" is not one of the allowed values: view, append, update. Value is \"bogus\"."
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
@@ -246,7 +246,7 @@ func TestPrepareToolCall_BrokenJSONNonLengthStop(t *testing.T) {
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path": nope}`)},
-		et, []string{"edit_file"}, "edit_file", llm.FinishReasonStop)
+		et, []string{"edit_file"}, "edit_file", "communicate", llm.FinishReasonStop)
 	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, "not valid JSON") {
 		t.Fatalf("want invalid-JSON error, got: %q", res.PrevalErr)
 	}

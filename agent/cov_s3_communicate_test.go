@@ -113,13 +113,25 @@ func TestS3Cov_CommunicateSchemaStringSlice(t *testing.T) {
 	}
 }
 
-func TestS3Cov_CommunicateSchemaContains(t *testing.T) {
+func TestS3Cov_StringSetsEqual(t *testing.T) {
 	t.Parallel()
-	if !communicateSchemaContains([]string{"x", "y"}, "y") {
-		t.Fatal("expected contains")
+	props := func(names ...string) map[string]any {
+		m := map[string]any{}
+		for _, n := range names {
+			m[n] = map[string]any{}
+		}
+		return m
 	}
-	if communicateSchemaContains([]string{"x"}, "z") {
-		t.Fatal("expected not contains")
+	if !stringSetsEqual(props("x", "y"), []string{"y", "x"}, "x", "y") {
+		t.Fatal("expected equal")
+	}
+	// Missing member.
+	if stringSetsEqual(props("x"), []string{"x", "y"}, "x", "y") {
+		t.Fatal("expected not equal: required missing y")
+	}
+	// Extra member.
+	if stringSetsEqual(props("x", "y", "z"), []string{"x", "y"}, "x", "y") {
+		t.Fatal("expected not equal: extra property z")
 	}
 }
 

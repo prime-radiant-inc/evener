@@ -37,7 +37,7 @@ func TestPrepareToolCall_TaskListUpdateCallerNamesAppendBranch(t *testing.T) {
 			`"depends_on":[],"id":1,"notes":"","reasoning_effort":"inherit",` +
 			`"status":"in_progress","type":"implement"}]}`),
 	}
-	res := prepareToolCall(call, rt, []string{"task_list"}, "task_list", "")
+	res := prepareToolCall(call, rt, []string{"task_list"}, "task_list", "communicate", "")
 	if res.PrevalErr == "" {
 		t.Fatalf("expected prevalidation failure for update-shaped entries in tasks, got none (changes: %v)", res.Changes)
 	}
