@@ -13,17 +13,26 @@
 # It exports the following, then runs <command...> with them in its
 # environment:
 #
-#   HOME                   a fresh directory made by mktemp, chmod 700,
-#                          deleted on exit unless --keep.
+#   HOME                   a subdirectory of a fresh mktemp root. The root
+#                          itself (not every directory nested under it) is
+#                          chmod 700, which is sufficient: Unix directory
+#                          traversal means the root alone blocks other
+#                          users from reaching anything inside it,
+#                          regardless of the nested entries' own bits. The
+#                          whole root is deleted on exit unless --keep.
 #   XDG_CONFIG_HOME
 #   XDG_CACHE_HOME
 #   XDG_STATE_HOME         redirected under the same fake home (via
 #                          scripts/lib/private-go-home.sh), so anything that
 #                          resolves paths from these instead of the EVENER_*
 #                          variables below still cannot see the real ones.
-#   GOENV                  a private copy of the ambient `go env -w` file (or
-#                          an empty one) — `go env -w` run under the wrapper
-#                          can never touch the developer's real Go config.
+#   GOENV                  a private, verbatim copy of the ambient `go env
+#                          -w` file (or an empty one) — `go env -w` run
+#                          under the wrapper can never touch the
+#                          developer's real Go config. That file ordinarily
+#                          holds only settings like GOPROXY/GOSUMDB, never
+#                          secrets, so the verbatim copy is not a
+#                          credential-handling concern in practice.
 #   GOPATH, GOCACHE        preserved at their ambient (real) values when not
 #                          already set in the environment. Without this,
 #                          redirecting HOME makes every `go build`/`go test`
@@ -51,8 +60,9 @@
 # It also sources ~/git/prime-radiant/serf/.env into the process environment
 # when that file exists (ANTHROPIC_API_KEY, OPENROUTER_API_KEY,
 # OPENAI_API_KEY, GEMINI_API_KEY, OLLAMA_HOST, MOONSHOT_API_KEY) so curated
-# providers can pick them up implicitly. A credential value is never echoed,
-# logged, or placed in argv — not even on an error path.
+# providers can pick them up implicitly. A credential value is never
+# echoed, logged, or placed in argv — not even on an error path, and not
+# even under xtrace (the sourcing block explicitly guards against `set -x`).
 #
 # Usage:
 #   scripts/live/with-live-env [--config providers.toml] [--store] [--keep] -- <command...>
@@ -166,10 +176,20 @@ if [ "$use_store" -eq 1 ]; then
 fi
 
 if [ -f "$credential_env_file" ]; then
+	# Credential VALUES pass through this exact statement (`. file` executes
+	# each KEY=value assignment). xtrace instruments every command it runs,
+	# so sourcing this under `bash -x` (or any caller that already has -x
+	# on) would print every credential verbatim. Disable xtrace for this
+	# block only and restore whatever the caller had — never assume it was
+	# off, and never leave it off for the rest of the run.
+	xtrace_was_on=0
+	[[ $- == *x* ]] && xtrace_was_on=1
+	set +x
 	set -a
 	# shellcheck disable=SC1090  # dynamic path to a private, uncommitted secrets file
 	. "$credential_env_file"
 	set +a
+	[ "$xtrace_was_on" -eq 1 ] && set -x
 	note "sourced credentials from $credential_env_file"
 else
 	note "no credential file at $credential_env_file; continuing without it"
