@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,7 +160,12 @@ func requestIDObserverFrom(ctx context.Context) func(ID) {
 // runClientKeepalive pings the peer every interval and closes the transport if
 // a ping goes unanswered within timeout. Closing unblocks the read loop's Recv,
 // which fails pending requests and closes the notifications channel — so a
-// silently-dead daemon surfaces as a normal subscription end.
+// silently-dead daemon surfaces as a normal subscription end. The teardown
+// logs one line first: the closed connection then fails every later write
+// with an ordinary transport error, so without the log a pong-timeout
+// teardown under load — e.g. the hub subprocess starved past
+// interval+timeout by concurrent CI gates (#154) — is indistinguishable
+// from a dead hub.
 func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -172,6 +178,7 @@ func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error
 			err := pinger.Ping(pingCtx)
 			cancel()
 			if err != nil {
+				log.Printf("appwire: keepalive ping failed (ping interval %s, pong timeout %s): %v; closing connection", interval, timeout, err)
 				_ = closeFn()
 				return
 			}
