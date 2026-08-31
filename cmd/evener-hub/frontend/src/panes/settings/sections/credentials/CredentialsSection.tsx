@@ -150,27 +150,21 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     const version = instanceVersion.current;
     if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
     setCredentialTests((current) => ({ ...current, [name]: { version, pending: true } }));
-    try {
-      const response = await credentialsStore.getState().testCredentials(name);
+    // A result lands only on the request that is still pending for the
+    // instance list it was started against: a refreshed list bumps the
+    // version, and a stale answer is dropped rather than shown.
+    function settle(response: AuthTestResponse): void {
       setCredentialTests((current) => ({
         ...current,
         ...(current[name]?.version === version && current[name]?.pending
           ? { [name]: { version, pending: false, result: safeCredentialTestResult(name, response) } }
           : {}),
       }));
+    }
+    try {
+      settle(await credentialsStore.getState().testCredentials(name));
     } catch {
-      setCredentialTests((current) => ({
-        ...current,
-        ...(current[name]?.version === version && current[name]?.pending
-          ? {
-              [name]: {
-                version,
-                pending: false,
-                result: safeCredentialTestResult(name, { provider: name, status: "endpoint_failure", message: "" }),
-              },
-            }
-          : {}),
-      }));
+      settle({ provider: name, status: "endpoint_failure", message: "" });
     }
   }
 
