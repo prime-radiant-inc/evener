@@ -169,9 +169,9 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 	}{
 		{watchArgs{Events: []string{"assistant.message"}}, "invalid_request: assistant.message"},
 		{watchArgs{Events: []string{"not-real"}}, "invalid_request: unknown event"},
-		{watchArgs{Every: 2}, "invalid_request: every requires exactly"},
+		{watchArgs{Every: 2}, "invalid_request: every requires events naming exactly one kind"},
 		{watchArgs{Events: []string{"*"}, Every: 2}, "invalid_request: every requires a single concrete"},
-		{watchArgs{EventFilter: &watchEventFilter{}}, "invalid_request: event_filter requires events"},
+		{watchArgs{EventFilter: &watchEventFilter{}}, "invalid_request: event_filter requires events naming assistant.tool"},
 		{watchArgs{Events: []string{"communicate"}, EventFilter: &watchEventFilter{}}, "invalid_request: event_filter matches assistant.tool events; parent"},
 		{watchArgs{Events: []string{"job.notification"}, EventFilter: &watchEventFilter{}}, "invalid_request: event_filter matches assistant.tool events; use"},
 		{watchArgs{Events: []string{"assistant.tool"}, EventFilter: &watchEventFilter{Status: "bad"}}, "invalid_request: event_filter.status"},
