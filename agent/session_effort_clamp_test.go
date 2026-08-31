@@ -177,7 +177,7 @@ func TestFallbackChain_OmitsEffortWhenFallbackProfileDoesNotSupportReasoning(t *
 	}
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"tiny-chat"},
@@ -247,7 +247,7 @@ func TestFallbackChain_ConfiguredLevelsBeatCatalog(t *testing.T) {
 	}
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"glm-5.2"},
@@ -310,7 +310,7 @@ func TestFallbackChain_OllamaSkipsCatalogLevels(t *testing.T) {
 	}
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, withTestSessionNamer(c, primary), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:        dir,
 		LLMRetryPolicy:  &policy,
 		ModelFallbacks:  []string{"glm-5.2"},

@@ -92,7 +92,9 @@ func TestDelegateResourceSupervision_AttentionBareTextRecordsExplicitNoAction(t 
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
-	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
 	armStableSupervisionAttention(t, sub, "attention:no-action", "inspect the completed work")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	snapshot := <-snapshots
@@ -122,7 +124,9 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
-	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
 	armStableSupervisionAttention(t, sub, "attention:follow-up", "inspect before follow-up")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
@@ -161,7 +165,9 @@ func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
-	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
 	armStableSupervisionAttention(t, sub, "attention:goal", "inspect before continuation")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
@@ -199,7 +205,9 @@ func TestDelegateResourceSupervision_AttentionNotificationRemainsNoAction(t *tes
 	root = restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
-	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
 	armStableSupervisionAttention(t, sub, "attention:notification", "inspect before notification")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
@@ -267,7 +275,9 @@ func TestDelegateResourceSupervision_ExplicitAttentionCommunicateRemainsReported
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	snapshots := make(chan delegateCompletionSnapshot, 1)
-	sub.sess.cfg.testOnly.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
 	armStableSupervisionAttention(t, sub, "attention:reported", "report the completed work")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	snapshot := <-snapshots
@@ -630,13 +640,15 @@ func TestDelegateResourceSupervision_FatalFailureBeatsPendingSteer(t *testing.T)
 		t.Fatalf("stable child %q was not tracked", fixture.childID)
 	}
 	phaseBeforeFinish := make(chan delegatestore.Phase, 1)
-	child.sess.cfg.testOnly.subagentAfterFinalStatePublish = func(got *subagent) {
-		got.sess.delegateController.mu.Lock()
-		aggregate := got.sess.delegateController.durable[fixture.delegateID]
-		phase := aggregate.Phase
-		got.sess.delegateController.mu.Unlock()
-		phaseBeforeFinish <- phase
-	}
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentAfterFinalStatePublish = func(got *subagent) {
+			got.sess.delegateController.mu.Lock()
+			aggregate := got.sess.delegateController.durable[fixture.delegateID]
+			phase := aggregate.Phase
+			got.sess.delegateController.mu.Unlock()
+			phaseBeforeFinish <- phase
+		}
+	})
 	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "accepted before fatal failure", 0)
 	if steered.result.Err != nil || steered.result.Action != "steered" {
 		t.Fatalf("steer stable delegate = %#v", steered.result)
@@ -861,11 +873,13 @@ func TestDelegateResourceSupervision_LateOrdinarySteerPreservesOwnedWorkForConti
 		ownedShell.closeDone()
 	})
 	var steerOnce sync.Once
-	child.sess.cfg.testOnly.subagentBeforeSettlement = func(*subagent) {
-		steerOnce.Do(func() {
-			lateSteer <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "late steering at ordinary settlement", 0).result
-		})
-	}
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = func(*subagent) {
+			steerOnce.Do(func() {
+				lateSteer <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "late steering at ordinary settlement", 0).result
+			})
+		}
+	})
 	close(releaseInitialRequest)
 	child.mu.Lock()
 	done := child.done
@@ -922,27 +936,29 @@ func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *tes
 		t.Fatalf("stable child %q was not tracked", fixture.childID)
 	}
 	var cancelOnce sync.Once
-	child.sess.cfg.testOnly.subagentRunIteration = func(_ *subagent, iteration int) {
-		if iteration > 1 {
-			select {
-			case <-continued:
-			default:
-				close(continued)
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentRunIteration = func(_ *subagent, iteration int) {
+			if iteration > 1 {
+				select {
+				case <-continued:
+				default:
+					close(continued)
+				}
 			}
 		}
-	}
-	child.sess.cfg.testOnly.subagentBeforeSettlement = func(got *subagent) {
-		cancelOnce.Do(func() {
-			lateCancel <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer admitted at cancellation boundary", 0).result
-			got.mu.Lock()
-			got.cancelRequested = true
-			cancel := got.cancel
-			got.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-		})
-	}
+		cfg.subagentBeforeSettlement = func(got *subagent) {
+			cancelOnce.Do(func() {
+				lateCancel <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "steer admitted at cancellation boundary", 0).result
+				got.mu.Lock()
+				got.cancelRequested = true
+				cancel := got.cancel
+				got.mu.Unlock()
+				if cancel != nil {
+					cancel()
+				}
+			})
+		}
+	})
 	close(release)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if steered := <-lateCancel; steered.Err != nil || steered.Action != "steered" {
@@ -2103,21 +2119,23 @@ func TestDelegateResourceSupervision_StopBeforeOrdinaryFinalizationDrainsQuietAt
 	}
 	boundary := make(chan boundaryResult, 1)
 	var boundaryOnce sync.Once
-	child.sess.cfg.testOnly.subagentBeforeSettlement = func(*subagent) {
-		boundaryOnce.Do(func() {
-			root.delegateController.mu.Lock()
-			live := root.delegateController.live[lease.delegateID]
-			activityAt := live.activityAt
-			root.delegateController.mu.Unlock()
-			quiet, err := root.delegateController.BeginQuietAttention(root, lease, activityAt.Add(delegateQuietWindow))
-			if err != nil || quiet == nil {
-				boundary <- boundaryResult{err: fmt.Errorf("BeginQuietAttention = %#v, %w", quiet, err)}
-				return
-			}
-			stop, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), lease.delegateID)
-			boundary <- boundaryResult{quiet: quiet, stop: stop, err: err}
-		})
-	}
+	updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = func(*subagent) {
+			boundaryOnce.Do(func() {
+				root.delegateController.mu.Lock()
+				live := root.delegateController.live[lease.delegateID]
+				activityAt := live.activityAt
+				root.delegateController.mu.Unlock()
+				quiet, err := root.delegateController.BeginQuietAttention(root, lease, activityAt.Add(delegateQuietWindow))
+				if err != nil || quiet == nil {
+					boundary <- boundaryResult{err: fmt.Errorf("BeginQuietAttention = %#v, %w", quiet, err)}
+					return
+				}
+				stop, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), lease.delegateID)
+				boundary <- boundaryResult{quiet: quiet, stop: stop, err: err}
+			})
+		}
+	})
 	close(release)
 	observed := <-boundary
 	if observed.err != nil {

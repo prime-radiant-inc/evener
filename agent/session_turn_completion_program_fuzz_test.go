@@ -250,7 +250,7 @@ func tfpNewSession(t *testing.T, program tfpProgram, adapter *tfpAdapter) *Sessi
 			},
 		}
 	}
-	sess, err := NewSession(client, NewOpenAIProfile("primary"), &agenttest.DenyEnv{WorkDir: workspace, Seed: program.seed}, cfg)
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("primary")), &agenttest.DenyEnv{WorkDir: workspace, Seed: program.seed}, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

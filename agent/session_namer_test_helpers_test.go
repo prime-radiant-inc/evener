@@ -25,3 +25,11 @@ func registerTestSessionNamer(client *llm.Client) {
 		}
 	}})
 }
+
+// updateSessionTestConfig synchronizes post-construction test seam changes with
+// metadata snapshots taken by the asynchronous session namer.
+func updateSessionTestConfig(session *Session, update func(*testConfig)) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	update(&session.cfg.testOnly)
+}
