@@ -62,14 +62,15 @@ type relayConnection struct {
 // Existing listeners must acknowledge every pre-cut delivery before Read can
 // return; post-cut frames remain private until the downstream handoff resolves.
 type relayCapture struct {
-	epoch      uint64
-	generation uint64
-	prepared   bool
-	cutSeen    bool
-	beforeCut  []appwire.Notification
-	afterCut   []appwire.Notification
-	flushed    chan struct{}
-	release    sync.Once
+	epoch           uint64
+	generation      uint64
+	prepared        bool
+	routesPublished bool
+	cutSeen         bool
+	beforeCut       []appwire.Notification
+	afterCut        []appwire.Notification
+	flushed         chan struct{}
+	release         sync.Once
 }
 
 type relayPublishJob struct {
@@ -81,6 +82,12 @@ type relayPublishJob struct {
 
 type relayPublicationFence struct {
 	revoked chan struct{}
+}
+
+type relayDeliveryWait struct {
+	ack          <-chan struct{}
+	listenerDone <-chan struct{}
+	listenerCtx  <-chan struct{}
 }
 
 type relayListener struct {
@@ -143,6 +150,17 @@ func (l *relaySessionLease) Read(ctx context.Context, params appwire.ThreadReadP
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
 	}
 	return l.session.read(ctx, params)
+}
+
+func (l *relaySessionLease) ReadWithRoutePublication(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	publish func(appwire.Thread),
+) (RelayReadResult, error) {
+	if l == nil || l.session == nil {
+		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
+	}
+	return l.session.readWithRoutePublication(ctx, params, publish)
 }
 
 func (l *relaySessionLease) Listen(ctx context.Context) (<-chan RelayDelivery, error) {
@@ -217,6 +235,14 @@ func (l *relayListener) close() {
 }
 
 func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams) (RelayReadResult, error) {
+	return s.readWithRoutePublication(ctx, params, nil)
+}
+
+func (s *relaySession) readWithRoutePublication(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+	publishRoutes func(appwire.Thread),
+) (RelayReadResult, error) {
 	select {
 	case <-ctx.Done():
 		return RelayReadResult{}, ctx.Err()
@@ -265,6 +291,23 @@ func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams
 			return RelayReadResult{}, callerErr
 		}
 		return RelayReadResult{}, localDaemonSubscribeReadError(err)
+	}
+	if publishRoutes != nil {
+		s.mu.Lock()
+		valid := !s.closed && s.capture == capture && s.connection == connection && capture.cutSeen
+		if valid {
+			// Once routing publication starts, disconnect preserves this capture
+			// exactly as Prepare does. The already-materialized response and every
+			// pre-cut delivery still complete their acknowledgement barrier before
+			// Read returns; a disconnected handoff is rejected by Prepare later.
+			capture.routesPublished = true
+		}
+		s.mu.Unlock()
+		if !valid {
+			s.cancelCapture(capture)
+			return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended before route publication")
+		}
+		publishRoutes(response.Thread)
 	}
 
 	select {
@@ -394,7 +437,7 @@ func (s *relaySession) disconnect(epoch uint64) {
 	// connection. A replacement daemon is a new turn-id generation, so the
 	// feed cannot resume against that state without a re-read first.
 	s.resyncPending = true
-	if capture != nil && capture.epoch == epoch && capture.prepared {
+	if capture != nil && capture.epoch == epoch && (capture.prepared || capture.routesPublished) {
 		connection.disconnected = true
 		s.mu.Unlock()
 		_ = connection.transport.Close()
@@ -631,6 +674,10 @@ func (s *relaySession) queuePublishLocked(epoch uint64, notifications []appwire.
 }
 
 func (s *relaySession) publishLoop() {
+	closed := make(chan struct{})
+	close(closed)
+	barrierTail := (<-chan struct{})(closed)
+	var pending []relayDeliveryWait
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -646,18 +693,24 @@ func (s *relaySession) publishLoop() {
 				s.publishJobs[0] = relayPublishJob{}
 				s.publishJobs = s.publishJobs[1:]
 				s.publishMu.Unlock()
+				pending = s.pruneDeliveryWaits(pending)
 				for _, notification := range job.notifications {
-					s.publishNotification(job.epoch, job.fence, notification)
+					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification)...)
 				}
 				if job.done != nil {
-					close(job.done)
+					waits := append([]relayDeliveryWait(nil), pending...)
+					pending = nil
+					previous := barrierTail
+					barrier := make(chan struct{})
+					barrierTail = barrier
+					go s.finishPublicationBarrier(previous, waits, job.done, barrier)
 				}
 			}
 		}
 	}
 }
 
-func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) {
+func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) []relayDeliveryWait {
 	s.mu.Lock()
 	listeners := make([]*relayListener, 0, len(s.listeners))
 	for _, listener := range s.listeners {
@@ -665,30 +718,48 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 	}
 	s.mu.Unlock()
 
+	waits := make([]relayDeliveryWait, 0, len(listeners))
 	for _, listener := range listeners {
-		if !s.publishToListenerAtEpoch(epoch, fence, listener, notification) && s.ctx.Err() != nil {
-			return
+		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification)
+		if wait != nil {
+			waits = append(waits, *wait)
+		}
+		if !published && s.ctx.Err() != nil {
+			return waits
 		}
 	}
+	return waits
 }
 
 func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
-	return s.publishToListenerAtEpoch(0, nil, listener, notification)
+	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification)
+	if wait != nil {
+		return s.waitForDelivery(*wait)
+	}
+	return published
 }
 
-func (s *relaySession) publishToListenerAtEpoch(epoch uint64, fence *relayPublicationFence, listener *relayListener, notification appwire.Notification) bool {
+func (s *relaySession) dispatchToListenerAtEpoch(
+	epoch uint64,
+	fence *relayPublicationFence,
+	listener *relayListener,
+	notification appwire.Notification,
+) (bool, *relayDeliveryWait) {
 	ack := make(chan struct{})
-	var once sync.Once
+	proceed := make(chan struct{})
+	var ackOnce sync.Once
+	var proceedOnce sync.Once
 	delivery := RelayDelivery{
 		Notification: notification,
 		Acknowledge: func() {
-			once.Do(func() { close(ack) })
+			ackOnce.Do(func() { close(ack) })
 		},
+		Proceed: func() { proceedOnce.Do(func() { close(proceed) }) },
 	}
 	s.publishBoundary.RLock()
 	if epoch != 0 && (s.publicationEpoch != epoch || s.publicationFence != fence) {
 		s.publishBoundary.RUnlock()
-		return false
+		return false, nil
 	}
 	if hook := s.publishEntryHook; hook != nil {
 		hook()
@@ -698,28 +769,82 @@ func (s *relaySession) publishToListenerAtEpoch(epoch uint64, fence *relayPublic
 	case <-listener.ctx.Done():
 		s.publishBoundary.RUnlock()
 		s.removeListener(listener.id)
-		return false
+		return false, nil
 	case <-listener.done:
 		s.publishBoundary.RUnlock()
-		return false
+		return false, nil
 	case <-fenceRevoked(fence):
 		s.publishBoundary.RUnlock()
-		return false
+		return false, nil
 	case <-s.ctx.Done():
 		s.publishBoundary.RUnlock()
-		return false
+		return false, nil
 	}
 	s.publishBoundary.RUnlock()
 	select {
 	case <-ack:
-		return true
+		return true, nil
+	case <-proceed:
+		return true, &relayDeliveryWait{ack: ack, listenerDone: listener.done, listenerCtx: listener.ctx.Done()}
 	case <-listener.ctx.Done():
 		s.removeListener(listener.id)
-		return false
+		return false, nil
 	case <-listener.done:
+		return false, nil
+	case <-s.ctx.Done():
+		return false, nil
+	}
+}
+
+func (s *relaySession) waitForDelivery(wait relayDeliveryWait) bool {
+	select {
+	case <-wait.ack:
+		return true
+	case <-wait.listenerCtx:
+		return false
+	case <-wait.listenerDone:
 		return false
 	case <-s.ctx.Done():
 		return false
+	}
+}
+
+func (s *relaySession) pruneDeliveryWaits(waits []relayDeliveryWait) []relayDeliveryWait {
+	kept := waits[:0]
+	for _, wait := range waits {
+		select {
+		case <-wait.ack:
+			continue
+		case <-wait.listenerCtx:
+			continue
+		case <-wait.listenerDone:
+			continue
+		case <-s.ctx.Done():
+			return nil
+		default:
+			kept = append(kept, wait)
+		}
+	}
+	return kept
+}
+
+func (s *relaySession) finishPublicationBarrier(
+	previous <-chan struct{},
+	waits []relayDeliveryWait,
+	done chan struct{},
+	barrier chan struct{},
+) {
+	defer close(barrier)
+	defer close(done)
+	select {
+	case <-previous:
+	case <-s.ctx.Done():
+		return
+	}
+	for _, wait := range waits {
+		if !s.waitForDelivery(wait) && s.ctx.Err() != nil {
+			return
+		}
 	}
 }
 
