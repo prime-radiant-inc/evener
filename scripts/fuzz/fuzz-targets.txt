@@ -27,6 +27,7 @@ native:.:./appwire:FuzzMessageDecodeStructured
 native:.:./appwire:FuzzTurnPagingEquivalence
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
+native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./schema:FuzzSessionMetaRoundTrip
 native:agent:./schema:FuzzSessionDisplayName
