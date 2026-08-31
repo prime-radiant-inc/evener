@@ -630,6 +630,9 @@ func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
 			RunningJobs: []appwire.EvenerJobInfo{{
 				JobID: "job_shell", JobType: "shell", Status: "running",
 			}},
+			CompletedJobs: []appwire.EvenerJobInfo{{
+				JobID: "job_done", JobType: "shell", Status: "completed",
+			}},
 		}}
 	}, nil)
 
@@ -637,8 +640,8 @@ func TestLocalDaemonSourceListCarriesRunningNonAgentJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 1 {
-		t.Fatalf("thread list diagnostics = %+v, want one running shell job", resp.Data)
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 2 {
+		t.Fatalf("thread list diagnostics = %+v, want active and completed shell jobs", resp.Data)
 	}
 	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
 	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {

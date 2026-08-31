@@ -88,6 +88,8 @@ type JobStatusInfo struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
 type DelegateStatusInfo struct {

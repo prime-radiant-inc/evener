@@ -107,6 +107,9 @@ interface RailSectionProps {
 function renderRailRow(actions: RailRowActions) {
   return (node: RailNode, info: TreeRowInfo) => <RailRow node={node} info={info} actions={actions} />;
 }
+function isPassiveRailNode(node: RailNode): boolean {
+  return node.kind === "loading" || node.kind === "job";
+}
 function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectionProps) {
   if (nodes.length === 0) return null;
   return (
@@ -673,7 +676,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
 
   function handleToggle(node: RailNode) {
-    if (node.kind === "loading") return;
+    if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
     setExpanded(node.id, value);
     if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
@@ -691,7 +694,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     if (url) navigate(url);
   }
   function handleActivate(node: RailNode) {
-    if (node.kind === "loading") return;
+    if (isPassiveRailNode(node)) return;
     if (node.kind === "overflow") {
       void revealOverflow(node);
       return;

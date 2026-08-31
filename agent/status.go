@@ -44,6 +44,8 @@ type JobStatusInfo struct {
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	ExitCode         *int   `json:"exit_code,omitempty"`
+	Command          string `json:"command,omitempty"`
+	Task             string `json:"task,omitempty"`
 }
 
 // DelegateStatusInfo is the stable delegate read model exposed by
@@ -403,6 +405,8 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 			TranscriptRef:    jobTranscriptRef(rec),
 			OutputBytes:      rec.OutputBytes,
 			ExitCode:         rec.ExitCode,
+			Command:          rec.Command,
+			Task:             rec.Task,
 		})
 	}
 	return jobs

@@ -53,8 +53,11 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
+  activeWorkSummary,
+  type CompletedJobsFoldRailNode,
   displayState,
   type InactiveFoldRailNode,
+  type JobRailNode,
   needsYouDescendantCount,
   type OverflowRailNode,
   type ProjectRailNode,
@@ -62,7 +65,6 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
-  workingDescendantCount,
 } from "./railNodes";
 import { isTopLevelSession } from "./sessionKind";
 
@@ -242,13 +244,16 @@ function Signal({ wireState }: { wireState: string }) {
 // on the main line it charged its width to the title at the rail's default
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
-export function activityGloss(session: RailSession): string {
-  const workingCount = workingDescendantCount(session);
-  const parts = [
-    workingCount === 0
-      ? humanizeState(session.state, session.ask_pending === true)
-      : `${workingCount} subagent${workingCount === 1 ? "" : "s"} working`,
-  ];
+export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
+  const workingCount = activity.workingSubagents;
+  const jobCount = activity.runningJobs;
+  const parts: string[] = [];
+  if (workingCount > 0) {
+    parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
+  } else if (jobCount === 0 || session.state === "active") {
+    parts.push(humanizeState(session.state, session.ask_pending === true));
+  }
+  if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
@@ -262,12 +267,17 @@ export function activityGloss(session: RailSession): string {
 // the project it belongs to is the row it is indented under. Project leads
 // the line (state is what's happening, project is where) the same way
 // activityGloss already leads with state before branch.
-function secondLine(session: RailSession, showsGloss: boolean, showsProject: boolean): string {
+function secondLine(
+  session: RailSession,
+  showsGloss: boolean,
+  showsProject: boolean,
+  activity?: ReturnType<typeof activeWorkSummary>,
+): string {
   const parts: string[] = [];
   // An empty project name has nothing to join, so it must not contribute a
   // leading " · " separator with no text before it (UX fix).
   if (showsProject && session.project !== "") parts.push(session.project);
-  if (showsGloss) parts.push(activityGloss(session));
+  if (showsGloss) parts.push(activityGloss(session, activity));
   return parts.join(" · ");
 }
 
@@ -508,8 +518,16 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // gloss, and with it its second line - which makes signal rows physically
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
-  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(presented));
-  const hasWorkingDescendants = workingDescendantCount(session) > 0;
+  const activity = activeWorkSummary(session);
+  const hasWorkingDescendants = activity.workingSubagents > 0;
+  const hasRunningJobs = activity.runningJobs > 0;
+  const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
+  // Descendant/job activity is a working signal for the owning session. A
+  // failed session still wins over that rollup so an error cannot disappear
+  // behind a green child.
+  let effectiveState = presented;
+  if (effectiveState !== "errored" && hasActiveWork) effectiveState = "active";
+  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
   // Archived session is always nested under its own ProjectRow, never a depth-0
@@ -519,14 +537,14 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const showsActivity = showsGloss || hasWorkingDescendants;
-  const gloss = secondLine(session, showsActivity, showsProject);
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs;
+  const gloss = secondLine(session, showsActivity, showsProject, activity);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
   // has no state family to color, so it stays the plain --ink-low default.
   const activityClass = showsGloss
-    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(presented)] ?? ""}`.trim()
+    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(effectiveState)] ?? ""}`.trim()
     : CLASS.activity;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -550,7 +568,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             unreachable. The title's tooltip also carries what the visible row
             drops (rowTooltip). */}
         <span className={CLASS.titleLine}>
-          <Signal wireState={presented} />
+          <Signal wireState={effectiveState} />
           <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
             {session.title}
           </span>
@@ -684,17 +702,15 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 // hides carry their own. Its label sits at the same x as every other row at
 // its nesting depth - the trailing chevron after the label is its toggle,
 // the same inline affordance session and project rows use.
-function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
-  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+function DisclosureFoldRow({ label, testId, info }: { label: string; testId: string; info: TreeRowInfo }) {
   return (
-    <span className={CLASS.railRow} data-testid="rail-row-inactive-fold">
+    <span className={CLASS.railRow} data-testid={testId}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          {/* Same mouse-only shortcut for the toggle the chevron already offers,
-              and the same a11y reasoning as SessionRow's own label: this text is
-              the treeitem's accessible name, so it can't be aria-hidden. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          {/* The label is the accessible activation target; the chevron is a
+              decorative shortcut for the same treeitem toggle. */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling */}
           <span className={CLASS.label} onClick={info.toggle}>
             {label}
           </span>
@@ -702,6 +718,44 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
         </span>
       </span>
     </span>
+  );
+}
+
+function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
+  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+  return <DisclosureFoldRow label={label} testId="rail-row-inactive-fold" info={info} />;
+}
+
+function jobLabel(job: JobRailNode["job"]): string {
+  return job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+}
+
+function JobRow({ node }: { node: JobRailNode }) {
+  const active = node.active;
+  const status = node.job.status.trim() || (active ? "running" : "completed");
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
+          <span className={CLASS.label} title={`${jobLabel(node.job)} · ${status}`}>
+            {jobLabel(node.job)}
+          </span>
+        </span>
+        <span
+          data-testid="rail-row-job-status"
+          className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
+        >
+          {status}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
+  return (
+    <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
   );
 }
 
@@ -741,8 +795,12 @@ export function RailRow({ node, info, actions }: RailRowProps) {
   switch (node.kind) {
     case "loading":
       return LoadingRow();
+    case "job":
+      return <JobRow node={node} />;
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
+    case "completedJobsFold":
+      return <CompletedJobsFoldRow node={node} info={info} />;
     case "overflow":
       return <OverflowRow node={node} info={info} />;
     case "project":
