@@ -684,6 +684,86 @@ func TestHubRelayBlockedActorDoesNotBlockUnrelatedThread(t *testing.T) {
 	}
 }
 
+func TestHubRelayStaleRelayKeyReleaseDoesNotAffectReplacement(t *testing.T) {
+	const relayKey = "local:remapped-key"
+	canonicalRef := appwire.Ref{SourceID: "local", ThreadID: "canonical-old"}
+	thread := appwire.Thread{
+		ID:     "remapped-key",
+		Source: "local",
+		Evener: appwire.EvenerThread{Ref: relayKey},
+	}
+	newLease := func() *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	oldLease := newLease()
+	staleReadEntered := make(chan struct{})
+	releaseStaleRead := make(chan struct{})
+	oldLease.readHook = func() {
+		close(staleReadEntered)
+		<-releaseStaleRead
+	}
+	replacementLease := newLease()
+	source := &relaySessionTestSource{
+		thread: thread,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return canonicalRef, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionLease, error) {
+			if ref.ThreadID == "canonical-old" {
+				return oldLease, nil
+			}
+			return replacementLease, nil
+		},
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+	params := appwire.ThreadReadParams{Ref: relayKey, Subscribe: true}
+
+	type readResult struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	staleResult := make(chan readResult, 1)
+	go func() {
+		read, err := relays.readThread(context.Background(), source, params)
+		staleResult <- readResult{read: read, err: err}
+	}()
+	<-staleReadEntered
+	canonicalRef = appwire.Ref{SourceID: "local", ThreadID: "canonical-replacement"}
+	replacementRead, err := relays.readThread(context.Background(), source, params)
+	if err != nil {
+		close(releaseStaleRead)
+		t.Fatalf("replacement readThread: %v", err)
+	}
+	if got := source.acquireCallCount(); got != 2 {
+		replacementRead.finish(false)
+		close(releaseStaleRead)
+		t.Fatalf("relay acquisitions = %d, want replacement canonical handle", got)
+	}
+
+	close(releaseStaleRead)
+	stale := <-staleResult
+	if stale.err != nil {
+		replacementRead.finish(false)
+		t.Fatalf("stale readThread: %v", stale.err)
+	}
+	stale.read.finish(false)
+	if got := relays.relayCommandCount(relayKey); got != 1 {
+		replacementRead.finish(false)
+		t.Fatalf("replacement command owners after stale release = %d, want 1", got)
+	}
+	replacementRead.finish(false)
+}
+
 func TestHubAtomicRelayReadLetsDeletionWinAndAbortsHandoff(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
@@ -905,6 +985,8 @@ type relaySessionTestSource struct {
 	legacyReadCalls int
 	legacySubCalls  int
 	startTurnCalls  int
+	resolveRelay    func(appwire.ThreadReadParams) (appwire.Ref, error)
+	acquireRelay    func(appwire.Ref) (appsource.RelaySessionLease, error)
 }
 
 func (s *relaySessionTestSource) ID() string {
@@ -936,6 +1018,9 @@ func (s *relaySessionTestSource) StartTurn(context.Context, appwire.TurnStartPar
 }
 
 func (s *relaySessionTestSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	if s.resolveRelay != nil {
+		return s.resolveRelay(params)
+	}
 	if params.Ref != "" {
 		return appwire.ParseRef(params.Ref)
 	}
@@ -945,11 +1030,20 @@ func (s *relaySessionTestSource) ResolveRelaySession(params appwire.ThreadReadPa
 	return appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}, nil
 }
 
-func (s *relaySessionTestSource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
+func (s *relaySessionTestSource) AcquireRelaySession(ref appwire.Ref) (appsource.RelaySessionLease, error) {
 	s.mu.Lock()
 	s.acquireCalls++
 	s.mu.Unlock()
+	if s.acquireRelay != nil {
+		return s.acquireRelay(ref)
+	}
 	return s.lease, nil
+}
+
+func (s *relaySessionTestSource) acquireCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acquireCalls
 }
 
 func (s *relaySessionTestSource) legacyReadCallCount() int {

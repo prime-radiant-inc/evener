@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
@@ -21,7 +22,13 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 		childRef = "local:child-thread"
 	)
 	pool := &aliasRelayPool{}
-	source := &aliasRelaySource{pool: pool}
+	source := &aliasRelaySource{
+		pool: pool,
+		canonicalRefs: map[string]appwire.Ref{
+			"root-thread":  {SourceID: "local", ThreadID: "root-thread"},
+			"child-thread": {SourceID: "local", ThreadID: "root-thread"},
+		},
+	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	appServer := newHubAppServer(hubcore.WebConfig{
@@ -41,8 +48,11 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 			t.Fatalf("subscribe long-lived client to %s: %v", ref, err)
 		}
 	}
-	if got := pool.listenerCount(); got != 2 {
-		t.Fatalf("relay listeners = %d, want two alias handles sharing one session", got)
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("relay acquisitions = %d, want one canonical session", got)
+	}
+	if got := pool.listenerCount(); got != 1 {
+		t.Fatalf("relay listeners = %d, want one canonical listener", got)
 	}
 
 	fresh := dialHubRPC(t, hub)
@@ -95,6 +105,70 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 	if got := aliasDeltaCountUntilBarrier(t, fresh, "one child delta"); got != 0 {
 		t.Fatalf("fresh root-only client received child delta %d times, want none", got)
+	}
+}
+
+func TestHubRelayConcurrentAliasesShareCanonicalHandle(t *testing.T) {
+	const (
+		rootRef  = "local:root-concurrent"
+		childRef = "local:child-concurrent"
+	)
+	acquireEntered := make(chan struct{}, 2)
+	releaseAcquire := make(chan struct{})
+	childResolved := make(chan struct{})
+	var childResolveOnce sync.Once
+	pool := &aliasRelayPool{}
+	source := &aliasRelaySource{
+		pool: pool,
+		canonicalRefs: map[string]appwire.Ref{
+			"root-concurrent":  {SourceID: "local", ThreadID: "root-concurrent"},
+			"child-concurrent": {SourceID: "local", ThreadID: "root-concurrent"},
+		},
+		resolveHook: func(params appwire.ThreadReadParams) {
+			if params.Ref == childRef {
+				childResolveOnce.Do(func() { close(childResolved) })
+			}
+		},
+		acquireEntered: acquireEntered,
+		acquireGate:    releaseAcquire,
+	}
+	relays := newHubRelayFunctions(
+		appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"}),
+		hubcore.WebConfig{},
+		appsource.NewRegistry(),
+	)
+
+	type readResult struct {
+		read *hubThreadReadResult
+		err  error
+	}
+	read := func(ref string) <-chan readResult {
+		result := make(chan readResult, 1)
+		go func() {
+			got, err := relays.readThread(context.Background(), source, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+			result <- readResult{read: got, err: err}
+		}()
+		return result
+	}
+
+	rootResult := read(rootRef)
+	<-acquireEntered
+	childResult := read(childRef)
+	<-childResolved
+	close(releaseAcquire)
+
+	for ref, result := range map[string]<-chan readResult{rootRef: rootResult, childRef: childResult} {
+		got := <-result
+		if got.err != nil {
+			t.Fatalf("readThread(%s): %v", ref, got.err)
+		}
+		got.read.finish(false)
+	}
+	if got := source.acquireCallCount(); got != 1 {
+		t.Fatalf("relay acquisitions = %d, want one for concurrent aliases", got)
+	}
+	if got := pool.listenerCount(); got != 1 {
+		t.Fatalf("relay listeners = %d, want one for concurrent aliases", got)
 	}
 }
 
@@ -168,22 +242,57 @@ type aliasRelaySource struct {
 	relayLifecycleSource
 	pool              *aliasRelayPool
 	authoritativeRefs map[string]string
+	canonicalRefs     map[string]appwire.Ref
+
+	mu             sync.Mutex
+	acquireCalls   int
+	resolveHook    func(appwire.ThreadReadParams)
+	acquireGate    <-chan struct{}
+	acquireEntered chan<- struct{}
 }
 
 func (*aliasRelaySource) ID() string { return "local" }
 
 func (s *aliasRelaySource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	if s.resolveHook != nil {
+		s.resolveHook(params)
+	}
+	var ref appwire.Ref
 	if params.Ref != "" {
-		return appwire.ParseRef(params.Ref)
+		parsed, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.Ref{}, err
+		}
+		ref = parsed
+	} else {
+		if params.ThreadID == "" {
+			return appwire.Ref{}, errors.New("missing relay target")
+		}
+		ref = appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}
 	}
-	if params.ThreadID == "" {
-		return appwire.Ref{}, errors.New("missing relay target")
+	if canonical := s.canonicalRefs[ref.ThreadID]; canonical != (appwire.Ref{}) {
+		return canonical, nil
 	}
-	return appwire.Ref{SourceID: s.ID(), ThreadID: params.ThreadID}, nil
+	return ref, nil
 }
 
 func (s *aliasRelaySource) AcquireRelaySession(appwire.Ref) (appsource.RelaySessionLease, error) {
+	s.mu.Lock()
+	s.acquireCalls++
+	s.mu.Unlock()
+	if s.acquireEntered != nil {
+		s.acquireEntered <- struct{}{}
+	}
+	if s.acquireGate != nil {
+		<-s.acquireGate
+	}
 	return &aliasRelayLease{source: s}, nil
+}
+
+func (s *aliasRelaySource) acquireCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acquireCalls
 }
 
 type aliasRelayLease struct {
