@@ -475,7 +475,10 @@ func fuzzScenarioPastIndex_FindMissDoesNotRebuild(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 
-	if _, ok := idx.Find("02wMz5Txv3jkJ4xWqYvQrZ"); ok {
+	// A valid-shaped id that is absent everywhere: an INVALID id would
+	// return at the ValidateSessionID guard and never reach the miss path,
+	// making this scenario vacuous.
+	if _, ok := idx.Find("034GVn7HewXzI8xWeLBkCA"); ok {
 		t.Fatal("expected miss for a session that does not exist")
 	}
 	if _, ok := idx.findCached("02wMz5Txv2enqVTitaig6F"); ok {
@@ -611,6 +614,52 @@ func fuzzScenarioPastIndex_FindFoldWritesFTS(t *testing.T) {
 	}
 	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == foldedID }) {
 		t.Fatalf("FTS did not surface the probe-folded session %s (results: %d entries)", foldedID, len(results))
+	}
+}
+
+// fuzzScenarioPastIndex_FindRepairsStaleFTS pins the repair path for a FTS
+// lost-update: when the FTS mirror is stale (a fold's or rebuild's rebuildFTS
+// lost its SQLITE_BUSY race, or the db was briefly unwritable), the in-memory
+// index still serves Find from cache — but search would miss the session. A
+// cache-hit Find must notice i.fts is false and re-publish, so searchFTS
+// serves every indexed id again. Without the repair, staleness persisted
+// until the next full Rebuild (which itself could lose the same race).
+func fuzzScenarioPastIndex_FindRepairsStaleFTS(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             sessionID,
+		UpdatedAt:      time.Unix(1_700_000_000, 0).UTC(),
+		OriginalPrompt: "fts-repair-needle",
+	})
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the lost-update: force the FTS mirror stale while the
+	// in-memory index stays populated.
+	idx.mu.Lock()
+	idx.fts = false
+	idx.mu.Unlock()
+	if results, ok := idx.searchFTS("fts-repair-needle"); ok && len(results) > 0 {
+		t.Fatalf("FTS unexpectedly served the session while stale (results: %d)", len(results))
+	}
+
+	// A cache-hit Find must repair the mirror.
+	if _, ok := idx.Find(sessionID); !ok {
+		t.Fatal("expected the indexed session to be found")
+	}
+	results, ok := idx.searchFTS("fts-repair-needle")
+	if !ok {
+		t.Fatal("FTS index still unavailable after the repair; cache-hit Find must re-publish a stale mirror")
+	}
+	if !slices.ContainsFunc(results, func(e PastEntry) bool { return e.ID == sessionID }) {
+		t.Fatalf("FTS did not surface the repaired session %s (results: %d entries)", sessionID, len(results))
 	}
 }
 
