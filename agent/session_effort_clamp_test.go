@@ -96,11 +96,13 @@ func alwaysOnThinkingProfile() *provider.Profile {
 	return p.WithResolved(res)
 }
 
-// TestBuildModelRequest_ThinkingAlwaysOn_InjectsNoEffort pins spec §7.4: a
-// mandatory-reasoning model is a builder concern, never an injected effort.
-// With no --reasoning-effort configured the request carries none, and the
-// protocol's builder is what keeps the always-on model legal.
-func TestBuildModelRequest_ThinkingAlwaysOn_InjectsNoEffort(t *testing.T) {
+// A mandatory-reasoning row is not a special case: it is a reasoning model,
+// so with nothing configured it takes the request rule's default like any
+// other — medium, clamped to its own ladder, which tops out below medium
+// here at [low high max] and so resolves to high. The always-on flag is left
+// to the protocol builder, which is what keeps the model legal when no
+// effort reaches it at all.
+func TestBuildModelRequest_ThinkingAlwaysOn_TakesTheDefault(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	profile := alwaysOnThinkingProfile()
@@ -108,8 +110,8 @@ func TestBuildModelRequest_ThinkingAlwaysOn_InjectsNoEffort(t *testing.T) {
 	// No session reasoning effort configured (empty string).
 	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "")
 
-	if req.ReasoningEffort != nil {
-		t.Fatalf("ReasoningEffort = %q, want nil (no effort is ever injected)", *req.ReasoningEffort)
+	if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %v, want high (medium clamped to [low high max])", req.ReasoningEffort)
 	}
 }
 
@@ -129,7 +131,7 @@ func TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins(t *testing.T) {
 
 // TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits verifies that a
 // model the user declared reasoning=false gets no effort even when its row
-// also carries thinking_always_on: an unconfigured effort is never filled in,
+// also carries thinking_always_on: the default reaches reasoning models only,
 // and the protocol builder is what keeps a mandatory-reasoning model legal.
 func TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits(t *testing.T) {
 	t.Parallel()

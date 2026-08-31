@@ -293,6 +293,14 @@ func (p *Profile) ReasoningEffortLevels() []string {
 	return cloneStringSlice(p.res.Caps.EffortValues)
 }
 
+// DefaultReasoningEffort is the effort the model states it runs at when the
+// request carries none (spec §7.4), normalized to the canonical vocabulary so
+// a hand-written "High" or "off" means what it says. Empty means no source
+// states one and the caller applies its own fallback.
+func (p *Profile) DefaultReasoningEffort() string {
+	return llm.NormalizeReasoningEffort(registry.StringValue(p.res.Caps.DefaultEffort))
+}
+
 // SupportsWebSearch reports whether the row serves provider-native web search.
 func (p *Profile) SupportsWebSearch() bool { return registry.BoolValue(p.res.Caps.WebSearch) }
 

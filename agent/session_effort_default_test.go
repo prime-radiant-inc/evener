@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // resolveRequestEffort is the one rule for what effort a request carries.
@@ -50,13 +51,17 @@ func TestResolveRequestEffort(t *testing.T) {
 	}
 }
 
+// reasoningProfile resolves model on a lunaroute-style gateway whose row
+// carries caps, so the request-effort rule runs against facts that came
+// through registry.Resolve rather than a hand-built profile.
+func reasoningProfile(model string, caps registry.Caps) *provider.Profile {
+	caps.Reasoning = new(true)
+	return resolveTestProfile("lunaroute", lunarouteInstance(map[string]registry.Model{model: {Caps: caps}}), model)
+}
+
 // buildModelRequest feeds the profile's model facts into that rule.
 func TestBuildModelRequest_AppliesRequestEffortRule(t *testing.T) {
 	t.Parallel()
-	reasoning := func(model string, info llm.ModelInfo) *provider.Profile {
-		info.SupportsReasoning = true
-		return provider.NewOpenAIProfile(model).WithLiveModelInfo(info)
-	}
 	cases := []struct {
 		name       string
 		profile    *provider.Profile
@@ -67,19 +72,19 @@ func TestBuildModelRequest_AppliesRequestEffortRule(t *testing.T) {
 			// A gateway-fronted glm-5.3 spent 25k reasoning tokens on one turn
 			// when the request carried no effort; the default bounds that.
 			name:       "unset gets the default clamped to the model's levels",
-			profile:    reasoning("lunaroute/glm-5.3", llm.ModelInfo{ReasoningEffortLevels: []string{"high", "max"}}),
+			profile:    reasoningProfile("glm-5.3", registry.Caps{EffortValues: []string{"high", "max"}}),
 			configured: "",
 			want:       "high",
 		},
 		{
 			name:       "unset uses the model's stated default",
-			profile:    reasoning("gateway-model", llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}, DefaultReasoningEffort: "high"}),
+			profile:    reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"low", "medium", "high"}, DefaultEffort: new("high")}),
 			configured: "",
 			want:       "high",
 		},
 		{
 			name:       "explicit none is never overridden by the default",
-			profile:    reasoning("lunaroute/glm-5.3", llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}}),
+			profile:    reasoningProfile("glm-5.3", registry.Caps{EffortValues: []string{"low", "medium", "high"}}),
 			configured: "none",
 			want:       "",
 		},

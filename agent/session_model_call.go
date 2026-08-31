@@ -794,18 +794,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 	if mt := profile.MaxOutputTokens(); mt > 0 {
 		req.MaxTokens = &mt
 	}
-	if reasoningEffort != "" && profile.SupportsReasoning() {
-		// Clamp to what the active model supports so loop-detector escalation,
-		// the --reasoning-effort flag, and the UI selector never send a level the
-		// provider rejects (e.g. "xhigh" to a model that tops out at "high").
-		// Gated on SupportsReasoning so a model explicitly declared non-reasoning
-		// (providers.toml reasoning=false) never gets reasoning_effort on the
-		// wire — ClampReasoningEffort passes the value through unchanged when
-		// the supported list is empty, which would otherwise leak the session
-		// effort straight through and 400.
-		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
-		req.ReasoningEffort = &v
-	}
+	req.ReasoningEffort = resolveRequestEffort(reasoningEffort, profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
 	s.applyModelRequestMetadata(&req)
 	return req
 }
@@ -962,20 +951,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := responsesContinuationModelFallbackRequest(req, fullHistory)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			if origEffort != "" && fbProfile.SupportsReasoning() {
-				// Clamp to the FALLBACK model's own levels: fbProfile is
-				// resolved from the fallback reference, so its effort ladder
-				// is the fallback model's, not the primary's.
-				//
-				// Gated on SupportsReasoning so a fallback explicitly declared
-				// non-reasoning never gets reasoning_effort on the wire (see the
-				// same guard on the primary path above).
-				fbLevels := fbProfile.ReasoningEffortLevels()
-				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
-				fbReq.ReasoningEffort = &clamped
-			} else {
-				fbReq.ReasoningEffort = nil
-			}
+			// The same rule as the primary path, against the FALLBACK model's
+			// own facts: fbProfile is resolved from the fallback reference, so
+			// its ladder and stated default are the fallback model's, not the
+			// primary's.
+			fbReq.ReasoningEffort = resolveRequestEffort(origEffort, fbProfile.SupportsReasoning(), fbProfile.ReasoningEffortLevels(), fbProfile.DefaultReasoningEffort())
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
