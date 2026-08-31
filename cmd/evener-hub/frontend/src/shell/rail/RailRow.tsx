@@ -730,6 +730,21 @@ function jobLabel(job: JobRailNode["job"]): string {
   return job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
 }
 
+// jobTitle is the job row's hover tooltip: the full command that actually ran
+// (full_command, untruncated, when the label's command was cut by the wire's
+// label bound) plus the tool call's `intent` — why the model said it is
+// running the command. Status rides along the same way the old single-line
+// title carried it, so a hover still answers "what is this doing" end to end.
+function jobTitle(job: JobRailNode["job"], status: string): string {
+  const command =
+    job.full_command?.trim() || job.command?.trim() || job.task?.trim() || job.job_type?.trim() || job.job_id;
+  const intent = job.intent?.trim();
+  if (intent) {
+    return `${command} · ${intent} · ${status}`;
+  }
+  return `${command} · ${status}`;
+}
+
 function JobRow({ node }: { node: JobRailNode }) {
   const active = node.active;
   const status = node.job.status.trim() || (active ? "running" : "completed");
@@ -738,7 +753,7 @@ function JobRow({ node }: { node: JobRailNode }) {
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
           <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
-          <span className={CLASS.label} title={`${jobLabel(node.job)} · ${status}`}>
+          <span className={CLASS.label} title={jobTitle(node.job, status)}>
             {jobLabel(node.job)}
           </span>
         </span>

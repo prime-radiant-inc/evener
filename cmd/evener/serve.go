@@ -1428,6 +1428,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			OutputBytes:      job.OutputBytes,
 			TranscriptRef:    job.TranscriptRef,
 			Command:          job.Command,
+			Intent:           job.Intent,
 			Task:             job.Task,
 		})
 	}

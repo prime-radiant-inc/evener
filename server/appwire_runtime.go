@@ -2052,6 +2052,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 			OutputBytes:      job.OutputBytes,
 			TranscriptRef:    job.TranscriptRef,
 			Command:          job.Command,
+			Intent:           job.Intent,
 			Task:             job.Task,
 		})
 	}

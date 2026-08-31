@@ -160,6 +160,13 @@ type JobRecord struct {
 	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
 	Description      string  `json:"description,omitempty"`
 	Command          string  `json:"command,omitempty"`
+	// Intent is the tool call's `intent` argument (the model's own one-line
+	// statement of why this command is being run), captured at launch.
+	// Distinct from Description (the shell tool's separate `description`
+	// arg): Description is a human gloss for the command; Intent is the
+	// purpose the caller stated. Both may be present, and either may be
+	// empty when the model omitted it.
+	Intent string `json:"intent,omitempty"`
 	// Background reports that a shell job is running in the background rather
 	// than being waited on inline: stamped at launch for mode:"background", and
 	// at promotion when a foreground command outlives its block timeout. No

@@ -46,8 +46,12 @@ const (
 )
 
 type shellArgs struct {
-	Command        string
-	Description    string
+	Command     string
+	Description string
+	// Intent is the tool call's `intent` argument (see ctxToolCallIntent):
+	// why the model says it is running the command. Stamped onto the job
+	// record so job surfaces can show it with the command.
+	Intent         string
 	Mode           shellMode
 	Background     bool
 	BlockTimeoutMS int
@@ -516,6 +520,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Type:             jobstore.JobShell,
 			Status:           jobstore.StatusRunning,
 			Command:          args.Command,
+			Intent:           args.Intent,
 			WorkingDir:       args.WorkingDir,
 			Background:       args.Background,
 			Description:      args.Description,
@@ -605,6 +610,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		JobID:            rec.JobID,
 		Type:             rec.Type,
 		Command:          rec.Command,
+		Intent:           rec.Intent,
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,

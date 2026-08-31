@@ -28,10 +28,16 @@ const (
 	maxNavigationManifestBytes = 256 * 1024
 	maxNavigationCatalogBytes  = 512 * 1024
 
-	maxNavigationTitleRunes      = 200
-	maxNavigationLabelRunes      = 512
-	maxNavigationIdentityBytes   = 1_024
-	maxNavigationWorkingDirBytes = 4_096
+	maxNavigationTitleRunes = 200
+	maxNavigationLabelRunes = 512
+	// maxNavigationFullCommandRunes bounds FullCommand, the tooltip-sized
+	// untruncated command. Generous rather than label-tight: a tooltip can
+	// wrap, but it must not lie — a cut-off "full" command is worse than a
+	// long one. Still bounded so one pathological command cannot dominate
+	// the response's byte budget (navigationJSONFits).
+	maxNavigationFullCommandRunes = 4_096
+	maxNavigationIdentityBytes    = 1_024
+	maxNavigationWorkingDirBytes  = 4_096
 )
 
 type navigationResourceKind string
@@ -1074,12 +1080,14 @@ func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.
 	out := make(hubapi.NavigationArray[hubapi.NavigationJobSummary], 0, len(jobs))
 	for _, job := range jobs {
 		out = append(out, hubapi.NavigationJobSummary{
-			JobID:   job.JobID,
-			JobType: job.JobType,
-			Status:  job.Status,
-			Command: truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
-			Task:    truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
-			Reason:  truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
+			JobID:       job.JobID,
+			JobType:     job.JobType,
+			Status:      job.Status,
+			Command:     truncateNavigationRunes(job.Command, maxNavigationLabelRunes),
+			FullCommand: truncateNavigationRunes(job.Command, maxNavigationFullCommandRunes),
+			Task:        truncateNavigationRunes(job.Task, maxNavigationLabelRunes),
+			Reason:      truncateNavigationRunes(job.Reason, maxNavigationLabelRunes),
+			Intent:      truncateNavigationRunes(job.Intent, maxNavigationLabelRunes),
 		})
 	}
 	return out
