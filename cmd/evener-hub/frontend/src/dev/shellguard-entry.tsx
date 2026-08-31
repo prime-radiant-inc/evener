@@ -389,13 +389,40 @@ function measureMobileSidebar() {
 
 const booted = boot();
 
+// Interactive elements inside the MOBILE rail panel (the session list a phone
+// user taps through) whose rendered box falls under the platform tap floor.
+// Zero-box elements (display:none / visibility:hidden at measure time) are not
+// targets and are excluded. Both dimensions are reported; a target fails when
+// EITHER is under the floor - a 44px-tall row whose "⋯" button is 20px wide is
+// still a miss (Apple HIG/WCAG 2.5.5's 44x44).
+export const TAP_TARGET_MIN = 44;
+
+function measureTapTargets() {
+  const settings = document.querySelector("[data-testid='rail-settings']");
+  const rail = settings?.parentElement?.parentElement ?? null;
+  const panel = rail?.parentElement?.parentElement ?? null;
+  const interactive = panel
+    ? [...panel.querySelectorAll('button, a[href], input, [role="treeitem"], [role="button"]')]
+    : [];
+  const offenders = interactive
+    .filter((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      return r.width < TAP_TARGET_MIN || r.height < TAP_TARGET_MIN;
+    })
+    .map((el) => ({ selector: describe(el), box: rect(el) }));
+  return { min: TAP_TARGET_MIN, measured: interactive.length, offenders };
+}
+
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
   measureShell: typeof measureShell;
   measureMobileSidebar: typeof measureMobileSidebar;
+  measureTapTargets: typeof measureTapTargets;
 };
 target.measureShell = measureShell;
 target.measureMobileSidebar = measureMobileSidebar;
+target.measureTapTargets = measureTapTargets;
 target.settledShell = (async () => {
   await booted;
   const deadline = performance.now() + 15_000;
