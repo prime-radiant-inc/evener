@@ -43,7 +43,26 @@ type Client struct {
 	overrides     map[string]ProviderAdapter
 	pinnedDefault string
 	firstOverride string
-	middleware    []Middleware
+
+	// middlewareMu guards middleware. One client is legitimately shared by
+	// concurrent callers — two sessions on the same injected client each
+	// attach their own API logger — so registration races dispatch. An
+	// RWMutex is the whole cost: one RLock per dispatch is noise next to the
+	// network call it precedes.
+	middlewareMu sync.RWMutex
+	middleware   []Middleware
+}
+
+// middlewareSnapshot returns the registered middleware for one read. The
+// returned header is safe to iterate without the lock: a later Use appends at
+// or past this snapshot's length, which it never reads.
+func (c *Client) middlewareSnapshot() []Middleware {
+	if c == nil {
+		return nil
+	}
+	c.middlewareMu.RLock()
+	defer c.middlewareMu.RUnlock()
+	return c.middleware
 }
 
 // ClientOption configures NewClient.
@@ -288,7 +307,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		}
 		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
-	handler := applyMiddlewareComplete(base, c.middleware)
+	handler := applyMiddlewareComplete(base, c.middlewareSnapshot())
 	resp, err := handler(ctx, req)
 	resp.Provider = t.name
 	err = RewriteErrorProvider(err, t.name)
@@ -322,7 +341,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		}
 		return t.protocol.Stream(c.withHasher(ctx), req, t.res)
 	}
-	handler := applyMiddlewareStream(base, c.middleware)
+	handler := applyMiddlewareStream(base, c.middlewareSnapshot())
 	st, err := handler(ctx, req)
 	if err != nil {
 		return nil, RewriteErrorProvider(err, t.name)
@@ -470,7 +489,9 @@ func (c *Client) Use(mw ...Middleware) {
 	if c == nil {
 		return
 	}
+	c.middlewareMu.Lock()
 	c.middleware = append(c.middleware, mw...)
+	c.middlewareMu.Unlock()
 }
 
 type sessionAPILogReleaser interface {
@@ -484,7 +505,7 @@ func (c *Client) ReleaseSessionAPILog(sessionID string) error {
 		return nil
 	}
 	var result error
-	for _, middleware := range c.middleware {
+	for _, middleware := range c.middlewareSnapshot() {
 		if releaser, ok := middleware.(sessionAPILogReleaser); ok {
 			result = errors.Join(result, releaser.ReleaseSession(sessionID))
 		}
@@ -501,7 +522,7 @@ func (c *Client) bindAPIAttemptSinkBeforeDispatch(ctx context.Context) context.C
 		return ctx
 	}
 	var sink APIAttemptSink
-	for _, middleware := range c.middleware {
+	for _, middleware := range c.middlewareSnapshot() {
 		if candidate, ok := middleware.(APIAttemptSink); ok {
 			sink = candidate
 		}
@@ -531,7 +552,7 @@ func (c *Client) beginProviderOperation(ctx context.Context) (context.Context, *
 	state, _ := ctx.Value(apiAttemptSinkContextKey{}).(apiAttemptSinkContext)
 	sink := state.sink
 	if sink == nil {
-		for _, middleware := range c.middleware {
+		for _, middleware := range c.middlewareSnapshot() {
 			if candidate, ok := middleware.(APIAttemptSink); ok {
 				sink = candidate
 			}
