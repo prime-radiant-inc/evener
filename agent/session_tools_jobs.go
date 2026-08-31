@@ -1921,7 +1921,11 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	}
 	statuses := make([]jobstore.Status, 0, len(values))
 	for _, value := range values {
-		status := jobstore.Status(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		status := jobstore.Status(s)
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
@@ -2087,7 +2091,11 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 	}
 	types := make([]jobstore.JobType, 0, len(values))
 	for _, value := range values {
-		jobType := jobstore.JobType(fmt.Sprint(value))
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		jobType := jobstore.JobType(s)
 		switch jobType {
 		case jobstore.JobShell, jobstore.JobType(delegateResourceType):
 			types = append(types, jobType)
