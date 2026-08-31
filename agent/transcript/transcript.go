@@ -901,14 +901,6 @@ func byteOffsetOfEntry(f *os.File, entryIndex int) (int64, error) {
 // and the resume's own full read (the fallback the seeded fold's caller
 // holds) remains the authority for anything the fold would have caught.
 func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string) {
-	// The message content lives on the attention's steering turn; the sidecar
-	// re-marshals it from the decoded entry.
-	byAttention := map[string]Entry{}
-	for i := range entries {
-		if id := entries[i].Turn.AttentionID; id != "" {
-			byAttention[id] = entries[i]
-		}
-	}
 	pending = nil
 	commits = nil
 	mutations = map[string]string{}
@@ -920,13 +912,9 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 		for _, commit := range turn.DelegateDeliveryCommits {
 			commits = append(commits, SidecarDeliveryCommit{DeliveryID: commit.DeliveryID, ToolCallID: commit.ToolCallID})
 		}
-		if turn.AttentionID == "" {
-			continue
-		}
-		// A pending attention is one whose steering turn exists with no
-		// resolution anywhere in the file.
 	}
-	// Resolution pass: an attention is pending only if unresolved.
+	// Resolution pass: an attention is pending only if its steering turn
+	// exists with no resolution anywhere in the file.
 	resolved := map[string]bool{}
 	for i := range entries {
 		if r := entries[i].Turn.AttentionResolution; r != nil {
