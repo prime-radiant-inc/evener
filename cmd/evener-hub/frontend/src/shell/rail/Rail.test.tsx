@@ -16,6 +16,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, Rail } from "./Rail";
+import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 
 function summary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
@@ -148,6 +149,16 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText("Live resource")).toBeTruthy();
     expect(screen.getAllByText("Proj").length).toBeGreaterThan(0);
+  });
+
+  test("can delegate scrolling to its parent container", () => {
+    installState([sectionResource("live", [summary({ title: "Live resource" })])]);
+    const { container } = render(<Rail scrollOwner="parent" />);
+    const body = container.querySelector(`.${railStyles.body}`);
+
+    expect(body).toBeTruthy();
+    expect(railStyles.parentScrollBody).toBeTruthy();
+    expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
   });
   test("shows bounded loading and empty states from manifest/resource state", () => {
     installState(

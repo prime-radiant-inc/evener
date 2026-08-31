@@ -83,6 +83,8 @@ const CLASS = {
   footer: requireClass(styles.footer, "Rail.module.css", "footer"),
   footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
+  parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
+  parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
@@ -201,6 +203,9 @@ export interface RailProps {
   onWidthChange?: (width: number) => void;
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
+  /** The normal rail owns its list scrolling. Mobile's Sheet can opt to own
+   * the whole rail instead, so the rail grows with its content. */
+  scrollOwner?: "rail" | "parent";
 }
 interface RevealRequestGuard {
   target: string;
@@ -465,7 +470,14 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
   );
 }
 
-function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
+function NavigationRail({
+  onHide,
+  width,
+  onWidthChange,
+  revealTarget,
+  onRevealConsumed,
+  scrollOwner = "rail",
+}: RailProps = {}) {
   const client = useClient();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
@@ -1050,9 +1062,10 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
   const displayed = nonEmpty(resources);
   const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
+  const parentOwnsScroll = scrollOwner === "parent";
   return (
     <div
-      className={CLASS.rail}
+      className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
       ref={railRef}
       style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
     >
@@ -1089,7 +1102,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
           </Button>
         </div>
       </div>
-      <div className={CLASS.body} ref={bodyRef}>
+      <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
         {loading && !displayed && <Skeleton lines={6} />}
         {!loading && !displayed && loadError && (
           <EmptyState

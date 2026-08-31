@@ -33,6 +33,9 @@ export interface SheetProps {
    * header/body classes flow to OverlayPanel. Defaults to undefined; existing
    * consumers that don't pass it render exactly as before. */
   expandable?: ExpandableConfig;
+  /** Optional extra class appended to the panel element after the side and
+   * size classes. */
+  panelClassName?: string;
 }
 
 const BASE_PANEL_CLASS = requireClass(dialogStyles.panel, "dialog.module.css", "panel");
@@ -88,6 +91,7 @@ export function Sheet({
   children,
   footer,
   expandable,
+  panelClassName,
 }: SheetProps) {
   const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
   const dragStartYRef = useRef<number | null>(null);
@@ -153,15 +157,14 @@ export function Sheet({
     window.addEventListener("pointerup", handlePointerUp);
   }
 
+  const composedPanelClassName = panelClassName
+    ? `${SIDE_CLASS[side]} ${SIZE_CLASS[size]} ${panelClassName}`
+    : `${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`;
+  const composedExpandablePanelClassName = panelClassName ? `${SIDE_CLASS[side]} ${panelClassName}` : SIDE_CLASS[side];
+
   if (!expandable) {
     return (
-      <OverlayPanel
-        open={open}
-        onClose={onClose}
-        title={title}
-        footer={footer}
-        panelClassName={`${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`}
-      >
+      <OverlayPanel open={open} onClose={onClose} title={title} footer={footer} panelClassName={composedPanelClassName}>
         {children}
       </OverlayPanel>
     );
@@ -179,7 +182,7 @@ export function Sheet({
       handle={<DragHandle onPointerDown={startDrag} />}
       headerClassName={EXPANDABLE_HEADER_CLASS}
       bodyClassName={EXPANDABLE_BODY_CLASS}
-      panelClassName={`${SIDE_CLASS[side]} ${EXPANDABLE_BOTTOM_CLASS}`}
+      panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}
     >
       <div data-geometry={geometry}>{children}</div>

@@ -129,6 +129,14 @@ test('offers "Jump back in" to the first needs-you session when one exists', () 
   expect(screen.getByRole("button", { name: /Jump back in.*Fix the thing/s })).toBeTruthy();
 });
 
+test('can hide "Jump back in" while retaining orientation text', () => {
+  setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
+  render(<WelcomeContent showResume={false} />);
+
+  expect(screen.queryByRole("button", { name: /Jump back in/ })).toBeNull();
+  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
+});
+
 test("falls back to the first live session when nothing needs you", () => {
   setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);

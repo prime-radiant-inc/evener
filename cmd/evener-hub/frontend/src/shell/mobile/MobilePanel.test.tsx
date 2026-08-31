@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { MobilePanel } from "./MobilePanel";
+import styles from "./MobilePanel.module.css";
 
 // The brief's tests call openPane("doc", ...) and openPane("welcome"). Both
 // require a registered pane type (openPane -> paneFor throws otherwise), so
@@ -46,10 +47,9 @@ test("renders rail content when open", () => {
   expect(screen.getByTestId("rail-fixture")).toBeTruthy();
 });
 
-test("renders a search box at the top", () => {
+test("does not render an inline search box", () => {
   render(<MobilePanel rail={<RailFixture />} open onClose={vi.fn()} />);
-  expect(screen.getByRole("searchbox")).toBeTruthy();
-  expect(screen.getByRole("searchbox").getAttribute("placeholder")).toBe("Search sessions");
+  expect(screen.queryByRole("searchbox")).toBeNull();
 });
 
 test("renders welcome content when nothing is focused", () => {
@@ -57,6 +57,26 @@ test("renders welcome content when nothing is focused", () => {
   workspaceStore.getState().openPane("welcome");
   render(<MobilePanel rail={<RailFixture />} open onClose={vi.fn()} />);
   expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
+});
+
+test("keeps mobile orientation text but hides resume and shortcut hints", () => {
+  workspaceStore.getState().openPane("welcome");
+  render(<MobilePanel rail={<RailFixture />} open onClose={vi.fn()} />);
+
+  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Jump back in/i })).toBeNull();
+  expect(screen.queryByText("command palette")).toBeNull();
+  expect(screen.queryByText("focus the composer")).toBeNull();
+  expect(screen.queryByText("next session needing you")).toBeNull();
+  expect(screen.queryByText(/shows all shortcuts/i)).toBeNull();
+});
+
+test("makes the Sheet panel the mobile scroll owner", () => {
+  render(<MobilePanel rail={<RailFixture />} open onClose={vi.fn()} />);
+  const panel = screen.getByRole("dialog");
+
+  expect(styles.singleScrollPanel).toBeTruthy();
+  expect(panel.className.split(/\s+/)).toContain(styles.singleScrollPanel);
 });
 
 test("hides welcome content when a session is focused", () => {

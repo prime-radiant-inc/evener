@@ -1,3 +1,3 @@
-.searchWrap {
-  padding: 0 var(--space-2) var(--space-2);
+.singleScrollPanel {
+  overflow: hidden;
 }

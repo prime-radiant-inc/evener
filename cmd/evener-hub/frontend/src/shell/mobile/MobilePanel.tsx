@@ -1,6 +1,6 @@
-import { type ChangeEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { WelcomeContent } from "../../panes/welcome/WelcomeContent";
-import { Input, Sheet } from "../../widgets";
+import { Sheet } from "../../widgets";
 import { useWorkspaceStore } from "../workspace";
 import styles from "./MobilePanel.module.css";
 
@@ -18,8 +18,6 @@ export function MobilePanel({ rail, open, onClose }: MobilePanelProps) {
 
   const prevFocusedIdRef = useRef(focusedPaneId);
   const prevOpenRef = useRef(open);
-  const [search, setSearch] = useState("");
-
   useEffect(() => {
     if (open && prevOpenRef.current !== open) prevFocusedIdRef.current = focusedPaneId;
     prevOpenRef.current = open;
@@ -27,22 +25,16 @@ export function MobilePanel({ rail, open, onClose }: MobilePanelProps) {
     prevFocusedIdRef.current = focusedPaneId;
   }, [focusedPaneId, open, onClose]);
 
-  function handleSearchChange(e: ChangeEvent<HTMLInputElement>) {
-    setSearch(e.target.value);
-  }
-
   return (
-    <Sheet side="left" open={open} onClose={onClose} title="Sessions" size="wide">
-      {nothingFocused && <WelcomeContent showHints />}
-      <div className={styles.searchWrap}>
-        <Input
-          type="search"
-          value={search}
-          onChange={handleSearchChange}
-          placeholder="Search sessions"
-          aria-label="Search sessions"
-        />
-      </div>
+    <Sheet
+      side="left"
+      open={open}
+      onClose={onClose}
+      title="Sessions"
+      size="wide"
+      panelClassName={styles.singleScrollPanel}
+    >
+      {nothingFocused && <WelcomeContent showResume={false} showHints={false} />}
       {rail}
     </Sheet>
   );

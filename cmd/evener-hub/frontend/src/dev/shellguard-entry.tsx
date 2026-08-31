@@ -342,13 +342,60 @@ function measureShell() {
   };
 }
 
+function scrollMetrics(el: Element | null) {
+  if (el === null) return null;
+  const htmlEl = el as HTMLElement;
+  const computed = getComputedStyle(el);
+  return {
+    clientHeight: htmlEl.clientHeight,
+    scrollHeight: htmlEl.scrollHeight,
+    overflowX: computed.overflowX,
+    overflowY: computed.overflowY,
+    box: rect(el),
+  };
+}
+
+function measureMobileSidebar() {
+  const settings = document.querySelector("[data-testid='rail-settings']");
+  const footer = settings?.parentElement ?? null;
+  const rail = footer?.parentElement ?? null;
+  const railBody = footer?.previousElementSibling ?? null;
+  const panelBody = rail?.parentElement ?? null;
+  const panel = panelBody?.parentElement ?? null;
+  const panelText = panel?.textContent ?? "";
+  const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors ?? [];
+
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    document: {
+      scrollWidth: document.documentElement.scrollWidth,
+      scrollHeight: document.documentElement.scrollHeight,
+    },
+    panel: scrollMetrics(panel),
+    panelBody: scrollMetrics(panelBody),
+    rail: scrollMetrics(rail),
+    railBody: scrollMetrics(railBody),
+    searchBox: panel?.querySelector('input[type="search"]') !== null,
+    resume: panelText.includes("Jump back in"),
+    hints:
+      panelText.includes("command palette") ||
+      panelText.includes("focus the composer") ||
+      panelText.includes("next session needing you") ||
+      panelText.includes("shows all shortcuts"),
+    orientation: panelText.includes("read and edit the repository"),
+    errors,
+  };
+}
+
 const booted = boot();
 
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
   measureShell: typeof measureShell;
+  measureMobileSidebar: typeof measureMobileSidebar;
 };
 target.measureShell = measureShell;
+target.measureMobileSidebar = measureMobileSidebar;
 target.settledShell = (async () => {
   await booted;
   const deadline = performance.now() + 15_000;
