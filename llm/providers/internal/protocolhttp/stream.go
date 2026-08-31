@@ -11,8 +11,8 @@ import (
 )
 
 // StreamDecoder consumes the live SSE response in its own goroutine and owns
-// closing resp.Body and s, completing attempt, and calling cancel when done
-// (the contract of today's decodeStream functions).
+// closing resp.Body and s, completing attempt, and calling cancel when done —
+// the contract every protocol's decodeStream implements.
 type StreamDecoder func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *Result, attempt *transport.APIAttemptCapture)
 
 // Stream performs a streaming exchange: a 2xx response is handed to decode

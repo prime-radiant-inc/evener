@@ -51,8 +51,8 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		}
 	}
 	if status != 400 && status != 422 {
-		// 401/403/404/408/429/5xx, including the 403 and 429 usage-limit
-		// phrase checks, are today's rules unchanged.
+		// 401/403/404/408/429/5xx classify by status, including the 403 and
+		// 429 usage-limit phrase checks errorFromHTTPStatus makes.
 		return errorFromHTTPStatus(base)
 	}
 	base.retryable = false
