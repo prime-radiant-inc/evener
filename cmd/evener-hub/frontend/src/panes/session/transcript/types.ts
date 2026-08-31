@@ -28,6 +28,10 @@ export interface ItemRenderProps {
   // A projector-owned compact summary for a critical entry. When present,
   // renderers must not reconstruct a routine summary from raw tool fields.
   projectedSummary?: string;
+  /** When true, suppress the intent/description line and render only the
+   * tool-call summary — used by IntentToolCallRow's expanded disclosure, which
+   * already showed the intent as the collapsed headline. */
+  hideIntent?: boolean;
   /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
   threadFingerprint?: string;
   thread?: ThreadModel;
@@ -76,6 +80,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.opensExchange === next.opensExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
+    prev.hideIntent === next.hideIntent &&
     prev.renderContext === next.renderContext &&
     prev.threadFingerprint === next.threadFingerprint
   );

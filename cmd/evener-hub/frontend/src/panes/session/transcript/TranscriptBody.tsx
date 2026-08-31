@@ -324,6 +324,9 @@ export function TranscriptBody({
             separatorTurn={row.separatorTurn}
             viewAnchorIndex={index}
             showSeenDivider={showSeenDivider && row.sourceTurnIds.includes(seenTurnId ?? "")}
+            sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={model}
           />
         </div>
       );

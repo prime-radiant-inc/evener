@@ -6,8 +6,6 @@
 // ever imported, regardless of what else the app happens to have loaded -
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
-import "./ToolCallItem";
-import "./tools";
 import type { ReactNode } from "react";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
@@ -17,7 +15,7 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
-import { FailureGlyph } from "../../../widgets";
+import "./tools";
 import {
   disclosureDefault,
   isDisclosureOpen,
@@ -30,6 +28,8 @@ import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
 import { ToolCallCluster } from "./ToolCallCluster";
+import { ToolCallItem } from "./ToolCallItem";
+import { ToolRow } from "./ToolRow";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { shouldGroup, toolRunFor } from "./toolGrouping";
 import { toolRendererFor } from "./toolRenderers";
@@ -104,6 +104,77 @@ export interface ProjectedIntentGroupProps {
   separatorTurn?: TurnModel;
   viewAnchorIndex?: number;
   showSeenDivider?: boolean;
+  sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
+}
+
+// IntentToolCallRow is the drill-down row inside a ProjectedIntentGroup at
+// verbosity levels below "tools". Collapsed, it shows the agent's stated
+// intent plus the tool-family icon and a chevron — the same ToolRow headline a
+// full tool-call row uses, but with no summary line. Expanded, it reveals the
+// real ToolCallItem with hideIntent so the intent does not appear twice: it
+// was already the collapsed headline, and the expanded body shows the
+// tool-call summary + body instead. This is the "verbosity = expansion"
+// contract: each click peels one more layer (intent → tool summary → body).
+function IntentToolCallRow({
+  entry,
+  sessionRef,
+  renderContext,
+  thread,
+  viewAnchorIndex,
+}: {
+  entry: Extract<ProjectedEntry, { kind: "intent" }>;
+  sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
+  viewAnchorIndex?: number;
+}) {
+  const context = useTranscriptRenderContext();
+  const item = entry.item;
+  const descriptor = toolRendererFor(item.toolName ?? "");
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(disclosureScope, `intent-row:${item.id}`);
+  const fallback =
+    expandDetailsByDefault(context.config) || disclosureDefault(disclosureScope, `intent-row:${item.id}`, false);
+  const open = isDisclosureOpen(disclosureKey, fallback);
+  // A minimal turn carrying only this item: ToolCallItem is memoized with
+  // ignoringTurn and never reads the turn itself; the descriptor body receives
+  // item/live/sessionRef/cwd, not turn.
+  const miniTurn: TurnModel = { id: entry.turnId, status: "completed", items: [item] };
+  const live = item.status === "inProgress";
+  return (
+    <div
+      className={transcriptStyles.intentRow}
+      data-testid="intent-tool-call-row"
+      data-open={open ? "true" : "false"}
+      {...projectedEntryAnchor(entry, viewAnchorIndex)}
+    >
+      <ToolRow
+        summary=""
+        intent={entry.rationale}
+        icon={descriptor.icon}
+        failed={entry.failed}
+        expandable
+        expanded={open}
+        onToggle={() => toggleDisclosure(disclosureKey, fallback)}
+      />
+      {open && (
+        <div className={transcriptStyles.intentRowBody}>
+          <ToolCallItem
+            item={item}
+            turn={miniTurn}
+            live={live}
+            sessionRef={sessionRef}
+            hideIntent
+            renderContext={renderContext ?? context}
+            thread={thread}
+            threadFingerprint={threadFingerprintForItem(item, thread, descriptor.summarySuffix?.(item, thread))}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ProjectedIntentGroup({
@@ -113,6 +184,9 @@ export function ProjectedIntentGroup({
   separatorTurn,
   viewAnchorIndex,
   showSeenDivider = false,
+  sessionRef,
+  renderContext,
+  thread,
 }: ProjectedIntentGroupProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
@@ -144,10 +218,14 @@ export function ProjectedIntentGroup({
         </summary>
         <div className={transcriptStyles.intentGroupItems}>
           {entries.map((entry) => (
-            <div key={entry.id} className={transcriptStyles.intent} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
-              {entry.failed && <FailureGlyph />}
-              {entry.rationale}
-            </div>
+            <IntentToolCallRow
+              key={entry.id}
+              entry={entry}
+              sessionRef={sessionRef}
+              renderContext={renderContext}
+              thread={thread}
+              viewAnchorIndex={viewAnchorIndex}
+            />
           ))}
         </div>
       </details>
@@ -210,7 +288,14 @@ export function TurnBlock({
         if (next?.kind === "intent") group.push(next);
       }
       renderedEntries.push(
-        <ProjectedIntentGroup key={`intent-group:${group[0]?.id}`} entries={group} viewAnchorIndex={viewAnchorIndex} />,
+        <ProjectedIntentGroup
+          key={`intent-group:${group[0]?.id}`}
+          entries={group}
+          viewAnchorIndex={viewAnchorIndex}
+          sessionRef={sessionRef}
+          renderContext={itemRenderContext}
+          thread={thread}
+        />,
       );
       continue;
     }
