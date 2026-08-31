@@ -619,20 +619,23 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 		// every property) still lets the model decline to override.
 		reasoningSchema["enum"] = append(append([]string(nil), effortLevels...), "inherit")
 	}
+	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. Use view to inspect tasks and reasoning effort levels, append to add new tasks, and update to change status, notes, dependencies, or reasoning_effort. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same updates array.",
+		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, brief description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		// Strict is explicitly false: the OpenAI Responses adapter defaults
+		// strict=true when unset and force-requires every nested property,
+		// which would force strict-mode models to emit "status": "" (enum
+		// violation) or "depends_on": [] (which clears deps) on every update
+		// item. Opting out keeps optional fields genuinely omittable.
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"action": map[string]any{
-					"type": "string",
-					"enum": []string{"view", "append", "update"},
-				},
-				"tasks": map[string]any{
+				"add": map[string]any{
 					"type":        "array",
-					"description": "For append: tasks to add. Each has a type, brief description (<10 words), a detailed prompt, and optional reasoning_effort.",
+					"description": "Tasks to add. Omit or [] for none. Each: type, brief description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -646,16 +649,16 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
-								"description": "IDs of tasks this one depends on. Optional.",
+									"description": "IDs of existing tasks (or earlier tasks in this same add array, which get sequential IDs) this one depends on. Optional.",
 							},
 							"reasoning_effort": reasoningSchema,
 						},
 						"required": []string{"type", "description", "prompt"},
 					},
 				},
-				"updates": map[string]any{
+				"update": map[string]any{
 					"type":        "array",
-					"description": "For update: list of {id} entries with optional status, notes, depends_on, or reasoning_effort.",
+					"description": "Changes to existing tasks. Omit or [] for none. Each: id plus optional status, notes, depends_on, or reasoning_effort. Omit status to leave it unchanged.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -673,7 +676,6 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 					},
 				},
 			},
-			"required": []string{"action"},
 		},
 	}
 }
