@@ -404,3 +404,13 @@ func TestParseConfig_UnsupportedSchemaNamesIt(t *testing.T) {
 		t.Fatalf("schema = 3 must name the unsupported version and the supported one: %v", err)
 	}
 }
+
+func TestParseConfig_OldSchemaErrorNamesMigrate(t *testing.T) {
+	_, err := ParseConfig([]byte("[instances.kimi]\ntype = \"kimi\"\n"))
+	if !errors.Is(err, ErrOldSchema) {
+		t.Fatalf("want ErrOldSchema, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "evener migrate") {
+		t.Fatalf("old-schema error must point at evener migrate: %v", err)
+	}
+}

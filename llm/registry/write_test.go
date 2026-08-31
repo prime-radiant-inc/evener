@@ -182,3 +182,16 @@ func TestReadConfigFileReportsOldSchema(t *testing.T) {
 		t.Fatalf("want ErrOldSchema, got %v", err)
 	}
 }
+
+func TestMarshalConfig_StampsSchemaTwo(t *testing.T) {
+	data, err := MarshalConfig(&Layer{Default: "openai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "schema = 2") {
+		t.Fatalf("marshalled config must declare schema = 2:\n%s", data)
+	}
+	if _, err := ParseConfig(data); err != nil {
+		t.Fatalf("stamped config must round-trip: %v", err)
+	}
+}

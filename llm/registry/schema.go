@@ -39,7 +39,7 @@ type Layer struct {
 
 // ErrOldSchema marks a providers.toml written for the pre-registry schema
 // (spec §14.1). Callers match it with errors.Is.
-var ErrOldSchema = errors.New("providers.toml uses the pre-registry schema ([instances.*], type, api_style, quirks, compat); rewrite it per docs/superpowers/specs/2026-08-28-provider-registry-design.md §14.1")
+var ErrOldSchema = errors.New("providers.toml uses the pre-registry schema ([instances.*], type, api_style, quirks, compat); run `evener migrate` to convert it, or rewrite it per docs/superpowers/specs/2026-08-28-provider-registry-design.md §14.1")
 
 // Vocabularies validated at load (spec §10).
 var (

@@ -27,7 +27,7 @@ var ErrConfigUnloadable = errors.New("providers.toml would not load back")
 // empty api_key_env list is kept: `api_key_env = []` is how a Codex-style
 // entry says "no key variable" (spec §6.2).
 func MarshalConfig(l *Layer) ([]byte, error) {
-	doc := map[string]any{}
+	doc := map[string]any{"schema": 2}
 	if l.Default != "" {
 		doc["default"] = l.Default
 	}
