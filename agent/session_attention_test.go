@@ -2659,7 +2659,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 				if midTurnAppendErr == nil {
 					midTurnArmErr = root.armDelegateAttention(secondID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
@@ -2822,7 +2822,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				calls++
@@ -2888,7 +2888,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 				if appendErr == nil {
 					armErr = root.armDelegateAttention(attentionID)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(req llm.Request) llm.Response {
 				roundTwoSaw = requestContainsText(req, content)
@@ -3151,7 +3151,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
@@ -3262,7 +3262,7 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 				if err := root.armDelegateAttention(attentionID); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
-				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{"action":"view"}`), Type: "function"})
+				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))

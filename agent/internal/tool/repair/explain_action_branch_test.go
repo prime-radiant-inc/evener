@@ -247,7 +247,7 @@ func TestExplainSchemaError_ProseTagOutsideEnumIsNotBranch(t *testing.T) {
 	}
 	want := "read_file: missing required argument \"start\" in slices[0].\n" +
 		"Required arguments in slices[0]: start (integer).\n" +
-		"Example: {\"action\": \"...\"}"
+		"Example: {\"slices\": [{\"start\": 0}]}"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}

@@ -3196,15 +3196,15 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			// Step 1: create a task.
 			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"action":"append","tasks":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
+				return taskListCall("c1", `{"add":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
 			},
 			// Step 2: start it (in_progress, no effort override yet).
 			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`)
+				return taskListCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
 			},
 			// Step 3: escalate reasoning_effort to high.
 			func(req llm.Request) llm.Response {
-				return taskListCall("c3", `{"action":"update","updates":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
+				return taskListCall("c3", `{"update":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
 			},
 			// Step 4: done — this request should carry effort=high.
 			func(req llm.Request) llm.Response {
@@ -3265,10 +3265,10 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"action":"append","tasks":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
+				return taskListCall("c1", `{"add":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
 			},
 			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"action":"update","updates":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
+				return taskListCall("c2", `{"update":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
 			},
 			func(req llm.Request) llm.Response { return finalResponse("done") },
 		},

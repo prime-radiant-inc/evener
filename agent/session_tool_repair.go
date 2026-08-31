@@ -68,6 +68,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		res.PrevalErr = errText
 		return res
 	}
+	if errText := retiredTaskListShapeError(call.Name, args); errText != "" {
+		res.PrevalErr = errText
+		return res
+	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
@@ -146,6 +150,29 @@ func unsupportedDelegateWaitOption(toolName string, args map[string]any) string 
 		}
 	}
 	return ""
+}
+
+// retiredTaskListShapeError prevents argument repair from silently turning
+// an old action-shaped task_list call into a bare view. Repair would
+// otherwise drop the retired action/tasks/updates keys, validate the empty
+// remainder, and return the list — while the model believes its mutations
+// were applied. Naming the retired shape gets the model to the new contract
+// in one retry instead.
+func retiredTaskListShapeError(toolName string, args map[string]any) string {
+	if toolName != "task_list" {
+		return ""
+	}
+	var retired []string
+	for _, key := range []string{"action", "tasks", "updates"} {
+		if _, supplied := args[key]; supplied {
+			retired = append(retired, key)
+		}
+	}
+	if len(retired) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("invalid_request: task_list no longer takes %s; the call was not applied. Use {\"add\": [...]} to add tasks, {\"update\": [{\"id\": N, ...}]} to change them (omit status to leave it unchanged), or {} to view the list — all in one call.",
+		strings.Join(retired, ", "))
 }
 
 // changeStrings encodes changes as "kind:field:detail" for the telemetry event.

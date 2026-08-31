@@ -1997,11 +1997,29 @@ func extractTaskListEffortEnum(t *testing.T, p *provider.Profile) []string {
 		t.Fatalf("task_list tool not found in profile %s", p.ID())
 	}
 
-	// Navigate: parameters -> properties -> updates -> items -> properties -> reasoning_effort -> enum
+	// Navigate: parameters -> properties -> update -> items -> properties -> reasoning_effort -> enum
+	// (check both add and update; both item schemas carry the enum)
 	params, _ := taskListTool.Parameters["properties"].(map[string]any)
-	updates, _ := params["updates"].(map[string]any)
-	items, _ := updates["items"].(map[string]any)
-	itemProps, _ := items["properties"].(map[string]any)
+	var itemProps map[string]any
+	for _, arrayName := range []string{"update", "add"} {
+		arraySchema, _ := params[arrayName].(map[string]any)
+		if arraySchema == nil {
+			continue
+		}
+		items, _ := arraySchema["items"].(map[string]any)
+		if items == nil {
+			continue
+		}
+		itemProps, _ = items["properties"].(map[string]any)
+		if itemProps != nil {
+			if _, has := itemProps["reasoning_effort"]; has {
+				break
+			}
+		}
+	}
+	if itemProps == nil {
+		t.Fatalf("no task_list item schema with reasoning_effort in profile %s", p.ID())
+	}
 	reasoningEffort, _ := itemProps["reasoning_effort"].(map[string]any)
 	enumAny, _ := reasoningEffort["enum"].([]string)
 	if enumAny == nil {

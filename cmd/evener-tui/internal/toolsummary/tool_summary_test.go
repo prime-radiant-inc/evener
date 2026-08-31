@@ -113,8 +113,8 @@ func TestSummarizeTool_Grep(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_View(t *testing.T) {
-	desc, detail := SummarizeTool("task_list", `{"action":"view"}`)
-	if desc != "view" {
+	desc, detail := SummarizeTool("task_list", `{}`)
+	if desc != "view tasks" {
 		t.Errorf("got %q", desc)
 	}
 	if detail != "" {
@@ -123,8 +123,8 @@ func TestSummarizeTool_TaskList_View(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Append(t *testing.T) {
-	desc, detail := SummarizeTool("task_list", `{"action":"append","tasks":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
-	if desc != "append 2 tasks" {
+	desc, detail := SummarizeTool("task_list", `{"add":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
+	if desc != "add 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
 	if !strings.Contains(detail, "do thing A") {
@@ -137,7 +137,7 @@ func TestSummarizeTool_TaskList_Append(t *testing.T) {
 
 func TestSummarizeTool_TaskList_Update(t *testing.T) {
 	// Status keys must be snake_case to match the statusIcon map.
-	desc, detail := SummarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
+	desc, detail := SummarizeTool("task_list", `{"update":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
 	if desc != "update 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
@@ -261,10 +261,10 @@ func TestSummarizeToolEmptyCwdNeverStrips(t *testing.T) {
 // Surfaced by FuzzSummarizeTool.
 func TestSummarizeTool_TaskUpdate_MissingID(t *testing.T) {
 	cases := []string{
-		`{"action":"update","updates":[{}]}`,
-		`{"action":"update","updates":[{"status":"completed"}]}`,
-		`{"action":"update","updates":[{"id":"not-a-number"}]}`,
-		`{"action":"update","updates":[{"id":3,"status":"completed"}]}`,
+		`{"update":[{}]}`,
+		`{"update":[{"status":"completed"}]}`,
+		`{"update":[{"id":"not-a-number"}]}`,
+		`{"update":[{"id":3,"status":"completed"}]}`,
 	}
 	for _, args := range cases {
 		// Must not panic; we only assert it returns.

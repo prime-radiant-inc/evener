@@ -142,18 +142,21 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		return desc, detail
 
 	case "task_list":
-		action := str("action")
-		switch action {
-		case "append":
-			tasks, _ := args["tasks"].([]any)
-			desc = fmt.Sprintf("append %d tasks", len(tasks))
-			detail = renderTaskAppend(tasks)
-		case "update":
-			updates, _ := args["updates"].([]any)
+		// Presence-based dispatch: add and/or update arrays, either or both.
+		adds, _ := args["add"].([]any)
+		updates, _ := args["update"].([]any)
+		switch {
+		case len(adds) > 0 && len(updates) > 0:
+			desc = fmt.Sprintf("add %d, update %d tasks", len(adds), len(updates))
+			detail = renderTaskAppend(adds) + renderTaskUpdate(updates)
+		case len(adds) > 0:
+			desc = fmt.Sprintf("add %d tasks", len(adds))
+			detail = renderTaskAppend(adds)
+		case len(updates) > 0:
 			desc = fmt.Sprintf("update %d tasks", len(updates))
 			detail = renderTaskUpdate(updates)
 		default:
-			desc = action
+			desc = "view tasks"
 		}
 		return desc, detail
 

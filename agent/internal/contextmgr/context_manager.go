@@ -676,9 +676,21 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		return fmt.Sprintf("[delegate: %d chars]", len(contentStr))
 
 	case "task_list":
-		action := getArg("action")
+		// Presence-based dispatch: derive the verb from whichever array the
+		// call carried (add/update, either or both; none = view).
+		verb := "view"
+		if a := getArg("add"); a != "" {
+			verb = "add"
+		}
+		if u := getArg("update"); u != "" {
+			if verb == "add" {
+				verb = "add+update"
+			} else {
+				verb = "update"
+			}
+		}
 		tasks := countJSONArrayElements(contentStr)
-		return fmt.Sprintf("[task_list: %s → %d tasks]", action, tasks)
+		return fmt.Sprintf("[task_list: %s → %d tasks]", verb, tasks)
 
 	case "use_skill":
 		name := getArg("skill_name")

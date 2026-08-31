@@ -144,10 +144,10 @@ func FuzzStoolDispatch(f *testing.F) {
 		// one, complete it to trigger auto-advance, complete the rest to hit the
 		// all-done steer), then the fuzzed append/update calls exercise the reject
 		// and view arms.
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"append","tasks":[{"type":"implement","description":"a","prompt":"do a"},{"type":"verify","description":"b","prompt":"do b"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":1,"status":"in_progress"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":1,"status":"done"}]}`))
-		stool_execOne(ctx, t, sess, "task_list", []byte(`{"action":"update","updates":[{"id":2,"status":"done"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"add":[{"type":"implement","description":"a","prompt":"do a"},{"type":"verify","description":"b","prompt":"do b"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"in_progress"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":1,"status":"done"}]}`))
+		stool_execOne(ctx, t, sess, "task_list", []byte(`{"update":[{"id":2,"status":"done"}]}`))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "append"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "update"))
 		stool_execOne(ctx, t, sess, "task_list", stool_taskListArgs(r, "view"))
@@ -260,7 +260,7 @@ func stool_taskListArgs(r *jobtools_reader, action string) []byte {
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return []byte(`{"action":"view"}`)
+		return []byte(`{}`)
 	}
 	return b
 }

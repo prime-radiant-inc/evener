@@ -256,9 +256,11 @@ func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
 }
 
 // TestTaskTool_CombinedAddUpdate: both arrays in one call apply atomically
-// with one publication revision and one EventTaskUpdated.
+// with one publication revision and one EventTaskUpdated. The update must
+// target a PRE-EXISTING task — updates validate against the pre-add state
+// (the model cannot know IDs this call's add would assign).
 func TestTaskTool_CombinedAddUpdate(t *testing.T) {
-	h := newTaskToolHarness(t, nil)
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p0"}})
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{
 			"type": "implement", "description": "first", "prompt": "do one",
@@ -274,8 +276,8 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 		t.Fatalf("output should combine add+update ack: %q", res.FullOutput)
 	}
 	view := h.store.View()
-	if len(view) != 1 || view[0].Status != taskpkg.TaskInProgress {
-		t.Fatalf("combined call should add and start: %+v", view)
+	if len(view) != 2 || view[0].Status != taskpkg.TaskInProgress || view[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("combined call should update existing and add new: %+v", view)
 	}
 }
 
@@ -330,7 +332,8 @@ func TestTaskTool_ViewIsBareCall(t *testing.T) {
 }
 
 // TestTaskTool_OldActionShapeRejectedHelpfully: back-compat — old
-// action-shaped calls fail at validation.
+// action-shaped calls fail at validation. The call below deliberately
+// sends the retired action key; do not "migrate" it.
 func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{"action": "view"})
