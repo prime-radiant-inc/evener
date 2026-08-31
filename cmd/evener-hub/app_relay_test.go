@@ -1454,7 +1454,7 @@ func (l *cancelAfterRoutePublicationLease) ReadWithRoutePublication(
 	params appwire.ThreadReadParams,
 	publish func(context.Context, appwire.Thread) error,
 ) (appsource.RelayReadResult, error) {
-	result, err := l.scriptedRelaySessionLease.Read(ctx, params)
+	result, err := l.Read(ctx, params)
 	if err != nil {
 		return result, err
 	}
@@ -1692,7 +1692,6 @@ func TestHubRelayPendingTargetPreservesOrderWhileKnownTargetProgresses(t *testin
 
 	ackOrder := make(chan string, 2)
 	for _, delta := range []string{"first", "second"} {
-		delta := delta
 		lease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
 				Method: appwire.NotifyAgentMessageDelta,
@@ -1781,7 +1780,7 @@ func TestHubRelayPendingDeliveryLimitCleansUpOnCanonicalStop(t *testing.T) {
 	}()
 	<-secondEntered
 	acknowledged := make(chan int, hubRelayPendingDeliveryLimit)
-	for i := 0; i < hubRelayPendingDeliveryLimit; i++ {
+	for i := range hubRelayPendingDeliveryLimit {
 		proceeded := make(chan struct{})
 		delivery := appsource.RelayDelivery{
 			Notification: appwire.Notification{
@@ -2557,7 +2556,7 @@ func (l *routePublishingTestLease) ReadWithRoutePublication(
 	params appwire.ThreadReadParams,
 	publish func(context.Context, appwire.Thread) error,
 ) (appsource.RelayReadResult, error) {
-	result, err := l.RelaySessionLease.Read(ctx, params)
+	result, err := l.Read(ctx, params)
 	if err == nil && publish != nil {
 		if err := publish(ctx, result.Response.Thread); err != nil {
 			return appsource.RelayReadResult{}, err
