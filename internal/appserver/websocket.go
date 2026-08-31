@@ -159,15 +159,11 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn.purgeRequestQueue()
 }
 
-// runWebSocketReceiveLoop keeps only transport concerns: park in Recv (reader
-// available; keepalive can ping), answer ping inline, and enqueue every other
-// frame onto the connection's bounded request queue for the serial worker.
-// The inline ping rides handleAndEnqueue — one ping implementation, one panic
-// barrier, no hand-built response beside the real path that could drift from
-// it — so its response enqueue can park on a full outbound buffer until the
-// send loop drains it or the write-timeout cascade cancels the connection;
-// ping liveness is guaranteed against handler behavior, not against a peer
-// that stopped draining its own socket.
+// runWebSocketReceiveLoop keeps only transport concerns: park in Recv
+// (reader available; keepalive can ping), hand each frame to the
+// connection's inbound policy (Connection.receiveInbound owns the
+// ping-inline-vs-enqueue decision), and stop when the transport or the
+// connection dies.
 func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) {
 	for {
 		gate.readerAvailable()
@@ -179,11 +175,7 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 			}
 			return
 		}
-		if msg.Request != nil && msg.Request.Method == appwire.MethodPing {
-			conn.handleAndEnqueue(ctx, msg)
-			continue
-		}
-		if !conn.enqueueRequest(ctx, msg) {
+		if !conn.receiveInbound(ctx, msg) {
 			return
 		}
 	}

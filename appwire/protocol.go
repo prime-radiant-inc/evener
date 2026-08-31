@@ -60,6 +60,27 @@ func CatalogMethodNames(scope MethodScope) []string {
 	return out
 }
 
+// KnownWireName reports whether name is a wire name this catalog defines:
+// any request method, any outbound notification, or the client's initialized
+// handshake notification. Callers that must not echo client-controlled
+// strings verbatim (log lines, advisories) use it to decide whether a name
+// is one of ours.
+func KnownWireName(name string) bool {
+	return knownWireNames[name]
+}
+
+var knownWireNames = func() map[string]bool {
+	names := make(map[string]bool, len(Methods)+len(Notifications)+1)
+	for _, m := range Methods {
+		names[m.Name] = true
+	}
+	for _, n := range Notifications {
+		names[n.Name] = true
+	}
+	names[MethodInitialized] = true
+	return names
+}()
+
 // MethodSpec is one request method in the AppWire catalog: the wire name, the
 // Go param/result types (zero values, so the doc generator can reflect their
 // JSON fields), the scope, and a one-line summary.

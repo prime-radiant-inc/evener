@@ -25,14 +25,9 @@ func parkedSlowReadServer(t *testing.T) (*Server, func() string, chan string, ch
 		<-releases
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: params.ThreadID}}, nil
 	})
-	t.Cleanup(func() {
-		for range cap(releases) {
-			select {
-			case releases <- struct{}{}:
-			default:
-			}
-		}
-	})
+	// Closing the token channel unparks every present and future receiver;
+	// all test-body sends complete before cleanup runs.
+	t.Cleanup(func() { close(releases) })
 	return server, logged, started, releases
 }
 
@@ -83,12 +78,7 @@ func TestServeWebSocketSlowReadCapBlocksNextReadWithOneAdvisory(t *testing.T) {
 	if strings.Contains(logs, "evicting") {
 		t.Fatalf("cap saturation caused an eviction:\n%s", logs)
 	}
-	advisories := 0
-	for line := range strings.SplitSeq(logs, "\n") {
-		if strings.Contains(line, "slow-read") {
-			advisories++
-		}
-	}
+	advisories := strings.Count(logs, "slow-read")
 	if advisories != 1 {
 		t.Fatalf("cap advisories = %d, want exactly 1 in:\n%s", advisories, logs)
 	}
@@ -109,7 +99,7 @@ func TestServeWebSocketSlowReadCapBlocksNextReadWithOneAdvisory(t *testing.T) {
 // (ids 2..cap+1), a dequeue signal for when the worker has dequeued the
 // beyond-cap read (id cap+2), which is the deterministic "worker is parked in
 // the acquire" marker.
-func rawParkedCapConnection(t *testing.T, server *Server, started chan string) (*appwire.WSTransport, *Connection, chan struct{}) {
+func rawParkedCapConnection(t *testing.T, server *Server, started chan string) (*appwire.WSTransport, *Connection) {
 	t.Helper()
 	beyondCapDequeued := make(chan struct{})
 	var readDequeues atomic.Int64
@@ -134,7 +124,7 @@ func rawParkedCapConnection(t *testing.T, server *Server, started chan string) (
 	}
 	sendRaw(t, transport, rawRequest(t, slowReadDispatchCap+2, appwire.MethodThreadRead, appwire.ThreadReadParams{ThreadID: "read-beyond-cap"}))
 	waitFor(t, "the worker to dequeue the beyond-cap read", beyondCapDequeued)
-	return transport, conn, beyondCapDequeued
+	return transport, conn
 }
 
 // TestServeWebSocketSlowReadCapHeadOfLineBlocksAndDrainsOnCompletion pins
@@ -149,7 +139,7 @@ func TestServeWebSocketSlowReadCapHeadOfLineBlocksAndDrainsOnCompletion(t *testi
 		close(serialStarted)
 		return appwire.ThreadListResponse{}, nil
 	})
-	transport, _, _ := rawParkedCapConnection(t, server, started)
+	transport, _ := rawParkedCapConnection(t, server, started)
 	serialID := int64(slowReadDispatchCap + 3)
 	sendRaw(t, transport, rawRequest(t, serialID, appwire.MethodThreadList, appwire.ThreadListParams{}))
 
@@ -193,8 +183,8 @@ func TestServeWebSocketSlowReadCapHeadOfLineBlocksAndDrainsOnCompletion(t *testi
 // promptly — the acquire selects on ctx.Done — and teardown completes without
 // waiting for the parked reads.
 func TestServeWebSocketSlowReadCapAcquireExitsOnClose(t *testing.T) {
-	server, _, started, releases := parkedSlowReadServer(t)
-	transport, conn, _ := rawParkedCapConnection(t, server, started)
+	server, _, started, _ := parkedSlowReadServer(t)
+	transport, conn := rawParkedCapConnection(t, server, started)
 
 	if err := transport.Close(); err != nil {
 		t.Fatalf("close transport: %v", err)
@@ -206,12 +196,9 @@ func TestServeWebSocketSlowReadCapAcquireExitsOnClose(t *testing.T) {
 		t.Fatalf("slow read %q started during teardown", id)
 	default:
 	}
-	// The sixteen reads are still parked; release them so the test does not
-	// leak goroutines — "never returns" is the property under test, not a
-	// goroutine bequeathed to the next test.
-	for range slowReadDispatchCap {
-		releases <- struct{}{}
-	}
+	// The parked reads are released by the fixture's cleanup close, so
+	// "never returns" stays a property under test, not a goroutine
+	// bequeathed to the next test.
 }
 
 // TestServeWebSocketSlowReadCapAcquireRaceNeverStartsAfterCancel pins test
@@ -267,7 +254,7 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 		close(serialStarted)
 		return appwire.ThreadListResponse{}, nil
 	})
-	transport, _, _ := rawParkedCapConnection(t, server, started)
+	transport, _ := rawParkedCapConnection(t, server, started)
 	sendRaw(t, transport, rawRequest(t, slowReadDispatchCap+3, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	frames := collectFrames(transport)
 
@@ -278,10 +265,9 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 		t.Fatalf("frame = %+v, want ping response id 100", pong)
 	}
 
-	stallDeadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged(), "parked") && time.Now().Before(stallDeadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitUntil(t, "the stall advisory reaches Logf", func() bool {
+		return strings.Contains(logged(), "parked")
+	})
 	var stall string
 	for line := range strings.SplitSeq(logged(), "\n") {
 		if strings.Contains(line, "parked") {
@@ -329,7 +315,7 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 		serialRuns.Add(1)
 		return appwire.ThreadListResponse{}, nil
 	})
-	transport, _, _ := rawParkedCapConnection(t, server, started)
+	transport, _ := rawParkedCapConnection(t, server, started)
 	frames := collectFrames(transport)
 
 	// Below queue saturation, ping answers even though the worker is parked.
@@ -343,13 +329,8 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 	// beyond-cap read, so every earlier enqueue completed — and the worker is
 	// now parked in the acquire; discard stale signals so the wait below
 	// observes the serial-fill phase, not the setup.
-	for {
-		select {
-		case <-blocked:
-			continue
-		default:
-		}
-		break
+	for len(blocked) > 0 {
+		<-blocked
 	}
 
 	// Fill the queue behind the parked worker until the receive loop blocks.
@@ -414,5 +395,4 @@ func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing
 			t.Fatal("keepalive never observed the recovered reader")
 		}
 	}
-	_ = releases
 }
