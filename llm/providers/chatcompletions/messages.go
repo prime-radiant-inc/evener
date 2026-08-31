@@ -25,8 +25,7 @@ func isReasoningControlKey(k string) bool {
 }
 
 // toChatMessages converts messages to the Chat Completions wire array (spec
-// §8.4). Every quirk that used to live on ModelCompat/ProviderQuirks now
-// reads straight off caps.
+// §8.4). Every per-model quirk it applies reads off caps.
 func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDetails bool) ([]map[string]any, error) {
 	reasoningOff := caps.Reasoning != nil && !*caps.Reasoning
 	systemRole := "system"

@@ -51,8 +51,8 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 }
 
 // ListModels implements llm.Protocol: GET the models endpoint page by page
-// (limit=1000, after_id) and return the ids verbatim; the curated [1m]
-// alias rows replace the synthesized variants of the old adapter.
+// (limit=1000, after_id) and return the ids verbatim. The [1m] long-context
+// variants are curated alias rows; this listing synthesizes none of its own.
 func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]registry.Model, error) {
 	if res.Transport.ModelsEndpoint == registry.EndpointUnsupported {
 		return nil, llm.ErrModelListingUnsupported
