@@ -224,6 +224,164 @@ func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
 	}
 }
 
+// TestWatchArgsFromToolArgsRejectsTriggerFieldsOnNonCreateOperations covers the
+// one-trigger-mode-per-create contract from the other side: trigger fields
+// (output_match, events, event_filter, every, progress_interval_ms) select what a
+// NEW watch fires on, so supplying them with list/inspect/clear is a misuse the
+// parse used to swallow — those operations take only watch_id, and the trigger
+// fields silently did nothing.
+func TestWatchArgsFromToolArgsRejectsTriggerFieldsOnNonCreateOperations(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string]map[string]any{
+		"list with events": {
+			"operation": "list",
+			"events":    []any{"communicate"},
+		},
+		"list with output_match": {
+			"operation":    "list",
+			"output_match": "ready",
+		},
+		"list with progress_interval_ms": {
+			"operation":            "list",
+			"progress_interval_ms": 5000,
+		},
+		"list with every": {
+			"operation": "list",
+			"every":     2,
+		},
+		"inspect with events": {
+			"operation": "inspect",
+			"watch_id":  "watch_x",
+			"events":    []any{"communicate"},
+		},
+		"clear with event_filter": {
+			"operation":    "clear",
+			"watch_id":     "watch_x",
+			"event_filter": map[string]any{"tool_name": "read_file"},
+		},
+		"clear with output_match": {
+			"operation":    "clear",
+			"watch_id":     "watch_x",
+			"output_match": "ready",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := watchArgsFromToolArgs(args)
+			if err == nil {
+				t.Fatal("watchArgsFromToolArgs succeeded, want invalid_request")
+			}
+			if !strings.Contains(err.Error(), "invalid_request") {
+				t.Fatalf("error = %v, want invalid_request", err)
+			}
+			for _, field := range []string{"events", "output_match", "progress_interval_ms", "every", "event_filter"} {
+				if _, ok := args[field]; ok {
+					if !strings.Contains(err.Error(), field) {
+						t.Fatalf("error = %v, want it to name the supplied trigger field %q", err, field)
+					}
+				}
+			}
+			if !strings.Contains(err.Error(), "operation=\"create\"") {
+				t.Fatalf("error = %v, want it to name operation=\"create\" as the valid alternative", err)
+			}
+		})
+	}
+}
+
+// TestWatchArgsFromToolArgsAcceptsTriggerFieldsOnCreate pins the flip side of the
+// rejection above: every trigger field stays valid on create, so the new guard
+// cannot start rejecting legitimate installs.
+func TestWatchArgsFromToolArgsAcceptsTriggerFieldsOnCreate(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string]map[string]any{
+		"events": {
+			"operation": "create",
+			"source":    "self",
+			"events":    []any{"communicate"},
+		},
+		"output_match": {
+			"operation":    "create",
+			"source":       "job_x",
+			"output_match": "ready",
+		},
+		"progress_interval_ms": {
+			"operation":            "create",
+			"source":               "job_x",
+			"progress_interval_ms": 5000,
+		},
+		"every": {
+			"operation": "create",
+			"source":    "self",
+			"events":    []any{"communicate"},
+			"every":     2,
+		},
+		"event_filter": {
+			"operation":    "create",
+			"source":       "self",
+			"events":       []any{"assistant.tool"},
+			"event_filter": map[string]any{"tool_name": "read_file"},
+		},
+		"none (watch-all)": {
+			"operation": "create",
+			"source":    "parent",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := watchArgsFromToolArgs(args); err != nil {
+				t.Fatalf("watchArgsFromToolArgs returned error: %v", err)
+			}
+		})
+	}
+}
+
+// TestJobWatchValidationNamesRuleAndFixForBareEventModifiers covers the two
+// "modifier without events" errors the model actually hits: `every` with no
+// events names the supplied field, the rule (events must name exactly one
+// concrete kind), and the fix; `event_filter` with no events does the same with
+// the concrete assistant.tool shape.
+func TestJobWatchValidationNamesRuleAndFixForBareEventModifiers(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	for _, tc := range []struct {
+		name string
+		args string
+		want []string
+	}{
+		{
+			name: "every without events",
+			args: `{"operation":"create","source":"self","every":3}`,
+			want: []string{"every", "events", "exactly one", "communicate"},
+		},
+		{
+			name: "event_filter without events",
+			args: `{"operation":"create","source":"self","event_filter":{"tool_name":"read_file","status":"ok"}}`,
+			want: []string{"event_filter", "events", "assistant.tool", "tool_name"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !res.IsError {
+				t.Fatalf("job_watch succeeded, want validation error: %s", res.Output)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(res.Output, want) {
+					t.Fatalf("job_watch error = %q, want it to contain %q", res.Output, want)
+				}
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+			}
+		})
+	}
+}
+
 func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -239,6 +397,8 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 		{name: "source wildcard", args: `{"operation":"create","source":"*","events":["job.notification"]}`, want: "wildcard watch target is not supported"},
 		{name: "legacy target rejected", args: `{"operation":"create","target":"caller","events":["job.notification"]}`, want: "additionalProperties 'target' not allowed"},
 		{name: "legacy send rejected", args: `{"operation":"create","source":"self","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "additionalProperties 'send' not allowed"},
+		{name: "list with trigger field", args: `{"operation":"list","events":["job.notification"]}`, want: "trigger fields apply only to operation=\"create\""},
+		{name: "clear with trigger field", args: `{"operation":"clear","watch_id":"watch_x","progress_interval_ms":120000}`, want: "operation=\"create\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

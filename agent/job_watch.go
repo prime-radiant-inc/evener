@@ -770,7 +770,10 @@ func validateWatchEventArgs(a watchArgs) error {
 	}
 	if a.Every > 0 {
 		if len(a.Events) != 1 {
-			return errors.New("invalid_request: every requires exactly one watched event kind")
+			if len(a.Events) == 0 {
+				return errors.New(`invalid_request: every requires events naming exactly one kind (e.g. events ["communicate"], every 3); every with no events has nothing to fire on`)
+			}
+			return errors.New(`invalid_request: every requires events naming exactly one kind, not several (e.g. events ["communicate"], every 3)`)
 		}
 		if a.Events[0] == "*" {
 			return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
@@ -778,7 +781,7 @@ func validateWatchEventArgs(a watchArgs) error {
 	}
 	if a.EventFilter != nil {
 		if len(a.Events) == 0 {
-			return errors.New("invalid_request: event_filter requires events")
+			return errors.New(`invalid_request: event_filter requires events naming assistant.tool (e.g. events ["assistant.tool"], event_filter {"tool_name":"read_file","status":"ok"}); event_filter with no events has nothing to filter`)
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
