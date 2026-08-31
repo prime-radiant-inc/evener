@@ -90,9 +90,14 @@ func TestApplyFastCheapModel_BlankUsesPrimaryModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
-	providerName, model := got.CheapModelRef()
-	if providerName != "openai" || model != "gpt-5.2" {
-		t.Fatalf("CheapModelRef() = (%q, %q), want (openai, gpt-5.2)", providerName, model)
+	// A blank flag configures nothing: the route is exactly the input
+	// profile's own (which the registry may point at the row's cheap_model).
+	wantProvider, wantModel := profile.CheapModelRef()
+	if providerName, model := got.CheapModelRef(); providerName != wantProvider || model != wantModel {
+		t.Fatalf("CheapModelRef() = (%q, %q), want the untouched route (%q, %q)", providerName, model, wantProvider, wantModel)
+	}
+	if got.ConfiguredCheapModel() != "" {
+		t.Fatalf("blank flag configured %q, want nothing configured", got.ConfiguredCheapModel())
 	}
 }
 
