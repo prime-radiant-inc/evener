@@ -49,6 +49,7 @@ type shellArgs struct {
 	Command     string
 	Description string
 	// Intent is the tool call's `intent` argument (see ctxToolCallIntent):
+	// Intent is the tool call's `intent` argument (see tool.IntentFromContext):
 	// why the model says it is running the command. Stamped onto the job
 	// record so job surfaces can show it with the command.
 	Intent         string

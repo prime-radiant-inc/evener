@@ -157,6 +157,34 @@ func TestNavigationJobSummaryKeepsFullCommandForTooltip(t *testing.T) {
 	}
 }
 
+func TestNavigationJobSummaryOmitsFullCommandWhenLabelFits(t *testing.T) {
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID:    "session-parent",
+			Title: "parent",
+			Kind:  "session",
+			State: "idle",
+			RunningJobs: []appwire.EvenerJobInfo{{
+				JobID: "job-running", JobType: "shell", Status: "running", Command: "go test ./...",
+			}},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	job := resource.Current.Sessions[0].RunningJobs[0]
+	if job.FullCommand != "" {
+		t.Fatalf("full_command = %q, want empty when the command fits the label bound", job.FullCommand)
+	}
+}
+
 func TestNavigationProjectionRejectsMalformedIdentity(t *testing.T) {
 	_, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "bad ref", Title: "bad", Kind: "session", State: "idle"}}}})
 	if err == nil {
