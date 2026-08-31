@@ -239,6 +239,126 @@ func TestForkChildResumeFallsBackToFullScanWithoutSidecar(t *testing.T) {
 	}
 }
 
+// TestFoldSnapshotRefusalsMatchTheFileFold pins the parity contract the
+// snapshot's doc states: every entry shape the agent's file fold rejects
+// must also be refused by the transcript package's restatement, and every
+// shape the fold accepts must produce a snapshot. The snapshot cannot
+// import the fold (agent imports transcript), so this differential — the
+// same turns fed to both, accept/reject agreement asserted — is what keeps
+// the restatement from drifting.
+func TestFoldSnapshotRefusalsMatchTheFileFold(t *testing.T) {
+	steering := func(id, text string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		turn.AttentionID = id
+		return turn
+	}
+	resolution := func(id, disposition string, generation uint64) schema.Turn {
+		turn := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+		turn.AttentionResolution = &schema.AttentionResolutionInfo{
+			AttentionID:      id,
+			Disposition:      disposition,
+			ResumeGeneration: generation,
+		}
+		return turn
+	}
+	toolResults := func(callID string, commits ...schema.DelegateDeliveryCommit) schema.Turn {
+		turn := schema.NewTurn(schema.TurnToolResults, llm.User("results"))
+		turn.Message.Content = []llm.ContentPart{{
+			Kind:       llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "shell"},
+		}}
+		turn.DelegateDeliveryCommits = commits
+		return turn
+	}
+	cases := []struct {
+		name     string
+		turns    []schema.Turn
+		accepted bool
+	}{
+		{"plain steering accepted", []schema.Turn{steering("a1", "one")}, true},
+		{"re-sent identical steering accepted", []schema.Turn{steering("a1", "one"), steering("a1", "one")}, true},
+		{"re-sent conflicting content refused", []schema.Turn{steering("a1", "one"), steering("a1", "two")}, false},
+		{"resolved attention accepted", []schema.Turn{steering("a1", "one"), resolution("a1", "consumed", 0)}, true},
+		{"identical re-resolution accepted", []schema.Turn{steering("a1", "one"), resolution("a1", "consumed", 0), resolution("a1", "consumed", 0)}, true},
+		{"conflicting re-resolution refused", []schema.Turn{steering("a1", "one"), resolution("a1", "consumed", 0), resolution("a1", "discarded", 0)}, false},
+		{"resolution before append refused", []schema.Turn{resolution("a1", "consumed", 0), steering("a1", "one")}, false},
+		{"unknown disposition refused", []schema.Turn{steering("a1", "one"), resolution("a1", "archived", 0)}, false},
+		{"discarded with generation refused", []schema.Turn{steering("a1", "one"), resolution("a1", "discarded", 3)}, false},
+		{"generation claimed twice refused", []schema.Turn{steering("a1", "one"), steering("a2", "two"), resolution("a1", "consumed", 7), resolution("a2", "consumed", 7)}, false},
+		{"resolution turn with nil pointer refused", []schema.Turn{steering("a1", "one"), func() schema.Turn {
+			turn := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+			turn.AttentionResolution = nil
+			return turn
+		}()}, false},
+		{"non-steering attention turn refused", []schema.Turn{func() schema.Turn {
+			turn := schema.NewTurn(schema.TurnUserInput, llm.User("not steering"))
+			turn.AttentionID = "a1"
+			return turn
+		}()}, false},
+		{"valid delivery commit accepted", []schema.Turn{toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "d1", ToolCallID: "tc1"})}, true},
+		{"commit off tool-results turn refused", []schema.Turn{func() schema.Turn {
+			turn := schema.NewTurn(schema.TurnUserInput, llm.User("wrong kind"))
+			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{DeliveryID: "d1", ToolCallID: "tc1"}}
+			return turn
+		}()}, false},
+		{"commit referencing absent tool call refused", []schema.Turn{toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "d1", ToolCallID: "tcX"})}, false},
+		{"commit with incomplete identity refused", []schema.Turn{toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "", ToolCallID: "tc1"})}, false},
+		{"conflicting tool call per delivery refused", []schema.Turn{
+			toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "d1", ToolCallID: "tc1"}),
+			toolResults("tc2", schema.DelegateDeliveryCommit{DeliveryID: "d1", ToolCallID: "tc2"}),
+		}, false},
+		{"conflicting delivery per tool call refused", []schema.Turn{
+			toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "d1", ToolCallID: "tc1"}),
+			toolResults("tc1", schema.DelegateDeliveryCommit{DeliveryID: "d2", ToolCallID: "tc1"}),
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "diff.transcript.jsonl")
+			writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "diff"})
+			if err != nil {
+				t.Fatalf("new writer: %v", err)
+			}
+			// A checkpoint after the turns so the full-scan anchor has a
+			// boundary to anchor at; the refusals fire before it is consulted.
+			for _, turn := range tc.turns {
+				if err := writer.Append(turn); err != nil {
+					t.Fatalf("append turn: %v", err)
+				}
+			}
+			if err := writer.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))); err != nil {
+				t.Fatalf("append checkpoint: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close writer: %v", err)
+			}
+			// The snapshot's verdict is observable through the sidecar it
+			// leaves behind: a refused fold writes no sidecar at all.
+			refreshErr := transcript.RefreshSidecarFromFullScan(path, "diff")
+			if refreshErr != nil {
+				t.Fatalf("refresh: %v", refreshErr)
+			}
+			_, snapshotOK := transcript.ReadSidecar(path)
+			entries := make([]transcript.Entry, 0, len(tc.turns))
+			for i, turn := range tc.turns {
+				entries = append(entries, transcript.Entry{Seq: i, Turn: turn})
+			}
+			_, fileErr := foldDelegateAttention(entries)
+			fileOK := fileErr == nil
+			if snapshotOK != fileOK {
+				t.Fatalf("snapshot and file fold disagree: snapshot ok=%v, file fold ok=%v (file fold error: %v)", snapshotOK, fileOK, fileErr)
+			}
+			if !tc.accepted && snapshotOK {
+				t.Fatalf("case must be refused but the snapshot accepted it")
+			}
+			if tc.accepted && !snapshotOK {
+				t.Fatalf("case must be accepted but the snapshot refused it")
+			}
+		})
+	}
+}
+
 // TestFullScanSnapshotDedupesReSentAttentionAndCarriesResolutions pins the
 // opportunistic anchor's fold snapshot over the two attention shapes the
 // reviewer's probe showed it mishandling: a steering turn re-sent with
@@ -309,10 +429,11 @@ func TestFullScanSnapshotDedupesReSentAttentionAndCarriesResolutions(t *testing.
 	for _, row := range sidecar.PendingAttention {
 		rows[row.AttentionID] = row
 	}
-	if want := []string{"att_dup", "att_resolved", "att_pending"}; len(sidecar.PendingAttention) != len(want) {
+	want := []string{"att_dup", "att_resolved", "att_pending"}
+	if len(sidecar.PendingAttention) != len(want) {
 		t.Fatalf("snapshot rows: got %d (%v), want %d — a re-sent attention must not add a row", len(sidecar.PendingAttention), sidecar.PendingAttention, len(want))
 	}
-	for _, id := range []string{"att_dup", "att_resolved", "att_pending"} {
+	for _, id := range want {
 		if _, present := rows[id]; !present {
 			t.Fatalf("snapshot is missing attention %q: %+v", id, sidecar.PendingAttention)
 		}

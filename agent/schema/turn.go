@@ -63,6 +63,14 @@ const (
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
 )
 
+// Attention resolution dispositions: the terminal states an attention can
+// resolve to. Exported because two packages judge them — the agent's fold
+// and the transcript package's restatement of it — and must not drift.
+const (
+	AttentionDispositionConsumed  = "consumed"
+	AttentionDispositionDiscarded = "discarded"
+)
+
 // AttentionResolutionInfo identifies one durable attention item and its
 // terminal disposition. The resolution is append-only so cold reconciliation
 // can repeat safely after a crash.

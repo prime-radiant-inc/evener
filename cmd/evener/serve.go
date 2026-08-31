@@ -166,8 +166,9 @@ type serveDeps struct {
 	// refreshResumeSidecar rewrites a session's resume sidecar from a full
 	// transcript scan. The compaction-anchored fallback calls it after its
 	// file-form re-read so the NEXT resume windows instead of repeating that
-	// re-read. Injectable so a test can observe (and fault) the refresh the
-	// same way the identity forms above are observed.
+	// re-read. Injectable for pattern consistency with the filesystem-touching
+	// collaborators around it (the prepareAppIdentity* deps) and as the
+	// injection point for the fallback's best-effort branch below.
 	refreshResumeSidecar func(transcriptPath, sessionID string) error
 	updateSessionID      func(*rvreg.Registration, string) error
 	observeCallbacks     func(serveCallbackObserver)

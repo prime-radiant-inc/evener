@@ -12,14 +12,15 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
 
 type delegateAttentionResolution string
 
 const (
-	delegateAttentionConsumed  delegateAttentionResolution = "consumed"
-	delegateAttentionDiscarded delegateAttentionResolution = "discarded"
+	delegateAttentionConsumed  delegateAttentionResolution = schema.AttentionDispositionConsumed
+	delegateAttentionDiscarded delegateAttentionResolution = schema.AttentionDispositionDiscarded
 )
 
 type shellNotificationIdentity struct {

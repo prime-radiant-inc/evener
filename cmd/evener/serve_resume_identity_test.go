@@ -59,6 +59,8 @@ type serveResumeIdentityProbe struct {
 	windowedFormUsed      bool
 	windowedPrefixTurns   int
 	windowedPrefixEntries int
+	refreshUsed           bool
+	refreshPath           string
 	gotThreadID           string
 	gotEntryCount         int
 }
@@ -95,6 +97,12 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		probe.windowedPrefixEntries = prefixEntryCount
 		probe.windowedPrefixTurns = prefixTurnCount
 		return windowedForm(sourceID, threadID, ref, header, entries, prefixEntryCount, prefixTurnCount)
+	}
+	refreshForm := deps.refreshResumeSidecar
+	deps.refreshResumeSidecar = func(transcriptPath, sessionID string) error {
+		probe.refreshUsed = true
+		probe.refreshPath = transcriptPath
+		return refreshForm(transcriptPath, sessionID)
 	}
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
 		// Cancel before returning: the shutdown goroutine waits on ctx.Done()
@@ -298,6 +306,9 @@ func TestServeResumeCompactionFallbackRefreshesSidecar(t *testing.T) {
 	}
 	if probe.windowedFormUsed || probe.entriesFormUsed {
 		t.Fatal("compaction-anchored resume used a non-file identity form")
+	}
+	if !probe.refreshUsed || probe.refreshPath != path {
+		t.Fatalf("refresh seam: used=%v path=%q, want used=true path=%q", probe.refreshUsed, probe.refreshPath, path)
 	}
 	refreshed, ok := transcript.ReadSidecar(path)
 	if !ok {

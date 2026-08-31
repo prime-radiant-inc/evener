@@ -22,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // DefaultMaxLineBytes is the maximum transcript record payload. The trailing
@@ -1018,38 +1019,69 @@ func projectsThreadItems(turn schema.Turn) bool {
 
 // foldSnapshotForSidecar computes the fold snapshots a full-scan anchor can
 // vouch for: the delegate-attention fold over every entry, projected into
-// the sidecar's snapshot types. ok is false when the transcript's attention
-// records are inconsistent (a resolution for an attention that never
-// appended, a resolution naming no attention, or a resolution whose shape the
-// file fold would reject) — the caller must not write a sidecar claiming
-// complete snapshots over such a file, because the seeded fold would silently
-// reconstruct an empty state where the full read errors. The structural
-// checks here are the ones the full entry list can judge without importing
-// the agent's fold: an unresolvable resolution, or a resolution that names
-// no attention, is inconsistent on their face.
+// the sidecar's snapshot types. The agent's file fold is the authority; this
+// restates its rules rule-for-rule, in file order, because the agent imports
+// this package and the reverse edge would be a cycle. Every entry shape the
+// file fold rejects — a non-steering attention turn, a conflicting or
+// unmarshalable re-send, a resolution turn with no resolution, a resolution
+// before its append, an unknown disposition, a conflicting re-resolution, a
+// resume generation claimed twice, a delivery commit off a tool-results turn
+// or referencing an absent or conflicting tool call — is refused here too
+// (ok=false, nothing written), so the anchor never writes a snapshot the
+// seeded fold would accept over a file the full read errors on.
 //
-// The attention pass mirrors the agent's file fold rule for rule, in file
-// order, keyed on the attention ID rather than the entry: a re-sent steering
-// turn with identical content is a legal transcript (a second sighting adds
-// nothing), so the snapshot records the attention once, with its resolution
-// when one exists. Resolutions are carried, not dropped — a seeded fold that
-// sees an attention resolved in the prefix must report it resolved, exactly
-// as the file fold would. Every shape the file fold rejects (a non-steering
-// attention turn, a conflicting re-send, an unknown disposition, a
-// conflicting re-resolution, a resume generation claimed twice) is refused
-// here too, so the anchor never writes a snapshot the seeded fold would
-// accept over a file the full read errors on.
+// The attention rows key on the attention ID, not the entry: a re-sent
+// steering turn with identical content is a legal transcript (a second
+// sighting adds nothing), so the snapshot records the attention once —
+// first sighting's content, its resolution and resume generation carried
+// when one exists — with the ids in first-sighting order, matching the
+// fold's order slice.
 func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string, ok bool) {
 	pending = nil
 	commits = nil
 	mutations = map[string]string{}
+	commitIDs := map[string]string{}
 	for i := range entries {
 		turn := entries[i].Turn
 		if turn.ClientMutationID != "" {
 			mutations[turn.ClientMutationID] = turn.StableTurnID
 		}
-		for _, commit := range turn.DelegateDeliveryCommits {
-			commits = append(commits, SidecarDeliveryCommit{DeliveryID: commit.DeliveryID, ToolCallID: commit.ToolCallID})
+		if len(turn.DelegateDeliveryCommits) > 0 {
+			// The fold's own rules for delivery commits, mirrored: commits ride
+			// only on tool-results turns, name both identities, reference a
+			// tool result the turn's message actually carries, and never
+			// conflict with a delivery or tool call claimed earlier in the
+			// file. A commit violating any of these is a file the full fold
+			// errors on — the snapshot must refuse it, not carry it.
+			if turn.Kind != schema.TurnToolResults {
+				return nil, nil, nil, false
+			}
+			resultIDs := map[string]bool{}
+			for _, part := range turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID != "" {
+					resultIDs[part.ToolResult.ToolCallID] = true
+				}
+			}
+			for _, commit := range turn.DelegateDeliveryCommits {
+				if commit.DeliveryID == "" || commit.ToolCallID == "" || !resultIDs[commit.ToolCallID] {
+					return nil, nil, nil, false
+				}
+				if _, seen := commitIDs[commit.DeliveryID]; seen {
+					// A delivery named twice: the fold accepts it only when
+					// the repeat names the same tool call.
+					if commitIDs[commit.DeliveryID] != commit.ToolCallID {
+						return nil, nil, nil, false
+					}
+					continue
+				}
+				for deliveryID, toolCallID := range commitIDs {
+					if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
+						return nil, nil, nil, false
+					}
+				}
+				commitIDs[commit.DeliveryID] = commit.ToolCallID
+				commits = append(commits, SidecarDeliveryCommit{DeliveryID: commit.DeliveryID, ToolCallID: commit.ToolCallID})
+			}
 		}
 	}
 	// Attention pass, in file order: rows is the fold state at the end of the
@@ -1066,77 +1098,73 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 			if turn.Kind != schema.TurnSteering || turn.AttentionResolution != nil {
 				return nil, nil, nil, false
 			}
+			// A message the seeded fold could not reconstruct is a state the
+			// snapshot must refuse, not carry.
+			encoded, err := json.Marshal(turn.Message)
+			if err != nil {
+				return nil, nil, nil, false
+			}
 			if row, sighted := rows[turn.AttentionID]; sighted {
 				// A re-send with identical content is a no-op (the fold
 				// keeps the first sighting); different content is the fold's
-				// "conflicting content" error. Nil is the fold's
-				// "unmarshalable message" refusal — refused here too.
-				encoded := marshalFoldMessage(turn)
-				if encoded == nil || !bytes.Equal(row.Message, encoded) {
+				// "conflicting content" error.
+				if !bytes.Equal(row.Message, encoded) {
 					return nil, nil, nil, false
 				}
 				continue
-			}
-			encoded := marshalFoldMessage(turn)
-			if encoded == nil {
-				return nil, nil, nil, false
 			}
 			rows[turn.AttentionID] = SidecarPendingAttention{AttentionID: turn.AttentionID, Message: JSONMessage(encoded)}
 			order = append(order, turn.AttentionID)
 		}
-		if r := turn.AttentionResolution; r != nil {
-			// The fold admits a resolution only as a resolution turn whose
-			// pointer names the attention.
-			if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || r.AttentionID == "" {
+		r := turn.AttentionResolution
+		if r == nil {
+			// A resolution-kind turn with no resolution pointer is the fold's
+			// "attention resolution turn has no resolution" error.
+			if turn.Kind == schema.TurnAttentionResolution {
 				return nil, nil, nil, false
 			}
-			row, sighted := rows[r.AttentionID]
-			if !sighted {
-				// "Resolved before it was appended" — order matters to the
-				// fold, so it matters here.
-				return nil, nil, nil, false
-			}
-			if r.Disposition != "consumed" && r.Disposition != "discarded" {
-				return nil, nil, nil, false
-			}
-			if r.Disposition == "discarded" && r.ResumeGeneration != 0 {
-				return nil, nil, nil, false
-			}
-			if row.Resolution != "" {
-				// An identical re-resolution is the fold's no-op; anything
-				// else is its "conflicting resolutions" error.
-				if row.Resolution != r.Disposition || row.ResumeGeneration != r.ResumeGeneration {
-					return nil, nil, nil, false
-				}
-				continue
-			}
-			if r.ResumeGeneration != 0 {
-				if other, claimed := generations[r.ResumeGeneration]; claimed && other != r.AttentionID {
-					return nil, nil, nil, false
-				}
-				generations[r.ResumeGeneration] = r.AttentionID
-			}
-			row.Resolution = r.Disposition
-			row.ResumeGeneration = r.ResumeGeneration
-			rows[r.AttentionID] = row
+			continue
 		}
+		// The fold admits a resolution only as a resolution turn whose
+		// pointer names the attention.
+		if turn.Kind != schema.TurnAttentionResolution || turn.AttentionID != "" || r.AttentionID == "" {
+			return nil, nil, nil, false
+		}
+		row, sighted := rows[r.AttentionID]
+		if !sighted {
+			// "Resolved before it was appended" — order matters to the
+			// fold, so it matters here.
+			return nil, nil, nil, false
+		}
+		if r.Disposition != schema.AttentionDispositionConsumed && r.Disposition != schema.AttentionDispositionDiscarded {
+			return nil, nil, nil, false
+		}
+		if r.Disposition == schema.AttentionDispositionDiscarded && r.ResumeGeneration != 0 {
+			return nil, nil, nil, false
+		}
+		if row.Resolution != "" {
+			// An identical re-resolution is the fold's no-op; anything
+			// else is its "conflicting resolutions" error.
+			if row.Resolution != r.Disposition || row.ResumeGeneration != r.ResumeGeneration {
+				return nil, nil, nil, false
+			}
+			continue
+		}
+		if r.ResumeGeneration != 0 {
+			if other, claimed := generations[r.ResumeGeneration]; claimed && other != r.AttentionID {
+				return nil, nil, nil, false
+			}
+			generations[r.ResumeGeneration] = r.AttentionID
+		}
+		row.Resolution = r.Disposition
+		row.ResumeGeneration = r.ResumeGeneration
+		rows[r.AttentionID] = row
 	}
 	pending = make([]SidecarPendingAttention, 0, len(order))
 	for _, id := range order {
 		pending = append(pending, rows[id])
 	}
 	return pending, commits, mutations, true
-}
-
-// marshalFoldMessage encodes a steering turn's message for the fold
-// snapshot, or nil when it cannot be encoded — a message the seeded fold
-// could not reconstruct is a state the snapshot must refuse, not carry.
-func marshalFoldMessage(turn schema.Turn) []byte {
-	message, err := json.Marshal(turn.Message)
-	if err != nil {
-		return nil
-	}
-	return message
 }
 
 // resumeWindowed validates a sidecar against the opened file and, on
