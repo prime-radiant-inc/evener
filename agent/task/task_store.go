@@ -93,7 +93,10 @@ type TaskInput struct {
 	Insert          string   `json:"insert,omitempty"`           // template-expansion marker (see Task.Insert)
 }
 
-// TaskUpdate is a status change for an existing task.
+// TaskUpdate is a change for an existing task.
+// Status empty means no status change; a non-empty value must be one of the
+// four statuses. The tool schema has always documented status as optional,
+// so notes/deps/effort-only updates are legal.
 // DependsOn nil means no change; &[]int{} clears the dependency list.
 // ReasoningEffort empty means no change; a non-empty value replaces it.
 type TaskUpdate struct {
@@ -588,7 +591,12 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 
 func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 	// Validate status values up front so a bad status doesn't half-apply.
+	// An empty status means "no change": the tool schema documents status
+	// as optional, so notes/deps/effort-only updates are legal.
 	for _, u := range updates {
+		if u.Status == "" {
+			continue
+		}
 		switch u.Status {
 		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
 			// valid
@@ -607,7 +615,9 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		if _, exists := projected[u.ID]; !exists {
 			return fmt.Errorf("unknown task ID %d", u.ID)
 		}
-		projected[u.ID] = u.Status
+		if u.Status != "" {
+			projected[u.ID] = u.Status
+		}
 	}
 	inProgressCount := 0
 	for _, status := range projected {
@@ -675,7 +685,9 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		found := false
 		for i := range s.tasks {
 			if s.tasks[i].ID == u.ID {
-				s.tasks[i].Status = u.Status
+				if u.Status != "" {
+					s.tasks[i].Status = u.Status
+				}
 				if u.Notes != "" {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
 				}
@@ -691,7 +703,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 				s.tasks[i].UpdatedAt = ts
 				if u.Status == TaskDone {
 					s.tasks[i].CompletedAt = ts
-				} else {
+				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil
 				}
 				found = true
