@@ -179,7 +179,6 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
-	i.fts = false
 	i.mu.Unlock()
 	return i.publishAndSignal(all), nil
 }
@@ -346,6 +345,14 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // onChange fired for it.
 func (i *PastIndex) publishAndSignal(all []PastEntry) bool {
 	if i.dbPath != "" {
+		// Mark the mirror stale BEFORE attempting the write, so any failed
+		// publish (a fold's or rebuild's rebuildFTS losing its SQLITE_BUSY
+		// race, or the db being briefly unwritable) leaves i.fts false and
+		// Search's staleness gate can repair it. Only a successful write
+		// flips it back true below.
+		i.mu.Lock()
+		i.fts = false
+		i.mu.Unlock()
 		if err := i.rebuildFTS(all); err == nil {
 			i.mu.Lock()
 			i.fts = true
