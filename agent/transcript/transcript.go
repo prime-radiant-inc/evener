@@ -660,7 +660,8 @@ func OpenWriter(path string) (*Writer, error) {
 // OpenWriterForSession opens a transcript for resume, requiring its header to
 // belong to expectedSessionID and returning the validated semantic entries.
 func OpenWriterForSession(path, expectedSessionID string) (*Writer, []Entry, error) {
-	return openWriter(path, expectedSessionID)
+	w, scan, err := openWriter(path, expectedSessionID)
+	return w, scan.entries, err
 }
 
 // OpenWriterForSessionWithFS is the filesystem-injecting form of
@@ -672,13 +673,14 @@ func OpenWriterForSessionWithFS(fs afero.Fs, path, expectedSessionID string) (*W
 	if err != nil {
 		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
 	}
-	return resumeWriter(fs, f, expectedSessionID)
+	w, scan, err := resumeWriter(fs, f, expectedSessionID)
+	return w, scan.entries, err
 }
 
-func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
+func openWriter(path, expectedSessionID string) (*Writer, scanResult, error) {
 	f, err := openTranscriptAppendFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
+		return nil, scanResult{}, fmt.Errorf("open transcript for resume: %w", err)
 	}
 	return resumeWriter(afero.NewOsFs(), f, expectedSessionID)
 }
@@ -738,18 +740,17 @@ func OpenWriterForResume(path, expectedSessionID string) (*Writer, ResumeView, e
 			return nil, ResumeView{}, fmt.Errorf("open transcript for resume: %w", err)
 		}
 	}
-	writer, entries, err := resumeWriter(afero.NewOsFs(), f, expectedSessionID)
+	writer, scan, err := resumeWriter(afero.NewOsFs(), f, expectedSessionID)
 	if err != nil {
 		return nil, ResumeView{}, err
 	}
-	// Opportunistic anchor (the third anchor point): the full scan decoded
-	// every entry, so the sidecar it writes carries complete snapshots and
-	// the NEXT resume of this session can be windowed. The offset choice is
-	// the whole-file boundary: the next resume decodes only turns appended
-	// after this one. A write failure is non-fatal — this resume already
+	// Opportunistic anchor: the full scan decoded every entry (and recorded
+	// the last checkpoint's offset), so the sidecar it writes carries
+	// complete snapshots and the NEXT resume of this session can be
+	// windowed. A write failure is non-fatal — this resume already
 	// succeeded, and the next one simply falls back to another full scan.
-	writeSidecarAfterFullScan(path, f, info, entries, expectedSessionID)
-	return writer, ResumeView{Entries: entries, PrefixEntryCount: 0, SidecarUsed: false}, nil
+	writeSidecarAfterFullScan(path, f, info, scan, expectedSessionID)
+	return writer, ResumeView{Entries: scan.entries, PrefixEntryCount: 0, SidecarUsed: false}, nil
 }
 
 // writeSidecarAfterFullScan writes the opportunistic resume sidecar from a
@@ -769,7 +770,8 @@ func OpenWriterForResume(path, expectedSessionID string) (*Writer, ResumeView, e
 // ordinal is 0 (the anchor is written by the transcript package, which has
 // no fork knowledge; a fork child's file never validates this sidecar
 // anyway, because its file identity differs from the parent's).
-func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, entries []Entry, expectedSessionID string) {
+func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan scanResult, expectedSessionID string) {
+	entries := scan.entries
 	// The sidecar must only be written over a file whose current state this
 	// scan vouches for. A partial tail was truncated by resumeWriter; stat
 	// again so TranscriptSize reflects the post-truncation size.
@@ -777,21 +779,15 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, entrie
 	if err != nil {
 		return
 	}
-	// Find the last checkpoint entry and the byte offset where it starts.
-	// entries holds every decoded entry in order; the byte offsets are
-	// re-derived by re-scanning line lengths (the full scan did not retain
-	// them), which is a second pass over an already-decoded list — cheap
-	// compared to the decode itself.
+	// The scan recorded where the last checkpoint entry starts; no second
+	// file pass. No checkpoint means every entry is live history — no
+	// sidecar.
+	offset := scan.lastCheckpointOffset
+	if offset <= 0 {
+		return
+	}
 	checkpointIdx := lastCheckpointEntry(entries)
 	if checkpointIdx < 0 {
-		// No checkpoint: every entry is live history. No sidecar.
-		return
-	}
-	offset, err := byteOffsetOfEntry(f, checkpointIdx)
-	if err != nil {
-		return
-	}
-	if offset <= 0 {
 		return
 	}
 	prefix := entries[:checkpointIdx]
@@ -853,43 +849,6 @@ func lastCheckpointEntry(entries []Entry) int {
 		}
 	}
 	return last
-}
-
-// byteOffsetOfEntry returns the byte offset where the entry at index starts.
-// It re-walks the file's lines counting entry records (skipping the header
-// and blank lines), matching the full scan's ordering exactly.
-func byteOffsetOfEntry(f *os.File, entryIndex int) (int64, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return 0, err
-	}
-	reader := bufio.NewReaderSize(f, 64*1024)
-	var offset int64
-	seen := 0
-	headerRead := false
-	for {
-		line, complete, bytesRead, err := ReadLine(reader, transcriptJSONLMaxLineBytes)
-		if err != nil || !complete {
-			return 0, fmt.Errorf("rescan transcript for sidecar offset: %v", err)
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			offset += bytesRead
-			continue
-		}
-		if !headerRead {
-			headerRead = true
-			offset += bytesRead
-			continue
-		}
-		if seen == entryIndex {
-			// Seek back to the start so the writer's later SeekEnd (and any
-			// caller holding read position expectations) is unaffected.
-			_, _ = f.Seek(0, io.SeekEnd)
-			return offset, nil
-		}
-		seen++
-		offset += bytesRead
-	}
 }
 
 // foldSnapshotForSidecar computes the fold snapshots a full-scan anchor can
@@ -1077,11 +1036,15 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	return w, err
 }
 
-func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, []Entry, error) {
+func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, scanResult, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
 	maxSeq := -1
+	// lastCheckpointOffset is the byte offset of the last CHECKPOINT/SUMMARY
+	// entry observed during the scan — the boundary the opportunistic sidecar
+	// anchors at, recorded here so it needs no second file pass.
+	lastCheckpointOffset := int64(-1)
 	// entries is non-nil even for a header-only transcript: the
 	// delegate-attention fold keys on nilness to decide whether it can fold
 	// in memory or must re-read the file.
@@ -1095,13 +1058,18 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
 			_ = f.Close()
-			return nil, nil, fmt.Errorf("read transcript for resume: %w", readErr)
+			return nil, scanResult{}, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
 			hasPartialTail = bytesRead > 0
 			break
 		}
 		validLen += bytesRead
+		// The byte offset where the entry this iteration decodes STARTS:
+		// validLen already counted the line's bytes, so subtracting this
+		// line's length gives its start. Recorded for checkpoint-kind entries
+		// so the opportunistic sidecar write needs no second file pass.
+		entryStartOffset := validLen - int64(bytesRead)
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -1111,11 +1079,11 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 			header, err = DecodeHeader(line)
 			if err != nil {
 				_ = f.Close()
-				return nil, nil, fmt.Errorf("parse transcript header: %w", err)
+				return nil, scanResult{}, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
 				_ = f.Close()
-				return nil, nil, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
+				return nil, scanResult{}, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
 			continue
@@ -1123,25 +1091,28 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		entry, err := DecodeEntry(line)
 		if err != nil {
 			_ = f.Close()
-			return nil, nil, fmt.Errorf("parse transcript entry: %w", err)
+			return nil, scanResult{}, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		entries = append(entries, entry)
 		if entry.Seq > maxSeq {
 			maxSeq = entry.Seq
 		}
+		if kind := entry.Turn.Kind; kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
+			lastCheckpointOffset = entryStartOffset
+		}
 	}
 	if !headerRead {
 		_ = f.Close()
 		if hasPartialTail && validLen == 0 {
-			return nil, nil, errors.New("transcript has no complete lines")
+			return nil, scanResult{}, errors.New("transcript has no complete lines")
 		}
-		return nil, nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		return nil, scanResult{}, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
 			_ = f.Close() // cleanup on error path; the truncate error is what matters
-			return nil, nil, fmt.Errorf("truncate partial line: %w", err)
+			return nil, scanResult{}, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
@@ -1155,8 +1126,16 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		_ = f.Close() // cleanup on error path; the seek error is what matters
-		return nil, nil, fmt.Errorf("seek to end of transcript: %w", err)
+		return nil, scanResult{}, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: len(entries)}, entries, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now(), header: header, sidecarEntryCount: len(entries)}, scanResult{entries: entries, lastCheckpointOffset: lastCheckpointOffset}, nil
+}
+
+// scanResult is what a full resume scan learned besides the entries: the
+// byte offset of the last checkpoint entry, recorded during the scan so the
+// opportunistic sidecar write needs no second file pass.
+type scanResult struct {
+	entries              []Entry
+	lastCheckpointOffset int64
 }

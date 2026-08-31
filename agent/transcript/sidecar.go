@@ -189,11 +189,20 @@ func ReadSidecar(transcriptPath string) (sidecar ResumeSidecar, ok bool) {
 // (writeTranscript's forceSync path) uses the same discipline. A write
 // failure is returned to the caller; the resume fast path treats it as
 // non-fatal (the next resume simply falls back).
+//
+// A sidecar that would exceed the read limit is refused here rather than
+// written-and-forever-rejected: ReadSidecar caps the read at
+// resumeSidecarLimit, so an oversized write would cycle pointlessly —
+// every resume rewrites it, every read discards it. Refusing at the write
+// keeps the (correct) fallback to the full scan instead.
 func WriteSidecar(transcriptPath string, sidecar ResumeSidecar) error {
 	sidecar.IntegrityStamp = sidecarIntegrityStamp(sidecar)
 	data, err := json.Marshal(sidecar)
 	if err != nil {
 		return fmt.Errorf("marshal resume sidecar: %w", err)
+	}
+	if int64(len(data)) > resumeSidecarLimit {
+		return fmt.Errorf("resume sidecar is %d bytes, over the %d read limit", len(data), resumeSidecarLimit)
 	}
 	path := SidecarPath(transcriptPath)
 	temp, err := os.CreateTemp(filepath.Dir(path), ".resume-sidecar-*")
