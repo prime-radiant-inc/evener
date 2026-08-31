@@ -176,6 +176,8 @@ func execute(opts options, stdout, stderr io.Writer) int {
 		}
 	}
 
+	convertProvidersFile(opts, &rep, stdout, stderr)
+
 	if !opts.dryRun {
 		// The retired home roots hold nothing evener-migrate doesn't already
 		// know how to place elsewhere — once every known file is out, the

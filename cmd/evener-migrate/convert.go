@@ -3,6 +3,9 @@ package migrate
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -187,4 +190,58 @@ func writeStringTable(b *strings.Builder, provider, key string, m map[string]str
 	for _, k := range keys {
 		fmt.Fprintf(b, "%q = %q\n", k, m[k])
 	}
+}
+
+// convertProvidersFile upgrades a pre-registry providers.toml sitting at the
+// final config location, keeping the original beside it as
+// providers.toml.pre-registry. It runs after the layout moves so a file
+// arriving from ~/.serf or ~/.evener is converted in the same invocation.
+func convertProvidersFile(opts options, rep *report, stdout, stderr io.Writer) {
+	path := filepath.Join(opts.configBase, "evener", "providers.toml")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return // no file, nothing to convert
+	}
+	if !isOldProvidersSchema(src) {
+		return
+	}
+	converted, notes, err := convertProvidersConfig(src)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "providers.toml: cannot convert: %v\n", err)
+		rep.failed++
+		return
+	}
+	if opts.dryRun {
+		_, _ = fmt.Fprintf(stdout, "providers.toml: would convert to schema 2 (backup: providers.toml.pre-registry)\n")
+		rep.moved++
+		return
+	}
+	backup := path + ".pre-registry"
+	if _, err := os.Stat(backup); err == nil {
+		_, _ = fmt.Fprintf(stderr, "providers.toml: refusing to convert: %s already exists\n", backup)
+		rep.failed++
+		return
+	}
+	if err := os.WriteFile(backup, src, 0o644); err != nil {
+		_, _ = fmt.Fprintf(stderr, "providers.toml: write backup: %v\n", err)
+		rep.failed++
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, converted, 0o644); err != nil {
+		_, _ = fmt.Fprintf(stderr, "providers.toml: write converted: %v\n", err)
+		rep.failed++
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		_, _ = fmt.Fprintf(stderr, "providers.toml: replace: %v\n", err)
+		rep.failed++
+		return
+	}
+	_, _ = fmt.Fprintf(stdout, "providers.toml: converted to schema 2 (backup: providers.toml.pre-registry)\n")
+	for _, n := range notes {
+		_, _ = fmt.Fprintf(stdout, "  note: %s\n", n)
+	}
+	rep.moved++
 }
