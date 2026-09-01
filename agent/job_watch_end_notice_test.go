@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -96,6 +97,72 @@ func TestWatchEndNoticeRoutesToCrossSessionReceiver(t *testing.T) {
 	if len(ownerQueue) == 0 {
 		t.Error("owner queue is empty; it should still carry the target's own job-stopped notification")
 	}
+}
+
+// TestDescendantReceiverWatchSurvivesJobManagerClose investigates issue #695's
+// adversarial-review Finding 1: does a configureDescendantReceiverWatch-shaped
+// watch (ReceiverSessionID set, ReceiverDelegateID empty) still deliver to its
+// receiverNotify closure after its OWN job manager has gone through the close
+// teardown Session.close() runs on every subagent in a dispose cascade
+// (jobManager.closeRuntimeState)? If it does, a delegate that installed this
+// watch on a descendant, then got disposed, remains a live receiver after
+// dispose. If closeRuntimeState already tears the watch down, the hazard
+// cannot reproduce this way.
+//
+// "armed" is the control: the identical watch, fired with no close in
+// between, must reach the receiver -- proving the installed shape and the
+// synthetic event actually exercise onSessionEvent's notify branch, so an
+// empty queue in "after_close" is attributable to the close, not a setup
+// mistake. Target is the session pseudo-target ("caller"), not a real shell
+// job, so closeRuntimeState's running-job wait has nothing to wait for.
+func TestDescendantReceiverWatchSurvivesJobManagerClose(t *testing.T) {
+	t.Parallel()
+	install := func(t *testing.T, jm *jobManager, receiverQueue *[]jobNotification) {
+		t.Helper()
+		if _, err := jm.configureWatch(watchArgs{
+			Target:            runtimeMessageAliasCaller,
+			Events:            []string{"communicate"},
+			ReceiverSessionID: "S-observer",
+			ReceiverNotify:    func(n jobNotification) { *receiverQueue = append(*receiverQueue, n) },
+		}); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+	}
+
+	t.Run("armed", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		var receiverQueue []jobNotification
+		install(t, jm, &receiverQueue)
+
+		jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate})
+
+		if len(receiverQueue) == 0 {
+			t.Fatal("receiver got no notification for a live watch -- setup does not exercise the notify branch, so the after_close case proves nothing")
+		}
+	})
+
+	t.Run("after_close", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		var receiverQueue []jobNotification
+		install(t, jm, &receiverQueue)
+
+		// Simulate the watch's own job manager closing as part of a dispose
+		// cascade: Session.close() calls jobManager.closeRuntimeState() on
+		// every subagent it drains, including a descendant whose job manager
+		// holds a watch keyed to some other (possibly disposed) session as
+		// receiver.
+		if err := jm.closeRuntimeState(); err != nil {
+			t.Fatalf("closeRuntimeState: %v", err)
+		}
+
+		jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate})
+
+		if len(receiverQueue) != 0 {
+			t.Fatalf("receiver got %d notification(s) after its watch's job manager closed: %+v -- the watch survived teardown and can still deliver to a torn-down receiver", len(receiverQueue), receiverQueue)
+		}
+	})
 }
 
 // The end notice is for watches that ended unheard. A watch that already
