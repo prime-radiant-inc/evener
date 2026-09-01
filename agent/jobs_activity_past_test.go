@@ -766,3 +766,54 @@ func TestLoadHistoricalActivityBase_TruncatedDelegateJournalMarksLoadTruncated(t
 		t.Fatalf("LoadTruncated = false, want true: the delegate journal scan hit its own ceiling with a delegate omitted")
 	}
 }
+
+// TestLoadSessionJobActivityTree_OverBudgetSessionStillExhaustsBudget covers
+// the saturation edge of the aggregate work budget: a single session whose
+// owned-shell count EXCEEDS the remaining budget must still exhaust it, so
+// sibling/descendant sessions are skipped. Refuse-without-consuming semantics
+// (activityConsumeWorkUnit's contract, which projection relies on) would
+// otherwise leave the whole budget unspent here and every later journal would
+// still be opened and scanned.
+func TestLoadSessionJobActivityTree_OverBudgetSessionStillExhaustsBudget(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootoverbudget"
+	started := time.Unix(600, 0).UTC()
+
+	count := activityMaxWorkUnits + 1
+	events := make([]jobstore.Event, 0, count)
+	for i := range count {
+		jobID := fmt.Sprintf("job_%d", i)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+			OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+
+	childID := "childoverbudget"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "should never be opened"))
+	s1cov_writeJobLog(t, stateDir, childID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	var scannedPaths []string
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+		scannedPaths = append(scannedPaths, path)
+		return original(ctx, path, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+	if len(scannedPaths) != 1 {
+		t.Fatalf("scanned %d job journals, want exactly 1 (root only; an over-budget session must saturate the budget so the child delegate is never visited): %v", len(scannedPaths), scannedPaths)
+	}
+	if !got.Root.Branch.Truncated {
+		t.Fatalf("Root.Branch.Truncated = false, want true")
+	}
+}
