@@ -1837,9 +1837,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	//
 	// The announce precedes every content event of the turn. A boundary that
 	// came after would leave that content attributed to the turn before it.
-	if s.servedByDaemon() {
-		s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
-	}
+	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
 	if reminder != "" {
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
