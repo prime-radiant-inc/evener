@@ -196,3 +196,48 @@ func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
 		t.Fatalf("converter notes must ride through to Warnings: %v", res.Warnings)
 	}
 }
+
+// TestResolveInstanceCarriesWebSearchDisabledWarning pins parity with
+// resolveOn (issue #738): a record that is not reaching its provider's
+// first-party endpoint must explain a stripped web_search through
+// ResolveInstance the same way a model-based Resolve already does
+// (gateWebSearch, resolve.go, is the one function both call), and an
+// explicit web_search on the instance's own entry must suppress the
+// warning identically on both paths.
+func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
+	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
+		"gw":      {Base: "openai", Transport: Transport{BaseURL: "https://gw.example.com/v1"}},
+		"optedin": {Base: "openai", Transport: Transport{BaseURL: "https://gw.example.com/v1"}, Caps: Caps{WebSearch: new(true)}},
+	})
+	want := "web_search disabled: this endpoint is not openai's first-party API (set web_search = true on the instance to opt back in)"
+
+	instRes, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance(gw): %v", err)
+	}
+	if !strings.Contains(strings.Join(instRes.Warnings, "\n"), want) {
+		t.Fatalf("ResolveInstance must explain a stripped web_search: %v", instRes.Warnings)
+	}
+	modelRes, err := r.Resolve("gw/gpt-5.5")
+	if err != nil {
+		t.Fatalf("Resolve(gw/gpt-5.5): %v", err)
+	}
+	if !strings.Contains(strings.Join(modelRes.Warnings, "\n"), want) {
+		t.Fatalf("resolveOn must carry the identical warning ResolveInstance does: %v", modelRes.Warnings)
+	}
+
+	instOK, err := r.ResolveInstance("optedin")
+	if err != nil {
+		t.Fatalf("ResolveInstance(optedin): %v", err)
+	}
+	if strings.Contains(strings.Join(instOK.Warnings, "\n"), "web_search disabled") {
+		t.Fatalf("ResolveInstance: an explicit web_search = true must suppress the warning: %v", instOK.Warnings)
+	}
+	modelOK, err := r.Resolve("optedin/gpt-5.5")
+	if err != nil {
+		t.Fatalf("Resolve(optedin/gpt-5.5): %v", err)
+	}
+	if strings.Contains(strings.Join(modelOK.Warnings, "\n"), "web_search disabled") {
+		t.Fatalf("resolveOn: an explicit web_search = true must suppress the warning too: %v", modelOK.Warnings)
+	}
+}
