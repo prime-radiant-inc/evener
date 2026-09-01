@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -332,5 +333,75 @@ func TestServeResumeCompactionFallbackRefreshesSidecar(t *testing.T) {
 	}
 	if probe.windowedPrefixTurns != 2 {
 		t.Fatalf("windowed prefix turns after refresh = %d, want 2", probe.windowedPrefixTurns)
+	}
+}
+
+// TestServeResumeCompactionFallbackSurvivesRefreshFailure pins the refresh's
+// best-effort contract: a refresh that fails must not fail the daemon — the
+// session keeps serving on the file form, correct only slower, and the next
+// compaction-anchored resume tries the refresh again.
+func TestServeResumeCompactionFallbackSurvivesRefreshFailure(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedWindowedResumableSession(t, stateDir, sessionID)
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after seeded first resume")
+	}
+	sidecar.PrefixTurnCount = -1
+	sidecar.SnapshotsComplete = false
+	sidecar.PendingAttention = nil
+	sidecar.DeliveryCommits = nil
+	sidecar.ClientMutationTurns = nil
+	if err := transcript.WriteSidecar(path, sidecar); err != nil {
+		t.Fatalf("rewrite sidecar with compaction-anchor shape: %v", err)
+	}
+
+	// Fault the refresh: every call fails. The daemon must still come up and
+	// serve on the file form — the fallback is the contract, the refresh is
+	// the optimization.
+	probe := &serveResumeIdentityProbe{}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+	var cancel context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		cancel = stop
+		return next, stop
+	}
+	deps.refreshResumeSidecar = func(transcriptPath, sessionID string) error {
+		probe.refreshUsed = true
+		return errors.New("simulated sidecar refresh failure")
+	}
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		cancel()
+		return http.ErrServerClosed
+	}
+	args := []string{
+		"--model", "openai/gpt-test",
+		"--addr", "127.0.0.1:0",
+		"--resume", sessionID,
+		"--dir", t.TempDir(),
+		"--state-dir", stateDir,
+		"--run-dir", t.TempDir(),
+		"--no-project-prompts",
+	}
+	if serveErr := runServeWithDeps(args, deps); serveErr != nil {
+		t.Fatalf("serve with a failing refresh must still start: %v", serveErr)
+	}
+	if !probe.refreshUsed {
+		t.Fatal("the refresh dep was not exercised on the compaction-anchored fallback")
+	}
+	// The sidecar keeps its compaction-anchored shape — a failed refresh
+	// leaves the previous state untouched rather than corrupting it.
+	surviving, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after a failed refresh")
+	}
+	if surviving.PrefixTurnCount != -1 || surviving.SnapshotsComplete {
+		t.Fatalf("failed refresh mutated the sidecar: prefixTurns=%d complete=%v, want -1 and false", surviving.PrefixTurnCount, surviving.SnapshotsComplete)
 	}
 }

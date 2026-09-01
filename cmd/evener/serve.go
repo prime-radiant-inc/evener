@@ -576,15 +576,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				prepared, err = deps.prepareAppIdentityFromEntriesWindowed("local", sess.ID(), workspaceRef, header, entries, prefixEntries, prefixTurns)
 			} else {
 				prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
-				// The file form re-reads the whole transcript anyway, so pay
-				// the same cost once to convert the compaction-anchored sidecar
-				// into the full-scan one — the NEXT resume then windows and
-				// arms paging instead of taking this fallback again.
-				// Best-effort: a session whose sidecar cannot be refreshed
-				// keeps the fallback, which is correct, only slower.
-				if refreshErr := deps.refreshResumeSidecar(sess.TranscriptPath(), sess.ID()); refreshErr != nil {
-					fmt.Fprintf(os.Stderr, "resume sidecar refresh after compaction-anchored fallback: %v\n", refreshErr)
-				}
 			}
 		} else {
 			prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
@@ -596,6 +587,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess.Close()
 		listener.Close() //nolint:errcheck // returning the preparation failure; the close error is not actionable
 		return fmt.Errorf("prepare app identity: %w", err)
+	}
+	// The compaction-anchored fallback above just paid a full file read for the
+	// identity projection; convert that read into the sidecar the NEXT resume
+	// windows on, so the fallback stays one-per-compaction instead of every
+	// resume. A second independent full scan, paid once. Best-effort: a session
+	// whose sidecar cannot be refreshed keeps the fallback — correct, only
+	// slower. Runs after the error gate so a failing startup pays nothing.
+	if windowed, _, prefixTurns, _ := sess.RestoredTranscriptWindowed(); windowed && prefixTurns < 0 {
+		if refreshErr := deps.refreshResumeSidecar(sess.TranscriptPath(), sess.ID()); refreshErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: resume sidecar refresh after compaction-anchored fallback: %v\n", refreshErr)
+		}
 	}
 	srv.ReplaceAppIdentity(prepared, nil)
 	rvRegistration := &rvreg.Registration{}

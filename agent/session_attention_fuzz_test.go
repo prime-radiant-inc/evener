@@ -83,7 +83,52 @@ func FuzzDelegateAttentionFold(f *testing.F) {
 		if !bytes.Equal(before, after) || beforeInfo.Size() != afterInfo.Size() || !beforeInfo.ModTime().Equal(afterInfo.ModTime()) {
 			t.Fatalf("cold fold mutated transcript: before=%d/%s after=%d/%s", beforeInfo.Size(), beforeInfo.ModTime(), afterInfo.Size(), afterInfo.ModTime())
 		}
+
+		// The sidecar snapshot's parity with the fold, over the SAME
+		// generated entries: the restatement in the transcript package cannot
+		// import this fold, so this differential is what bounds its drift.
+		// The snapshot's verdict is observable through the sidecar the
+		// refresh leaves behind — a refused fold writes none.
+		if len(entries) > 0 {
+			seedWriter, err := transcript.OpenWriter(path)
+			if err != nil {
+				t.Fatalf("OpenWriter for checkpoint: %v", err)
+			}
+			if err := seedWriter.AppendDurable(schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))); err != nil {
+				_ = seedWriter.Close()
+				t.Fatalf("append checkpoint: %v", err)
+			}
+			if err := seedWriter.Close(); err != nil {
+				t.Fatalf("close checkpoint writer: %v", err)
+			}
+			if err := transcript.RefreshSidecarFromFullScan(path, sessionID); err != nil {
+				t.Fatalf("refresh: %v", err)
+			}
+			_, sidecarOK := transcript.ReadSidecar(path)
+			if sidecarOK != (wantErr == nil) {
+				t.Fatalf("snapshot verdict = %v, fold verdict = %v — the restatement and the fold disagree over the same entries", sidecarOK, wantErr == nil)
+			}
+			if sidecarOK {
+				// A written snapshot must seed a fold that agrees with the model.
+				seeded, err := foldDelegateAttentionSeeded(sidecarForFuzz(t, path), nil)
+				if err != nil {
+					t.Fatalf("seeded fold: %v", err)
+				}
+				assertDelegateAttentionFuzzFold(t, seeded, want)
+			}
+		}
 	})
+}
+
+// sidecarForFuzz reads the sidecar the refresh wrote, failing the test when
+// it is absent — the caller only invokes it after asserting sidecarOK.
+func sidecarForFuzz(t *testing.T, path string) transcript.ResumeSidecar {
+	t.Helper()
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after refresh over an accepted fold")
+	}
+	return sidecar
 }
 
 func FuzzStableDelegateWatchDelivery(f *testing.F) {
