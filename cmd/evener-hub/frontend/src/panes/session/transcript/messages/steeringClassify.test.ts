@@ -220,7 +220,7 @@ Watch event triggered: file changed.
 test("an Observer callback parses as a notification", () => {
   const notifications = notificationsOf(
     parseSteeringNotifications(
-      "Observer callback:\nmessage: something happened\noutput: {\"message\":\"done\",\"data\":{\"status\":\"done\"}}",
+      'Observer callback:\nmessage: something happened\noutput: {"message":"done","data":{"status":"done"}}',
     ),
   );
   const n = notif(notifications, 0);

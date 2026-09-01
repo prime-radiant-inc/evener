@@ -148,7 +148,8 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
         status: "cancelled",
         reason: "stopped_by_parent",
         exitCode: -1,
-        rawText: '<job-notification status="cancelled" reason="stopped_by_parent" exit_code="-1">cancelled</job-notification>',
+        rawText:
+          '<job-notification status="cancelled" reason="stopped_by_parent" exit_code="-1">cancelled</job-notification>',
       })}
     />,
   );
