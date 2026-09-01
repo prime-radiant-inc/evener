@@ -168,7 +168,15 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}
-	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile)
+	// A durable delegate's child session id is controller-reserved before
+	// NewSession is ever called (cfg.spawn.sessionID carries it in); a fresh
+	// root session or a legacy in-process spawn has no id yet, leaving this
+	// trimmed empty. Hoisted here (instead of at its prior mint site below)
+	// so the live-model listing below can attribute to it when it already
+	// exists — the same identifier the rest of this function later mints or
+	// validates into s.id.
+	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +233,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// down the tree.
 	cfg.spawn.treeCounter = tc
 	cfg.spawn.driveCounter = dc
-	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
 	if sessionID == "" {
 		sessionID, err = identifier.NewSessionID()
 		if err != nil {
@@ -853,7 +860,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
-	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
+	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
+	// call: attribute this listing's canonical API-log attempt to it instead
+	// of letting it fall into the shared unattributed bucket.
+	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id)
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true
