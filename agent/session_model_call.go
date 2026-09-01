@@ -968,7 +968,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
 			// Group-transition reset (spec: "Group-transition reset"): OnReset
-			// only clears the screen between attempts WITHIN one callModel
+			// only discards partial output between attempts WITHIN one callModel
 			// invocation, so a chain walk away from a group that already
 			// delivered partial output leaves that partial rendered above this
 			// fallback's output. Recomputed from the recorder rather than a
