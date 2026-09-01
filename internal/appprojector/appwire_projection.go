@@ -1744,6 +1744,11 @@ func repairChangePhrase(raw string) string {
 		return fmt.Sprintf("removed the unrecognized %q field", field)
 	case "unicode_repair":
 		return "fixed an invalid character in the arguments"
+	case "fill_required":
+		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
+			return fmt.Sprintf("filled the required %q key", key)
+		}
+		return fmt.Sprintf("filled a required key in the %q field", field)
 	default:
 		if field == "" {
 			return "adjusted the arguments"
