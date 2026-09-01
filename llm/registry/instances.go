@@ -160,6 +160,11 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 	if own == "" {
 		return true
 	}
+	// missing (not just defaults) decides which switch case applies, and
+	// both come from this one resolveBaseURLWith call - a second call
+	// keyed on missing == 0 would just repeat this same work, not skip it -
+	// so defaults sits unused in the len(missing) > 0 case rather than
+	// being computed twice.
 	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
 	defaults = strings.TrimRight(defaults, "/")
 	switch {
@@ -170,7 +175,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		// already false for one) - kept explicit so a future curated row
 		// with its own base_url or GOOGLE_VERTEX_HOST is trusted the same
 		// way the vendor's provider-level template already is.
-		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec)) {
+		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec, base, own)) {
 			return false
 		}
 	case own != defaults:
@@ -189,18 +194,25 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
 }
 
-// vertexHostOverridden reports whether rec's own vars (never the curated
-// default, since google-vertex-anthropic/google-vertex define none) supply
-// a literal GOOGLE_VERTEX_HOST directly, bypassing vertexHost(LOCATION) -
-// the derivation the vertex-location host rule exists to perform
-// (resolveBaseURLWith's HostRuleVertexLocation case, load.go). Unlike
-// GOOGLE_VERTEX_PROJECT/LOCATION, which are genuinely deployment-specific,
-// GOOGLE_VERTEX_HOST has exactly one correct value for a given location;
-// supplying a different one is a redirect the vars-only carve-out above
-// would otherwise miss, since it leaves rec.ownBaseURL empty (the template
-// is technically untouched). A supplied value that happens to equal the
-// derivation's own answer is not an override (copying the default
-// verbatim is not "different", spec §10).
+// vertexHostOverridden reports whether rec's resolved host diverges from
+// Vertex's real, location-derived infrastructure - the derivation the
+// vertex-location host rule exists to perform (resolveBaseURLWith's
+// HostRuleVertexLocation case, load.go) - by either of two means:
+//
+//   - rec's own host_rule differs from base's: swapping to a different
+//     rule (the only other one today, ollama-host) does not intercept
+//     GOOGLE_VERTEX_HOST at all, so a literal value supplied alongside it
+//     flows straight through unresolved-by-derivation. Because that swap
+//     also disables the direct-override check below (a record inspecting
+//     its own, now-different rule would never even look), the swap itself
+//     counts as divergence rather than being trusted to self-report.
+//   - own's actual resolved host does not match vertexHost(LOCATION),
+//     checked directly against the fully resolved URL rather than by
+//     asking rec's own (unswapped) rule whether GOOGLE_VERTEX_HOST was
+//     overridden - so a value that happens to equal the derivation's own
+//     answer is not an override (copying the default verbatim is not
+//     "different", spec §10), and no other means of steering the same
+//     outcome slips through.
 //
 // This check is Vertex-specific by necessity, not by choice: it is the
 // only host rule with both a missing curated base_url default and a
@@ -208,17 +220,15 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 // shape - no curated default, host routed through its own env var, kept
 // template - would need an equivalent check of its own; nothing here
 // generalizes to it automatically.
-func (r *Registry) vertexHostOverridden(rec *record) bool {
-	if rec.head.Transport.HostRule != HostRuleVertexLocation {
-		return false
+func (r *Registry) vertexHostOverridden(rec, base *record, own string) bool {
+	if rec.head.Transport.HostRule != base.head.Transport.HostRule {
+		return true
 	}
-	raw := r.varLookupWith(rec, func(string) {})
-	given, ok := raw("GOOGLE_VERTEX_HOST")
+	loc, ok := r.varLookupWith(rec, func(string) {})("GOOGLE_VERTEX_LOCATION")
 	if !ok {
 		return false
 	}
-	loc, ok := raw("GOOGLE_VERTEX_LOCATION")
-	return !ok || given != vertexHost(loc)
+	return !strings.HasPrefix(own, strings.TrimRight(vertexHost(loc), "/")+"/")
 }
 
 // envCandidates lists, in the order credential resolution tries them, every

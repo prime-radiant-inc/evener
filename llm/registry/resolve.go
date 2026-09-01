@@ -237,6 +237,12 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	// rowID "" falls firstPartyEndpoint's endpoint comparison back to
+	// protocol defaults on both sides (no row to diverge on), so it is
+	// effectively a no-op here - correctly so: ListModels and credential
+	// probes, this path's only callers, never build a body, so there is no
+	// WebSearch tool for a row-level endpoint override to redirect. The
+	// base_url check above it still applies in full.
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", rec.ownBaseURL != ""); w != "" {
 		warnings = append(warnings, w)
 	}
@@ -338,6 +344,14 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	if hit.rowID != "" && hit.rowID != ref.Model {
 		altID = hit.rowID
 	}
+	// canonicalRowID names the row the endpoint gate (gateWebSearch,
+	// firstPartyEndpoint) compares transport against. It starts as the
+	// resolved row's own id, but a same-provider alias that imports its
+	// target's transport below is judged against the target's row instead
+	// (base.head.Models has no entry under the alias's own id - a
+	// user-chosen name, not a curated one - so looking it up there would
+	// find nothing and fall back to a row-less, and wrong, baseline).
+	canonicalRowID := hit.rowID
 	// Layer 0: alias seeding (spec §4.2).
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
@@ -346,6 +360,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 		} else {
 			seedFromAlias(&caps, &row, target, prov)
 			if same && rec.head.Models[hit.rowID].Protocol == "" && rec.head.Models[hit.rowID].Transport == nil {
+				canonicalRowID = target.Model.ID
 				row.Protocol = target.Model.Protocol
 				if target.Model.Transport != nil {
 					t := cloneTransport(*target.Model.Transport)
@@ -401,7 +416,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	rowOwnBaseURL := row.Transport != nil && row.Transport.BaseURL != ""
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, hit.rowID, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
