@@ -188,6 +188,7 @@ func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.Aut
 			Auth:             res.Transport.Auth,
 			Implicit:         true,
 			CredentialSource: res.Credential.Source,
+			ShadowedEnvVar:   res.ShadowedEnvVar,
 			Warnings:         res.Warnings,
 		}), nil
 	}

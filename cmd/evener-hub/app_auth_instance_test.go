@@ -300,6 +300,38 @@ func TestAuth_InstanceStatus_ReportsShadowedEnvVar(t *testing.T) {
 	}
 }
 
+// TestAuth_StatusFallbackReportsShadowedEnvVar covers the curated-implicit-
+// provider fallback in Status (PR #758 review): a provider with no
+// resolvable base URL (openai-compatible with OPENAI_COMPATIBLE_BASE_URL
+// unset) is Hidden, so it never becomes an r.Instance() and Status falls
+// through to ResolveInstance and a hand-built registry.Instance. That
+// construction must carry ShadowedEnvVar the same as the normal path does.
+func TestAuth_StatusFallbackReportsShadowedEnvVar(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, ""),
+		map[string]string{"OPENAI_COMPATIBLE_API_KEY": "env-key"})
+
+	if _, ok := ctrl.reg.Get().Instance("openai-compatible"); ok {
+		t.Fatal("openai-compatible with no base URL must be Hidden, not an instance")
+	}
+	if err := ctrl.creds.Set("openai-compatible", "stored-key"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := ctrl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai-compatible"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.ActiveSource != "store" || status.ShadowedEnvVar != "OPENAI_COMPATIBLE_API_KEY" {
+		t.Fatalf("status = %+v, want ActiveSource store and ShadowedEnvVar OPENAI_COMPATIBLE_API_KEY (the fallback construction must carry it too)", status)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. An instance whose name is the registry id resolves the same way
 // ─────────────────────────────────────────────────────────────────────────────

@@ -259,10 +259,16 @@ api_key_env = ["ENV_KEY"]
 base = "openai"
 base_url = "https://gw/v1"
 api_key_env = ["UNSET_KEY"]
+[providers.apiref]
+base = "openai"
+base_url = "https://gw/v1"
+api_key = "$APIREF_KEY"
+api_key_env = ["APIREF_KEY"]
 `
 	env := map[string]string{
 		"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk",
 		"HDR_KEY": "hdr-val", "STORED_KEY": "stored-shadow-val", "ENV_KEY": "env-val",
+		"APIREF_KEY": "apiref-val",
 	}
 	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
 	want := map[string]struct {
@@ -274,6 +280,10 @@ api_key_env = ["UNSET_KEY"]
 		"stored":  {"store", "STORED_KEY"},
 		"envwins": {"env:ENV_KEY", ""}, // the env source is itself the winner, not a shadow
 		"nothing": {"none", ""},        // UNSET_KEY is unset: no candidate to shadow with
+		// api_key is itself a $VAR reference to APIREF_KEY, which is ALSO
+		// listed in api_key_env: that name is what resolved the credential,
+		// not a loser, even though it is also a candidate (PR #758 review).
+		"apiref": {"api_key", ""},
 	}
 	for name, w := range want {
 		inst, ok := r.Instance(name)
@@ -286,6 +296,36 @@ api_key_env = ["UNSET_KEY"]
 		if inst.ShadowedEnvVar != w.shadow {
 			t.Errorf("%s: ShadowedEnvVar = %q, want %q", name, inst.ShadowedEnvVar, w.shadow)
 		}
+	}
+}
+
+// TestInstances_ShadowedEnvVarSkipsAnUnresolvedHigherPrecedenceScheme covers
+// the other half of the PR #758 review: oauth-openai-codex and gcp-adc are
+// terminal branches in credential (spec §10) - when neither resolves,
+// credential returns "none" without ever consulting api_key_env, so a
+// candidate env var that happens to be set must not be reported as shadowed
+// by a scheme that never looked at it ("WORK_API_KEY set but shadowed by
+// none" would be a lie: none is not a competing precedence source here, it
+// is this instance's entire resolution never reaching the env candidates at
+// all). google-vertex resolves through gcp-adc; with no ADC file or
+// GOOGLE_APPLICATION_CREDENTIALS reachable, it stays unresolved.
+func TestInstances_ShadowedEnvVarSkipsAnUnresolvedHigherPrecedenceScheme(t *testing.T) {
+	cfg := `
+[providers.myvertex]
+base = "google-vertex"
+api_key_env = ["FAKE_VERTEX_KEY"]
+`
+	r := fixtureLoad(t, map[string]string{"FAKE_VERTEX_KEY": "set-but-irrelevant"}, cfg)
+	rec := r.explicit["myvertex"]
+	if rec.head.Transport.Auth != AuthGCPADC {
+		t.Fatalf("myvertex must inherit gcp-adc from google-vertex, got %q", rec.head.Transport.Auth)
+	}
+	cred, _ := r.credential(rec)
+	if cred.Source != "none" {
+		t.Fatalf("gcp-adc with no ADC reachable must resolve none, got %q", cred.Source)
+	}
+	if got := r.shadowedEnvVar(rec, cred); got != "" {
+		t.Fatalf("an unresolved gcp-adc scheme must never report a shadow, got %q", got)
 	}
 }
 

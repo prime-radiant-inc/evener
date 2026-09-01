@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -117,15 +118,45 @@ func (r *Registry) envCandidates(rec *record) []string {
 	return out
 }
 
+// consumedEnvVars names the environment variable(s) a winning api_key or
+// credential_headers expression itself expanded (a "$VAR" reference), so
+// shadowedEnvVar can tell "this is what resolved the credential" apart from
+// "this lost." Empty for a literal value (no "$") and for every other
+// source, which consumes no expression.
+func consumedEnvVars(rec *record, source string) []string {
+	switch source {
+	case "api_key":
+		refs, _, _ := ScanConfigValue(rec.head.APIKey)
+		return refs
+	case "credential_headers":
+		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders["Authorization"])
+		return refs
+	default:
+		return nil
+	}
+}
+
 // shadowedEnvVar names an environment variable that is set but loses to
 // cred, the credential that actually resolved (spec §10: api_key >
-// credential_headers > store > env). Empty when nothing shadows it: no
-// candidate is set, or an env source is itself what won.
+// credential_headers > store > env). Only those three sources can shadow
+// anything: oauth-openai-codex and gcp-adc are terminal branches in
+// credential that never consult api_key_env at all (whether they resolve,
+// giving "oauth"/"adc", or not, giving "none" the same as every other
+// unresolved scheme), so naming a candidate against any of them - including
+// "none" - would blame a source that was never actually in contention.
+// Empty when nothing shadows it: no remaining candidate is set, or an env
+// source is itself what won.
 func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
-	if strings.HasPrefix(cred.Source, "env:") {
+	switch cred.Source {
+	case "api_key", "credential_headers", "store":
+	default:
 		return ""
 	}
+	consumed := consumedEnvVars(rec, cred.Source)
 	for _, name := range r.envCandidates(rec) {
+		if slices.Contains(consumed, name) {
+			continue
+		}
 		if v, ok := r.env(name); ok && v != "" {
 			return name
 		}

@@ -114,6 +114,12 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
+	// InstanceEntry never appears as a method's own Params/Result - only
+	// nested inside InstanceListResponse.Instances - so without this it
+	// would never get a field table of its own, and a field documented on
+	// its AuthStatusResponse twin (e.g. shadowedEnvVar) would silently go
+	// undocumented here (PR #758 review).
+	register(appwire.InstanceEntry{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

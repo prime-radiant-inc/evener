@@ -682,6 +682,32 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 
 
+### `InstanceEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `base` | `string` | yes |  |
+| `providerId` | `string` |  |  |
+| `protocol` | `string` |  |  |
+| `surface` | `string` | yes |  |
+| `auth` | `string` |  |  |
+| `baseUrl` | `string` | yes |  |
+| `vars` | `map[string]string` | yes |  |
+| `implicit` | `bool` |  |  |
+| `hidden` | `bool` | yes |  |
+| `isDefault` | `bool` |  |  |
+| `authModes` | `[]string` | yes |  |
+| `activeSource` | `string` |  |  |
+| `hasStoredFile` | `bool` | yes |  |
+| `hasStoredOAuth` | `bool` |  |  |
+| `envVar` | `string` | yes |  |
+| `shadowedEnvVar` | `string` | yes |  |
+| `storedEmail` | `string` | yes |  |
+| `credentialRequired` | `bool` |  |  |
+| `warnings` | `[]string` | yes |  |
+
+
 ### `InstanceListResponse`
 
 | Field | Go type | Omitempty | Embedded |
