@@ -137,6 +137,32 @@
   border-radius: var(--radius-control);
 }
 
+.bodyTrigger {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
+.bodyTrigger:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.bodyTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
 /* The agent's stated reason for the call - the one part of the row written for
  * a human, so it gets the sans face, the full-contrast ink, and (Jesse's
  * review call) italics: a rationale reads as commentary on the call, set off
