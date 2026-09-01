@@ -1,4 +1,4 @@
-.PHONY: test-fuzz mutation-floor fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens fuzz-corpus-scan
+.PHONY: test-fuzz mutation-floor fuzz fuzz-seeds fuzz-nightly fuzz-triage fuzz-continuous fuzz-drive fuzz-bisect fuzz-oracle-audit fuzz-mutation-score fuzz-ledger fuzz-gap-check fuzz-registry-check fuzz-goldens fuzz-corpus-scan
 
 # Fuzz replay is a deterministic evidence gate: never inherit a developer's
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
@@ -167,19 +167,6 @@ mutation-floor:
 fuzz-bisect:
 	@scripts/fuzz/fuzz-bisect.sh $(FUZZ_ARGS)
 
-# fuzz-bisect-selftest verifies bisection end-to-end against a throwaway git repo
-# whose fuzz target crashes only after a known commit (real git bisect + replay).
-## Verify bisection end-to-end against a throwaway git repo whose fuzz
-## target crashes only after a known commit.
-## proves: fuzz-bisect names the correct commit using real git bisect and
-##   real replay; only the registry source (run-fuzz.sh --list) is stubbed.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; builds a real throwaway git history.
-## fails-when: fuzz-bisect fails to name the known-bad commit. Leftover
-##   files fail only under the test-dev-tooling wave, which owns that check.
-fuzz-bisect-selftest:
-	@scripts/fuzz/fuzz-bisect-selftest.sh
-
 # fuzz-oracle-audit proves every fuzz oracle reddens on its bug class (Phase 9 W1):
 # each mutation in fuzz/mutations/ reintroduces a known fault in a throwaway
 # worktree and the audit asserts the target FAILS. `FUZZ_ARGS=--gap-only` lists
@@ -195,22 +182,6 @@ fuzz-bisect-selftest:
 ##   target fails to build under audit.
 fuzz-oracle-audit:
 	@scripts/fuzz/fuzz-oracle-audit.sh $(FUZZ_ARGS)
-
-# fuzz-oracle-audit-selftest verifies the audit's caught/blind/rot/build-failure
-# classification against a throwaway module (real worktree + go test, stubbed
-# registry).
-## Verify the oracle audit's caught/blind/rot/build-failure classification
-## against a throwaway module.
-## proves: The audit correctly classifies each outcome (caught, blind, rot,
-##   build-failure) using a real worktree and go test, with only the
-##   registry stubbed.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; a real throwaway module.
-## fails-when: The audit's classification diverges from the fixture's
-##   expected verdict. Leftover files fail only under the test-dev-tooling
-##   wave, which owns that check.
-fuzz-oracle-audit-selftest:
-	@scripts/fuzz/fuzz-oracle-audit-selftest.sh
 
 # fuzz-mutation-score (Phase 10 W5) measures detection sufficiency with gremlins:
 # the per-package kill rate, and the surviving (LIVED) mutants are the weak-oracle

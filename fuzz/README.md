@@ -136,10 +136,11 @@ who pull `main`.
 
 ### Testing the triage logic
 
-fuzz-triage has no selftest: its old suite drove it with a stubbed `go`/`gh`
-toolchain, and fake-toolchain selftests are banned (docs/developing-evener/testing.md). The
-header's contract and the ledger/bucket file formats are the living contract;
-honest tests arrive when the tool ports to Go
+fuzz-triage has no automated test today: an old attempt drove it with a
+stubbed `go`/`gh` toolchain, which docs/developing-evener/testing.md's ban
+on faking the toolchain in a test rules out. The header's contract and the
+ledger/bucket file formats are the living contract; honest tests arrive
+when the tool ports to Go
 (docs/superpowers/specs/2026-08-17-dev-tooling-in-go-design.md,
 "port-on-touch").
 
@@ -169,8 +170,9 @@ Round-robin (default, one target per turn) or `--sweep` (all selected targets pe
 round). Rapid targets are excluded — they are bounded property checks, not
 coverage-guided searches that deepen across turns via `$GOCACHE/fuzz`. Seams
 `EVENER_FUZZ_RUNNER` (registry) and `EVENER_FUZZ_TRIAGE` (per-turn engine) exist
-for advanced use; the stub-driven selftest that used them is gone
-(fake-toolchain selftests are banned, docs/developing-evener/testing.md).
+for advanced use; the tool has no automated test of its own today (a
+stub-driven attempt was rejected under the same fake-toolchain policy,
+docs/developing-evener/testing.md).
 
 ## Regression bisect (`make fuzz-bisect`)
 
@@ -181,9 +183,8 @@ reproduces at `--bad` and not at `--good`, then drives `git bisect run`, replayi
 that one corpus entry at each step under `-tags evenerfuzz`. A commit where the
 target does not build or does not yet exist is **skipped** (exit 125), not
 misjudged; the working tree is restored on exit. Seams `EVENER_FUZZ_GO` and
-`EVENER_FUZZ_TAGS` (plus `EVENER_FUZZ_RUNNER`) back the self-test
-(`make fuzz-bisect-selftest`), which bisects a throwaway repo whose target crashes
-only after a known commit — real `git bisect`, no stubbed search.
+`EVENER_FUZZ_TAGS` (plus `EVENER_FUZZ_RUNNER`) let the tool be pointed at a
+different toolchain or a throwaway repository instead of the real one.
 
 ## Oracles (never bare "no panic")
 

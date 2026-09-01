@@ -654,9 +654,9 @@ func hasSummaryAbove(before []string) bool {
 // the Makefile/docs decomposition spec: every target carries a documentation
 // annotation, with no exemption list. A target with no "##" summary is a
 // target that appears in no doc and in `make help` with nothing beside it,
-// which is how mutation-floor, fuzz-drive, coverage-gaps,
-// coverage-gaps-selftest and test-install reached the point of having no
-// target-level documentation anywhere in the repository.
+// which is how mutation-floor, fuzz-drive, coverage-gaps and test-install
+// reached the point of having no target-level documentation anywhere in the
+// repository.
 //
 // It keys on RULES rather than on .PHONY names, which is a strict superset:
 // fuzz-drive carried a rule with no .PHONY declaration for months, and keying

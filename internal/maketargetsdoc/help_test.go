@@ -33,13 +33,13 @@ func TestRenderHelpGroupsByFamily(t *testing.T) {
 
 // TestRenderHelpAlignsWithinFamilyNotAcrossFamilies pins that the summary
 // column's width is computed per family: a long name in one family (like
-// fuzzing's fuzz-oracle-audit-selftest) must not push every other family's
+// fuzzing's fuzz-oracle-audit-recheck) must not push every other family's
 // column out too.
 func TestRenderHelpAlignsWithinFamilyNotAcrossFamilies(t *testing.T) {
 	families := []family{
 		{Stem: "fuzzing", Targets: []Target{
 			{Name: "fuzz", Summary: "Run the CI fuzz gate."},
-			{Name: "fuzz-oracle-audit-selftest", Summary: "Verify the audit."},
+			{Name: "fuzz-oracle-audit-recheck", Summary: "Verify the audit."},
 		}},
 		{Stem: "repo", Targets: []Target{
 			{Name: "clean", Summary: "Remove the binaries."},

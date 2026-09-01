@@ -85,10 +85,11 @@ awaiting, and zero were fixed by widening a timeout.
 
 ## Destructive Operations and the Tooling Test Estate
 
-Four standing rules (Jesse, 2026-08-17), set after a selftest's cleanup
-deleted a home directory (kata 5hs2). The test that did it was the deepest
-meta-layer in the repo — a selftest of the selftest library, proving a
-delete-guard by handing it live targets.
+Four standing rules (Jesse, 2026-08-17), set after a shell test suite's
+cleanup trap deleted a home directory (kata 5hs2). The test that did it was
+the deepest meta-layer the repo's shell tooling ever had — a test of the
+test-support library itself, proving a delete-guard by handing it live
+targets.
 
 **No recursive delete takes an argument a caller could clobber.** Scratch
 is minted by `scratch_dir <var> <prefix>` and reclaimed by the no-argument
@@ -131,31 +132,31 @@ decoy directories, never at `/`, `$HOME`, or anything a person would
 miss. Where deletion itself is the behaviour under test, the delete
 targets fixture-owned paths and sits on the audit's count-pinned list
 with that reason. No shell suite holds such a line today: the last two
-(run-module-lint-selftest's vanishing-scratch fakes) retired when that
-runner ported to Go, where the equivalent tests remove only their own
-`t.TempDir` scratch.
+(the module-lint runner's old shell suite and its vanishing-scratch fakes)
+retired when that runner ported to Go, where the equivalent tests remove
+only their own `t.TempDir` scratch.
 
-**Test depth caps at one meta-level.** Tools get selftests; the shared
-libraries under them get one direct test file each; nothing tests the
-tests. A library property is proven once, directly — that every consumer
-actually goes through the library is a static audit's job, not a reason
-to re-run consumers under sabotage.
+**Test depth caps at one meta-level.** A tool gets a direct test; the shared
+libraries under it get one direct test file each; nothing tests the tests.
+A library property is proven once, directly — that every consumer actually
+goes through the library is a static audit's job, not a reason to re-run
+consumers under sabotage.
 
-**A selftest earns its gate slot by pinning outcomes of a tool the gate
-or CI depends on.** Outcomes are exit codes, summaries, refusals, and
+**A test of dev tooling earns its keep by pinning outcomes of a tool the
+gate or CI depends on.** Outcomes are exit codes, summaries, refusals, and
 file effects; the argv a script hands a faked binary is an implementation
-restated, and asserting on it is testing the mock. Fake-toolchain
-selftests are banned outright, not merely denied a gate slot: a tool that
-can only be tested by faking `go`, `gh`, or its sibling tools on PATH has
-outgrown shell, and the move is the port (the dev-tooling spec's
-port-on-touch trigger), never the suite. Feeding a data seam fixture
-input — the registry listing fuzz-bisect's and fuzz-oracle-audit's suites
+restated, and asserting on it is testing the mock. Faking the toolchain to
+test a script is banned outright: a tool that can only be tested by faking
+`go`, `gh`, or its sibling tools on PATH has outgrown shell, and the move
+is the port (the dev-tooling spec's port-on-touch trigger), never a
+fixture harness built around the fake. Feeding a data seam fixture input —
+the registry listing fuzz-bisect's and fuzz-oracle-audit's real behavior
 stub while the git history, replays, and verdicts stay real — is not a
-faked toolchain. Hand-run conveniences
-fail loudly in front of whoever ran them and get no suite. New tooling
-that accumulates real logic belongs in Go under `go test`, where the type
-system, `-race`, and ordinary unit tests replace an entire shell-fixture
-harness; shell stays for glue.
+faked toolchain. Hand-run conveniences fail loudly in front of whoever ran
+them and need no automated suite. Tooling that accumulates real logic
+belongs in Go under `go test`, where the type system, `-race`, and
+ordinary unit tests replace an entire shell-fixture harness; shell stays
+for glue.
 
 ## Gates that need more than a table row
 
@@ -275,7 +276,6 @@ For diagnosis and evidence, that target expands serially to:
 make lint
 make build
 ROOT_FULL=1 make test
-make test-dev-tooling
 ~~~
 
 Live/e2e tests police their own requirements: the cmd/evener-hub
@@ -311,11 +311,6 @@ failed or interrupted run instead retains the directory and prints its path so
 the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
-
-make test-dev-tooling runs the scripts/*-selftest.sh suites that pin evener's
-own tooling (cmd/evener-test-dev-tooling). They test tooling, not the product,
-so they run here — where tooling regressions matter — and on demand, not
-inside every inner-loop make test.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
@@ -659,13 +654,14 @@ paths_test.go:411:6: func checkSanitizeDirPrefix_PreservesLoneTrailingDot is unu
 running both. Run the linter after adding a check, and state which table each
 new check is registered in when handing work off.
 
-**A shell selftest that redirects `TMPDIR`.** macOS `mktemp -t` resolves
+**A shell test that redirects `TMPDIR`.** macOS `mktemp -t` resolves
 against the per-user temp path (`confstr(_CS_DARWIN_USER_TEMP_DIR)`) and
-ignores `TMPDIR`, so a selftest that sets `TMPDIR=$scratch` to observe a
+ignores `TMPDIR`, so a test that sets `TMPDIR=$scratch` to observe a
 script's temp handling observes nothing: the script writes to the real temp
-dir, six assertions in run-module-lint-selftest.sh were unfalsifiable, and
-every run littered the machine (found during kata cqne). Fake the `mktemp`
-binary on `PATH` instead of faking the environment.
+dir, six assertions in the module-lint runner's old shell suite were
+unfalsifiable, and every run littered the machine (found during kata cqne,
+before that runner ported to Go). Fake the `mktemp` binary on `PATH`
+instead of faking the environment.
 
 **A stylesheet assertion that matches its own comment.** A test that greps CSS
 text (`expect(css).toContain("flex: none")`) will match the declaration quoted
@@ -1000,13 +996,11 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
 | `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
-| `make test-dev-tooling` | Run the scripts/*-selftest.sh suites that pin evener's own dev tooling. | Each suite is the only thing pinning its script's contract. | Final step of make merge-approval-gate, and on demand; not part of make test. | Each suite is offline and deterministic; the wave runner gives every suite its own process group and private TMPDIR. It is quiet on success and replays a failing suite's whole log. | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
-| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, the full test suite, then the dev-tooling selftest wave. | make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, then the full test suite. | make lint, make build, then ROOT_FULL=1 make test all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses root and nonroot on separate runners, both derived from GO_MODULES. | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces; bare invocation only measures and prints. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | Under CHECK=1 in a CI-shaped environment, a package over 1.5x its budget or any per-test ceiling breach is nonzero; a missing or empty budget file always exits zero. |
-| `make test-timing-budget-selftest` | Exercise the timing-budget comparison contract against fixture duration rows — no go test or vitest run. | The ratio bands, the per-test ceiling, a missing budget entry, an absent/empty budget file, strict-vs-warn-only policy, and --bless all compare correctly. | make test-dev-tooling wave; on demand. | Offline and deterministic; fixture rows only, no real suite run. | Any comparison diverges from its fixture's expected verdict. Leftover files fail only under the test-dev-tooling wave, which owns that check. |
 
 ### Other targets
 

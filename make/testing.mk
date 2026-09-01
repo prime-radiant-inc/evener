@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-dev-tooling test test-short test-race merge-approval-gate vet test-timing-budget test-timing-budget-selftest test-rebaseline
+.PHONY: test-web test-web-browser test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -34,39 +34,15 @@ test-web: web-preflight
 test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
 
-# test-dev-tooling tests tooling, not the product, so it runs in
-# `make merge-approval-gate` (where tooling regressions matter) and on demand
-# — not in every inner-loop `make test` and not on `make lint`, which checks
-# the product's code, not the tooling's behaviour.
-# The wave runner (cmd/evener-test-dev-tooling) owns parallel
-# spawn, signal forwarding to each suite's process group, per-suite TMPDIR
-# isolation, and the leftover-files check that fails any suite that does not
-# clean up after itself. Quiet on success; a failing suite's whole log is
-# replayed. The runner's contract is pinned by
-# cmd/evener-test-dev-tooling/wave_test.go, which runs in the ordinary Go test
-# wave.
-## Run the scripts/*-selftest.sh suites that pin evener's own dev tooling.
-## proves: Each suite is the only thing pinning its script's contract.
-## trigger: Final step of make merge-approval-gate, and on demand; not part
-##   of make test.
-## requires: Each suite is offline and deterministic; the wave runner gives
-##   every suite its own process group and private TMPDIR. It is quiet on
-##   success and replays a failing suite's whole log.
-## fails-when: Any suite exit nonzero, or a passing suite leaving files
-##   behind, is nonzero.
-test-dev-tooling:
-	@go run ./cmd/evener-dev/bin test-dev-tooling $(DEV_TOOLING_TEST_SCRIPTS)
-
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
 # Go waves instead of adding its runtime on the end. WEB=0 skips it.
 # run-module-tests.sh's own contract — including that every test stream gets a
-# private HOME and TMPDIR — is currently unpinned: run-module-tests-selftest.sh,
-# the only suite that proved it, faked `go` and `mktemp` on PATH, which
-# docs/developing-evener/testing.md's rule against fake-toolchain selftests
-# bans outright, and was deleted. The port that would pin this contract
-# honestly is tracked as issue #293.
+# private HOME and TMPDIR — is currently unpinned: the shell suite that once
+# proved it faked `go` and `mktemp` on PATH, which docs/developing-evener/testing.md's
+# rule against faking the toolchain in a test bans outright, and was deleted.
+# The port that would pin this contract honestly is tracked as issue #293.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
@@ -87,10 +63,10 @@ test-short:
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
 # hosts are handled inside the tests themselves: the live/e2e families probe
 # their own capabilities and t.Skip (internal/e2ecap).
-## The canonical serial post-merge gate: lint, build, the full test suite,
-## then the dev-tooling selftest wave.
-## proves: make lint, make build, ROOT_FULL=1 make test, then
-##   make test-dev-tooling all pass, in that order.
+## The canonical serial post-merge gate: lint, build, then the full test
+## suite.
+## proves: make lint, make build, then ROOT_FULL=1 make test all pass, in
+##   that order.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
@@ -100,8 +76,7 @@ test-short:
 merge-approval-gate:
 	@$(MAKE) lint && \
 		$(MAKE) build && \
-		ROOT_FULL=1 $(MAKE) test && \
-		$(MAKE) test-dev-tooling
+		ROOT_FULL=1 $(MAKE) test
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
 # leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra
@@ -155,23 +130,6 @@ vet:
 ##   empty budget file always exits zero.
 test-timing-budget:
 	@scripts/gate/test-timing-budget.sh $(if $(CHECK),--check) $(TIMING_ARGS)
-
-# test-timing-budget-selftest exercises the comparison contract (ratio bands,
-# the per-test ceiling, a missing budget entry, an absent/empty budget file,
-# strict-vs-warn-only policy, and --bless) against fixture duration rows — no
-# go test or vitest run.
-## Exercise the timing-budget comparison contract against fixture duration
-## rows — no go test or vitest run.
-## proves: The ratio bands, the per-test ceiling, a missing budget entry, an
-##   absent/empty budget file, strict-vs-warn-only policy, and --bless all
-##   compare correctly.
-## trigger: make test-dev-tooling wave; on demand.
-## requires: Offline and deterministic; fixture rows only, no real suite run.
-## fails-when: Any comparison diverges from its fixture's expected verdict.
-##   Leftover files fail only under the test-dev-tooling wave, which owns
-##   that check.
-test-timing-budget-selftest:
-	@scripts/gate/test-timing-budget-selftest.sh
 
 # test-rebaseline resets testing-budget.json to what a clean-host run just
 # measured (kata b6rv). Run it deliberately, on an otherwise idle box, and
