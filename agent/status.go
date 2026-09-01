@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"time"
@@ -236,14 +237,16 @@ func (s *Session) DetailedStatus() DetailedStatus {
 
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows
 // from the root journal without constructing a Session or opening an
-// append-capable store.
-func LoadSessionDelegateStatus(stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
+// append-capable store. ctx is checked between decoded delegate-journal
+// records the same way the job-activity tree loader's scans are (#448); pass
+// context.Background() when no request-scoped context is available.
+func LoadSessionDelegateStatus(ctx context.Context, stateDir, sessionID string) ([]DelegateStatusInfo, []string, error) {
 	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
 	rootID := activityRootIDFromMeta(sessionID, meta)
-	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(stateDir, rootID, sessionID)
+	rows, diagnostics, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}

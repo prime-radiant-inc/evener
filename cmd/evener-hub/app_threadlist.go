@@ -38,7 +38,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 					liveIDs[key] = struct{}{}
 				}
 			}
-			thread = mergePastMetadataForList(cfg, source.ID(), thread)
+			thread = mergePastMetadataForList(ctx, cfg, source.ID(), thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -53,7 +53,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
 			}
-			thread, err := pastEntryThread(cfg, entry, false)
+			thread, err := pastEntryThread(ctx, cfg, entry, false)
 			if err != nil {
 				return appwire.ThreadListResponse{}, err
 			}
@@ -145,7 +145,7 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return slices.Contains(params.SourceIDs, sourceID)
 }
 
-func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
+func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
 	if cfg.Past == nil {
 		return live
 	}
@@ -166,7 +166,7 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 	if !ok {
 		return live
 	}
-	past, err := pastEntryThread(cfg, entry, false)
+	past, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return live
 	}

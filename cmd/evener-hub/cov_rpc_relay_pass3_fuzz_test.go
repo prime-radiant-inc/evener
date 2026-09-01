@@ -107,7 +107,7 @@ func FuzzRPCRelayPass3(f *testing.F) {
 		_ = transcriptTargetSource("remote:x", "fallback")
 		_ = transcriptTargetSource("bad ref", "fallback")
 		if variant&1 != 0 {
-			_ = mergePastMetadataForList(hubcore.WebConfig{}, "remote", thread)
+			_ = mergePastMetadataForList(context.Background(), hubcore.WebConfig{}, "remote", thread)
 		}
 	})
 }

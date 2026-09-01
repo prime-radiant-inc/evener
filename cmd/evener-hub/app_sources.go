@@ -117,10 +117,18 @@ func managedLaunchSourceIDForRef(cfg hubcore.WebConfig, ref string) (string, boo
 // index. Used to gate auto-resume retries after live-action failures so that
 // non-local refs (which never appear in the local past index) still get the
 // retry when their backing daemon dies.
+//
+// This fans out to 6 unrelated RPC handlers across the hub package (compact,
+// model, vision-model, session-resume, plus its own callers here), none of
+// which currently thread a request context this deep — passing
+// context.Background() here (rather than widening every one of those call
+// chains for one existence check) means the bounded delegate-journal scan
+// (#448) still applies, just without real cancellation on this specific
+// path.
 func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 	if _, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return true
 	}
-	_, ok, _ := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	_, ok, _ := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: ref})
 	return ok
 }
