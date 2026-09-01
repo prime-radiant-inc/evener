@@ -157,6 +157,25 @@ func writeScanEvents(t *testing.T, path string, n int, line func(i int) Event) {
 	}
 }
 
+// appendScanEvents appends count more lines to an existing file written by
+// writeScanEvents, indexed startIndex..startIndex+count-1 via the same line
+// callback shape, so incrementality tests can grow a journal after an
+// earlier scan already ran against it.
+func appendScanEvents(t *testing.T, path string, startIndex, count int, line func(i int) Event) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for i := startIndex; i < startIndex+count; i++ {
+		if err := enc.Encode(line(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestScanEvents_WithinLimitsDecodesNormally(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -387,17 +406,179 @@ func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
 // of any length before returning it) — the underlying reader must itself be
 // bounded via io.LimitReader so this refusal doesn't require buffering the
 // whole 5 MB line first.
+// TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
+// unterminated-final-chunk path specifically: a single line with no trailing
+// newline at all, longer than MaxLineBytes, must be refused rather than
+// tolerated as an in-flight partial write. This is now MaxLineBytes'
+// responsibility, not MaxBytes' — #448's incremental-fold round removes
+// MaxBytes as a truncating per-file ceiling (a legitimate large journal must
+// fold in full, not get cut off), but a single pathological line is still
+// corruption, not Tuesday, so it keeps its own independent, always-on cap.
 func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
-	// One line, no trailing newline, far longer than the byte ceiling below.
+	// One line, no trailing newline, far longer than the line cap below.
 	content := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"` + strings.Repeat("w", 5_000_000) + `"}`)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: 100})
-	if !errors.Is(err, ErrScanLimitExceeded) {
-		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	_, err := ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes covers the
+// terminated-line path for the same cap: MaxLineBytes refuses a single
+// pathological line even when it IS newline-terminated (not just an
+// in-flight partial write), and independently of any MaxBytes setting.
+func TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	content := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"` + strings.Repeat("w", 5_000_000) + `"}` + "\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffset is the incrementality
+// contract ScanEventsFrom exists for: given the offset ScanEventsFrom
+// reported after an earlier call, a later call starting there must decode
+// ONLY the events appended since — not re-decode anything already seen —
+// and the offset it returns must land exactly at the new end of file.
+func TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	writeScanEvents(t, path, 3, func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+
+	first, firstOffset, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("first ScanEventsFrom: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("first scan got %d events, want 3", len(first))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstOffset != info.Size() {
+		t.Fatalf("firstOffset = %d, want the file's full size %d (a clean file with no torn tail)", firstOffset, info.Size())
+	}
+
+	appendScanEvents(t, path, 3, 2, func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+
+	second, secondOffset, err := ScanEventsFrom(context.Background(), path, firstOffset, ScanLimits{})
+	if err != nil {
+		t.Fatalf("second ScanEventsFrom: %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("second scan got %d events, want exactly the 2 appended since firstOffset, not all 5", len(second))
+	}
+	if second[0].WatchID != "w3" || second[1].WatchID != "w4" {
+		t.Fatalf("second scan events = %+v, want w3 then w4", second)
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondOffset != info2.Size() {
+		t.Fatalf("secondOffset = %d, want the file's new full size %d", secondOffset, info2.Size())
+	}
+}
+
+// TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets proves
+// the offset-tracking discipline that makes repeated ScanEventsFrom calls
+// safe against an in-flight write: the returned offset never advances past
+// an unterminated final line, so a LATER call from that same offset picks
+// the same content back up once it is completed, rather than silently
+// skipping or duplicating it.
+func TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	complete := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"w0"}` + "\n")
+	if err := os.WriteFile(path, complete, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"kind":"watch_registered","seq":2,"watch_id":"w1"`); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, offset, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1 (the torn trailing line contributes none)", len(events))
+	}
+	if offset != int64(len(complete)) {
+		t.Fatalf("offset = %d, want %d (just past the one complete line, not into the torn tail)", offset, len(complete))
+	}
+
+	// Finish the second event and append a third.
+	f2, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f2.WriteString(`}` + "\n" + `{"kind":"watch_registered","seq":3,"watch_id":"w2"}` + "\n"); err != nil {
+		_ = f2.Close()
+		t.Fatal(err)
+	}
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	more, _, err := ScanEventsFrom(context.Background(), path, offset, ScanLimits{})
+	if err != nil {
+		t.Fatalf("second ScanEventsFrom: %v", err)
+	}
+	if len(more) != 2 || more[0].WatchID != "w1" || more[1].WatchID != "w2" {
+		t.Fatalf("second scan events = %+v, want w1 (now complete) then w2 -- resuming from offset must not have skipped the completed line", more)
+	}
+}
+
+// TestScanEvents_IsScanEventsFromAtOffsetZero pins ScanEvents as a thin
+// wrapper: identical behavior to calling ScanEventsFrom with fromOffset 0
+// and discarding the returned offset.
+func TestScanEvents_IsScanEventsFromAtOffsetZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	writeScanEvents(t, path, 4, func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+
+	viaWrapper, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	viaFrom, _, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom: %v", err)
+	}
+	if len(viaWrapper) != len(viaFrom) {
+		t.Fatalf("ScanEvents returned %d events, ScanEventsFrom(0) returned %d, want equal", len(viaWrapper), len(viaFrom))
+	}
+	for i := range viaWrapper {
+		if viaWrapper[i] != viaFrom[i] {
+			t.Fatalf("event %d differs: ScanEvents=%+v ScanEventsFrom=%+v", i, viaWrapper[i], viaFrom[i])
+		}
 	}
 }
