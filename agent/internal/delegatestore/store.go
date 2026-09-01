@@ -301,7 +301,11 @@ func decodeLogContext(ctx context.Context, raw []byte, tolerateUnterminatedTail 
 			return nil, fmt.Errorf("delegatestore: batch line %d has no events", i+2)
 		}
 		if maxEvents > 0 && len(events)+len(batch.Events) > maxEvents {
-			return nil, fmt.Errorf("%w: batch line %d would exceed %d events", ErrScanLimitExceeded, i+2, maxEvents)
+			// Return what was already decoded (a complete prefix of whole
+			// batches) alongside the error, not nil: ScanEvents' caller can
+			// degrade to a truncated-but-honest partial result instead of
+			// discarding everything read so far.
+			return events, fmt.Errorf("%w: batch line %d would exceed %d events", ErrScanLimitExceeded, i+2, maxEvents)
 		}
 		events = append(events, batch.Events...)
 	}

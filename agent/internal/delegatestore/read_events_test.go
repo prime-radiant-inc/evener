@@ -239,6 +239,46 @@ func TestScanEvents_RefusesRawEventLimit(t *testing.T) {
 	}
 }
 
+// TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError covers the
+// degrade-to-partial contract: hitting MaxEvents must not discard everything
+// already decoded — a legitimately large delegates.jsonl (its Descriptor
+// embeds full skill bodies and role prompts, see historicalDelegateScanLimits
+// in jobs_activity_past.go) should still show its first N delegates rather
+// than losing the whole activity tree.
+func TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 50)
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 10})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) != 10 {
+		t.Fatalf("got %d partial events, want exactly the 10 decoded before the limit fired", len(events))
+	}
+}
+
+// TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError is the byte-
+// ceiling counterpart: the byte-limited read almost always lands mid-batch-
+// line, so this also exercises the torn-tail-style trim back to the last
+// complete line before Fold sees it.
+func TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) == 0 || len(events) >= 200 {
+		t.Fatalf("got %d partial events, want a nonzero prefix short of the full 200", len(events))
+	}
+}
+
 // TestScanEvents_RefusesRawByteLimit covers the raw-limit-refusal acceptance
 // test on the byte dimension: a journal over the byte ceiling is refused
 // before being retained.
