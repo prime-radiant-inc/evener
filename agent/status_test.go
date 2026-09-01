@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -820,5 +821,51 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 	}
 	if !foundUnsupported {
 		t.Error("HookEvents missing Setup (unsupported/reserved-placeholder)")
+	}
+}
+
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing
+// covers the adversarial regression review's CRITICAL finding: an oversized
+// delegates.jsonl line propagated ErrLineTooLong unclassified all the way
+// through LoadSessionDelegateStatus into the hub's ThreadRead RPC, hard-
+// failing the chat/transcript view for every session sharing that root --
+// live or historical -- on a single corrupt line. The posture ruling is
+// "loud but CONTAINED": LoadSessionDelegateStatus must not fail, and must
+// carry a diagnosed error (with file + line info) rather than swallowing it
+// silently.
+func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "oversizedelegateroot"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	// Inject a small MaxLineBytes so this test's fixture doesn't need an
+	// actual 128 MiB line to trip delegatestore's package default -- same
+	// established pattern as
+	// TestLoadSessionJobActivityTree_PathologicalLineErrorsLoudlyNotSilently,
+	// this test is about the CONTAINMENT property, not re-proving the cap
+	// fires (delegatestore's own tests already do that).
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		limits.MaxLineBytes = 20
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	status, diagnostics, err := LoadSessionDelegateStatus(context.Background(), stateDir, rootID)
+	if err != nil {
+		t.Fatalf("LoadSessionDelegateStatus: %v, want nil error -- an oversized delegate journal line must degrade, not fail the whole ThreadRead RPC this feeds", err)
+	}
+	if len(status) != 0 {
+		t.Fatalf("status = %+v, want empty (nothing is safely decodable once a line in the shared journal exceeds the cap)", status)
+	}
+	found := false
+	for _, d := range diagnostics {
+		if strings.Contains(d, "delegates.jsonl") && strings.Contains(d, "line") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics = %v, want one identifying the oversized delegates.jsonl line (file + line info), visible rather than silently dropped", diagnostics)
 	}
 }
