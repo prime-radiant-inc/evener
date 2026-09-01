@@ -295,3 +295,171 @@ func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
 		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
 	}
 }
+
+// TestScanEvents_MissingVersionHeaderOnEmptyFile pins existing behavior for
+// an actually-empty (0-byte) file, distinct from a missing file: ScanEvents
+// streams the header line itself now, so this regression-pins that an empty
+// read is still reported as "missing version header", not misread as EOF-
+// with-nothing-wrong.
+func TestScanEvents_MissingVersionHeaderOnEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err == nil || !strings.Contains(err.Error(), "missing version header") {
+		t.Fatalf("ScanEvents error = %v, want missing version header", err)
+	}
+}
+
+// TestScanEvents_UnterminatedVersionHeaderOnEntireFileWithoutNewline pins
+// existing behavior: a file with no newline anywhere (not even the header
+// line completes) is always a hard error, regardless of scan limits — there
+// is no complete line to trim back to.
+func TestScanEvents_UnterminatedVersionHeaderOnEntireFileWithoutNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	if err := os.WriteFile(path, []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err == nil || !strings.Contains(err.Error(), "unterminated version header") {
+		t.Fatalf("ScanEvents error = %v, want unterminated version header", err)
+	}
+}
+
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit covers
+// roborev's finding on #448 (jobstore's counterpart is
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit in
+// agent/internal/jobstore): if ctx is canceled during the read whose chunk
+// ALSO happens to push totalBytes past MaxBytes, that must still be
+// reported as context.Canceled, not silently swallowed by
+// ErrScanLimitExceeded. MaxBytes is set to exactly the header+line-1 size:
+// both fit (totalBytes == MaxBytes, not over), so the limit fires on line
+// 2's byte check — deterministically, not by guessing a fraction of the
+// whole file's size.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 1)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerPlusLine1Size := info.Size()
+	writeDelegateJournal(t, path, 5)
+	// allow:3 lets exactly three ctx.Err() calls through as nil — the
+	// top-of-read checks for the header, line 1, and line 2 — then reports
+	// canceled on every call after, including the check placed right before
+	// the byte-limit return on line 2's iteration.
+	ctx := &countdownContext{Context: context.Background(), allow: 3}
+
+	_, _, err = ScanEvents(ctx, path, ScanLimits{MaxBytes: headerPlusLine1Size})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the byte limit", err)
+	}
+}
+
+// TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit is the
+// MaxEvents counterpart: with MaxEvents=1, the limit fires on line 2's
+// iteration (line 1's single event fits; line 2's would exceed it) — three
+// top-of-read ctx checks (header, line 1, line 2) must see nil before the
+// fourth, the one guarding the limit-triggered return itself, reports
+// canceled.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 5)
+	ctx := &countdownContext{Context: context.Background(), allow: 3}
+
+	_, _, err := ScanEvents(ctx, path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the event limit", err)
+	}
+}
+
+// TestScanEvents_RefusesSingleOversizedUnterminatedLine mirrors jobstore's
+// test of the same name: a single batch line with no trailing newline at
+// all, longer than MaxBytes, must be refused rather than tolerated as an
+// in-flight partial write — and the underlying reader must itself be
+// bounded via io.LimitReader so this refusal doesn't require buffering the
+// whole oversized line first (bufio.Reader.ReadBytes has no size cap of its
+// own, unlike Scanner's MaxScanTokenSize).
+func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 0)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerSize := info.Size()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[` + strings.Repeat("x", 5_000_000)); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxBytes: headerSize + 100})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_TornTailTrueOnGenuineUnterminatedFile pins existing,
+// correct behavior: an actually-incomplete trailing batch line (an in-flight
+// append racing the read, with no scan limit involved) is a genuine torn
+// tail.
+func TestScanEvents_TornTailTrueOnGenuineUnterminatedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 3)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[`); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if !diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = false, want true for a genuinely incomplete trailing batch line")
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want the 3 complete ones (the torn trailing line contributes none)", len(events))
+	}
+}
+
+// TestScanEvents_TornTailFalseOnArtificialByteCutoff covers roborev's
+// finding on #448: TornTail must reflect whether the journal genuinely ends
+// without a terminating newline, not whether an artificial MaxBytes cutoff
+// happened to land mid-line. The journal here is cleanly terminated — an
+// unbounded read would show TornTail=false — so a MaxBytes cutoff reporting
+// TornTail=true would be reporting corruption that isn't there.
+func TestScanEvents_TornTailFalseOnArtificialByteCutoff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = true, want false: the cutoff is an artificial MaxBytes ceiling, not a genuine torn tail")
+	}
+}
