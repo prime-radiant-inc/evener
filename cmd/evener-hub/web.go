@@ -179,7 +179,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/debug/subscriptions", s.handleAPIDebugSubscriptions)
 
-	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
+	mux.HandleFunc("/auth/", hubedge.HandleAuth(s.cfg.AuthToken))
 
 	auth := hubedge.AuthGuard(s.cfg.AuthToken)
 	// Optional opt-in (EVENER_RECORD_HTTP) inbound-request recorder for fuzz-corpus
@@ -216,7 +216,7 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if token := s.cfg.AuthToken; token != "" {
-		manifest["start_url"] = "/auth?token=" + url.QueryEscape(token) + "&next=" + url.QueryEscape("/")
+		manifest["start_url"] = hubedge.AuthURLFor("", token) + "?next=" + url.QueryEscape("/")
 	}
 	out, err := manifestMarshal(manifest)
 	if err != nil {

@@ -52,5 +52,5 @@ export async function checkAuthStatus(fetchImpl: typeof fetch = fetch): Promise<
 // checkAuthStatus resolves "unauthenticated" - shorthand for the fuller
 // instructions AuthGuard's own 401 body gives a non-JS client
 // (auth_token.go: read the auth URL from the hub's startup log, or the
-// token file, then visit /auth?token=<value>).
+// token file, then visit /auth/<value>).
 export const SIGN_IN_PROMPT_MESSAGE = "Open the authorization link from the hub's startup log.";
