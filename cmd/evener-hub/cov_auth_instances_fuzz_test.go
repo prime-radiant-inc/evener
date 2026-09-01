@@ -345,7 +345,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		_ = ic.List()
 		_ = ic.Edit(appwire.InstanceEditParams{Name: "missing"})
 		_ = ic.Edit(appwire.InstanceEditParams{Name: "new", Protocol: "openai-responses", Surface: "generic", Vars: map[string]string{"X": "y"}})
-		if err := ic.Edit(appwire.InstanceEditParams{Name: "new", BaseURL: new("http://local")}); err != nil {
+		if err := ic.Edit(appwire.InstanceEditParams{Name: "new", BaseURL: "http://local"}); err != nil {
 			t.Fatal(err)
 		}
 		_ = ic.SetDefault(appwire.InstanceSetDefaultParams{Name: "missing"})

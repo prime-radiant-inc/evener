@@ -306,12 +306,23 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			params := appwire.InstanceEditParams{
 				Name:     p.formName,
 				Protocol: p.formProtocol,
-				// The form always shows the instance's current base URL and
-				// edits it in place, so whatever ends up in the field is the
-				// intended final value — including empty, which now clears
-				// an authored override back to the registry default (#711)
-				// instead of the wire's usual "omitted means unchanged".
-				BaseURL: new(p.formBaseURL),
+			}
+			switch {
+			case strings.TrimSpace(p.formBaseURL) == strings.TrimSpace(p.formBaseURLWas):
+				// Untouched: send neither field. formBaseURLWas is the
+				// instance's displayed base URL, which for an implicit
+				// instance is its resolved default (not an authored
+				// override) — sending it back unedited would author it as a
+				// literal one and stop spec §10's credential inheritance.
+				// For a hidden or unresolvable instance the display can be
+				// empty while a real base_url is still authored underneath,
+				// so an untouched empty field must not read as a clear
+				// either (#711).
+			case p.clearedBaseURL():
+				// Deliberately emptied a field that had something displayed.
+				params.ClearBaseURL = true
+			default:
+				params.BaseURL = p.formBaseURL
 			}
 			return p, func() tea.Msg { return InstanceEditSubmitMsg{Params: params} }
 		}

@@ -512,6 +512,7 @@ export interface InstanceCreateParams {
 export interface InstanceEditParams {
   name: string;
   baseUrl?: string;
+  clearBaseUrl?: boolean;
   protocol?: string;
   surface?: string;
   vars?: Record<string, string>;

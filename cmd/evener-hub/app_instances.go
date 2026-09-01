@@ -276,6 +276,13 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// before is an independent parse from l below — a fresh read sharing no
+	// maps with it — so if the edit parses fine but fails to load (#711),
+	// writing it back restores exactly what was on disk before this call.
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -287,13 +294,15 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 		p = registry.Provider{ID: name}
 	}
-	if params.BaseURL != nil {
-		// Unlike Protocol and Surface below, nil (not sent) and a non-nil
-		// empty string (sent, cleared) are distinguishable here, so an
-		// explicit clear reaches "" and drops the authored override —
-		// restoring the registry default and, per spec §10, the base's
-		// inherited api_key_env (#711).
-		p.Transport.BaseURL = strings.TrimSpace(*params.BaseURL)
+	if params.ClearBaseURL {
+		// Drops the authored override and goes back to the registry
+		// default, restoring spec §10's credential inheritance from the
+		// base provider (#711). Additive over BaseURL's existing "empty
+		// means unchanged" (v3): the two are never both meaningful in the
+		// same request (appwire.InstanceEditParams doc comment).
+		p.Transport.BaseURL = ""
+	} else if v := strings.TrimSpace(params.BaseURL); v != "" {
+		p.Transport.BaseURL = v
 	}
 	if v := strings.TrimSpace(params.Protocol); v != "" {
 		p.Protocol = v
@@ -311,7 +320,24 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	return c.reg.Reload()
+	if err := c.reg.Reload(); err != nil {
+		// writeLoadable's dry parse only checks TOML syntax against the
+		// registry schema; it does not resolve the config the way Reload
+		// does. A standalone instance (no base, and its own name is not a
+		// registry id either) that just lost its only base_url is a config
+		// that parses fine but cannot resolve an endpoint (llm/registry:
+		// "no base URL: set base_url = … or base = <registry id>"), and one
+		// bad instance record fails the whole reload, not just this one
+		// (#711). Restore the file this call just overwrote instead of
+		// leaving every instance operation refused by a config only this
+		// edit produced.
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("this edit would leave %q unable to load: %v", name, err))
+	}
+	return nil
 }
 
 // Remove deletes an authored instance, its stored key and its OAuth record.

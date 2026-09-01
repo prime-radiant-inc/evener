@@ -240,7 +240,7 @@ describe("EditInstanceDialog", () => {
   test("emptying a set Base URL clears it back to the provider default", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "" });
+      expect(params).toEqual({ name: "work", clearBaseUrl: true });
       return { instances: [], availableProviders: [] };
     });
     const onSuccess = vi.fn();
@@ -253,9 +253,9 @@ describe("EditInstanceDialog", () => {
       />,
     );
     await user.clear(screen.getByLabelText(/base url/i));
-    // InstanceEditParams.baseUrl is a pointer wire-side (#711): an explicit
-    // empty string clears the authored override back to the provider's
-    // default, distinct from the omitted field an unchanged save sends.
+    // InstanceEditParams.baseUrl keeps its old "empty means unchanged"
+    // meaning (v3); clearBaseUrl is the additive signal that actually
+    // drops the authored override back to the provider's default (#711).
     expect(screen.getByText(/resets the endpoint to the provider's default/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
     await user.click(screen.getByRole("button", { name: "Save" }));

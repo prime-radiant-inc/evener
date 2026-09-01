@@ -10864,7 +10864,7 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: new("https://example.test")}, &resp); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
 		t.Fatalf("evener/instance/edit: %v", err)
 	}
 
