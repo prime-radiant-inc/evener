@@ -499,14 +499,19 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 }
 
 // TestModelSwitchLiveListingAttribution pins issue #754: resolveModelSwitchTarget
-// (agent/session_set_model.go), used by SetModel and by subagent
-// explicit-model-override selection (selectSubagentModel), lists the switch
-// target's instance with a bare context.Background() even though every call
-// site runs on an already-existing session with a real s.id in scope — the
-// same unattributed-API-log defect TestPreSessionLiveModelListingAttribution
-// pins for pre-session listings (issue #745 / PR #752), but here session
-// attribution is trivially available rather than sometimes structurally
-// absent.
+// (agent/session_set_model.go), used by SetModel and by both
+// resolveModelSwitchTarget call sites inside selectSubagentModel — the plain
+// explicit-override path (subagent_model_selection.go:117) and the
+// plugin-agent-resolution-failed fallback path (subagent_model_selection.go:74)
+// — lists the switch target's instance with a bare context.Background() even
+// though every call site runs on an already-existing session with a real
+// s.id in scope. Same unattributed-API-log defect
+// TestPreSessionLiveModelListingAttribution pins for pre-session listings
+// (issue #745 / PR #752), but here session attribution is trivially
+// available rather than sometimes structurally absent. All three call sites
+// get the identical one-line fix, so all three are pinned here rather than
+// just the shared helper: a fix applied to two of the three call sites would
+// still leave the third silently unattributed.
 func TestModelSwitchLiveListingAttribution(t *testing.T) {
 	t.Run("SetModel", func(t *testing.T) {
 		stateDir := t.TempDir()
@@ -529,7 +534,7 @@ func TestModelSwitchLiveListingAttribution(t *testing.T) {
 		assertSessionAPILogAttributed(t, stateDir, sess.ID())
 	})
 
-	t.Run("subagent explicit model override", func(t *testing.T) {
+	t.Run("subagent explicit model override (no plugin agent, :117)", func(t *testing.T) {
 		stateDir := t.TempDir()
 		client := llm.NewClient()
 		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
@@ -542,6 +547,52 @@ func TestModelSwitchLiveListingAttribution(t *testing.T) {
 		sess := newModelSwitchAttributionSession(t, client, stateDir)
 		if _, err := sess.selectSubagentModel(context.Background(), "gpt-5.2", ""); err != nil {
 			t.Fatalf("selectSubagentModel: %v", err)
+		}
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertSessionAPILogAttributed(t, stateDir, sess.ID())
+	})
+
+	// This subtest drives selectSubagentModel's OTHER resolveModelSwitchTarget
+	// call site: the plugin-fallback branch at subagent_model_selection.go:74,
+	// reached only when a plugin agent is named, its own Model resolution
+	// fails (resolvePluginAgentModel returns a non-empty reason), and an
+	// explicit override model is also supplied. The plugin's requested model
+	// ("gpt-9.9-plugin-unavailable") names nothing any instance serves, so
+	// resolvePluginAgentRef rejects it before any listing (reason
+	// "unavailable", mirroring TestSelectSubagentModel_PluginAvailabilityPrecedence's
+	// "unservable plugin model is refused without listing" case) — the only
+	// live listing this subtest drives is the explicit override's, at :74.
+	t.Run("subagent plugin-fallback model override (:74)", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		sess := newModelSwitchAttributionSession(t, client, stateDir)
+		sess.pluginAgents = map[string]plugin.Agent{
+			"reviewer": {
+				Name:       "reviewer",
+				Model:      "gpt-9.9-plugin-unavailable",
+				PluginName: "test-plugin",
+			},
+		}
+
+		selected, err := sess.selectSubagentModel(context.Background(), "gpt-5.2", "reviewer")
+		if err != nil {
+			t.Fatalf("selectSubagentModel: %v", err)
+		}
+		if selected.warning == nil {
+			t.Fatal("expected a plugin-fallback warning (proves the :74 branch ran), got nil")
+		}
+		if selected.profile.Model() != "gpt-5.2" {
+			t.Fatalf("selected model = %q, want the explicit fallback %q", selected.profile.Model(), "gpt-5.2")
 		}
 
 		if err := logger.Close(); err != nil {
