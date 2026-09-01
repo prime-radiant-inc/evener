@@ -1228,3 +1228,394 @@ test("ToolCallItem renders no transcript button when the descriptor has no openT
   render(<ToolCallItem item={item({ toolName: "trg_no_opentranscript" })} turn={turn} live={false} />);
   expect(screen.queryByRole("button", { name: "Open transcript" })).toBeNull();
 });
+
+// --- two-level disclosure: intent button controls summaryOpen, body chevron
+//     controls expanded -----------------------------------------------------
+//
+// When onToggleSummary is provided, ToolRow splits its single disclosure into
+// two: the intent button toggles `summaryOpen` (whether the summary line is
+// shown), and a separate `.bodyTrigger` chevron button toggles `expanded` (the
+// body below). Intent-less rows are unchanged - the overlay pattern keeps one
+// trigger controlling the body. The opt-in is the prop itself: callers that
+// do not pass onToggleSummary get the legacy single-level behavior exactly.
+
+test("two-level: summaryOpen=false expanded=false renders only the intent button, aria-expanded=false", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // The intent button controls the summary, so it reflects summaryOpen.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No summary line and no body chevron render yet.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: summaryOpen=true expanded=false renders the summary line and body chevron, intent expanded, body collapsed", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  // The summary line renders...
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  // ...and the body chevron renders, collapsed.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("two-level: summaryOpen=true expanded=true renders summary line and body chevron, both expanded", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+});
+
+test("two-level: summaryOpen=false expanded=true (auto-expand) puts the body chevron on the intent line with data-intent-trailing=true", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  // The summary is hidden, so the body chevron shares the intent line.
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  // The intent button reports summaryOpen=false (summary not visible).
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("two-level: clicking the intent button calls onToggleSummary, not onToggle", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen={false}
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-trigger"));
+  expect(onToggleSummary).toHaveBeenCalledTimes(1);
+  expect(onToggle).not.toHaveBeenCalled();
+});
+
+test("two-level: clicking the body chevron calls onToggle, not onToggleSummary", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  expect(onToggleSummary).not.toHaveBeenCalled();
+});
+
+test("two-level: summaryHidden hides the summary line while expanded, body chevron moves to intent line", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+      summaryHidden
+    />,
+  );
+  // summaryVisible = summaryOpen && !summaryHidden = false, so the summary
+  // line is gone and the intent button reports not-expanded.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  // The body chevron still renders on the intent line, expanded.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+test("two-level: the intent button controls the summary region via aria-controls", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const summaryRegionId = trigger.getAttribute("aria-controls");
+  expect(summaryRegionId).toBeTruthy();
+  // The summary div carries that id.
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  expect(summaryEl.closest("div")?.getAttribute("id")).toBe(summaryRegionId);
+});
+
+test("two-level: the body chevron controls the body region via aria-controls", () => {
+  const bodyId = "body-region-1";
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      bodyId={bodyId}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-controls")).toBe(bodyId);
+});
+
+test("two-level: the body chevron has an accessible name from the summary label", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect((bodyTrigger.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+});
+
+test("two-level: a failed row's body chevron label starts with 'Failed'", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-label")).toBe("Failed npm test -- src/foo");
+});
+
+test("two-level: the summary line carries the chevron span inside the intent button, not a separate body chevron, when expanded and summary visible", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The intent button still carries the inline chevron (chrome)...
+  expect(screen.getByTestId("tool-row-intent").contains(screen.getByTestId("tool-row-chevron"))).toBe(true);
+  // ...and a separate body-trigger chevron renders too.
+  expect(screen.getByTestId("tool-row-body-trigger")).toBeTruthy();
+});
+
+test("two-level: intent-less rows keep the unchanged overlay pattern - onToggleSummary is ignored", () => {
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // Intent-less rows keep the overlay: one trigger controls the body, aria-expanded=expanded.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No separate body chevron renders for intent-less rows.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: an intent-less row's overlay trigger calls onToggle, not onToggleSummary", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onToggleSummary = vi.fn();
+  render(
+    <ToolRow
+      summary="npm test"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      summaryOpen
+      onToggleSummary={onToggleSummary}
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-trigger"));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  expect(onToggleSummary).not.toHaveBeenCalled();
+});
+
+test("two-level: without onToggleSummary, an intent row keeps the legacy single-level behavior", () => {
+  // The opt-in is the prop: callers that do not pass onToggleSummary get the
+  // old behavior - the intent button controls `expanded` directly.
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No separate body chevron renders in the legacy single-level mode.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+});
+
+test("two-level: the summary div gets id={summaryRegionId} when rendered", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const summaryRegionId = trigger.getAttribute("aria-controls");
+  expect(summaryRegionId).toBeTruthy();
+  // The summary line wrapper div carries the region id.
+  const summaryLine = screen.getByTestId("tool-row-summary").parentElement;
+  expect(summaryLine?.getAttribute("id")).toBe(summaryRegionId);
+});
+
+test("two-level: when summaryHidden the intent button drops aria-controls (no region to point at)", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+      summaryHidden
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  // summaryVisible is false, so no summary region exists to control.
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(trigger.getAttribute("aria-controls")).toBeFalsy();
+});
+
+test("two-level: the body chevron's chevron span rotates with expanded state", () => {
+  const { rerender } = render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  const chevron = bodyTrigger.querySelector("[data-open]");
+  expect(chevron?.getAttribute("data-open")).toBe("false");
+  rerender(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTriggerOpen = screen.getByTestId("tool-row-body-trigger");
+  const chevronOpen = bodyTriggerOpen.querySelector("[data-open]");
+  expect(chevronOpen?.getAttribute("data-open")).toBe("true");
+});
