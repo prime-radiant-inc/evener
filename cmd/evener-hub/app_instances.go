@@ -203,24 +203,32 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // Create authors a new instance entry. APIKeyEnv is a variable name and
 // CredentialHeader must reference a $VAR: a literal secret never crosses this
 // boundary, and none is ever written to the file (spec §11.2).
+//
+// Every refusal that blames the fields the caller sent comes back as a wire
+// error naming its class — InvalidParams for a field that is malformed or
+// names something that does not exist, Conflict for a name already taken —
+// matching how hubDirsCreate and the pin-section store classify the same
+// shapes. A refusal about the hub's own state (the registry not loaded, a
+// read or write failure) stays a plain error: that is not the caller's to
+// fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
 	if !registry.ValidInstanceName(name) {
-		return fmt.Errorf("invalid instance name %q (lowercase, no slash)", params.Name)
+		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 	base := strings.TrimSpace(params.Base)
 	if _, ok := c.reg.Get().Provider(base); !ok {
-		return fmt.Errorf("unknown base provider %q", params.Base)
+		return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 	}
 	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
 	if err != nil {
 		return err
 	}
 	if err := validVarNames(params.Vars); err != nil {
-		return err
+		return appwire.InvalidParams(err.Error())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -229,7 +237,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		return err
 	}
 	if _, exists := l.Providers[name]; exists {
-		return fmt.Errorf("instance %q already exists", name)
+		return appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
 	}
 	p := registry.Provider{
 		ID:       name,

@@ -217,14 +217,22 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 		wire   bool
 	}{
 		{
+			wire:   true,
 			name:   "invalid instance name",
 			params: appwire.InstanceCreateParams{Name: "Work/Two", Base: "openai"},
 			want:   "invalid instance name",
 		},
 		{
+			wire:   true,
 			name:   "unknown base provider",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "not-a-provider"},
 			want:   "unknown base provider",
+		},
+		{
+			wire:   true,
+			name:   "invalid variable name",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Vars: map[string]string{"region": "value"}},
+			want:   "invalid variable name",
 		},
 		{
 			wire:   true,
@@ -296,6 +304,12 @@ func TestInstances_CreateRejectsDuplicateName(t *testing.T) {
 	err := f.ctl.Create(params)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second Create = %v, want an already-exists error", err)
+	}
+	// The name collides with an existing entry, matching the Conflict class
+	// hubDirsCreate and the pin-section store use for the same "taken" shape.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("second Create = %v, want a Conflict wire error", err)
 	}
 }
 
