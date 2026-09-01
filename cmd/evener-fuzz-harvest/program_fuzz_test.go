@@ -10,6 +10,7 @@ func FuzzHarvestProgram(f *testing.F) {
 		scenarioGitleaksScanOutcomes, scenarioHarvestLeakExitAndSmallHelpers, scenarioEmitterWriteFileFailure,
 		scenarioHarvesterInjectedSanitizeAndEmitFailures, scenarioReverseHTTPNoMatchAndBadQuery,
 		scenarioReverseHTTPAuthPathTokenNeverHarvested, scenarioReverseHTTPLegitimateSessionSuffixNotRedacted,
+		scenarioReverseHTTPAuthPathTokenCaseInsensitive, scenarioIsAuthBootstrapPathShapes,
 		scenarioForEachJSONLineOpenAndEmpty, scenarioRemainingFilesystemAndGateBranches,
 		scenarioRunLogAndPersonalKeepNote, scenarioToolArgsSecondDecodeAndSanitizeFailure,
 		scenarioHarvestRunInjectedOutcomes, scenarioRunnerFailureAccountingAndHelpers,
