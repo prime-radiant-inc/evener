@@ -2685,3 +2685,128 @@ func (h *recordingRelayHandoff) Abort() bool {
 	})
 	return won
 }
+
+// TestHubRelayPendingFrameWakesOnARoutePublishItRaced pins the wake-up a
+// parked relay frame waits on. signalRouteChangeLocked closes the handle's
+// route-change channel and installs a fresh one, so a listener that captures
+// the channel after deciding to park -- rather than before reading the routes
+// that decision rests on -- captures the replacement and sleeps through the
+// publication it is waiting for. The park hook here holds the listener in
+// exactly that gap while the replacement read publishes its routes.
+func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
+	const (
+		downstreamRef       = "local:wake-downstream"
+		oldAuthoritativeRef = "local:wake-authoritative-old"
+		newAuthoritativeRef = "local:wake-authoritative-new"
+	)
+	canonicalOld := appwire.Ref{SourceID: "local", ThreadID: "wake-old"}
+	canonicalNew := appwire.Ref{SourceID: "local", ThreadID: "wake-new"}
+	newLease := func(authoritativeRef string) *scriptedRelaySessionLease {
+		return &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "wake-downstream", Source: "local",
+					Evener: appwire.EvenerThread{Ref: authoritativeRef},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			},
+			deliveries: make(chan appsource.RelayDelivery),
+		}
+	}
+	oldLease := newLease(oldAuthoritativeRef)
+	replacementLease := newLease(newAuthoritativeRef)
+	replacementReadEntered := make(chan struct{})
+	releaseReplacementRead := make(chan struct{})
+	replacementLease.readHook = func() {
+		close(replacementReadEntered)
+		<-releaseReplacementRead
+	}
+	var resolveMu sync.Mutex
+	resolved := canonicalOld
+	source := &relaySessionTestSource{
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			resolveMu.Lock()
+			defer resolveMu.Unlock()
+			return resolved, nil
+		},
+		acquireRelay: func(ref appwire.Ref) (appsource.RelaySessionRoutePublicationLease, error) {
+			if ref == canonicalOld {
+				return routeAwareTestLease(oldLease), nil
+			}
+			return routeAwareTestLease(replacementLease), nil
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: downstreamRef, Subscribe: true}); err != nil {
+		t.Fatalf("initial ThreadRead: %v", err)
+	}
+	resolveMu.Lock()
+	resolved = canonicalNew
+	resolveMu.Unlock()
+
+	// Hold the listener between parking the frame and waiting for its wake-up,
+	// so the replacement read's route publication lands inside that gap.
+	parked := make(chan struct{})
+	resumeListener := make(chan struct{})
+	var parkOnce sync.Once
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() {
+		parkOnce.Do(func() {
+			close(parked)
+			<-resumeListener
+		})
+	}
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+
+	replacementResult := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+			Ref: downstreamRef, Subscribe: true, ReplaceSubscription: true,
+		})
+		replacementResult <- err
+	}()
+	<-replacementReadEntered
+	acknowledged := make(chan struct{})
+	go func() {
+		replacementLease.deliveries <- appsource.RelayDelivery{
+			Notification: appwire.Notification{
+				Method: appwire.NotifyAgentMessageDelta,
+				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+					Ref: newAuthoritativeRef, ThreadID: "wake-authoritative-new",
+					TurnID: "turn-wake", ItemID: "item-wake", Delta: "raced publish",
+				}),
+			},
+			Acknowledge: func() { close(acknowledged) },
+		}
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		close(releaseReplacementRead)
+		t.Fatal("changed-target notification was never parked for the pending replacement generation")
+	}
+	close(releaseReplacementRead)
+	if err := <-replacementResult; err != nil {
+		close(resumeListener)
+		t.Fatalf("replacement ThreadRead: %v", err)
+	}
+	close(resumeListener)
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("notification after raced publish method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("parked notification slept through the route publication it raced")
+	}
+	<-acknowledged
+}
