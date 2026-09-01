@@ -463,3 +463,91 @@ func TestScanEvents_TornTailFalseOnArtificialByteCutoff(t *testing.T) {
 		t.Errorf("diagnostics.TornTail = true, want false: the cutoff is an artificial MaxBytes ceiling, not a genuine torn tail")
 	}
 }
+
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted covers
+// roborev's finding on #807: MaxEvents must be checked BEFORE attempting to
+// decode the next batch line, not after — otherwise a MaxEvents: 1 scan can
+// still fully decode an oversized (or, as here, malformed) later batch just
+// to discover afterward that the budget was already spent. Line 1 holds
+// exactly one valid event (bringing the running count to MaxEvents); line 2
+// is malformed JSON. If the fix checks the budget first, ScanEvents never
+// attempts to decode line 2 at all and reports ErrScanLimitExceeded; the
+// pre-fix behavior decodes line 2 first and reports a decode error instead.
+func TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	event := createdEvent("dlg_0", "")
+	event.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	buf.WriteString(`{"events":[}` + "\n") // malformed -- must never be reached
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a decode error means the malformed line 2 was reached despite the budget already being spent)", err)
+	}
+}
+
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError covers
+// roborev's finding on #807: when the partial prefix ScanEvents degrades to
+// on hitting a limit would NOT fold cleanly on its own (e.g. it ends
+// mid-relationship — a RunStarted for a delegate whose own Created event is
+// in a later, never-read batch), ScanEvents must still report
+// ErrScanLimitExceeded, not a Fold error. Folding is the caller's job
+// (scanRootDelegateState already does it); ScanEvents degrading to partial
+// only to have its own internal validation immediately reject that same
+// partial prefix would silently defeat the documented contract in exactly
+// the cases it exists for.
+func TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	orphan := startedEvent("dlg_orphan", 1, TriggerInitial)
+	orphan.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{orphan}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	second := createdEvent("dlg_second", "")
+	second.Seq = 2
+	secondBatch, err := json.Marshal(batchRecord{Events: []Event{second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(secondBatch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// MaxEvents: 1 stops the scan after the orphan RunStarted alone -- a
+	// partial prefix that, folded by itself, is invalid (no Created event
+	// for dlg_orphan ever appears in it).
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a fold error here means it was silently swallowed)", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want the 1 decoded before the limit fired", len(events))
+	}
+}
