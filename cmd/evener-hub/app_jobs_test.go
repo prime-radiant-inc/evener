@@ -445,34 +445,24 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation pins #448's
-// resolved choice for load-phase truncation (a session's own journal scan
-// hitting the work-unit-derived event ceiling, as opposed to projection's
-// pre-existing mid-list truncation): report Truncated=true but mint NO
-// continuation token, rather than one that silently never advances.
-//
-// A resumable byte/event cursor was rejected as disproportionate for this
-// round: the continuation format was never designed to carry cross-page scan
-// state, and — verified empirically while fixing this — even projection's
-// OWN pre-existing mid-list continuation doesn't actually skip already-shown
-// records on resume; it re-projects the same ordered list from the start
-// with a fresh, filtered budget. That was rarely visible under the old
-// fully-unbounded load (a large budget trimmed only the last few records),
-// but #448's load-time ceiling cuts much more aggressively per page, making
-// the non-advancing continuation a real, reviewer-visible defect rather than
-// a latent one. A continuation that never delivers new data is worse than
-// none: it invites a client to poll forever for jobs it will never receive.
-// TestHubJobsListWorkBudgetTruncationMintsAContinuation covers roborev's
-// finding on #807: the raw journal scan's own ceiling (historicalJobScanLimits)
-// is now independent of the projection work budget (activityMaxWorkUnits,
-// 2000 here) — a session with more jobs than that STILL loads its complete
-// history (LoadTruncated=false), and it is projection alone that renders
-// only the first 2000 entries and mints a continuation for the rest. This
-// replaces the pre-#807 expectation (a load-time ceiling tied to the work
-// budget, producing LoadTruncated=true and a deliberately empty
-// continuation): 2002 jobs no longer exhausts the RAW scan at all.
-func TestHubJobsListWorkBudgetTruncationMintsAContinuation(t *testing.T) {
-	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2002)
+// TestHubJobsListMidListTruncationMintsAdvancingContinuation replaces
+// #448 round 3's TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation
+// now that Jesse's ruling on #807 (200k events is a normal Tuesday;
+// truncating legit history is unacceptable) removed the load-phase ceiling
+// that test pinned: a session's own journal always folds in full now (see
+// historicalJobFoldCache), so there is no more load-truncated,
+// no-continuation state to produce. The only truncation left is
+// projection's own mid-list cutoff, and #448's incremental-fold round's
+// other half (closing #812 on this surface) is that its continuation must
+// actually ADVANCE: resuming with it must render DIFFERENT, later jobs, not
+// re-render the same first page a fresh, non-continuation request already
+// showed.
+func TestHubJobsListMidListTruncationMintsAdvancingContinuation(t *testing.T) {
+	// 2050 exceeds agent.activityMaxWorkUnits (2000, unexported — this
+	// package can't reference it directly) by enough margin that the child
+	// session's own rendered page still truncates regardless of how many
+	// budget units the root's own entries consume first.
+	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2050)
 	sources := newExitedLocalRegistry()
 
 	first, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
@@ -485,16 +475,63 @@ func TestHubJobsListWorkBudgetTruncationMintsAContinuation(t *testing.T) {
 		t.Fatalf("child branch = %+v child = %+v, want Truncated=true", delegate.Branch, delegate.Child)
 	}
 	if delegate.Child.Branch.Continuation == "" {
-		t.Fatalf("child branch.Continuation is empty, want a real continuation: the full 2002-job history loaded, only projection's own work budget (2000) truncated the response")
+		t.Fatalf("child branch.Continuation is empty, want a real, advancing continuation (#812's fix on this surface)")
 	}
-	// The root's own 1 job + 1 delegate entry are rendered (and charged
-	// against the SAME shared work budget) before the child's own entries
-	// start, so the child gets slightly under the full 2000-unit budget --
-	// this only checks that SOME of the 2002 jobs were cut, not the exact
-	// count (which depends on the ancestor chain's own entry count).
-	if got := len(delegate.Child.Entries); got == 0 || got >= 2002 {
-		t.Fatalf("child entries = %d, want a nonzero prefix short of the full 2002", got)
+	if len(delegate.Child.Entries) == 0 {
+		t.Fatalf("child entries = %+v, want a nonzero rendered prefix", delegate.Child.Entries)
 	}
+	firstJobIDs := activityEntryJobIDs(delegate.Child.Entries)
+
+	second, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{
+		Ref:          "local:" + sessionID,
+		Continuation: delegate.Child.Branch.Continuation,
+	})
+	if err != nil {
+		t.Fatalf("hubJobsList (resumed): %v", err)
+	}
+	secondTree := mustActivityTree(t, second.Data)
+	// The response's own Root is always the SAME query root (the wire shape
+	// buildActivityContinuationAt produces re-enters via a filtered
+	// root->delegate->child chain, not a response rooted at the target
+	// session directly) — the child's entries are still reached the same
+	// way the first page's were.
+	secondDelegate := findActivityDelegate(t, secondTree.Root, childID)
+	if secondDelegate.Child == nil {
+		t.Fatalf("resumed delegate = %+v, want a child subtree", secondDelegate)
+	}
+	if len(secondDelegate.Child.Entries) == 0 {
+		t.Fatalf("resumed entries = %+v, want a nonzero second page", secondDelegate.Child.Entries)
+	}
+	secondJobIDs := activityEntryJobIDs(secondDelegate.Child.Entries)
+	if secondJobIDs[0] == firstJobIDs[0] {
+		t.Fatalf("resumed page's first job %q is the SAME as the first page's first job — the continuation did not advance", secondJobIDs[0])
+	}
+	firstSeen := make(map[string]bool, len(firstJobIDs))
+	for _, id := range firstJobIDs {
+		firstSeen[id] = true
+	}
+	overlap := 0
+	for _, id := range secondJobIDs {
+		if firstSeen[id] {
+			overlap++
+		}
+	}
+	if overlap != 0 {
+		t.Fatalf("resumed page repeats %d job(s) already shown on the first page, want 0 overlap", overlap)
+	}
+}
+
+// activityEntryJobIDs extracts the shell-job IDs, in order, from a session's
+// rendered entries (skipping any delegate entries, which this test's fixture
+// does not produce past the root).
+func activityEntryJobIDs(entries []appwire.JobActivityEntry) []string {
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Job != nil {
+			ids = append(ids, entry.Job.JobID)
+		}
+	}
+	return ids
 }
 
 // TestHubJobsOutputLiveDaemon is the output path's counterpart to
