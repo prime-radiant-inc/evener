@@ -1,11 +1,27 @@
 package jobstore
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 )
+
+// ScanLimits bounds a context-aware journal scan. A zero value performs an
+// unbounded scan (matching ReadEvents' behavior).
+type ScanLimits struct {
+	MaxBytes  int64 // raw bytes read from the file; 0 means unlimited
+	MaxEvents int   // decoded events retained; 0 means unlimited
+}
+
+// ErrScanLimitExceeded reports that ScanEvents stopped because a journal
+// exceeded a configured raw byte or event ceiling before reaching the end of
+// the file.
+var ErrScanLimitExceeded = errors.New("jobstore: journal exceeds scan limit")
 
 // ReadEvents reads and decodes every event from a jobs.jsonl file WITHOUT
 // opening a Store for append. It is the read-only forensic path: a caller that
@@ -14,37 +30,82 @@ import (
 // error). An unterminated, syntactically incomplete trailing line — an
 // in-flight append racing the read — is tolerated, but durable or definitively
 // malformed input is reported as corruption.
+//
+// ReadEvents performs an unbounded scan; ScanEvents is the context-aware,
+// budget-enforcing counterpart used by callers (like the persisted
+// job-activity loader) that must bound how much of a journal they will
+// decode.
 func ReadEvents(path string) ([]Event, error) {
-	data, err := os.ReadFile(path)
+	return ScanEvents(context.Background(), path, ScanLimits{})
+}
+
+// ScanEvents is ReadEvents' context-aware, budget-enforcing counterpart. It
+// streams the journal line by line instead of reading it whole, so a raw
+// byte or event ceiling in limits is enforced BEFORE the rest of an oversized
+// file is retained or decoded, and it checks ctx between each decoded record
+// so a canceled request stops before finishing a large journal. Line-
+// tolerance behavior — a missing file yielding no events, and an
+// unterminated, syntactically incomplete final line from an in-flight append
+// being tolerated rather than treated as corruption — matches ReadEvents
+// exactly.
+func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("jobstore: read %s: %w", path, err)
 	}
-	trailingLineTerminated := len(data) > 0 && data[len(data)-1] == '\n'
-	lines := bytes.Split(data, []byte{'\n'})
-	// A trailing newline produces a final empty element; drop it so the last
-	// real line is correctly identified for partial-line tolerance.
-	if n := len(lines); n > 0 && len(lines[n-1]) == 0 {
-		lines = lines[:n-1]
-	}
-	events := make([]Event, 0, len(lines))
-	for i, line := range lines {
+	defer func() { _ = f.Close() }()
+
+	reader := bufio.NewReader(f)
+	events := make([]Event, 0)
+	var totalBytes int64
+	lineNum := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		chunk, readErr := reader.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, fmt.Errorf("jobstore: read %s: %w", path, readErr)
+		}
+		terminated := readErr == nil
+		if !terminated && len(chunk) == 0 {
+			break // clean EOF, nothing left to process
+		}
+		lineNum++
+		totalBytes += int64(len(chunk))
+		if limits.MaxBytes > 0 && totalBytes > limits.MaxBytes {
+			return nil, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
+		}
+		line := chunk
+		if terminated {
+			line = chunk[:len(chunk)-1] // drop the trailing '\n'
+		}
 		if len(bytes.TrimSpace(line)) == 0 {
+			if !terminated {
+				break // trailing blank/whitespace-only unterminated tail
+			}
 			continue
+		}
+		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
+			return nil, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
 		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
-			if i == len(lines)-1 && !trailingLineTerminated && isIncompleteTrailingJSON(line, err) {
+			if !terminated && isIncompleteTrailingJSON(line, err) {
 				// Tolerate only an unterminated, syntactically incomplete final
 				// line from an in-flight append. A newline-terminated or
 				// definitively malformed final record is durable corruption.
 				break
 			}
-			return nil, fmt.Errorf("jobstore: parse event line %d in %s: %w", i+1, path, err)
+			return nil, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
 		}
 		events = append(events, e)
+		if !terminated {
+			break // consumed the final unterminated line; EOF follows
+		}
 	}
 	return events, nil
 }
