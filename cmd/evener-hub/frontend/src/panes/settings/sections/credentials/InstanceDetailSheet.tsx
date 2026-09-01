@@ -107,7 +107,7 @@ export function InstanceDetailSheet({
   // instead of the stray key, and on an adc/api_key/env row it never shows
   // at all. This action always targets the store layer only, so it is safe
   // to offer regardless of what is effective.
-  const showClearStoredKey = instance !== undefined && instance.hasStoredFile && instance.activeSource !== "store";
+  const showClearStoredKey = instance?.hasStoredFile && instance.activeSource !== "store";
   // The danger zone is Clear + Clear stored key + Remove under a divider; an
   // implicit instance with nothing stored offers none of them, and a divider
   // over nothing reads as a rendering bug.

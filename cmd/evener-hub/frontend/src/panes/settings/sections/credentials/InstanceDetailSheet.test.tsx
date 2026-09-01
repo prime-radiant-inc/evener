@@ -194,7 +194,13 @@ describe("actions are conditionally rendered", () => {
   // drop the login instead of the stray key).
   test("Clear stored key when a stored key is shadowed behind an active OAuth login", () => {
     renderSheet(
-      instance({ name: "a", providerId: "openai-codex", activeSource: "oauth", hasStoredFile: true, hasStoredOAuth: true }),
+      instance({
+        name: "a",
+        providerId: "openai-codex",
+        activeSource: "oauth",
+        hasStoredFile: true,
+        hasStoredOAuth: true,
+      }),
     );
     expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
   });
@@ -358,7 +364,13 @@ describe("action callbacks fire", () => {
   test("clicking Clear stored key calls its handler", async () => {
     const user = userEvent.setup();
     const { handlers } = renderSheet(
-      instance({ name: "a", providerId: "openai-codex", activeSource: "oauth", hasStoredFile: true, hasStoredOAuth: true }),
+      instance({
+        name: "a",
+        providerId: "openai-codex",
+        activeSource: "oauth",
+        hasStoredFile: true,
+        hasStoredOAuth: true,
+      }),
     );
     await user.click(screen.getByRole("button", { name: "Clear stored key" }));
     expect(handlers.onClearStoredKey).toHaveBeenCalled();
