@@ -235,6 +235,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		}
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
+	r.gateWebSearch(&caps, prov, rec)
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	cred, cw := r.credential(rec)
@@ -260,6 +261,28 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		ShadowedEnvVar: r.shadowedEnvVar(rec, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
+}
+
+// webSearchExplicit reports whether prov attributes Caps.WebSearch to a
+// layer the record's own providers.toml entry contributed (tag "config"),
+// as opposed to a base-chain layer, a row glob, or nothing at all.
+func webSearchExplicit(prov map[string]string) bool {
+	return strings.HasPrefix(prov["WebSearch"], LayerConfig+"/")
+}
+
+// gateWebSearch applies issue #738's endpoint gate: WebSearch is a
+// platform-side capability, not a wire-protocol fact (spec §4.2 says
+// explicitly it is not one of the facts an alias imports), so it does not
+// survive on a record whose resolved base_url diverges from its provider's
+// own default (baseURLDiverged, instances.go) - unless the record's own
+// providers.toml entry set WebSearch itself, in which case an explicit true
+// or false always wins.
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record) {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || !r.baseURLDiverged(rec) {
+		return
+	}
+	caps.WebSearch = nil
+	delete(prov, "WebSearch")
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
@@ -343,6 +366,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
+	r.gateWebSearch(&caps, prov, rec)
 	seedFields(&caps, rowProto)
 
 	transport, tw := r.buildTransport(rec, row, rowProto)
