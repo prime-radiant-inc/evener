@@ -113,6 +113,64 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 	}
 }
 
+func TestContentFilterRecoveryResetsReusedPreviewCallIDGeneration(t *testing.T) {
+	contentFilterErr := llm.ErrorFromHTTPStatus(
+		"openai", 400, "content filter triggered",
+		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
+		nil,
+	)
+	if llm.Kind(contentFilterErr) != llm.KindContentFilter {
+		t.Fatalf("fixture kind=%v want=%v", llm.Kind(contentFilterErr), llm.KindContentFilter)
+	}
+
+	var attempts atomic.Int32
+	client := llm.NewClient()
+	client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+		attempt := attempts.Add(1)
+		call := communicateCall("reused-call", "blocked generation")
+		if attempt == 2 {
+			call = communicateCall("reused-call", "recovered generation")
+		}
+		sendCommunicatePreview(st, call)
+		if attempt == 1 {
+			st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: contentFilterErr})
+			return
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	}})
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-test")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := startPreviewEventRecorder(sess)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter and compaction; only fires on a genuine hang.
+	defer cancel()
+	out, callErr := sess.ProcessInput(ctx, "run", nil)
+	evs := recorder.stop(sess)
+	if callErr != nil {
+		t.Fatalf("ProcessInput: %v", callErr)
+	}
+	if out != "recovered generation" {
+		t.Fatalf("ProcessInput output=%q want=%q", out, "recovered generation")
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("stream attempts=%d want=2", attempts.Load())
+	}
+
+	lifecycle := inspectPreviewLifecycle(evs)
+	if lifecycle.maxActive != 1 || len(lifecycle.startsWhileActive) != 0 || len(lifecycle.active) != 0 {
+		t.Fatalf("preview lifecycle max=%d overlapping=%v active=%v; events=%v", lifecycle.maxActive, lifecycle.startsWhileActive, lifecycle.active, evs)
+	}
+	if !maps.Equal(lifecycle.resets, map[string]int{"reused-call": 2}) {
+		t.Fatalf("preview reset counts=%v; events=%v", lifecycle.resets, evs)
+	}
+}
+
 func TestContinuationRecoveryDiscardsFailedCommunicatePreview(t *testing.T) {
 	var attempts atomic.Int32
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{

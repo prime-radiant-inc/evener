@@ -1348,6 +1348,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if err != nil {
 			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)
 			if retry {
+				s.resetCommunicatePreviews(communicatePreviewCalls)
 				continue
 			}
 			return "", progressed, ferr
