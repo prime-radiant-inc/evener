@@ -397,12 +397,17 @@ func writeProbedProtocol(name, current string, protocols []string, results map[s
 	return nil
 }
 
+// protocolChoices is the one spelling of the protocol vocabulary, shared by
+// the --protocol flag help and the defaulted-protocol hint so the two cannot
+// drift.
+var protocolChoices = strings.Join([]string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle}, "|")
+
 func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("providers add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	base := fs.String("base", "", "registry provider this instance is based on (required)")
 	baseURL := fs.String("base-url", "", "endpoint base URL, including the version segment")
-	protocol := fs.String("protocol", "", "wire protocol: openai-chat|openai-responses|anthropic|google")
+	protocol := fs.String("protocol", "", "wire protocol: "+protocolChoices)
 	surface := fs.String("surface", "", "agent-facing surface: openai|anthropic|google|generic")
 	apiKeyEnv := fs.String("api-key-env", "", "environment variable holding this instance's key")
 	noProbe := fs.Bool("no-probe", false, "write the entry without probing the endpoint")
@@ -479,7 +484,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 	if strings.TrimSpace(*protocol) == "" {
 		_, _ = fmt.Fprintf(stdout, "%s: protocol %s (%s's default; --protocol %s overrides)\n",
 			name, res.Protocol, entry.Base,
-			strings.Join([]string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle}, "|"))
+			protocolChoices)
 	} else {
 		_, _ = fmt.Fprintf(stdout, "%s: protocol %s\n", name, res.Protocol)
 	}
