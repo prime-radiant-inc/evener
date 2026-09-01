@@ -821,28 +821,6 @@ func (rec *record) aliasFromConfig(id string) bool {
 	return false
 }
 
-// rowOwnBaseURL reports whether the user's own config layer - not an
-// inherited curated layer - set a literal base_url for row id, the same
-// origin/provenance discipline ownBaseURL applies at the record level,
-// applied here row by row (mirroring aliasFromConfig's exact-row check for
-// AliasOf). A curated row can carry its own Transport.BaseURL too (Google
-// Vertex MaaS rows, whose API endpoint models.dev's own upstream data
-// supplies per model, modelsdev.go's convertModelOverride), and that is
-// vendor data, not a user redirect - firstPartyEndpoint's canonical-row
-// transport comparison already judges those correctly on their own, so
-// only a user-authored override needs to gate here.
-func (rec *record) rowOwnBaseURL(id string) bool {
-	for _, l := range rec.layers {
-		if l.tag != LayerConfig {
-			continue
-		}
-		if m, ok := l.rows[id]; ok {
-			return m.Transport != nil && m.Transport.BaseURL != ""
-		}
-	}
-	return false
-}
-
 // aliasTarget resolves an alias_of reference: an exact row of the same
 // record first, else "provider-id/id" against the curated registry. A glob
 // pattern never names a target, on either side of the slash.
@@ -920,6 +898,15 @@ func (r *Registry) varLookup(rec *record) func(string) (string, bool) {
 // the transport's host rule (spec §9.1). missing lists unresolved
 // variables; warnings carry host-rule failures.
 func (r *Registry) resolveBaseURLWith(rec *record, t Transport, lookup func(string) (string, bool)) (string, []string, []string) {
+	return r.resolveBaseURLVia(t, lookup, r.env)
+}
+
+// resolveBaseURLVia is resolveBaseURLWith with the environment injectable:
+// the ollama-host rule reads OLLAMA_BASE_URL from the environment directly
+// rather than through the variable lookup, so the canonical first-party
+// resolution (firstPartyEndpoint, instances.go) passes an empty env to keep
+// a live override out of the canonical URL.
+func (r *Registry) resolveBaseURLVia(t Transport, lookup, env func(string) (string, bool)) (string, []string, []string) {
 	var warnings []string
 	switch t.HostRule {
 	case HostRuleOllamaHost:
@@ -928,7 +915,7 @@ func (r *Registry) resolveBaseURLWith(rec *record, t Transport, lookup func(stri
 			if name != "OLLAMA_HOST" {
 				return inner(name)
 			}
-			baseURL, _ := r.env("OLLAMA_BASE_URL")
+			baseURL, _ := env("OLLAMA_BASE_URL")
 			host, _ := inner("OLLAMA_HOST")
 			u, err := resolveOllamaHost(baseURL, host)
 			if err != nil {

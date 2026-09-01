@@ -557,6 +557,85 @@ base = "google-vertex-anthropic"
 	}
 }
 
+// TestResolve_WebSearchCanonicalGate pins the redirection channels the
+// canonical-comparison design must catch: instead of enumerating each
+// config channel that can move a request (an open-ended set), the gate
+// resolves the provider's curated layers alone into a canonical transport
+// and demands the actual resolution's transport equal it componentwise.
+// Each case here is a channel a prior enumeration round missed.
+func TestResolve_WebSearchCanonicalGate(t *testing.T) {
+	cfg := `
+[providers.vertexhostnoloc]
+base = "google-vertex-anthropic"
+[providers.vertexhostnoloc.vars]
+"GOOGLE_VERTEX_HOST" = "https://no-loc-gateway.example"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+
+[providers.vertexrowrule]
+base = "google-vertex-anthropic"
+[providers.vertexrowrule.vars]
+"GOOGLE_VERTEX_HOST" = "https://row-rule-gateway.example"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+[providers.vertexrowrule.models."claude-opus-5"]
+host_rule = "ollama-host"
+
+[providers.vertexglobgw]
+base = "google-vertex-anthropic"
+[providers.vertexglobgw.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+[providers.vertexglobgw.models."claude-*"]
+base_url = "https://glob-gateway.example/v1"
+
+[providers.vertexaliastarget]
+base = "google-vertex"
+[providers.vertexaliastarget.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+[providers.vertexaliastarget.models."my-claude-alias"]
+alias_of = "claude-opus-5"
+[providers.vertexaliastarget.models."claude-opus-5"]
+base_url = "https://alias-target-gateway.example/v1"
+
+[providers.vertexhostquery]
+base = "google-vertex-anthropic"
+[providers.vertexhostquery.vars]
+"GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com?"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexhostfragment]
+base = "google-vertex-anthropic"
+[providers.vertexhostfragment.vars]
+"GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com#"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+`
+	r := fixtureLoad(t, nil, cfg)
+	cases := []struct {
+		ref      string
+		want     string
+		wantWarn bool
+		desc     string
+	}{
+		{"vertexhostnoloc/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST with no GOOGLE_VERTEX_LOCATION has no canonical derivation to check against, so the gate must fail closed, not open"},
+		{"vertexrowrule/claude-opus-5", "false", true, "a model row swapping host_rule redirects the resolved URL; divergence is judged on the final transport, not the provider-level rule"},
+		{"vertexglobgw/claude-opus-5", "false", true, "a user glob row's base_url redirects a vars-only provider even though no exact config row exists"},
+		{"vertexaliastarget/my-claude-alias", "false", true, "a base_url override on the alias TARGET's row rides the alias import; the target's override provenance must gate the alias too"},
+		{"vertexhostquery/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST with a bare trailing ? changes the assembled request URL and must not read as the canonical host"},
+		{"vertexhostfragment/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST with a bare trailing # changes the assembled request URL and must not read as the canonical host"},
+	}
+	for _, c := range cases {
+		res := mustResolve(t, r, c.ref)
+		if got := bp(res.Caps.WebSearch); got != c.want {
+			t.Errorf("%s: web_search = %s, want %s (%s)", c.ref, got, c.want, c.desc)
+		}
+		if got := hasWarning(res, "web_search disabled"); got != c.wantWarn {
+			t.Errorf("%s: web_search-disabled warning present = %v, want %v (%s): %v", c.ref, got, c.wantWarn, c.desc, res.Warnings)
+		}
+	}
+}
+
 // TestResolve_WebSearchInheritedCuratedRowBaseURL guards against treating
 // an inherited curated row's own base_url as a user override: Google
 // Vertex MaaS rows carry a row-level base_url straight from models.dev's
