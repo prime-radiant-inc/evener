@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +225,280 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 	}
 	if len(scannedPaths) != 1 {
 		t.Fatalf("scanned %d job journals after cancellation, want exactly 1 (root only): %v", len(scannedPaths), scannedPaths)
+	}
+}
+
+// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget is
+// #448's own root-cause reproduction: a session's jobs.jsonl carries more
+// valid job_started records than activityMaxWorkUnits, followed by one
+// malformed trailing line. Before this fix, the per-file scan ceiling
+// (100,000 events) was unrelated to activityMaxWorkUnits (2000), so decoding
+// ran past the budget line and only failed on the malformed content past it
+// — proving the projection budget did not bound input scanning. Loading must
+// now stop at the work-unit budget itself and report a truncated (not
+// failed) tree, never reaching the malformed line.
+func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootbudget"
+	started := time.Unix(500, 0).UTC()
+
+	events := make([]jobstore.Event, 0, activityMaxWorkUnits+1)
+	for i := range activityMaxWorkUnits + 1 {
+		jobID := fmt.Sprintf("job_%d", i)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+			OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+	}
+	jobsPath := s1cov_writeJobLog(t, stateDir, rootID, events...)
+	s1cov_corruptJobLog(t, jobsPath) // appends one malformed trailing line
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v, want a truncated tree, not a hard error", err)
+	}
+	if !got.Root.Branch.Truncated {
+		t.Fatalf("Root.Branch.Truncated = false, want true (load stopped at the work-unit budget)")
+	}
+	if len(got.Root.Entries) != activityMaxWorkUnits {
+		t.Fatalf("got %d entries, want exactly activityMaxWorkUnits=%d (decoding must stop there, never reaching the malformed line)", len(got.Root.Entries), activityMaxWorkUnits)
+	}
+}
+
+// TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted covers
+// the aggregate, cross-session half of #448's finding 1: the root session
+// alone consumes the entire tree-wide work-unit budget, so a delegate child
+// must never even be visited (its jobs.jsonl must never be opened) —
+// previously only cycle detection bounded the number of sessions visited
+// during load, so an unbounded tree of small sessions still forced O(sessions)
+// file opens before projection's budget ever applied.
+func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootwidebudget"
+	started := time.Unix(600, 0).UTC()
+
+	events := make([]jobstore.Event, 0, activityMaxWorkUnits)
+	for i := range activityMaxWorkUnits {
+		jobID := fmt.Sprintf("job_%d", i)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+			OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+
+	childID := "childwidebudget"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "should never be opened"))
+	childJobsPath := s1cov_writeJobLog(t, stateDir, childID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+	)
+	before, err := os.Stat(childJobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	var scannedPaths []string
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+		scannedPaths = append(scannedPaths, path)
+		return original(ctx, path, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+	if len(scannedPaths) != 1 {
+		t.Fatalf("scanned %d job journals, want exactly 1 (root only; budget exhausted before the child delegate is ever visited): %v", len(scannedPaths), scannedPaths)
+	}
+	after, err := os.Stat(childJobsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ModTime() != before.ModTime() || after.Size() != before.Size() {
+		t.Fatalf("child job log changed despite never being opened: before=%v/%d after=%v/%d", before.ModTime(), before.Size(), after.ModTime(), after.Size())
+	}
+	if !got.Root.Branch.Truncated {
+		t.Fatalf("Root.Branch.Truncated = false, want true")
+	}
+}
+
+// TestLoadSessionJobActivityTree_BoundsRecursionDepth covers the depth half
+// of #448's finding 1: a chain of sessions longer than activityMaxNewDepth
+// must not be recursed into (and its jobs.jsonl must never be opened) past
+// that depth during LOAD, not only trimmed afterward in projection.
+// Asserting on the wire-visible depth alone would not catch a load-phase
+// regression here: projection ALREADY correctly trims a too-deep tree to
+// activityMaxNewDepth on its own (pre-existing, unrelated to this fix), so a
+// tree loaded fully unbounded would still render with the same, already-
+// truncated depth. The scan-call count is what actually distinguishes
+// "loaded everything, trimmed at render time" from "never opened the files
+// past the depth bound."
+func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
+	stateDir := t.TempDir()
+	started := time.Unix(700, 0).UTC()
+
+	const chainLen = activityMaxNewDepth + 5
+	sessionIDs := make([]string, chainLen)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("depthchain%d", i)
+	}
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		s1cov_writeJobLog(t, stateDir, id,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started},
+		)
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+
+	var scannedPaths []string
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+		scannedPaths = append(scannedPaths, path)
+		return original(ctx, path, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+	// Nodes at depth 0..activityMaxNewDepth (inclusive: activityMaxNewDepth+1
+	// nodes total) load fully; the node AT activityMaxNewDepth is the one
+	// whose own delegates don't get descended into, matching projection's
+	// existing depth semantics (kept identical on purpose, see below).
+	wantScanned := activityMaxNewDepth + 1
+	if len(scannedPaths) != wantScanned {
+		t.Fatalf("scanned %d job journals, want exactly %d (chain nodes past the depth bound must never be opened): %v", len(scannedPaths), wantScanned, scannedPaths)
+	}
+	depth := 0
+	session := got.Root
+	for {
+		var next *appwire.JobActivitySession
+		for _, entry := range session.Entries {
+			if entry.Delegate != nil && entry.Delegate.Child != nil {
+				next = entry.Delegate.Child
+			}
+		}
+		if next == nil {
+			break
+		}
+		session = *next
+		depth++
+	}
+	if depth > activityMaxNewDepth {
+		t.Fatalf("loaded chain %d levels deep, want at most activityMaxNewDepth=%d", depth, activityMaxNewDepth)
+	}
+}
+
+// TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant covers
+// #448's regression finding: a canceled request must surface as a real
+// error even when the cancellation lands while loading a DESCENDANT (not the
+// root) — the previous fix's own cancellation test only ever canceled the
+// root's own scan, so it never exercised the buildActivityFullSnapshot loop
+// that was catching a descendant's context.Canceled into snapshot.Errors and
+// returning a silently-partial tree with err == nil.
+func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootdesccancel"
+	child1ID := "child1desccancel"
+	child2ID := "child2desccancel"
+	started := time.Unix(800, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID,
+		pastStableDescriptor(rootID, child1ID, "child1 task"),
+		pastStableDescriptor(child1ID, child2ID, "child2 task"),
+	)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child1ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child1", Type: jobstore.JobShell, OwnerSessionID: child1ID, VisibleToSession: child1ID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child2ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child2", Type: jobstore.JobShell, OwnerSessionID: child2ID, VisibleToSession: child2ID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, child1ID, "Child1", rootID, 0)
+	savePastActivityMetaWithTreeRevision(t, stateDir, child2ID, "Child2", rootID, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+		calls++
+		if calls == 2 {
+			// Cancel while loading child1's OWN journal — a descendant, not
+			// the root — the exact case the swallow-into-Errors bug missed.
+			cancel()
+		}
+		return original(ctx, path, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	if _, err := LoadSessionJobActivityTree(ctx, stateDir, rootID, appwire.JobsListParams{}); err == nil {
+		t.Fatal("expected a non-nil error when a descendant's load is canceled, got nil (silently-partial success)")
+	}
+	if calls != 2 {
+		t.Fatalf("scanJobJournal called %d times, want exactly 2 (root, then child1; child2 must never be reached once cancellation propagates)", calls)
+	}
+}
+
+// TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit
+// covers the ceilings decision for #448: delegatestore.Descriptor embeds the
+// FULL FrozenRolePrompt/FrozenSkillBodies text on every delegate_created
+// event, so a legitimately heavy-delegating root can plausibly approach the
+// scan ceiling over time with no adversarial input at all. Hitting it must
+// degrade the response (a diagnostic, tree still returned) rather than hard-
+// failing the WHOLE activity tree for that root.
+func TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootdlgpartial"
+	started := time.Unix(900, 0).UTC()
+
+	restoreLimits := historicalDelegateScanLimits
+	historicalDelegateScanLimits = delegatestore.ScanLimits{MaxEvents: 5}
+	defer func() { historicalDelegateScanLimits = restoreLimits }()
+
+	descriptors := make([]delegatestore.Descriptor, 0, 10)
+	for i := range 10 {
+		descriptors = append(descriptors, pastStableDescriptor(rootID, fmt.Sprintf("childdlgpartial%d", i), "task"))
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v, want a degraded tree, not a hard error", err)
+	}
+	// Root's own shell job still renders: the delegate-journal ceiling must
+	// not sink data this session owns directly.
+	if len(got.Root.Entries) == 0 {
+		t.Fatalf("Root.Entries is empty, want the root's own shell job to still render")
+	}
+	found := false
+	for _, d := range got.Root.Diagnostics {
+		if strings.Contains(d, "delegate_journal") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Diagnostics = %v, want a delegate-journal-scan-limit diagnostic", got.Root.Diagnostics)
 	}
 }
 
