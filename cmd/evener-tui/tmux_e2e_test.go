@@ -1021,6 +1021,19 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("Hub session start failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
 
+// tuiE2EStreamBurst is how many agent deltas each round of the stream test
+// hands the hub before it starts capturing. The whole burst is queued up
+// front, so the TUI is still working through the backlog for the poll loop
+// that follows — the pane changes under all but the last of those captures,
+// which is the condition under test.
+//
+// It is sized from both ends: well under appwire.NotificationBufferCap (4096)
+// so the hub never evicts the TUI as a slow consumer mid-test, and small
+// enough that the backlog drains in a fraction of tuiE2EWaitTimeout even on a
+// starved runner — 100 deltas settle in under a second here, against a 60s
+// deadline.
+const tuiE2EStreamBurst = 100
+
 // TestTUITmuxE2E_CaptureStableDuringStream exercises CaptureStable under the
 // exact condition kata nxq6 reported the pane going blank above the composer:
 // a rapid burst of hub notifications re-rendering the pane in a tight loop,
@@ -1036,6 +1049,19 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 // to require completeness evidence (all anchors present, including the
 // last-written footer) before accepting stability, which is what
 // CaptureStable's anchor arguments do.
+//
+// The burst has to stay inside what the hub will actually carry. An
+// unthrottled broadcast goroutine — the shape this test used to have — pushes
+// deltas at ~120k/s, far past anything the TUI can drain, so Server.Broadcast
+// fills the connection's outbound buffer (appwire.NotificationBufferCap
+// frames) and evicts the TUI as a slow consumer within ~260ms. Everything
+// after that point is reconnect churn, not a render storm: the dropped client
+// logs its keepalive teardown straight into the pane (these E2E runs pass
+// -debug, which disables the alternate screen), scrolling the grid, and with
+// no hub left to notify it the TUI has no reason to repaint over the damage —
+// so the pane stays torn, without breadcrumb or composer, for CaptureStable's
+// whole deadline. Bounded bursts keep the subscription alive, so the storm
+// this test means to create is the one it actually gets.
 func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -1050,24 +1076,10 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	openLiveSession(t, app)
 	app.WaitFor("evener / session / live task", "initial answer", "enter send")
 
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+	for range 5 {
+		for range tuiE2EStreamBurst {
 			hub.BroadcastAgentDelta("01LIVE", "streamed word ")
 		}
-	})
-	t.Cleanup(func() {
-		close(stop)
-		wg.Wait()
-	})
-
-	for range 5 {
 		app.CaptureStable("evener / session / live task", "enter send")
 	}
 }
