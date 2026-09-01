@@ -123,7 +123,20 @@ func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 	}
 	f, err := apiLogOpenFile(filepath.Join(l.sessionsDir, base+".api.jsonl"))
 	if err != nil {
-		l.sessionFiles[base] = nil
+		if !errors.Is(err, ErrAPILogTargetLocked) {
+			// Cache the failure so repeated appends to the same base don't
+			// keep retrying a failure that won't clear itself on its own,
+			// e.g. a permissions error or a corrupt target (see
+			// TestSessionFileWithErrorNilCache). A locked target is
+			// different: the contender holding the flock can release it at
+			// any moment (issue #744 — a hub-spawned daemon or another
+			// evener process against the same project state dir), so don't
+			// latch that failure. Leave the cache miss in place and let the
+			// next append retry the open — deliberately, since a retry
+			// costs one flock syscall and this is best-effort forensic
+			// logging, not a hot path.
+			l.sessionFiles[base] = nil
+		}
 		return nil, err
 	}
 	l.sessionFiles[base] = f

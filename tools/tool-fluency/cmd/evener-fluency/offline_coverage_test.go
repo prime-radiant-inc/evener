@@ -169,9 +169,6 @@ func TestAvailabilityProfilesAndInfraClassification(t *testing.T) {
 	if _, err := runnerApplyFastCheapModel(p, "other/cheap", llm.NewClient()); err == nil {
 		t.Fatal("missing cheap provider returned nil")
 	}
-	if runnerClientHasProvider(nil, "x") {
-		t.Fatal("nil client has provider")
-	}
 }
 
 func TestRootSessionAndResultPersistence(t *testing.T) {

@@ -193,36 +193,42 @@ func TestServeWebSocketTraceSeparatesConnections(t *testing.T) {
 	if err := second.Close(websocket.StatusNormalClosure, ""); err != nil {
 		t.Fatalf("close second: %v", err)
 	}
+	// ServeWebSocket writes its close record from a defer that only runs once
+	// the handler goroutine finishes teardown. That goroutine's completion is
+	// independent of the client-side Close calls above: websocket.Accept
+	// hijacks the connection immediately, so httptest.Server's own shutdown
+	// bookkeeping stops tracking it long before the handler actually returns,
+	// and httpServer.Close below won't wait for it either. Wait for every
+	// connection's close record to land before stopping the trace, or
+	// trace.Close can race the still-running handler and silently drop it
+	// (WebSocketTrace.record discards writes once closed).
+	var records []decodedWebSocketTraceRecord
+	waitUntil(t, "both connections' open, outbound frame, and close records to land in the trace", func() bool {
+		records = readWebSocketTraceRecords(t, path)
+		byConnection, _ := groupWebSocketTraceRecordsByConnection(records)
+		if len(byConnection) != 2 {
+			return false
+		}
+		for _, conn := range byConnection {
+			if !conn.sawOpen || !conn.sawClose || !conn.sawOutbound {
+				return false
+			}
+		}
+		return true
+	})
 	httpServer.Close()
 	if err := trace.Close(); err != nil {
 		t.Fatalf("close trace: %v", err)
 	}
 
-	records := readWebSocketTraceRecords(t, path)
-	byConnection := make(map[string][]decodedWebSocketTraceRecord)
-	for _, record := range records {
-		byConnection[record.Connection] = append(byConnection[record.Connection], record)
-	}
+	records = readWebSocketTraceRecords(t, path)
+	byConnection, seenRequests := groupWebSocketTraceRecordsByConnection(records)
 	if len(byConnection) != 2 {
 		t.Fatalf("traced connections = %d, want 2: %+v", len(byConnection), records)
 	}
-	seenRequests := make(map[string]bool)
-	for connection, connectionRecords := range byConnection {
-		var sawOpen, sawClose, sawOutbound bool
-		for _, record := range connectionRecords {
-			switch {
-			case record.Event == "open":
-				sawOpen = true
-			case record.Event == "close":
-				sawClose = true
-			case record.Event == "frame" && record.Direction == "hub_to_browser":
-				sawOutbound = true
-			case record.Event == "frame" && record.Direction == "browser_to_hub" && record.Frame != nil:
-				seenRequests[*record.Frame] = true
-			}
-		}
-		if !sawOpen || !sawClose || !sawOutbound {
-			t.Errorf("connection %q records = %+v, want open, outbound frame, and close", connection, connectionRecords)
+	for connection, conn := range byConnection {
+		if !conn.sawOpen || !conn.sawClose || !conn.sawOutbound {
+			t.Errorf("connection %q records = %+v, want open, outbound frame, and close", connection, conn.records)
 		}
 	}
 	for _, request := range requests {
@@ -230,6 +236,40 @@ func TestServeWebSocketTraceSeparatesConnections(t *testing.T) {
 			t.Errorf("missing exact inbound request %q in trace", request)
 		}
 	}
+}
+
+// webSocketTraceConnection is one connection's trace records plus whether
+// its lifecycle events (open, an outbound frame, close) were all seen.
+type webSocketTraceConnection struct {
+	records                        []decodedWebSocketTraceRecord
+	sawOpen, sawClose, sawOutbound bool
+}
+
+// groupWebSocketTraceRecordsByConnection groups trace records by connection
+// and classifies each connection's lifecycle coverage, alongside the exact
+// inbound request payloads seen across all connections.
+func groupWebSocketTraceRecordsByConnection(records []decodedWebSocketTraceRecord) (byConnection map[string]*webSocketTraceConnection, seenRequests map[string]bool) {
+	byConnection = make(map[string]*webSocketTraceConnection)
+	seenRequests = make(map[string]bool)
+	for _, record := range records {
+		conn := byConnection[record.Connection]
+		if conn == nil {
+			conn = &webSocketTraceConnection{}
+			byConnection[record.Connection] = conn
+		}
+		conn.records = append(conn.records, record)
+		switch {
+		case record.Event == "open":
+			conn.sawOpen = true
+		case record.Event == "close":
+			conn.sawClose = true
+		case record.Event == "frame" && record.Direction == "hub_to_browser":
+			conn.sawOutbound = true
+		case record.Event == "frame" && record.Direction == "browser_to_hub" && record.Frame != nil:
+			seenRequests[*record.Frame] = true
+		}
+	}
+	return byConnection, seenRequests
 }
 
 func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {

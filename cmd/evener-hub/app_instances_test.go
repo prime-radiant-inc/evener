@@ -217,14 +217,22 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 		wire   bool
 	}{
 		{
+			wire:   true,
 			name:   "invalid instance name",
 			params: appwire.InstanceCreateParams{Name: "Work/Two", Base: "openai"},
 			want:   "invalid instance name",
 		},
 		{
+			wire:   true,
 			name:   "unknown base provider",
 			params: appwire.InstanceCreateParams{Name: "work", Base: "not-a-provider"},
 			want:   "unknown base provider",
+		},
+		{
+			wire:   true,
+			name:   "invalid variable name",
+			params: appwire.InstanceCreateParams{Name: "work", Base: "openai", Vars: map[string]string{"region": "value"}},
+			want:   "invalid variable name",
 		},
 		{
 			wire:   true,
@@ -297,6 +305,12 @@ func TestInstances_CreateRejectsDuplicateName(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("second Create = %v, want an already-exists error", err)
 	}
+	// The name collides with an existing entry, matching the Conflict class
+	// hubDirsCreate and the pin-section store use for the same "taken" shape.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("second Create = %v, want a Conflict wire error", err)
+	}
 }
 
 // TestInstances_EditImplicitWritesShadowingEntry is spec §11.3: editing an
@@ -334,6 +348,121 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 	}
 	if after.ActiveSource != "env:GROQ_API_KEY" {
 		t.Fatalf("ActiveSource = %q; the shadowing entry must not break credential inheritance", after.ActiveSource)
+	}
+}
+
+// TestInstances_EditWithoutClearLeavesAnAuthoredBaseURLAlone: neither an
+// omitted BaseURL nor ClearBaseURL=false must disturb an already-authored
+// override — only an explicit new value or an explicit clear touches it
+// (#711).
+func TestInstances_EditWithoutClearLeavesAnAuthoredBaseURLAlone(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
+		t.Fatalf("Edit(set): %v", err)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
+		t.Fatalf("Edit(protocol only): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "groq")
+	if p.Transport.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("authored base_url = %q, want the earlier override left alone", p.Transport.BaseURL)
+	}
+	if p.Protocol != "openai-responses" {
+		t.Fatalf("authored protocol = %q", p.Protocol)
+	}
+}
+
+// TestInstances_EditClearsAuthoredBaseURLBackToDefault is #711: an authored
+// base_url stops spec §10's credential inheritance from the base provider,
+// so an instance that could never clear it back to the registry default was
+// also stuck without the base's api_key_env. ClearBaseURL clears the
+// override and restores both the default endpoint and the inherited
+// credential, additively — BaseURL itself keeps meaning "leave unchanged"
+// when empty (v3).
+func TestInstances_EditClearsAuthoredBaseURLBackToDefault(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	before := entry(t, f.ctl.List(), "groq")
+	if before.ActiveSource != "env:GROQ_API_KEY" {
+		t.Fatalf("groq should inherit its credential before any override: activeSource = %q", before.ActiveSource)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
+		t.Fatalf("Edit(set): %v", err)
+	}
+	stopped := entry(t, f.ctl.List(), "groq")
+	if stopped.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("authored base URL = %q", stopped.BaseURL)
+	}
+	if stopped.ActiveSource == "env:GROQ_API_KEY" {
+		t.Fatalf("a literal base_url should stop credential inheritance (spec §10), but activeSource is still %q", stopped.ActiveSource)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", ClearBaseURL: true}); err != nil {
+		t.Fatalf("Edit(clear): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "groq")
+	if p.Transport.BaseURL != "" {
+		t.Fatalf("authored base_url = %q after clearing, want empty", p.Transport.BaseURL)
+	}
+	after := entry(t, f.ctl.List(), "groq")
+	if after.BaseURL != before.BaseURL {
+		t.Fatalf("after clearing, base URL = %q, want the registry default %q", after.BaseURL, before.BaseURL)
+	}
+	if after.ActiveSource != "env:GROQ_API_KEY" {
+		t.Fatalf("clearing the base_url override should resume credential inheritance (spec §10); activeSource = %q", after.ActiveSource)
+	}
+}
+
+// TestInstances_EditRejectsAClearThatWouldOrphanAStandaloneInstance is #711:
+// an instance with no base and no base_url of its own cannot resolve an
+// endpoint at all (llm/registry: "no base URL: set base_url = … or base =
+// <registry id>"), and one bad instance record fails the whole registry
+// reload, not just this one. writeLoadable's dry parse only checks TOML
+// syntax against the schema, so clearing the only base_url a standalone
+// instance has would otherwise write a config that parses fine but cannot
+// load, falling back the whole pane to an implicit-only registry and
+// refusing every instance operation until a human fixes the file outside
+// the hub. Edit must refuse the clear and leave the file exactly as it was.
+func TestInstances_EditRejectsAClearThatWouldOrphanAStandaloneInstance(t *testing.T) {
+	dir := t.TempDir()
+	// No `base` line: "standalone" names no registry id of its own either,
+	// so its base_url is the only thing that lets it resolve at all.
+	tomlPath := writeProvidersToml(t, dir, `[providers.standalone]
+protocol = "openai-chat"
+base_url = "http://127.0.0.1:9/v1"
+`)
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir())
+	before := entry(t, ctl.List(), "standalone")
+	if before.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("fixture did not load as expected: baseURL = %q", before.BaseURL)
+	}
+
+	err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", ClearBaseURL: true})
+	if err == nil {
+		t.Fatal("Edit accepted a clear that would leave standalone unable to resolve an endpoint")
+	}
+	if !strings.Contains(err.Error(), "standalone") {
+		t.Fatalf("Edit = %v, want the refusal to name the instance", err)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
+	}
+
+	// The file must be exactly as it was: not left mid-write, not carrying
+	// the rejected clear.
+	p := authoredEntry(t, tomlPath, "standalone")
+	if p.Transport.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("authored base_url = %q after a rejected clear, want the original untouched", p.Transport.BaseURL)
+	}
+
+	// The pane must not be locked out: WritesRefused must still be false,
+	// and a subsequent valid edit must still go through.
+	if ctl.reg.WritesRefused() {
+		t.Fatal("a rejected clear left the registry refusing writes; the pane is now locked out")
+	}
+	if err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", Protocol: "openai-responses"}); err != nil {
+		t.Fatalf("the pane refused a valid edit after rejecting an orphaning clear: %v", err)
 	}
 }
 

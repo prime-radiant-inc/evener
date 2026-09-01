@@ -58,7 +58,6 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"cheap rejected", TestApplyFastCheapModel_CrossProviderRejectedWhenNotRegistered},
 			{"cheap bare", TestApplyFastCheapModel_BareModelKeepsActiveProvider},
 			{"cheap blank", TestApplyFastCheapModel_BlankUsesPrimaryModel},
-			{"client providers", TestClientHasProvider},
 			{"noninteractive", TestRunServeNonInteractiveFlagControlsPromptAddendum},
 			{"shutdown waits", TestRunServeShutdownWaitsForInFlightInput},
 			{"goal", TestServeGoal_TUIPathEndToEnd},

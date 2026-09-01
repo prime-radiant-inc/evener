@@ -578,6 +578,9 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
+	if strings.Contains(got, "clearBaseUrl") {
+		t.Fatalf("marshal=%s carries clearBaseUrl, want it omitted when false", got)
+	}
 	bare, err := json.Marshal(InstanceEditParams{Name: "work"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -591,6 +594,57 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestInstanceEditParamsClearBaseURLIsAdditive is #711: ClearBaseURL clears
+// an authored base_url without changing what an empty BaseURL has always
+// meant on this wire ("leave unchanged", v3, unchanged by this field's
+// addition), so old and new v3 peers can never silently disagree about a
+// clear request either sends.
+func TestInstanceEditParamsClearBaseURLIsAdditive(t *testing.T) {
+	cleared, err := json.Marshal(InstanceEditParams{Name: "work", ClearBaseURL: true})
+	if err != nil {
+		t.Fatalf("marshal(cleared): %v", err)
+	}
+	if string(cleared) != `{"name":"work","clearBaseUrl":true}` {
+		t.Fatalf("a clear marshals to %s, want a bare clearBaseUrl flag and no baseUrl key", cleared)
+	}
+
+	// A pre-#711 decoder has no ClearBaseURL field. Decoding a new client's
+	// clear request into that old shape must still succeed (Go's
+	// encoding/json ignores unknown keys) and see an ordinary
+	// nothing-to-apply edit — an honest no-op, never a silent wrong clear.
+	type oldShape struct {
+		Name     string `json:"name"`
+		BaseURL  string `json:"baseUrl,omitempty"`
+		Protocol string `json:"protocol,omitempty"`
+	}
+	var old oldShape
+	if err := json.Unmarshal(cleared, &old); err != nil {
+		t.Fatalf("an old decoder rejected a new clear request: %v", err)
+	}
+	if old.BaseURL != "" {
+		t.Fatalf("an old decoder read baseUrl = %q from a clear request, want nothing set", old.BaseURL)
+	}
+
+	var out InstanceEditParams
+	if err := json.Unmarshal(cleared, &out); err != nil {
+		t.Fatalf("unmarshal(cleared): %v", err)
+	}
+	if !out.ClearBaseURL || out.BaseURL != "" {
+		t.Fatalf("roundtrip = %+v, want ClearBaseURL true and BaseURL empty", out)
+	}
+
+	// A new decoder reading a pre-#711 client's ordinary "leave unchanged"
+	// request (no clearBaseUrl key at all) must not spuriously clear
+	// anything.
+	var fromOldClient InstanceEditParams
+	if err := json.Unmarshal([]byte(`{"name":"work"}`), &fromOldClient); err != nil {
+		t.Fatalf("unmarshal(old client): %v", err)
+	}
+	if fromOldClient.ClearBaseURL {
+		t.Fatal("a request with no clearBaseUrl key decoded to ClearBaseURL = true")
 	}
 }
 

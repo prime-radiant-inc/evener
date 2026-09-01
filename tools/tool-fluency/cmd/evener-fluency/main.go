@@ -664,24 +664,12 @@ func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *ll
 	}
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !runnerClientHasProvider(client, cheapProvider) {
+		if !client.HasProvider(cheapProvider) {
 			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
 	}
 	return provider.WithCheapModel(profile, raw), nil
-}
-
-func runnerClientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
 }
 
 func unavailableFinding(probe probeFile, available map[string]bool) *finding {
