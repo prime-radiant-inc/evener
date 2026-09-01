@@ -230,6 +230,65 @@ base_url = "https://proxy/v1"
 	}
 }
 
+// TestInstances_ShadowedEnvVar covers the shadow relation TestCredential_Order
+// does not: an environment variable that is SET but loses to a
+// higher-precedence source (api_key, credential_headers, or store, spec
+// §10), which today's ActiveSource cannot express because it only ever names
+// the winner (issue #712). Instance.ShadowedEnvVar names that variable, or
+// is empty when nothing shadows it — including when an env source is itself
+// what wins, or when no candidate is set at all.
+func TestInstances_ShadowedEnvVar(t *testing.T) {
+	cfg := `
+[providers.lit]
+base = "openai"
+api_key = "literal-key"
+[providers.hdr]
+base = "openai"
+base_url = "https://gw/v1"
+api_key_env = ["HDR_KEY"]
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.stored]
+base = "openai"
+base_url = "https://gw/v1"
+api_key_env = ["STORED_KEY"]
+[providers.envwins]
+base = "openai"
+base_url = "https://gw/v1"
+api_key_env = ["ENV_KEY"]
+[providers.nothing]
+base = "openai"
+base_url = "https://gw/v1"
+api_key_env = ["UNSET_KEY"]
+`
+	env := map[string]string{
+		"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk",
+		"HDR_KEY": "hdr-val", "STORED_KEY": "stored-shadow-val", "ENV_KEY": "env-val",
+	}
+	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
+	want := map[string]struct {
+		source string
+		shadow string
+	}{
+		"lit":     {"api_key", "OPENAI_API_KEY"}, // no base_url: inherits openai's APIKeyEnv, which is set but loses to the literal key
+		"hdr":     {"credential_headers", "HDR_KEY"},
+		"stored":  {"store", "STORED_KEY"},
+		"envwins": {"env:ENV_KEY", ""}, // the env source is itself the winner, not a shadow
+		"nothing": {"none", ""},        // UNSET_KEY is unset: no candidate to shadow with
+	}
+	for name, w := range want {
+		inst, ok := r.Instance(name)
+		if !ok {
+			t.Fatalf("%s: not an instance", name)
+		}
+		if inst.CredentialSource != w.source {
+			t.Fatalf("%s: credential source = %q, want %q", name, inst.CredentialSource, w.source)
+		}
+		if inst.ShadowedEnvVar != w.shadow {
+			t.Errorf("%s: ShadowedEnvVar = %q, want %q", name, inst.ShadowedEnvVar, w.shadow)
+		}
+	}
+}
+
 func TestCredential_ValueNeverSerializes(t *testing.T) {
 	raw, err := json.Marshal(Credential{Value: "x", Source: "store"})
 	if err != nil || strings.Contains(string(raw), "x") {

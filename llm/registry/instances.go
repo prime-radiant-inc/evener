@@ -33,7 +33,12 @@ type Instance struct {
 	Hidden           bool              `json:"hidden,omitempty"`
 	Default          bool              `json:"default,omitempty"`
 	CredentialSource string            `json:"credential_source"`
-	Warnings         []string          `json:"warnings,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// a higher-precedence credential (api_key, credential_headers, or
+	// store, spec §10); empty when no such variable is set, including when
+	// an env source is itself what resolves.
+	ShadowedEnvVar string   `json:"shadowed_env_var,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // envVarName is the spec §6.2 rule: the id uppercased with `-` → `_`.
@@ -95,6 +100,39 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	return rec.ownAPIKeyEnv
 }
 
+// envCandidates lists, in the order credential resolution tries them, every
+// environment variable name that could supply rec's key: its effective
+// api_key_env, then (only for a name that is not itself a registry id, spec
+// §10) the name derived from the instance name. It never reads the
+// environment; it only says which variables would matter if they were set,
+// so both credential (which stops at the first hit) and shadowedEnvVar
+// (which wants to know about one even when something else already won) can
+// share the one list.
+func (r *Registry) envCandidates(rec *record) []string {
+	var out []string
+	out = append(out, r.effectiveAPIKeyEnv(rec)...)
+	if _, isRegistryID := r.curated[rec.name]; !isRegistryID {
+		out = append(out, InstanceKeyEnvVar(rec.name))
+	}
+	return out
+}
+
+// shadowedEnvVar names an environment variable that is set but loses to
+// cred, the credential that actually resolved (spec §10: api_key >
+// credential_headers > store > env). Empty when nothing shadows it: no
+// candidate is set, or an env source is itself what won.
+func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
+	if strings.HasPrefix(cred.Source, "env:") {
+		return ""
+	}
+	for _, name := range r.envCandidates(rec) {
+		if v, ok := r.env(name); ok && v != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // credential resolves an instance's credential in spec §10's order and
 // returns the "no credential" warnings (none for the none/optional-bearer
 // schemes). It never performs I/O beyond a file-existence check.
@@ -138,13 +176,7 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 			return Credential{Value: v, Source: "store"}, nil
 		}
 	}
-	for _, name := range r.effectiveAPIKeyEnv(rec) {
-		if v, ok := r.env(name); ok && v != "" {
-			return Credential{Value: v, Source: "env:" + name}, nil
-		}
-	}
-	if _, isRegistryID := r.curated[rec.name]; !isRegistryID {
-		name := InstanceKeyEnvVar(rec.name)
+	for _, name := range r.envCandidates(rec) {
 		if v, ok := r.env(name); ok && v != "" {
 			return Credential{Value: v, Source: "env:" + name}, nil
 		}
@@ -288,6 +320,7 @@ func (r *Registry) Instances() []Instance {
 			Auth: h.Transport.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,
+			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, cred),
 		})
 	}
 	return out

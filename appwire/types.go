@@ -1944,14 +1944,19 @@ type AuthStatusResponse struct {
 	// HasStoredFile is true when a key exists in credentials.toml.
 	HasStoredFile bool `json:"hasStoredFile,omitempty"`
 	// EnvVar is the name of the env var that supplies a key, when present.
-	EnvVar       string `json:"envVar,omitempty"`
-	Email        string `json:"email,omitempty"`
-	StoredEmail  string `json:"storedEmail,omitempty"`
-	AccountID    string `json:"accountId,omitempty"`
-	WorkspaceID  string `json:"workspaceId,omitempty"`
-	NeedsRefresh bool   `json:"needsRefresh,omitempty"`
-	NeedsLogin   bool   `json:"needsLogin,omitempty"`
-	Error        string `json:"error,omitempty"`
+	EnvVar string `json:"envVar,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// a higher-precedence credential (api_key, credential_headers, or
+	// store, spec §10); empty when no such variable is set, including when
+	// an env source is itself what resolves.
+	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
+	Email          string `json:"email,omitempty"`
+	StoredEmail    string `json:"storedEmail,omitempty"`
+	AccountID      string `json:"accountId,omitempty"`
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
+	NeedsLogin     bool   `json:"needsLogin,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -2548,7 +2553,12 @@ type InstanceEntry struct {
 	HasStoredFile  bool     `json:"hasStoredFile,omitempty"`
 	HasStoredOAuth bool     `json:"hasStoredOAuth"`
 	EnvVar         string   `json:"envVar,omitempty"`
-	StoredEmail    string   `json:"storedEmail,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// a higher-precedence credential (api_key, credential_headers, or
+	// store, spec §10); empty when no such variable is set, including when
+	// an env source is itself what resolves.
+	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
+	StoredEmail    string `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the

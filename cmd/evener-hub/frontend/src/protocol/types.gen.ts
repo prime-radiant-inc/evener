@@ -121,6 +121,7 @@ export interface AuthStatusResponse {
   hasStoredOAuth: boolean;
   hasStoredFile?: boolean;
   envVar?: string;
+  shadowedEnvVar?: string;
   email?: string;
   storedEmail?: string;
   accountId?: string;
@@ -535,6 +536,7 @@ export interface InstanceEntry {
   hasStoredFile?: boolean;
   hasStoredOAuth: boolean;
   envVar?: string;
+  shadowedEnvVar?: string;
   storedEmail?: string;
   credentialRequired: boolean;
   warnings?: string[];

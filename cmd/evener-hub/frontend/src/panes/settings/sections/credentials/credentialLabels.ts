@@ -47,16 +47,16 @@ export function activeSourceLabel(instance: InstanceEntry): string {
 
 // credentialLayers lists the credential line(s) the detail sheet shows: the
 // effective source first, then any credential this instance holds that the
-// resolution passed over. Spec §10 ranks four of them - api_key >
-// credential_headers > store > env - but the wire only lets the pane see one
-// of those losers: hasStoredFile is read straight from the credential store
+// resolution passed over (spec §10: api_key > credential_headers > store >
+// env). hasStoredFile is read straight from the credential store
 // (instanceStatus, cmd/evener-hub/app_auth.go), independently of what won,
-// while envVar is DERIVED from an "env:" activeSource and so is only ever
-// set on the winner. A set-but-losing environment variable is therefore
-// invisible here until the hub reports it separately. Saying the stored key
-// lost matters most anyway: it is the one the sheet offers to replace.
-// Empty when nothing has ever resolved (activeSource "none"); see
-// activeSourceLabel for that case's own message.
+// so a stored key behind providers.toml or a credential header renders as
+// shadowed. shadowedEnvVar answers the same question for the environment
+// layer: activeSource only ever names the winner, so a set-but-losing
+// variable has no other way onto the wire - the hub reports it separately
+// (issue #712). The two can coexist (an api_key can shadow both a stored
+// key and a set variable at once). Empty when nothing has ever resolved
+// (activeSource "none"); see activeSourceLabel for that case's own message.
 export function credentialLayers(instance: InstanceEntry): CredentialLayerView[] {
   if (instance.activeSource === "none") return [];
   const layers: CredentialLayerView[] = [
@@ -64,6 +64,13 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
   ];
   if (instance.hasStoredFile && instance.activeSource !== "store") {
     layers.push({ source: "store", label: STORED_KEY_LABEL, effective: false });
+  }
+  if (instance.shadowedEnvVar) {
+    layers.push({
+      source: `env:${instance.shadowedEnvVar}`,
+      label: `Configured via environment variable (${instance.shadowedEnvVar})`,
+      effective: false,
+    });
   }
   return layers;
 }

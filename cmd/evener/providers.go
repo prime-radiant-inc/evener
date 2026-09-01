@@ -107,9 +107,16 @@ func runProvidersList(args []string, stdout, stderr io.Writer) error {
 		if base == "" {
 			base = inst.ProviderID
 		}
-		notes := inst.Warnings
+		notes := append([]string(nil), inst.Warnings...)
+		if inst.ShadowedEnvVar != "" {
+			// The variable is set but a higher-precedence source won (spec
+			// §10); naming it is the only way the user learns their export
+			// is doing nothing (issue #712). The source it lost to is named,
+			// never the value either side holds.
+			notes = append(notes, fmt.Sprintf("%s set but shadowed by %s", inst.ShadowedEnvVar, inst.CredentialSource))
+		}
 		if inst.Default {
-			notes = append(append([]string(nil), notes...), "default")
+			notes = append(notes, "default")
 		}
 		// The credential SOURCE is what a listing may show; the value it names
 		// never crosses this boundary (spec §11.2) — and neither does the

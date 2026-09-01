@@ -626,11 +626,12 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthS
 		// A credential resolved from anywhere is a sign-in; "none" is the one
 		// state that is not one, and for an auth-none instance it is also not
 		// anything missing.
-		SignedIn:      inst.CredentialSource != "none",
-		ActiveSource:  inst.CredentialSource,
-		AuthModes:     authModesFor(inst.Auth),
-		HasStoredFile: hasFile,
-		EnvVar:        envVar,
+		SignedIn:       inst.CredentialSource != "none",
+		ActiveSource:   inst.CredentialSource,
+		AuthModes:      authModesFor(inst.Auth),
+		HasStoredFile:  hasFile,
+		EnvVar:         envVar,
+		ShadowedEnvVar: inst.ShadowedEnvVar,
 	}
 }
 
