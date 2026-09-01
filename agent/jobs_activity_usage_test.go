@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -39,7 +40,7 @@ func TestLoadHistoricalActivityBaseReadsUsage(t *testing.T) {
 		t.Fatalf("Close transcript: %v", err)
 	}
 
-	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, true)
+	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, true, newHistoricalActivityCache(context.Background()))
 	if err != nil {
 		t.Fatalf("loadHistoricalActivityBase: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestLoadHistoricalActivityBaseReadsUsageWithoutJobsFile(t *testing.T) {
 		t.Fatalf("Close transcript: %v", err)
 	}
 
-	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background()))
 	if err != nil {
 		t.Fatalf("loadHistoricalActivityBase: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestLoadHistoricalActivityBaseUsageNilWithoutTokenData(t *testing.T) {
 		t.Fatalf("Close transcript: %v", err)
 	}
 
-	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, true)
+	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, true, newHistoricalActivityCache(context.Background()))
 	if err != nil {
 		t.Fatalf("loadHistoricalActivityBase: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestLoadHistoricalActivityBaseRejectsUnsafeSessionID(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 
-	_, err := loadHistoricalActivityBase(stateDir, "../escaped", true)
+	_, err := loadHistoricalActivityBase(stateDir, "../escaped", true, newHistoricalActivityCache(context.Background()))
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
 		t.Fatalf("loadHistoricalActivityBase(%q) error = %v, want schema.ErrInvalidSessionID", "../escaped", err)
 	}

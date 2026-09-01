@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,88 @@ import (
 // child transcript.
 var activityUsageCache = apptranscript.NewTurnCache()
 
+// historicalJobScanLimits bounds one session's jobs.jsonl scan during
+// activity-tree loading. It is generous enough for any legitimate journal —
+// the largest observed in production was 6.99 MiB / 562 jobs (#448) — but
+// finite, so a corrupt or adversarial journal cannot force unbounded
+// decoding before the response projection ever gets a chance to apply its
+// own budget (activityMaxWorkUnits in jobs_activity.go).
+var historicalJobScanLimits = jobstore.ScanLimits{MaxBytes: 32 << 20, MaxEvents: 100_000}
+
+// historicalDelegateScanLimits is the same safety bound for the shared root
+// delegates.jsonl.
+var historicalDelegateScanLimits = delegatestore.ScanLimits{MaxBytes: 32 << 20, MaxEvents: 100_000}
+
+// scanJobJournal and scanDelegateJournal are package vars — like
+// historicalJobsStat below — so tests can count or intercept scans (proving
+// the shared delegate journal is read once per root, or that cancellation
+// stops before a later session's file is opened) without instrumenting the
+// filesystem.
+var scanJobJournal = jobstore.ScanEvents
+var scanDelegateJournal = delegatestore.ScanEvents
+
+// rootDelegateIndex is one root's delegates.jsonl decoded and folded once,
+// then indexed by OwnerSessionID so every visited session in the tree looks
+// up its own rows without re-reading or re-folding the shared journal.
+type rootDelegateIndex struct {
+	byOwner     map[string][]string // ownerSessionID -> sorted delegate IDs
+	state       delegatestore.State
+	diagnostics []string
+}
+
+// historicalActivityCache threads cancellation and shares per-traversal
+// state — the root delegate index above — through the recursive historical
+// loaders that both the live and persisted activity-tree entry points share.
+// It is created fresh for one loadActivitySnapshotForParams call and never
+// outlives it, the same traversal-local scope activityBudget already uses in
+// jobs_activity.go.
+type historicalActivityCache struct {
+	ctx           context.Context
+	delegateIndex map[string]*rootDelegateIndex // rootSessionID -> index, lazy
+}
+
+func newHistoricalActivityCache(ctx context.Context) *historicalActivityCache {
+	return &historicalActivityCache{ctx: ctx, delegateIndex: map[string]*rootDelegateIndex{}}
+}
+
+// rootDelegates returns rootSessionID's delegate index, scanning and folding
+// delegates.jsonl on the first request for that root and reusing the result
+// for every later visited session sharing the same root (#448: this file was
+// previously re-read and re-folded once per visited session, making loading
+// O(sessions x delegate events)).
+func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) (*rootDelegateIndex, error) {
+	if idx, ok := c.delegateIndex[rootSessionID]; ok {
+		return idx, nil
+	}
+	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	events, readDiagnostics, err := scanDelegateJournal(c.ctx, path, historicalDelegateScanLimits)
+	if err != nil {
+		return nil, err
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		return nil, err
+	}
+	byOwner := make(map[string][]string)
+	for id, aggregate := range state {
+		if aggregate == nil {
+			continue
+		}
+		owner := aggregate.Descriptor.OwnerSessionID
+		byOwner[owner] = append(byOwner[owner], id)
+	}
+	for owner := range byOwner {
+		sort.Strings(byOwner[owner])
+	}
+	var diagnostics []string
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
+	}
+	idx := &rootDelegateIndex{byOwner: byOwner, state: state, diagnostics: diagnostics}
+	c.delegateIndex[rootSessionID] = idx
+	return idx, nil
+}
+
 // historicalActivityUsage sums a retained session's own token usage from its
 // transcript. nil (not zero) when the transcript carries no usage, so the wire
 // omits the field and the UI hides the token cluster rather than rendering
@@ -33,13 +116,17 @@ func historicalActivityUsage(stateDir, sessionID string, meta schema.SessionMeta
 	return total
 }
 
-// LoadSessionJobActivityTree loads and projects a session's persisted job activity tree.
-func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsListParams) (appwire.JobActivityTree, error) {
+// LoadSessionJobActivityTree loads and projects a session's persisted job
+// activity tree. ctx is checked between visited sessions (and between
+// records within each journal, inside the scanners) so a canceled hub
+// request stops opening further files instead of finishing an unbounded
+// walk.
+func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string, params appwire.JobsListParams) (appwire.JobActivityTree, error) {
 	if err := validateActivityRootRef(params.Ref, sessionID); err != nil {
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+	snapshot, startDepth, err := loadActivitySnapshotForParams(ctx, root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
@@ -49,7 +136,7 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false)
+		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx))
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
@@ -58,7 +145,13 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC())
 }
 
-func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (activityLoadedBase, error) {
+func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache *historicalActivityCache) (activityLoadedBase, error) {
+	// Checked first, before any file is opened: a request canceled while an
+	// earlier session in the same traversal was loading must not go on to
+	// open THIS session's jobs.jsonl or the shared delegates.jsonl either.
+	if err := cache.ctx.Err(); err != nil {
+		return activityLoadedBase{}, err
+	}
 	// sessionID can arrive here as a descendant ID read out of a persisted job
 	// record (buildActivityContinuationAt), not only as the already-indexed
 	// root, so it must be checked before any join into a path below — the
@@ -80,12 +173,12 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		}
 	} else {
 		var err error
-		jobEvents, err = jobstore.ReadEvents(jobsPath)
+		jobEvents, err = scanJobJournal(cache.ctx, jobsPath, historicalJobScanLimits)
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
 	}
-	stable, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
+	stable, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
@@ -103,32 +196,21 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 	}}, nil
 }
 
-func loadHistoricalStableActivity(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
-	events, readDiagnostics, err := delegatestore.ReadEventsWithDiagnostics(path)
+// loadHistoricalStableActivity returns ownerSessionID's stable delegate rows
+// from rootSessionID's shared delegate journal, via cache so the journal
+// itself is scanned and folded at most once per root across the whole
+// traversal (see historicalActivityCache).
+func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
+	idx, err := cache.rootDelegates(stateDir, rootSessionID)
 	if err != nil {
 		return nil, nil, err
 	}
-	state, err := delegatestore.Fold(events)
-	if err != nil {
-		return nil, nil, err
-	}
-	ids := make([]string, 0, len(state))
-	for id, aggregate := range state {
-		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == ownerSessionID {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
+	ids := idx.byOwner[ownerSessionID]
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
-		rows[id] = captureDelegateSnapshot(state[id])
+		rows[id] = captureDelegateSnapshot(idx.state[id])
 	}
-	var diagnostics []string
-	if readDiagnostics.TornTail {
-		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
-	}
-	return rows, diagnostics, nil
+	return rows, idx.diagnostics, nil
 }
 
 func loadHistoricalStableActivityWithAttention(stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
