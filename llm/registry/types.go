@@ -194,8 +194,13 @@ type Resolved struct {
 	Headers           map[string]string `json:"headers,omitempty"`
 	Credential        Credential        `json:"-"`
 	CredentialHeaders map[string]string `json:"-"`
-	Provenance        map[string]string `json:"provenance,omitempty"`
-	Warnings          []string          `json:"warnings,omitempty"`
+	// ShadowedEnvVar names an environment variable that is set but loses to
+	// Credential (spec §10); empty when nothing shadows it. Hidden from
+	// JSON alongside Credential - a caller that needs it re-exposes it on
+	// its own output type, as instanceStatus does for the hub.
+	ShadowedEnvVar string            `json:"-"`
+	Provenance     map[string]string `json:"provenance,omitempty"`
+	Warnings       []string          `json:"warnings,omitempty"`
 	// DefaultModel and CheapModel are the instance's curated or configured
 	// default_model / cheap_model (spec §6.2, §7.5); the agent's profile reads
 	// them instead of a per-provider switch.

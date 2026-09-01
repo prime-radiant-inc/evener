@@ -257,7 +257,8 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
 		Transport: transport, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
-		DefaultModel: rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
+		ShadowedEnvVar: r.shadowedEnvVar(rec, cred),
+		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
 }
 
