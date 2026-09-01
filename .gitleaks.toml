@@ -33,6 +33,7 @@ regexes = [
   '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
   '''a\.eyJlbWFpbCI6ImpAZXhhbXBsZS5jb20ifQ\.sig''', # fake JWT ({"email":"j@example.com"}) in auth/openai fuzz seeds
   '''att_02wMz5TxuyedWwYBSOAa[0-9a-z]*''', # deterministic attempt-id fixtures in cmd/evener-doctor/main_test.go, not keys
+  '''synTHETIC_9mK3vL8pR2nW5tY0cF6hJ4bD1gA7eSqZx''', # fake hub-token-shaped fixture proving #795's /auth guard, cmd/evener-fuzz-harvest/coverage_test.go
 ]
 
 # The seed corpora are deliberately NOT path-allowlisted: that would make
