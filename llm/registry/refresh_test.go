@@ -183,6 +183,32 @@ func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
 	}
 }
 
+func TestLoad_NewerCacheWinsBeforeCustomSnapshotValidation(t *testing.T) {
+	state := t.TempDir()
+	f := &fakeFetch{body: subsetFixture(t, 1), etag: "newer"}
+	if _, err := Refresh(context.Background(), RefreshOptions{
+		StateRoot: state,
+		Fetcher:   f.fetcher(),
+		Force:     true,
+		Baseline:  fixtureBytes(t),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Load(
+		WithSnapshot([]byte("{")),
+		WithEnv(mapEnv(nil)),
+		WithNoUserLayer(),
+		WithStateRoot(state),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag, _ := r.Catalog(); tag != LayerCache {
+		t.Fatalf("a newer cache must replace the custom snapshot before validation, got %q", tag)
+	}
+}
+
 func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
 	state := t.TempDir()
 	f := &fakeFetch{body: subsetFixture(t, 1), etag: "n"}
