@@ -448,6 +448,27 @@ base = "google-vertex"
 base_url = "https://alias-gateway.example/v1"
 [providers.vertexaliasgw.models."my-claude-alias"]
 alias_of = "claude-opus-5"
+
+[providers.vertexhostpath]
+base = "google-vertex-anthropic"
+[providers.vertexhostpath.vars]
+"GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com/proxy"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexhostport]
+base = "google-vertex-anthropic"
+[providers.vertexhostport.vars]
+"GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com:8443"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexhostuserinfo]
+base = "google-vertex-anthropic"
+[providers.vertexhostuserinfo.vars]
+"GOOGLE_VERTEX_HOST" = "https://attacker@aiplatform.googleapis.com"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -478,6 +499,9 @@ alias_of = "claude-opus-5"
 		{"vertexhostrule/claude-opus-5", "false", true, "swapping host_rule away from vertex-location cannot silence the host-override check just by making it inspect the wrong rule"},
 		{"vertexalias/my-claude-alias", "true", false, "a same-provider alias to a transport-bearing curated row is first-party, judged against the target's own canonical transport, not a row-less baseline"},
 		{"vertexaliasgw/my-claude-alias", "false", true, "the same alias on a diverged instance still strips, regardless of the alias mechanism"},
+		{"vertexhostpath/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST carrying a path (a real segment injected before the template's own /v1/projects/... path) must not pass a prefix check that only looks at the start of the assembled URL"},
+		{"vertexhostport/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST carrying a port must not match the canonical host"},
+		{"vertexhostuserinfo/claude-opus-5", "false", true, "a GOOGLE_VERTEX_HOST carrying userinfo must not match the canonical host"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)
@@ -530,6 +554,65 @@ alias_of = "claude-opus-5"
 	}
 	if hasWarning(ts, "web_search disabled") {
 		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL with a trailing slash: unexpected web_search-disabled warning: %v", ts.Warnings)
+	}
+}
+
+// TestResolve_WebSearchInheritedCuratedRowBaseURL guards against treating
+// an inherited curated row's own base_url as a user override: Google
+// Vertex MaaS rows carry a row-level base_url straight from models.dev's
+// own upstream data (modelsdev.go's
+// convertModelOverride, triggered by a provider api field), not from any
+// user's config. vertexmaas below reproduces that shape - a curated,
+// vars-only provider template (so the provider-level base_url alone can
+// never resolve, exercising firstPartyEndpoint's missing-vars branch) whose
+// one row carries its own literal base_url. A custom instance that merely
+// inherits that row, with no base_url of its own anywhere, must keep
+// web_search; only a genuine user-config override of that same row may
+// strip it.
+func TestResolve_WebSearchInheritedCuratedRowBaseURL(t *testing.T) {
+	overlay := `
+[providers.vertexmaas]
+implicit = true
+protocol = "openai-chat"
+base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+host_rule = "vertex-location"
+web_search = true
+[providers.vertexmaas.models."maas-model"]
+base_url = "https://maas-curated-endpoint.example/v1"
+`
+	cfg := `
+[providers.vertexmaasinstance]
+base = "vertexmaas"
+[providers.vertexmaasinstance.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexmaasuser]
+base = "vertexmaas"
+[providers.vertexmaasuser.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+[providers.vertexmaasuser.models."maas-model"]
+base_url = "https://user-override-gateway.example/v1"
+`
+	r := fixtureLoad(t, nil, cfg, WithOverlay(overlayWith(overlay)))
+	cases := []struct {
+		ref      string
+		want     string
+		wantWarn bool
+		desc     string
+	}{
+		{"vertexmaasinstance/maas-model", "true", false, "inheriting a curated row's own base_url (Vertex MaaS shape) is not a user override and must keep web_search"},
+		{"vertexmaasuser/maas-model", "false", true, "a genuine user-config override of that same row's base_url must still strip web_search"},
+	}
+	for _, c := range cases {
+		res := mustResolve(t, r, c.ref)
+		if got := bp(res.Caps.WebSearch); got != c.want {
+			t.Errorf("%s: web_search = %s, want %s (%s)", c.ref, got, c.want, c.desc)
+		}
+		if got := hasWarning(res, "web_search disabled"); got != c.wantWarn {
+			t.Errorf("%s: web_search-disabled warning present = %v, want %v (%s): %v", c.ref, got, c.wantWarn, c.desc, res.Warnings)
+		}
 	}
 }
 

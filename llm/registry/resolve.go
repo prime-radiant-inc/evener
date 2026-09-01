@@ -415,8 +415,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
-	rowOwnBaseURL := row.Transport != nil && row.Transport.BaseURL != ""
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, rec.ownBaseURL != "" || rec.rowOwnBaseURL(hit.rowID)); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -175,7 +176,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		// already false for one) - kept explicit so a future curated row
 		// with its own base_url or GOOGLE_VERTEX_HOST is trusted the same
 		// way the vendor's provider-level template already is.
-		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec, base, own)) {
+		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec, base)) {
 			return false
 		}
 	case own != defaults:
@@ -194,10 +195,11 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
 }
 
-// vertexHostOverridden reports whether rec's resolved host diverges from
-// Vertex's real, location-derived infrastructure - the derivation the
-// vertex-location host rule exists to perform (resolveBaseURLWith's
-// HostRuleVertexLocation case, load.go) - by either of two means:
+// vertexHostOverridden reports whether rec's own GOOGLE_VERTEX_HOST
+// diverges from Vertex's real, location-derived infrastructure - the
+// derivation the vertex-location host rule exists to perform
+// (resolveBaseURLWith's HostRuleVertexLocation case, load.go) - by either
+// of two means:
 //
 //   - rec's own host_rule differs from base's: swapping to a different
 //     rule (the only other one today, ollama-host) does not intercept
@@ -206,13 +208,21 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 //     also disables the direct-override check below (a record inspecting
 //     its own, now-different rule would never even look), the swap itself
 //     counts as divergence rather than being trusted to self-report.
-//   - own's actual resolved host does not match vertexHost(LOCATION),
-//     checked directly against the fully resolved URL rather than by
-//     asking rec's own (unswapped) rule whether GOOGLE_VERTEX_HOST was
-//     overridden - so a value that happens to equal the derivation's own
-//     answer is not an override (copying the default verbatim is not
-//     "different", spec §10), and no other means of steering the same
-//     outcome slips through.
+//   - a supplied GOOGLE_VERTEX_HOST does not parse as exactly
+//     vertexHost(LOCATION)'s scheme and authority, with nothing else: no
+//     path, query, fragment, or userinfo. The canonical form vertexHost
+//     itself produces is authority-only (e.g. "https://aiplatform.googleapis.com",
+//     never a trailing slash or anything after it), so that is the whole
+//     comparison - not a prefix of the assembled base_url, which a value
+//     like "https://aiplatform.googleapis.com/proxy" would pass (the
+//     template's own "/v1/projects/..." continuation makes an injected
+//     path segment indistinguishable from the real one once the two are
+//     concatenated and read back as one string). Comparing the
+//     un-concatenated GOOGLE_VERTEX_HOST value on its own, component by
+//     component, closes that: a path, a different port, or userinfo all
+//     fail the check on their own terms, and a value that happens to
+//     equal the derivation's own answer is not an override (copying the
+//     default verbatim is not "different", spec §10).
 //
 // This check is Vertex-specific by necessity, not by choice: it is the
 // only host rule with both a missing curated base_url default and a
@@ -220,15 +230,24 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 // shape - no curated default, host routed through its own env var, kept
 // template - would need an equivalent check of its own; nothing here
 // generalizes to it automatically.
-func (r *Registry) vertexHostOverridden(rec, base *record, own string) bool {
+func (r *Registry) vertexHostOverridden(rec, base *record) bool {
 	if rec.head.Transport.HostRule != base.head.Transport.HostRule {
 		return true
 	}
-	loc, ok := r.varLookupWith(rec, func(string) {})("GOOGLE_VERTEX_LOCATION")
+	raw := r.varLookupWith(rec, func(string) {})
+	given, ok := raw("GOOGLE_VERTEX_HOST")
 	if !ok {
 		return false
 	}
-	return !strings.HasPrefix(own, strings.TrimRight(vertexHost(loc), "/")+"/")
+	loc, ok := raw("GOOGLE_VERTEX_LOCATION")
+	if !ok {
+		return false
+	}
+	u, err := url.Parse(given)
+	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return true
+	}
+	return u.Scheme+"://"+u.Host != vertexHost(loc)
 }
 
 // envCandidates lists, in the order credential resolution tries them, every
