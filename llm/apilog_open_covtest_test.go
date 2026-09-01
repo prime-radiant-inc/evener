@@ -45,6 +45,57 @@ func TestCovOpenPrivateAPILogFileTargetLocked(t *testing.T) {
 	}
 }
 
+// TestSessionFileWithErrorRecoversAfterTransientLockReleases covers issue #744:
+// a transient flock collision (ErrAPILogTargetLocked) must not latch a session
+// out of canonical logging the way a permanent failure does (contrast with
+// TestSessionFileWithErrorNilCache in apilog_coverage_test.go). Once the
+// contending holder releases the lock, the next call must retry the open
+// instead of replaying a cached failure.
+//
+// This lives here, not next to TestSessionFileWithErrorNilCache, because it
+// depends on the real flock semantics openPrivateAPILogFile only implements
+// on darwin/linux (see apilog_open_other.go): on other platforms
+// openPrivateAPILogFile never contends, so the ErrAPILogTargetLocked
+// assertion below would fail.
+func TestSessionFileWithErrorRecoversAfterTransientLockReleases(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Hold the flock on "unattributed"'s target file the way another evener
+	// process would (e.g. a hub-spawned serve daemon that reached this
+	// project's session log first) — same mechanism as
+	// TestCovOpenPrivateAPILogFileTargetLocked above, aimed at the session
+	// route.
+	target := filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")
+	contender, err := openPrivateAPILogFile(target)
+	if err != nil {
+		t.Fatalf("open contender lock: %v", err)
+	}
+
+	// First call collides with the contender's flock and fails.
+	if _, err := logger.sessionFileWithError(""); !errors.Is(err, ErrAPILogTargetLocked) {
+		t.Fatalf("first sessionFileWithError = %v, want ErrAPILogTargetLocked", err)
+	}
+
+	// The contender releases the lock — e.g. the other process exits.
+	if err := contender.Close(); err != nil {
+		t.Fatalf("close contender: %v", err)
+	}
+
+	// A later call must retry the open, not replay the cached failure.
+	f, err := logger.sessionFileWithError("")
+	if err != nil {
+		t.Fatalf("sessionFileWithError after lock release = %v, want success", err)
+	}
+	if f == nil {
+		t.Fatal("sessionFileWithError after lock release returned a nil file")
+	}
+}
+
 func TestCovOpenPrivateAPILogFileOpenError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonexistent-dir", "api.jsonl")
 	file, err := openPrivateAPILogFile(path)
