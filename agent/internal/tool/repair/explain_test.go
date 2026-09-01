@@ -328,7 +328,7 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			args:             map[string]any{"n": float64(5)},
 			instanceLocation: "n",
 			keyword:          "enum",
-			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is 5.`,
 		},
 		{
 			// A boolean enum's allowed values render bare too. Quoting them
@@ -364,7 +364,7 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			args:             map[string]any{"n": 5},
 			instanceLocation: "n",
 			keyword:          "enum",
-			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is 5.`,
 		},
 		{
 			name:     "typed []bool slice enum",

@@ -501,7 +501,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		if len(allowed) == 0 {
 			return ""
 		}
-		return fmt.Sprintf("%s: argument %q is not one of the allowed values: %s. Value is %q.", toolName, displayPath, strings.Join(allowed, ", "), fmt.Sprint(value))
+		return fmt.Sprintf("%s: argument %q is not one of the allowed values: %s. Value is %s.", toolName, displayPath, strings.Join(allowed, ", "), formatEnumValue(value))
 	case "required":
 		// The field itself is present but its object value is missing required
 		// properties (the issue #627 shape: communicate's output object without
