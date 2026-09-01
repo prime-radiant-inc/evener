@@ -57,16 +57,11 @@
   padding-bottom: var(--space-2);
 }
 
-/* IntentToolCallRow: a drill-down row inside the intent group. Collapsed it
- * shows ToolRow (intent + icon + chevron); expanded it reveals the real
- * ToolCallItem. The row itself is just a plain wrapper — ToolRow owns its own
- * layout, and the body below indents under the headline. */
-.intentRow {
-  display: flex;
-  flex-direction: column;
-}
-
-.intentRowBody {
+/* Each projected intent entry renders a ToolCallItem directly inside the
+ * intent group. The wrapper indents the row so the projected actions read as
+ * nested under the group's summary, the same inset the old drill-down body
+ * applied to its revealed ToolCallItem. */
+.intentGroupBody {
   padding-left: var(--space-3);
 }
 
