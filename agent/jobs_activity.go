@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -151,14 +152,20 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
 	now := s.sclock().Now().UTC()
 	if s.jobActivityClock == nil {
-		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+		// The live single-session path has no request context to thread in
+		// (its caller, cmd/evener/serve.go's SetJobsFunc hook, takes none);
+		// context.Background() still gets it the scan byte/event ceilings
+		// below, just not real cancellation. The hub's persisted fallback
+		// (LoadSessionJobActivityTree) is the path #448 measured and passes
+		// its actual request context.
+		snapshot, startDepth, err := loadActivitySnapshotForParams(context.Background(), root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now)
 	}
 	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, error) {
-		return loadActivitySnapshotForParams(root, params)
+		return loadActivitySnapshotForParams(context.Background(), root, params)
 	})
 }
 
@@ -195,10 +202,16 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 	return strings.TrimSpace(fallback)
 }
 
-func loadActivitySnapshotForParams(root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, error) {
+// loadActivitySnapshotForParams builds a fresh historicalActivityCache for
+// ctx and threads it through the whole recursive load, so the shared root
+// delegate journal is scanned once no matter how many sessions this one
+// build visits, and a canceled ctx stops before opening a later session's
+// files (checked in loadHistoricalActivityBase).
+func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, error) {
+	cache := newHistoricalActivityCache(ctx)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
-		snapshot, err := buildActivityFullSnapshot(root, visited, false)
+		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache)
 		return snapshot, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
@@ -206,15 +219,15 @@ func loadActivitySnapshotForParams(root activitySessionLocator, params appwire.J
 		return nil, 0, err
 	}
 	visited := map[string]bool{root.sessionID: true}
-	snapshot, err := buildActivityContinuationSnapshot(root, cont, visited, false)
+	snapshot, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
 	if err != nil {
 		return nil, 0, err
 	}
 	return snapshot, -len(cont.Path), nil
 }
 
-func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
-	loaded, err := loadActivityBase(loc, required)
+func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
+	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +259,7 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		}
 		nextVisited := cloneActivityVisited(visited)
 		nextVisited[childID] = true
-		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true)
+		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true, cache)
 		if err != nil {
 			snapshot.Errors[childID] = err
 			continue
@@ -256,24 +269,24 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 	return &snapshot, nil
 }
 
-func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
+func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
 	if len(cont.Path) == 0 {
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required)
+		return buildActivityFullSnapshot(loc, visited, required, cache)
 	}
-	return buildActivityContinuationAt(loc, cont, 0, visited, required)
+	return buildActivityContinuationAt(loc, cont, 0, visited, required, cache)
 }
 
-func buildActivityContinuationAt(loc activitySessionLocator, cont activityContinuation, hop int, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
+func buildActivityContinuationAt(loc activitySessionLocator, cont activityContinuation, hop int, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
 	if hop == len(cont.Path) {
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required)
+		return buildActivityFullSnapshot(loc, visited, required, cache)
 	}
-	loaded, err := loadActivityBase(loc, required)
+	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +305,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		}
 		nextVisited := cloneActivityVisited(visited)
 		nextVisited[childID] = true
-		child, err := buildActivityContinuationAt(childLoc, cont, hop+1, nextVisited, true)
+		child, err := buildActivityContinuationAt(childLoc, cont, hop+1, nextVisited, true, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -302,11 +315,11 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 	return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
 }
 
-func loadActivityBase(loc activitySessionLocator, required bool) (activityLoadedBase, error) {
+func loadActivityBase(loc activitySessionLocator, required bool, cache *historicalActivityCache) (activityLoadedBase, error) {
 	if loc.live != nil {
 		return loadLiveActivityBase(loc.live)
 	}
-	return loadHistoricalActivityBase(loc.stateDir, loc.sessionID, required)
+	return loadHistoricalActivityBase(loc.stateDir, loc.sessionID, required, cache)
 }
 
 func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {

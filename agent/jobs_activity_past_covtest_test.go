@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -63,7 +64,7 @@ func TestValidateActivityRootRef_Empty(t *testing.T) {
 // error (line 38-39).
 func TestLoadSessionJobActivityTree_BadRef(t *testing.T) {
 	stateDir := t.TempDir()
-	_, err := LoadSessionJobActivityTree(stateDir, "sess", appwire.JobsListParams{Ref: ":::"})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, "sess", appwire.JobsListParams{Ref: ":::"})
 	if err == nil {
 		t.Fatal("expected error for bad ref")
 	}
@@ -75,7 +76,7 @@ func TestLoadHistoricalActivityBase_RequiredChildMissing(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := "missingchild"
 	savePastActivityMeta(t, stateDir, sessionID, "Missing")
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, true)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, true, newHistoricalActivityCache(context.Background()))
 	if err == nil {
 		t.Fatal("expected error for required missing child session")
 	}
@@ -101,7 +102,7 @@ func TestLoadHistoricalActivityBase_StatError(t *testing.T) {
 	if err := os.WriteFile(filepath.Dir(jobsPath), []byte("blocker"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background()))
 	if err == nil {
 		// On some platforms the stat might not fail as expected. If it
 		// doesn't fail, try the ReadEvents error path instead.
@@ -123,7 +124,7 @@ func TestLoadHistoricalActivityBase_ReadEventsError(t *testing.T) {
 	if err := os.WriteFile(jobsPath, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background()))
 	if err == nil {
 		t.Fatal("expected error for malformed jobs.jsonl")
 	}
@@ -145,7 +146,7 @@ func TestLoadHistoricalActivityBase_StableActivityReadError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background()))
 	if err == nil {
 		t.Fatal("expected error for malformed delegates.jsonl")
 	}
@@ -170,7 +171,7 @@ func TestLoadHistoricalActivityBase_StableActivityFoldError(t *testing.T) {
 	if err := os.WriteFile(dlgPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := loadHistoricalActivityBase(stateDir, sessionID, false)
+	_, err := loadHistoricalActivityBase(stateDir, sessionID, false, newHistoricalActivityCache(context.Background()))
 	if err == nil {
 		t.Fatal("expected fold error for orphan delegate event")
 	}
@@ -320,7 +321,7 @@ func TestLoadSessionJobActivityTree_ContinuationError(t *testing.T) {
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 	// Call with a continuation param — buildActivityFullSnapshot will try to
 	// load the root's jobs and fail because there's no delegates.jsonl.
-	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: "some/continuation"})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: "some/continuation"})
 	if err == nil {
 		t.Fatalf("LoadSessionJobActivityTree with continuation: expected error, got nil")
 	}
@@ -333,7 +334,7 @@ func TestLoadSessionJobActivityTree_EmptyRootRevision(t *testing.T) {
 	rootID := "emptyrootrev"
 	savePastActivityMeta(t, stateDir, rootID, "EmptyRoot")
 	// No delegates, no jobs — the snapshot will have an empty RootID.
-	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	}
 	_ = f.Close()
 
-	_, diags, err := loadHistoricalStableActivity(stateDir, rootID, rootID)
+	_, diags, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background()), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
 	// This is hard to construct directly, so we test the normal path
 	// with a valid delegate and verify the non-nil branch (line 118).
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childnilagg", "nil test"))
-	rows, _, err := loadHistoricalStableActivity(stateDir, rootID, rootID)
+	rows, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background()), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,7 +45,7 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 	savePastActivityMeta(t, stateDir, childID, "Child")
 
-	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +85,7 @@ func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,12 +117,113 @@ func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendant
 	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 3)
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 7)
 
-	got, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Revision != 7 {
 		t.Fatalf("revision=%d, want 7", got.Revision)
+	}
+}
+
+// TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot covers
+// #448's evidence that loadHistoricalActivityBase re-read and re-folded the
+// shared root delegates.jsonl once per VISITED session, making loading
+// O(sessions x delegate events). root -> child1 -> child2 are three visited
+// sessions sharing one delegates.jsonl at the root; the journal must be
+// scanned exactly once regardless.
+func TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootonce"
+	child1ID := "child1once"
+	child2ID := "child2once"
+	started := time.Unix(300, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID,
+		pastStableDescriptor(rootID, child1ID, "child1 task"),
+		pastStableDescriptor(child1ID, child2ID, "child2 task"),
+	)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child1ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child1", Type: jobstore.JobShell, OwnerSessionID: child1ID, VisibleToSession: child1ID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child2ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child2", Type: jobstore.JobShell, OwnerSessionID: child2ID, VisibleToSession: child2ID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, child1ID, "Child1", rootID, 0)
+	savePastActivityMetaWithTreeRevision(t, stateDir, child2ID, "Child2", rootID, 0)
+
+	var delegateScans int32
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, limits delegatestore.ScanLimits) ([]delegatestore.Event, delegatestore.ReadDiagnostics, error) {
+		atomic.AddInt32(&delegateScans, 1)
+		return original(ctx, path, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child1 := pastFindDelegate(t, got.Root, child1ID)
+	if child1.Child == nil {
+		t.Fatalf("expected child1 subtree, got %+v", child1)
+	}
+	child2 := pastFindDelegate(t, *child1.Child, child2ID)
+	if child2.Child == nil {
+		t.Fatalf("expected child2 subtree, got %+v", child2)
+	}
+	if delegateScans != 1 {
+		t.Fatalf("delegates.jsonl scanned %d times across 3 visited sessions, want exactly 1", delegateScans)
+	}
+}
+
+// TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation
+// covers #448's acceptance criterion that cancellation is checked between
+// descendant sessions, not only between records within one journal: once the
+// request context is canceled, no later session's jobs.jsonl is opened.
+func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "rootcancel"
+	child1ID := "child1cancel"
+	child2ID := "child2cancel"
+	started := time.Unix(400, 0).UTC()
+
+	writePastStableDelegates(t, stateDir, rootID,
+		pastStableDescriptor(rootID, child1ID, "child1 task"),
+		pastStableDescriptor(rootID, child2ID, "child2 task"),
+	)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child1ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child1", Type: jobstore.JobShell, OwnerSessionID: child1ID, VisibleToSession: child1ID, StartedAt: &started},
+	)
+	s1cov_writeJobLog(t, stateDir, child2ID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child2", Type: jobstore.JobShell, OwnerSessionID: child2ID, VisibleToSession: child2ID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, child1ID, "Child1", rootID, 0)
+	savePastActivityMetaWithTreeRevision(t, stateDir, child2ID, "Child2", rootID, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var scannedPaths []string
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+		scannedPaths = append(scannedPaths, path)
+		cancel() // cancel once the first session's own journal is reached
+		return original(ctx, path, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	if _, err := LoadSessionJobActivityTree(ctx, stateDir, rootID, appwire.JobsListParams{}); err == nil {
+		t.Fatal("expected an error from a canceled request")
+	}
+	if len(scannedPaths) != 1 {
+		t.Fatalf("scanned %d job journals after cancellation, want exactly 1 (root only): %v", len(scannedPaths), scannedPaths)
 	}
 }
 
