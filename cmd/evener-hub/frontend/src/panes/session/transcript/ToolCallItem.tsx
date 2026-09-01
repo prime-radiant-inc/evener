@@ -283,9 +283,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // chat/intent it defaults closed, showing only the intent. An intent-less
   // row has no separate intent line to toggle, so its summary is forced open
   // regardless of the config default — the summary IS its only line.
+  // At levels where the summary defaults open (tools/activity/full), the
+  // summary has no separate toggle (twoLevel is false), so a persisted
+  // close from a lower level (chat/intent) must NOT win — the summary is
+  // always visible at these levels.
   const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
   const summaryConfigDefault = summaryOpenByDefault(config);
-  const summaryOpen = statedIntent === undefined ? true : isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
+  const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
+  const summaryOpen = statedIntent === undefined || summaryConfigDefault ? true : summaryDisclosureOpen;
   // A descriptor whose summary duplicates its expanded body (shell: the raw
   // command vs the body's pretty-printed block) hides the summary while the
   // body is open — the body is the single representation. ToolRow's own
@@ -373,7 +378,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
-        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
+        onToggleSummary={
+          summaryConfigDefault ? undefined : () => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)
+        }
         summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
