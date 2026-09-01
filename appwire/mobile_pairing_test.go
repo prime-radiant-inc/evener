@@ -8,7 +8,7 @@ import (
 
 func TestClientMobilePairingRoundTrip(t *testing.T) {
 	written := roundTrip(t, MethodEvenerMobilePairing, MobilePairingResponse{
-		AuthURL: "https://hub.example.test/auth?token=mobile-secret",
+		AuthURL: "https://hub.example.test/auth/mobile-secret",
 	}, func(ctx context.Context, client *Client) error {
 		response, err := client.MobilePairing(ctx, MobilePairingParams{
 			Origin: "http://192.168.1.20:9180",
@@ -16,7 +16,7 @@ func TestClientMobilePairingRoundTrip(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if response.AuthURL != "https://hub.example.test/auth?token=mobile-secret" {
+		if response.AuthURL != "https://hub.example.test/auth/mobile-secret" {
 			return fmt.Errorf("auth URL = %q", response.AuthURL)
 		}
 		return nil

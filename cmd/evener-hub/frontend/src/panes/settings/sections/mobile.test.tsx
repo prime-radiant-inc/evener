@@ -27,7 +27,7 @@ function renderMobileSection() {
 }
 
 test("renders HTTP observation and reusable-capability warnings for a mixed-case scheme", async () => {
-  const authURL = "HTTP://192.168.1.20:9180/auth?token=mobile-secret";
+  const authURL = "HTTP://192.168.1.20:9180/auth/mobile-secret";
   client.on("evener/mobile/pairing", () => ({ authUrl: authURL }));
 
   renderMobileSection();
@@ -40,7 +40,7 @@ test("renders HTTP observation and reusable-capability warnings for a mixed-case
 });
 
 test("renders the reusable-capability warning for HTTPS without the HTTP observation warning", async () => {
-  const authURL = "https://hub.example.test/auth?token=mobile-secret";
+  const authURL = "https://hub.example.test/auth/mobile-secret";
   client.on("evener/mobile/pairing", () => ({ authUrl: authURL }));
 
   renderMobileSection();

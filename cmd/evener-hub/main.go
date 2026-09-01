@@ -510,7 +510,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
+	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv, codexShutdowner(codexLauncher)); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
