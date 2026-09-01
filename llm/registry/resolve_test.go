@@ -426,6 +426,28 @@ base = "openai"
 base_url = "https://gw.example/v1"
 [providers.rowoptedin.models."gpt-5.5"]
 web_search = true
+
+[providers.vertexhostrule]
+base = "google-vertex-anthropic"
+host_rule = "ollama-host"
+[providers.vertexhostrule.vars]
+"GOOGLE_VERTEX_HOST" = "https://ollama-swap-gateway.example"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexalias]
+base = "google-vertex"
+[providers.vertexalias.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+[providers.vertexalias.models."my-claude-alias"]
+alias_of = "claude-opus-5"
+
+[providers.vertexaliasgw]
+base = "google-vertex"
+base_url = "https://alias-gateway.example/v1"
+[providers.vertexaliasgw.models."my-claude-alias"]
+alias_of = "claude-opus-5"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -453,6 +475,9 @@ web_search = true
 		{"vertexclaude/claude-opus-5", "true", false, "a custom instance inheriting google-vertex resolves Claude through the curated vertex-anthropic row transport, which is first-party even though a row-less comparison would disagree"},
 		{"globgw/gpt-5.5", "false", true, "a provider-scoped glob's web_search = true is not a deliberate per-instance/per-model opt-in and must not bypass the gate on a diverged instance"},
 		{"rowoptedin/gpt-5.5", "true", false, "an exact-model web_search = true is a deliberate opt-in and must still win, even at a diverged base_url"},
+		{"vertexhostrule/claude-opus-5", "false", true, "swapping host_rule away from vertex-location cannot silence the host-override check just by making it inspect the wrong rule"},
+		{"vertexalias/my-claude-alias", "true", false, "a same-provider alias to a transport-bearing curated row is first-party, judged against the target's own canonical transport, not a row-less baseline"},
+		{"vertexaliasgw/my-claude-alias", "false", true, "the same alias on a diverged instance still strips, regardless of the alias mechanism"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)
