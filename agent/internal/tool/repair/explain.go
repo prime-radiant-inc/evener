@@ -979,18 +979,13 @@ func examplePlaceholder(typ string) string {
 	}
 }
 
-// asStringSlice renders v — a schema's "required" list — as a []string,
-// dropping any non-string element. Handles both the []string a hand-built
-// schema may carry and the []any a JSON-decoded one unmarshals to. Callers
-// render an "enum" list instead through formatEnumValues, never this: a
-// required list's entries are always already strings (JSON-Schema requires
-// it, and a schema violating that fails compilation before
-// ExplainSchemaError can ever run — issue #625's adversarial review, F4),
-// so dropping a non-string here is unreachable in practice, not a lossy
-// shortcut. Silently underreporting an impossible entry is preferable to
-// rendering it: this list's callers use its entries as bare property names,
-// and a formatted non-string among them (e.g. a stray "3") would read as a
-// property name that doesn't exist.
+// asStringSlice renders a schema's "required" list as a []string, handling
+// both the []string a hand-built schema may carry and the []any a
+// JSON-decoded one unmarshals to. Non-string elements are dropped: a
+// required list's entries are property names, always strings, and a schema
+// violating that fails compilation before ExplainSchemaError can run. An
+// "enum" list renders through formatEnumValues instead, which must keep
+// values of every JSON type.
 func asStringSlice(v any) []string {
 	switch s := v.(type) {
 	case []string:
@@ -1008,22 +1003,14 @@ func asStringSlice(v any) []string {
 }
 
 // formatEnumValues renders a schema's "enum" list as JSON literals, one
-// string per value, ready to join with ", " into a message a model will
-// read as JSON syntax: a string value quoted ("open"), any other JSON type
-// (number, boolean, null, or a nested array/object) rendered as its own
-// JSON literal (1, true, null, [1,2]) — never Go's %v syntax. Handles both
-// the []string a hand-built schema may carry and the []any a JSON-decoded
-// one unmarshals to; unlike asStringSlice, every element here is
-// individually re-encoded, because a bare Go string isn't yet the
-// JSON-quoted form the message needs.
-//
-// This is the shared renderer for both of the enum-message call sites
-// (constraintMessage and branchRequirement) — issue #625's adversarial
-// review, F1: the two sites previously disagreed (one quoted every value,
-// the other quoted none), and quoting a non-string value either way
-// visually asserts the wrong JSON type, coaching the model to retry with a
-// value that fails validation again the same way. Routing both sites
-// through one function is what keeps them from re-diverging.
+// string per value, ready to join with ", " into a message a model reads as
+// JSON syntax: a string quoted ("open"), any other type as its own literal
+// (1, true, null, [1,2]). Quoting a non-string would visually assert the
+// wrong JSON type and coach a retry that fails validation the same way, so
+// both enum call sites (constraintMessage and branchRequirement) render
+// through here rather than quoting on their own. Handles both the []string
+// a hand-built schema may carry and the []any a JSON-decoded one
+// unmarshals to.
 func formatEnumValues(v any) []string {
 	switch s := v.(type) {
 	case []string:
@@ -1042,19 +1029,13 @@ func formatEnumValues(v any) []string {
 	return nil
 }
 
-// formatEnumValue renders one enum value as its own JSON literal via
-// json.Marshal — the single source of truth for "what does this value look
-// like in JSON," rather than hand-rolled quoting rules. Every value reaching
-// here came from a compiled JSON-Schema's enum list (json.Unmarshal output,
-// or an equivalent Go literal built by this codebase's own schema
-// constructors), all of which are directly JSON-marshalable, so Marshal
-// cannot fail in practice; the fmt.Sprint fallback only guards that.
-//
-// A number outside roughly the 1e-6..1e21 magnitude range still renders in
-// scientific notation (json.Marshal's own choice, e.g. 1e21 -> "1e+21") —
-// valid JSON, so left as-is rather than special-cased: matching
-// json.Marshal's formatting is the JSON-faithful contract this function
-// exists to keep, not a promise of decimal notation at every magnitude.
+// formatEnumValue renders one enum value as its own JSON literal, making
+// json.Marshal the single rule for what a value looks like in JSON —
+// including its number formatting, which turns to scientific notation
+// outside roughly the 1e-6..1e21 magnitude range (1e21 -> "1e+21"). Every
+// value here comes from a compiled schema's enum list and is JSON
+// marshalable, so the fmt.Sprint fallback only guards an error that cannot
+// happen in practice.
 func formatEnumValue(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

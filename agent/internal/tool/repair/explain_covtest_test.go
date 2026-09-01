@@ -581,12 +581,6 @@ func TestExplainSchemaError_PresentFieldUnhandledKeyword(t *testing.T) {
 }
 
 // TestAsStringSlice covers asStringSlice with various input types.
-// asStringSlice's only remaining callers render a schema's "required" list
-// (issue #625's adversarial review, F4: a non-string required-list entry
-// fails schema compilation before ExplainSchemaError can ever be called, so
-// it drops non-strings rather than rendering them — that shape is provably
-// unreachable, and a dropped entry under-reports rather than corrupting a
-// property-name list with a stray formatted garbage value).
 func TestAsStringSlice(t *testing.T) {
 	tests := []struct {
 		name string
@@ -616,12 +610,9 @@ func TestAsStringSlice(t *testing.T) {
 }
 
 // TestFormatEnumValues covers formatEnumValues, the shared renderer for
-// constraintMessage's and branchRequirement's enum clauses (issue #625's
-// adversarial review, F1: the two sites must render a non-string enum's
-// allowed values identically and type-faithfully, not one quoted and one
-// bare). Each case's want is JSON-Marshal's actual output for that value —
-// a string quoted, everything else its own JSON literal — never Go's %v
-// syntax (F2: composite values must read as JSON, not e.g. "map[a:1]").
+// constraintMessage's and branchRequirement's enum clauses. Each case's
+// want is json.Marshal's own output for that value: a string quoted,
+// everything else its own JSON literal, never Go's %v syntax.
 func TestFormatEnumValues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -634,18 +625,15 @@ func TestFormatEnumValues(t *testing.T) {
 		{"[]any booleans", []any{true, false}, []string{"true", "false"}},
 		{"[]any null", []any{nil}, []string{"null"}},
 		{"[]any mixed types", []any{"open", float64(1), true, nil}, []string{`"open"`, "1", "true", "null"}},
-		// F2: a nested array/object enum member renders as its own JSON
-		// value, not Go's %v syntax (which would print "[1 2]"/"map[a:1]").
+		// A composite enum member renders as its own JSON value, not Go's %v
+		// syntax (which would print "[1 2]"/"map[a:1]").
 		{"[]any nested array", []any{[]any{float64(1), float64(2)}}, []string{"[1,2]"}},
 		{"[]any nested object", []any{map[string]any{"a": float64(1)}}, []string{`{"a":1}`}},
-		// F3, decided: fmt.Sprint's %g switches to scientific notation far
-		// more aggressively than JSON encoding does (JSON only above ~1e21
-		// or below ~1e-6 magnitude); a realistic whole-number enum value
-		// like 1e20 now renders as a plain decimal instead of "1e+20".
-		// Outside that range JSON encoding still uses scientific notation
-		// (e.g. 1e21 -> "1e+21") — valid JSON, so left as-is: matching
-		// json.Marshal's own number formatting is the JSON-faithful
-		// contract, not a promise of decimal notation at every magnitude.
+		// JSON number encoding only turns to scientific notation above
+		// ~1e21 or below ~1e-6 magnitude, so a whole-number enum value like
+		// 1e20 renders as a plain decimal. Past that range it renders as
+		// "1e+21" — still valid JSON, and matching json.Marshal is the
+		// contract, not decimal notation at every magnitude.
 		{"[]any large float stays decimal", []any{1e20}, []string{"100000000000000000000"}},
 		{"[]any float past json.Marshal's decimal range", []any{1e21}, []string{"1e+21"}},
 		{"nil", nil, nil},
