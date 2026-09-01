@@ -14,7 +14,6 @@ type Price struct {
 	OutputPerM          float64
 	CacheReadPerM       *float64
 	CacheCreation5mPerM *float64
-	CacheCreation1hPerM *float64
 }
 
 // PriceFromCost is the registry's cost as per-million rates; models.dev
