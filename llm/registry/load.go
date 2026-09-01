@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -460,6 +461,131 @@ func cloneModel(m Model) Model {
 	return out
 }
 
+func cloneProviderView(p Provider) Provider {
+	out := p
+	out.InheritModels = clonePointer(p.InheritModels)
+	out.Implicit = clonePointer(p.Implicit)
+	out.Transport = cloneTransportView(p.Transport)
+	out.APIKeyEnv = slices.Clone(p.APIKeyEnv)
+	out.Headers = maps.Clone(p.Headers)
+	out.CredentialHeaders = maps.Clone(p.CredentialHeaders)
+	out.Caps = cloneCaps(p.Caps)
+	out.Models = make(map[string]Model, len(p.Models))
+	for id, model := range p.Models {
+		out.Models[id] = cloneModelView(model)
+	}
+	out.notes = slices.Clone(p.notes)
+	return out
+}
+
+func cloneModelView(m Model) Model {
+	out := m
+	out.Headers = maps.Clone(m.Headers)
+	out.Caps = cloneCaps(m.Caps)
+	if m.Transport != nil {
+		transport := cloneTransportView(*m.Transport)
+		out.Transport = &transport
+	}
+	return out
+}
+
+func cloneTransportView(t Transport) Transport {
+	out := cloneTransport(t)
+	out.Body = cloneAnyMap(t.Body)
+	return out
+}
+
+func cloneCaps(c Caps) Caps {
+	out := c
+	out.ContextWindow = clonePointer(c.ContextWindow)
+	out.MaxOutputTokens = clonePointer(c.MaxOutputTokens)
+	out.Tools = clonePointer(c.Tools)
+	out.StructuredOutput = clonePointer(c.StructuredOutput)
+	out.Sampling = clonePointer(c.Sampling)
+	out.Reasoning = clonePointer(c.Reasoning)
+	out.ReasoningControls = slices.Clone(c.ReasoningControls)
+	out.EffortValues = slices.Clone(c.EffortValues)
+	out.DefaultEffort = clonePointer(c.DefaultEffort)
+	out.InputModalities = slices.Clone(c.InputModalities)
+	out.KnowledgeCutoff = clonePointer(c.KnowledgeCutoff)
+	if c.Cost != nil {
+		cost := *c.Cost
+		cost.Tiers = slices.Clone(c.Cost.Tiers)
+		out.Cost = &cost
+	}
+	out.Fields = maps.Clone(c.Fields)
+	out.MaxTokensField = clonePointer(c.MaxTokensField)
+	out.ThinkingFormat = clonePointer(c.ThinkingFormat)
+	out.ThinkingShape = clonePointer(c.ThinkingShape)
+	out.ThinkingDisplay = clonePointer(c.ThinkingDisplay)
+	out.ThinkingAlwaysOn = clonePointer(c.ThinkingAlwaysOn)
+	out.ReasoningField = clonePointer(c.ReasoningField)
+	out.ReasoningSummary = clonePointer(c.ReasoningSummary)
+	out.ChatTemplateKwargs = cloneAnyMap(c.ChatTemplateKwargs)
+	out.FinishReasonMap = maps.Clone(c.FinishReasonMap)
+	out.CacheControl = clonePointer(c.CacheControl)
+	out.CacheTTL = clonePointer(c.CacheTTL)
+	out.StrictTools = clonePointer(c.StrictTools)
+	out.ToolChoiceForcing = clonePointer(c.ToolChoiceForcing)
+	out.MaxStopSequences = clonePointer(c.MaxStopSequences)
+	out.ImageDetail = clonePointer(c.ImageDetail)
+	out.ResponsesLite = clonePointer(c.ResponsesLite)
+	out.AssistantAfterToolResult = clonePointer(c.AssistantAfterToolResult)
+	out.ThinkingAsText = clonePointer(c.ThinkingAsText)
+	out.EmptyReasoningContent = clonePointer(c.EmptyReasoningContent)
+	out.StripEmptyContent = clonePointer(c.StripEmptyContent)
+	out.ToolResultName = clonePointer(c.ToolResultName)
+	out.ToolStream = clonePointer(c.ToolStream)
+	out.SessionAffinityHeaders = clonePointer(c.SessionAffinityHeaders)
+	out.MultimodalToolResults = clonePointer(c.MultimodalToolResults)
+	out.WebSearch = clonePointer(c.WebSearch)
+	return out
+}
+
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = cloneAnyValue(value)
+	}
+	return out
+}
+
+func cloneAnyValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(value)
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = cloneAnyValue(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(value))
+		for i, item := range value {
+			out[i] = cloneAnyMap(item)
+		}
+		return out
+	case []string:
+		return slices.Clone(value)
+	case map[string]string:
+		return maps.Clone(value)
+	default:
+		return value
+	}
+}
+
 // clearProtocolTransport drops the protocol-specific transport fields a
 // cross-protocol record does not inherit (spec §4.2).
 func clearProtocolTransport(t *Transport) {
@@ -804,15 +930,15 @@ func (r *Registry) computeHidden(rec *record) {
 // ProviderIDs lists the curated registry ids, sorted.
 func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
 
-// Provider returns the merged curated record for a registry id, with Hidden
-// computed against the environment. The head carries no capabilities: those
-// live in the record's layers, which only Resolve replays.
+// Provider returns an independently owned merged curated record for a registry
+// id, with Hidden computed against the environment. The head carries no
+// capabilities: those live in the record's layers, which only Resolve replays.
 func (r *Registry) Provider(id string) (Provider, bool) {
 	rec, ok := r.curated[id]
 	if !ok {
 		return Provider{}, false
 	}
-	return rec.head, true
+	return cloneProviderView(rec.head), true
 }
 
 // UserLayerNote describes where the user layer came from ("user layer:

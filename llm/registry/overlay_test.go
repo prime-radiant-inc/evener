@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,6 +22,17 @@ func loadOverlay(t *testing.T) *Layer {
 		t.Fatal(err)
 	}
 	return l
+}
+
+func TestEmbeddedOverlayReturnsIndependentCopy(t *testing.T) {
+	original := append([]byte(nil), embeddedOverlay...)
+	defer copy(embeddedOverlay, original)
+
+	first := EmbeddedOverlay()
+	first[0] ^= 0xff
+	if got := EmbeddedOverlay(); !bytes.Equal(got, original) {
+		t.Fatal("mutating returned overlay bytes changed the embedded source")
+	}
 }
 
 func TestCuratedOverlay_ImplicitListIsDefaultOrder(t *testing.T) {
