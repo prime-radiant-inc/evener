@@ -663,6 +663,51 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 	}
 }
 
+// TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiagnostic
+// restores the activity-view side of the adversarial regression review's
+// CRITICAL finding, replacing the deleted
+// TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit
+// for the new failure shape: #448's incremental-fold round removed the
+// MaxEvents/MaxBytes ceiling that test pinned, but an oversized single LINE
+// (MaxLineBytes, always-on) can still fire, and must not hard-fail the
+// whole activity tree -- the posture ruling is "loud but CONTAINED": the
+// tree still renders, and the diagnostic is surfaced prominently via the
+// same Diagnostics mechanism the torn-tail case already uses.
+func TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiagnostic(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "activitypathologicaldelegateroot"
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "child1", "a task long enough to exceed a tiny test line cap"))
+	started := time.Unix(7_000_000_000, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	original := scanDelegateJournal
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		limits.MaxLineBytes = 20
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v, want nil error -- an oversized delegate journal line must degrade the branch, not hard-fail the whole tree", err)
+	}
+	if len(tree.Root.Entries) == 0 {
+		t.Fatalf("Root.Entries is empty, want the root's own job still rendered despite the delegate journal failure")
+	}
+	found := false
+	for _, d := range tree.Root.Diagnostics {
+		if strings.Contains(d, "delegates.jsonl") && strings.Contains(d, "line") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Root.Diagnostics = %v, want one identifying the oversized delegates.jsonl line, surfaced prominently rather than a silent empty delegate list", tree.Root.Diagnostics)
+	}
+}
+
 func pastStableDescriptor(ownerSessionID, childSessionID, task string) delegatestore.Descriptor {
 	return delegatestore.Descriptor{
 		ChildSessionID:   childSessionID,
