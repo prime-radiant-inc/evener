@@ -512,6 +512,13 @@ export function ToolRow({
   const bodyTriggerOnIntentLine = twoLevel && !summaryVisible && expanded;
   const bodyTriggerOnSummaryLine = twoLevel && summaryVisible;
 
+  // Intent button attributes differ between two-level and legacy modes.
+  // In two-level mode the intent button controls the summary disclosure;
+  // in legacy mode it controls the body disclosure directly.
+  const triggerExpanded = twoLevel ? summaryVisible : expanded;
+  const triggerControls = twoLevel ? (summaryVisible ? summaryRegionId : undefined) : disclosureBodyId;
+  const triggerOnClick = twoLevel ? () => onToggleSummary?.() : () => onToggle?.();
+
   return (
     <div
       className={CLASS.row}
@@ -525,9 +532,9 @@ export function ToolRow({
           type="button"
           className={CLASS.trigger}
           data-testid="tool-row-trigger"
-          aria-expanded={twoLevel ? summaryVisible : expanded}
-          aria-controls={twoLevel ? (summaryVisible ? summaryRegionId : undefined) : disclosureBodyId}
-          onClick={twoLevel ? () => onToggleSummary?.() : () => onToggle?.()}
+          aria-expanded={triggerExpanded}
+          aria-controls={triggerControls}
+          onClick={triggerOnClick}
         >
           {iconNode}
           {failureNode}

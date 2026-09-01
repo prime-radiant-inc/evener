@@ -56,16 +56,6 @@
   gap: 0;
 }
 
-/* Each projected intent entry renders a ToolCallItem directly inside the
- * intent group. The wrapper indents the row so the projected actions read as
- * nested under the group's summary, the same inset the old drill-down body
- * applied to its revealed ToolCallItem. */
-/* The old .intentRowBody indented only the expanded body under the
- * headline. With the unified ToolCallItem rendering, the body sits
- * naturally below the row via .body's own margin-top, and the .call
- * padding provides vertical rhythm. No left indent is needed — the
- * visual hierarchy comes from the row/body separation, not indentation. */
-
 .coldStart {
   width: 100%;
   max-width: 76rem;
