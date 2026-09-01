@@ -918,7 +918,7 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 }
 
-// TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges covers issue #738: an
+// TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges pins that an
 // instance with its own base_url no longer inherits the vendor's
 // provider-level web_search (llm/registry's endpoint gate), so the request
 // this session builds must not carry the flag - a gateway that does not

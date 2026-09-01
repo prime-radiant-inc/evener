@@ -103,81 +103,55 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 
 // firstPartyEndpoint reports whether the endpoint a specific resolution
 // actually reaches - transport, the fully resolved Transport buildTransport
-// produced (row-level overrides and all, not just the instance's own
-// rec.head.Transport), resolved for proto - is its provider's
-// (r.curated[rec.providerID], which is rec itself for a curated record) own
-// canonical endpoint. WebSearch's gate uses this (spec §10's endpoint-stop
-// above is the analog; gateWebSearch in resolve.go applies it) - Jesse's
-// framing (2026-09-01, issue #738): "web_search should only be available
-// from openai as openai." A vendor's hosted search runs on the vendor's own
-// infrastructure, so any redirection away from it forfeits the capability,
-// however the redirection is expressed - unlike the endpoint stop above,
-// which only fires for a literal base_url override and lets a *_BASE_URL
-// environment override inherit the key normally (an unused credential is
-// merely wasted; a hosted-tool definition the gateway does not implement
-// fails the whole request).
+// produced (row-level overrides included, not just the instance's own
+// rec.head.Transport), resolved for proto against row rowID - is its
+// provider's (r.curated[rec.providerID], which is rec itself for a curated
+// record) own first-party endpoint: a vendor's hosted tools run on the
+// vendor's own infrastructure, so a resolution reaching anywhere else does
+// not get to carry them (WebSearch's gate, resolve.go's gateWebSearch,
+// applies this; spec §10's credential endpoint stop is the analogous rule
+// for the API key). TestResolve_WebSearchEndpointGate pins the case
+// catalog this has to get right; the invariants below are the ones a
+// reader would not derive from the code alone.
 //
-// ownOverride is true when anything rec's own config controls replaced the
-// provider's base_url template outright, rather than merely supplying
-// values for it: a literal base_url= on the instance itself
-// (rec.ownBaseURL != ""), or on the specific model row being resolved
-// (row.Transport's own BaseURL, spec §10's `[providers.X.models."id"]`
-// transport keys) - a row-level override must gate the same as an
-// instance-level one, since buildTransport merges it into the same
-// endpoint the request actually reaches.
+// ownOverride is true when anything rec's own config replaced the
+// provider's base_url template outright - literally (rec.ownBaseURL) or on
+// the resolved row (row.Transport's own BaseURL) - rather than merely
+// supplying values for it. base_url is compared against the provider's own
+// template resolved with only its curated vars (spec §10's "after
+// substituting the curated defaults"); trailing slashes are trimmed on
+// both sides first, mirroring protocolhttp.URL's own
+// strings.TrimRight(BaseURL, "/") rather than inventing a broader
+// canonicalization. A provider whose template needs only
+// deployment-specific variables with no curated default (Vertex, Bedrock)
+// has no default to diverge from - the template alone being intact is
+// first-party there, unless the record redirects the one variable that is
+// not deployment-specific (vertexHostOverridden).
 //
-// Two shapes, both compared against defaults, the provider's own template
-// resolved with only its curated vars - no user vars, no environment (spec
-// §10's "after substituting the curated defaults"), and both with the
-// trailing-slash normalization protocolhttp.URL itself applies
-// (strings.TrimRight(BaseURL, "/") before joining the endpoint path) so a
-// *_BASE_URL that merely repeats or drops a trailing slash is not read as
-// a different endpoint - not a broader canonicalization, just mirroring
-// the one the request builder already does:
+// A resolved base_url is not the whole story: its own endpoint,
+// stream_endpoint, or count_tokens_endpoint can send the same
+// web-search-bearing request body elsewhere while base_url stays
+// canonical. All three are judged the same way base_url is: against what
+// buildTransport produces for the provider's own record with no instance
+// overrides, for proto (which already applies the cross-protocol rule,
+// spec §4.2, so a legitimately cross-protocol instance is judged against
+// its own protocol's defaults) and the matching curated row
+// (base.head.Models[rowID]) rather than no row at all - a non-curated
+// instance that inherits a curated row with its own transport (a custom
+// instance with base = "google-vertex" resolving a Claude model, whose row
+// genuinely carries the vertex-anthropic preset from the models.dev
+// npm-to-preset conversion) is judged against that row, not a row-less
+// baseline that could never reproduce it; rowID == "" (ResolveInstance's
+// model-less path) falls back to the row-less comparison a provider-level
+// resolution needs anyway. ModelsEndpoint is excluded from this class:
+// ListModels is always a bodyless GET, so it can never carry WebSearch.
 //
-//   - !ownOverride (including every curated record, which can never set
-//     rec.ownBaseURL and whose curated rows carry no per-row override
-//     today): nothing replaced the provider's base_url template, so the
-//     template itself proves nothing - first-party turns on whether the
-//     *values* plugged into it (rec's own vars, then environment, then the
-//     curated default, spec §9.1's order) land on the curated default when
-//     the provider defines one (openai's BASE_URL; a *_BASE_URL environment
-//     override is exactly the case this line exists to catch). A provider
-//     whose template takes only deployment-specific variables with no
-//     curated default (Vertex's project, Bedrock's region - every
-//     deployment supplies its own) has no default to diverge from, so the
-//     template alone being intact is first-party - unless the record
-//     redirects the one variable that is not deployment-specific: see
-//     vertexHostOverridden.
-//   - ownOverride: something replaced the template outright. First-party
-//     only if the fully resolved URL reproduces the curated default byte
-//     for byte (copying the default verbatim is not "different", spec
-//     §10). A provider with no curated default has nothing a literal
-//     override could legitimately reproduce, so this is never first-party:
-//     a missing curated default must not be read as "nothing to compare",
-//     or every google-vertex-anthropic and google-vertex-based record
-//     would be first-party by default, override or not.
-//
-// The base_url check alone is not the complete picture: a canonical
-// base_url with its own endpoint, stream_endpoint, or count_tokens_endpoint
-// sends the same web-search-bearing request body somewhere else entirely
-// (buildTransport merges a row's own endpoint overrides too, the same
-// class of gap ownOverride already closes for base_url). For an instance,
-// all three are compared against what buildTransport would produce for the
-// provider's own record with no row and no instance overrides, for the
-// same proto - which already applies the cross-protocol rule (spec §4.2),
-// so a legitimately cross-protocol instance is compared against its own
-// protocol's defaults, not its base's. A curated record skips this
-// comparison entirely (rec.curated below): its own rows can carry their
-// own curated endpoints from the models.dev conversion's npm-to-preset
-// mapping (google-vertex's claude-opus-5 row genuinely uses the
-// vertex-anthropic preset's endpoints, baked in at conversion time, not a
-// redirect), and there is no row-less baseline to compare a curated
-// record's own row against that would not misread the vendor's own
-// cross-protocol mapping as one. ModelsEndpoint is not part of this class:
-// every protocol's ListModels sends a bodyless GET, so it can never carry a
-// WebSearch tool definition regardless of where it points.
-func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto string, ownOverride bool) bool {
+// A curated record (rec.curated) is trusted outright once base_url checks
+// out, endpoint comparison included: it is compared against itself
+// (base == rec), so the comparison would be trivially true anyway, but
+// skipping it also skips the row lookup, which matters when rowID names a
+// row the curated record's own config (not a user's) supplies.
+func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID string, ownOverride bool) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
 		return true
@@ -190,16 +164,12 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto st
 	defaults = strings.TrimRight(defaults, "/")
 	switch {
 	case len(missing) > 0:
-		// rec.curated is an explicit belt-and-suspenders guard, not load-
-		// bearing against today's data: a curated record never folds a
-		// LayerConfig layer, so ownOverride and vertexHostOverridden (both
-		// sourced from rec.userVars / a LayerConfig row) are already
-		// structurally false for one. It stays explicit so a future curated
-		// overlay row that sets its own base_url or GOOGLE_VERTEX_HOST -
-		// the vendor's own documented shape, not a user redirect - is
-		// trusted the same way the vendor's provider-level template
-		// already is, rather than accidentally gated by a mechanism built
-		// to catch user-config redirection.
+		// rec.curated is a belt-and-suspenders guard, not load-bearing
+		// against today's data (a curated record never folds a
+		// LayerConfig layer, so ownOverride/vertexHostOverridden are
+		// already false for one) - kept explicit so a future curated row
+		// with its own base_url or GOOGLE_VERTEX_HOST is trusted the same
+		// way the vendor's provider-level template already is.
 		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec)) {
 			return false
 		}
@@ -207,19 +177,13 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto st
 		return false
 	}
 	if rec.curated {
-		// The base_url checks above already establish this resolution
-		// reaches the vendor: trust the rest of a curated record's own
-		// data too, endpoints included. A curated row can legitimately
-		// carry its own Endpoint/StreamEndpoint/CountTokensEndpoint from
-		// the models.dev conversion's npm-to-preset mapping
-		// (google-vertex's claude-opus-5 row: protocol anthropic, the
-		// vertex-anthropic preset's endpoints, both baked in at
-		// conversion time, spec §4.2 - not user config); comparing that
-		// against a same-provider, row-less baseline would misread the
-		// vendor's own cross-protocol mapping as a redirect.
 		return true
 	}
-	canonical, _ := r.buildTransport(base, Model{}, proto)
+	var row Model
+	if rowID != "" {
+		row = base.head.Models[rowID]
+	}
+	canonical, _ := r.buildTransport(base, row, proto)
 	return transport.Endpoint == canonical.Endpoint &&
 		transport.StreamEndpoint == canonical.StreamEndpoint &&
 		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
@@ -229,24 +193,21 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto st
 // default, since google-vertex-anthropic/google-vertex define none) supply
 // a literal GOOGLE_VERTEX_HOST directly, bypassing vertexHost(LOCATION) -
 // the derivation the vertex-location host rule exists to perform
-// (resolveBaseURLWith's HostRuleVertexLocation case, load.go). The
-// vars-only carve-out above trusts a record that keeps the template, but a
-// direct GOOGLE_VERTEX_HOST leaves rec.ownBaseURL empty (the template is
-// technically untouched - it is still
-// "{GOOGLE_VERTEX_HOST}/v1/projects/.../locations/...") while still routing
-// every request to an arbitrary gateway, because GOOGLE_VERTEX_HOST is not
-// deployment-specific the way GOOGLE_VERTEX_PROJECT/LOCATION are: there is
-// exactly one correct value for a given location, computed by the rule,
-// and a record that supplies its own is substituting a choice, not
-// deployment data. A supplied value that happens to equal what the
-// derivation would have produced anyway is not an override (copying the
-// default verbatim is not "different", spec §10).
+// (resolveBaseURLWith's HostRuleVertexLocation case, load.go). Unlike
+// GOOGLE_VERTEX_PROJECT/LOCATION, which are genuinely deployment-specific,
+// GOOGLE_VERTEX_HOST has exactly one correct value for a given location;
+// supplying a different one is a redirect the vars-only carve-out above
+// would otherwise miss, since it leaves rec.ownBaseURL empty (the template
+// is technically untouched). A supplied value that happens to equal the
+// derivation's own answer is not an override (copying the default
+// verbatim is not "different", spec §10).
 //
-// Only vertex-location needs this today: Ollama's host rule
-// (resolveOllamaHost) derives from OLLAMA_HOST/OLLAMA_BASE_URL through a
-// different shape entirely (no single "the" derived value to compare
-// against), and no Ollama-family provider sets web_search, so there is
-// nothing for the same class of bypass to reach yet.
+// This check is Vertex-specific by necessity, not by choice: it is the
+// only host rule with both a missing curated base_url default and a
+// provider that sets web_search today. A future provider sharing that
+// shape - no curated default, host routed through its own env var, kept
+// template - would need an equivalent check of its own; nothing here
+// generalizes to it automatically.
 func (r *Registry) vertexHostOverridden(rec *record) bool {
 	if rec.head.Transport.HostRule != HostRuleVertexLocation {
 		return false
