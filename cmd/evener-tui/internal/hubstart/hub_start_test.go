@@ -348,7 +348,7 @@ func TestDialHubRPCReportsIncompatibleAPIForMismatchedProtocol(t *testing.T) {
 	defer srv.Close()
 	addr := HubAddress{BaseURL: srv.URL}
 
-	_, err := dialHubRPC(context.Background(), addr, srv.Client(), nil)
+	_, err := dialHubRPC(context.Background(), addr, srv.Client(), nil, nil)
 	if err == nil {
 		t.Fatal("dialHubRPC accepted a mismatched protocol version")
 	}
@@ -413,6 +413,34 @@ func TestStartHubClientWritesStartupDiagnosticsToLogFile(t *testing.T) {
 	if got := string(data); !strings.Contains(got, "startup failed") || !strings.Contains(got, "remote-no-autostart") {
 		t.Fatalf("log=%q, want startup diagnostic", got)
 	}
+}
+
+// TestConnectionLogfAppendsToLogFile pins the appwire.Client connection-
+// lifecycle sink (issue #783): dialHubRPC wires it to connectionLogf, which
+// must land formatted lines in the TUI's own diagnostics file rather than
+// the process's stderr — a -debug TUI session has no alternate screen to
+// protect a live bubbletea render from a stray stderr write.
+func TestConnectionLogfAppendsToLogFile(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "conn.log")
+	logf := connectionLogf(logFile)
+	logf("appwire: keepalive ping failed (%s): %v; closing connection", "5s", errors.New("boom"))
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "keepalive ping failed (5s): boom; closing connection") {
+		t.Fatalf("log=%q, want formatted keepalive line", got)
+	}
+}
+
+// TestConnectionLogfDiscardsWithoutLogFile proves the sink is a safe no-op
+// when no --log-file/EVENER_TUI_LOG_FILE was configured, matching
+// WriteStartupDiagnostic's own behavior — nothing is created on disk and
+// nothing panics.
+func TestConnectionLogfDiscardsWithoutLogFile(t *testing.T) {
+	logf := connectionLogf("")
+	logf("appwire: keepalive ping failed: %v", errors.New("boom"))
 }
 
 func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
