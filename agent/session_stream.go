@@ -43,6 +43,13 @@ func sortedPreviewCallIDs(calls map[string]struct{}) []string {
 	return ids
 }
 
+func (s *Session) resetCommunicatePreviews(calls map[string]struct{}) {
+	for callID := range calls {
+		s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		delete(calls, callID)
+	}
+}
+
 // attemptObservation carries one consumeModelStream attempt's phase/stats back
 // to callModel's retry closure, feeding llm.RetryStream's early-stop rules.
 // Populated on every return path, including errors, so a mid-stream failure
@@ -144,9 +151,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			for id := range previewCalls {
-				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: id})
-			}
+			s.resetCommunicatePreviews(previewCalls)
 			panic(recovered)
 		}
 	}()
@@ -174,6 +179,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			// discard it so the retry's output replaces rather than appends.
 			OnReset: func() {
 				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+				s.resetCommunicatePreviews(previewCalls)
 			},
 			// FailFastAfter enables both llm.RetryStream early-stop rules: the
 			// streak rule (modelRetryFailFastAfter consecutive consume-phase
