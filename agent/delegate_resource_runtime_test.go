@@ -1614,6 +1614,26 @@ func currentDelegateStop(t *testing.T, controller *delegateTreeController) *dele
 	return controller.stop
 }
 
+// awaitDelegateStopAdmission blocks until the controller durably admits a
+// subtree stop and returns that stop. A test that goes on to trigger
+// settlement (FinishGeneration, releasing the provider) MUST hold the stop it
+// captured here rather than reading controller.stop back afterwards: the
+// reconcile driver clears controller.stop the instant the stop settles, so the
+// later read races the completion it is waiting for.
+func awaitDelegateStopAdmission(t *testing.T, controller *delegateTreeController) *delegateStopState {
+	t.Helper()
+	var stop *delegateStopState
+	// TRIPWIRE: admission is a durable fsync + local drive, expected in low
+	// hundreds of ms; 5s only absorbs CI scheduling stalls.
+	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		stop = controller.stop
+		return stop != nil
+	})
+	return stop
+}
+
 func stableJobStopState(t *testing.T, invocation stableJobStopInvocation) jobStopResult {
 	t.Helper()
 	if invocation.err != nil {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 )
@@ -121,21 +120,12 @@ func TestJobStopReportsLiveWatchesSettled(t *testing.T) {
 			"max_wait_ms": 5000,
 		})
 	}()
-	// Wait for durable stop admission before finishing the generation — the
+	// Capture the stop at admission before finishing the generation — the
 	// pattern the retention tests use (delegate_resource_retention_stop_test.go).
-	// (currentDelegateStop itself is unsuitable to poll: it fails the test when
-	// the stop is not yet admitted.)
-	// TRIPWIRE: admission is a durable fsync + local drive, expected in low
-	// hundreds of ms; 5s only absorbs CI scheduling stalls.
-	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
-		f.controller.mu.Lock()
-		defer f.controller.mu.Unlock()
-		return f.controller.stop != nil
-	})
+	stop := awaitDelegateStopAdmission(t, f.controller)
 	if _, err := f.controller.FinishGeneration(delegateLease{delegateID: "dlg_observer", generation: 1}, delegateFinish{}); err != nil {
 		t.Fatalf("finish observer generation: %v", err)
 	}
-	stop := currentDelegateStop(t, f.controller)
 	<-stop.done
 	state := stableJobStopState(t, <-result)
 	if len(state.LiveWatches) != 1 || state.LiveWatches[0].ID != watchID {
@@ -184,13 +174,7 @@ func TestJobStopLiveWatchesSettleRefresh(t *testing.T) {
 			"max_wait_ms": 5000,
 		})
 	}()
-	// TRIPWIRE: admission is a durable fsync + local drive, expected in low
-	// hundreds of ms; 5s only absorbs CI scheduling stalls.
-	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
-		f.controller.mu.Lock()
-		defer f.controller.mu.Unlock()
-		return f.controller.stop != nil
-	})
+	stop := awaitDelegateStopAdmission(t, f.controller)
 	// Clear the watch between admission and settle: the settled result must
 	// not report it.
 	if _, err := f.rootJM.clearReceiverWatchByID(onlyWatchIDIn(t, f.rootJM), "child-dlg_observer", "dlg_observer"); err != nil {
@@ -199,7 +183,6 @@ func TestJobStopLiveWatchesSettleRefresh(t *testing.T) {
 	if _, err := f.controller.FinishGeneration(delegateLease{delegateID: "dlg_observer", generation: 1}, delegateFinish{}); err != nil {
 		t.Fatalf("finish observer generation: %v", err)
 	}
-	stop := currentDelegateStop(t, f.controller)
 	<-stop.done
 	state := stableJobStopState(t, <-result)
 	if len(state.LiveWatches) != 0 {
