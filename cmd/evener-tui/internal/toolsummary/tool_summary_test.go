@@ -13,6 +13,17 @@ func TestSummarizeTool_Shell_WithIntent(t *testing.T) {
 	}
 }
 
+// TestSummarizeTool_Shell_WithPurposeFallback (issue #709): tool calls
+// recorded before the purpose->intent rename (7512a736e, 2026-08-29) carry
+// the model's stated reason under "purpose", not "intent". The TUI must
+// still show that reason instead of falling through to the raw command.
+func TestSummarizeTool_Shell_WithPurposeFallback(t *testing.T) {
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
+	if desc != "list temp files" {
+		t.Errorf("got %q", desc)
+	}
+}
+
 func TestSummarizeTool_Shell_MultiLine(t *testing.T) {
 	cmd := "line one\nline two\nline three"
 	desc, detail := SummarizeTool("shell", `{"command":"`+strings.ReplaceAll(cmd, "\n", `\n`)+`"}`)
