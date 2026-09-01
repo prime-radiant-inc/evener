@@ -322,14 +322,21 @@ surface = "anthropic"
 
 // TestResolve_WebSearchEndpointGate covers issue #738: WebSearch is a
 // platform-side capability, not a wire-protocol fact (spec §4.2 says
-// explicitly it is not one of the facts an alias imports), so an instance
-// whose resolved base_url diverges from its provider's own default must not
-// inherit it - the same family as spec §10's credential endpoint stop, but
-// not limited to a literal base_url override: sending an unused credential
-// to the wrong endpoint is merely wasted, while sending a hosted-tool
-// definition the gateway does not implement fails the whole request, so a
-// *_BASE_URL environment override that keeps the template is just as
-// untrustworthy here even though credentials keep flowing through it.
+// explicitly it is not one of the facts an alias imports), so it survives
+// only on a record reaching its provider's first-party endpoint (Jesse's
+// framing, 2026-09-01: "web_search should only be available from openai as
+// openai"). This is the same family as spec §10's credential endpoint stop,
+// but not limited to a literal base_url override: sending an unused
+// credential to the wrong endpoint is merely wasted, while sending a
+// hosted-tool definition the gateway does not implement fails the whole
+// request, so a *_BASE_URL environment override that keeps the template is
+// just as untrustworthy here even though credentials keep flowing through
+// it. vertexgw is the regression case for a prior version of this gate,
+// which exempted every google-vertex-anthropic/google-vertex-based record
+// unconditionally (missing a curated default for GOOGLE_VERTEX_PROJECT/
+// LOCATION was read as "nothing to compare", regardless of whether the
+// record's own base_url ever touched the template) - the exact #738 failure
+// shape, one vendor over.
 func TestResolve_WebSearchEndpointGate(t *testing.T) {
 	cfg := `
 [providers.bedrock]
@@ -348,6 +355,7 @@ web_search = true
 
 [providers.optedout]
 base = "anthropic"
+base_url = "https://gw.example/v1"
 web_search = false
 
 [providers.vertex]
@@ -355,30 +363,43 @@ base = "google-vertex-anthropic"
 [providers.vertex.vars]
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexgw]
+base = "google-vertex-anthropic"
+base_url = "https://vertex-gateway.example/v1"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
-		ref  string
-		want string
-		desc string
+		ref      string
+		want     string
+		wantWarn bool
+		desc     string
 	}{
-		{"bedrock/us.openai.gpt-5.6-luna", "nil", "a literal base_url naming a different endpoint must not inherit web_search"},
-		{"openai/gpt-5.5", "true", "openai itself, unmodified, must keep web_search"},
-		{"same/gpt-5.5", "true", "copying the default base_url verbatim is not different (spec §10)"},
-		{"optedin/gpt-5.5", "true", "an explicit web_search = true must still opt a proxy in"},
-		{"optedout/claude-opus-5", "false", "an explicit web_search = false must still be the escape hatch"},
-		{"vertex/claude-opus-5", "true", "vertex keeps the template and supplies vars, so it inherits normally"},
+		{"bedrock/us.openai.gpt-5.6-luna", "nil", true, "a literal base_url naming a different endpoint must not inherit web_search"},
+		{"openai/gpt-5.5", "true", false, "openai itself, unmodified, must keep web_search"},
+		{"same/gpt-5.5", "true", false, "copying the default base_url verbatim is not different (spec §10)"},
+		{"optedin/gpt-5.5", "true", false, "an explicit web_search = true must still opt a proxy in, silently"},
+		{"optedout/claude-opus-5", "false", false, "an explicit web_search = false at a genuinely diverged base_url is still the escape hatch, silently"},
+		{"vertex/claude-opus-5", "true", false, "vertex keeps the template and supplies vars, so it inherits normally"},
+		{"vertexgw/claude-opus-5", "nil", true, "a literal base_url on a Vertex-based instance must not inherit web_search either - the vars-only carve-out must not swallow this"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)
 		if got := bp(res.Caps.WebSearch); got != c.want {
 			t.Errorf("%s: web_search = %s, want %s (%s)", c.ref, got, c.want, c.desc)
 		}
+		if got := hasWarning(res, "web_search disabled"); got != c.wantWarn {
+			t.Errorf("%s: web_search-disabled warning present = %v, want %v (%s): %v", c.ref, got, c.wantWarn, c.desc, res.Warnings)
+		}
 	}
 
 	proxy := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://proxy.example/v1"}, "")
-	if res := mustResolve(t, proxy, "openai/gpt-5.5"); bp(res.Caps.WebSearch) != "nil" {
+	res := mustResolve(t, proxy, "openai/gpt-5.5")
+	if bp(res.Caps.WebSearch) != "nil" {
 		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: web_search = %s, want nil (a gateway that merely speaks the protocol cannot honor it)", bp(res.Caps.WebSearch))
+	}
+	if !hasWarning(res, "web_search disabled") {
+		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: expected a web_search-disabled warning, got %v", res.Warnings)
 	}
 }
 

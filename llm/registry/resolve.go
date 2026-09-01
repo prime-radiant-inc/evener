@@ -235,9 +235,12 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		}
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
-	r.gateWebSearch(&caps, prov, rec)
+	webSearchWarning := r.gateWebSearch(&caps, prov, rec)
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	if webSearchWarning != "" {
+		warnings = append(warnings, webSearchWarning)
+	}
 	cred, cw := r.credential(rec)
 	warnings = append(warnings, cw...)
 	credHeaders := map[string]string{}
@@ -270,19 +273,23 @@ func webSearchExplicit(prov map[string]string) bool {
 	return strings.HasPrefix(prov["WebSearch"], LayerConfig+"/")
 }
 
-// gateWebSearch applies issue #738's endpoint gate: WebSearch is a
+// gateWebSearch applies issue #738's first-party gate: WebSearch is a
 // platform-side capability, not a wire-protocol fact (spec §4.2 says
 // explicitly it is not one of the facts an alias imports), so it does not
-// survive on a record whose resolved base_url diverges from its provider's
-// own default (baseURLDiverged, instances.go) - unless the record's own
+// survive on a record that is not reaching its provider's first-party
+// endpoint (firstPartyEndpoint, instances.go) - unless the record's own
 // providers.toml entry set WebSearch itself, in which case an explicit true
-// or false always wins.
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record) {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || !r.baseURLDiverged(rec) {
-		return
+// or false always wins. Returns the warning naming why WebSearch was
+// stripped, so an operator fronting a real first-party vendor with a mirror
+// or audit gateway sees why web_search went quiet instead of finding out
+// only when the model tries to use it and cannot; empty when nothing fired.
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record) string {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec) {
+		return ""
 	}
 	caps.WebSearch = nil
 	delete(prov, "WebSearch")
+	return fmt.Sprintf("web_search disabled: this endpoint is not %s's first-party API (set web_search = true on the instance to opt back in)", rec.providerID)
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
@@ -366,7 +373,9 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
-	r.gateWebSearch(&caps, prov, rec)
+	if w := r.gateWebSearch(&caps, prov, rec); w != "" {
+		warnings = append(warnings, w)
+	}
 	seedFields(&caps, rowProto)
 
 	transport, tw := r.buildTransport(rec, row, rowProto)

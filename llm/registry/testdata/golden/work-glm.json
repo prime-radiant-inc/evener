@@ -74,6 +74,9 @@
     "ThinkingFormat": "config/row",
     "model": "row:glm-5.2-nvfp4"
   },
+  "warnings": [
+    "web_search disabled: this endpoint is not openai's first-party API (set web_search = true on the instance to opt back in)"
+  ],
   "default_model": "gpt-5.6",
   "cheap_model": "gpt-4.1-nano",
   "credential_source": "credential_headers",
