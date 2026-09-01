@@ -266,6 +266,13 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // shadowing entry carrying those fields alone — never a base_url the form
 // merely displayed, which would stop the instance inheriting its provider's
 // key (spec §10, §11.3).
+//
+// Every refusal that blames the fields the caller sent — an unknown name, an
+// invalid vars key, an edit that would leave the instance unable to load —
+// comes back as appwire.InvalidParams, the same convention Create uses
+// (#717/#748). A refusal about the hub's own state (the registry not loaded,
+// a read, write, or restore failure) stays a plain error: that is not the
+// caller's to fix.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -291,7 +298,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	p, authored := l.Providers[name]
 	if !authored {
 		if _, ok := c.reg.Get().Instance(name); !ok {
-			return fmt.Errorf("instance %q not found", name)
+			return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 		}
 		p = registry.Provider{ID: name}
 	}

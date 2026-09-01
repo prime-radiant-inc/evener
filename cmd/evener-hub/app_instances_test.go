@@ -495,6 +495,13 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nowhere") {
 		t.Fatalf("Edit = %v, want an unknown-instance error", err)
 	}
+	// A name that resolves to nothing is the caller's to fix, the same shape
+	// as Create's unknown-base-provider check (#717/#748) — InvalidParams,
+	// not an internal fault.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
+	}
 }
 
 // TestInstances_RemoveRefusesImplicitInstance: an instance that exists from
