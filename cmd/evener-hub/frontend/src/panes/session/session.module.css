@@ -53,8 +53,7 @@
 .intentGroupItems {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding-bottom: var(--space-2);
+  gap: 0;
 }
 
 /* Each projected intent entry renders a ToolCallItem directly inside the
