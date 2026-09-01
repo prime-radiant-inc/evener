@@ -1164,24 +1164,26 @@ function renderWithConfig(config: ReturnType<typeof makeTranscriptDisplayConfig>
   );
 }
 
-test("at the tools level an intent-bearing row shows summary and the intent trigger controls the body", () => {
+test("at the tools level an intent-bearing row defaults to L1 (summary visible)", () => {
   registerToolRenderer({ match: "tci_summary_tools", summary: () => "Ran tests", body: () => <div>body</div> });
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
     item({ id: "summary_tools", toolName: "tci_summary_tools", description: "Running the test suite" }),
   );
-  // At tools level, summaryOpen defaults true but twoLevel is false (the
-  // summary has no separate toggle — the intent button controls the body
-  // directly, same as the legacy behavior).
+  // At tools level, summaryOpen defaults true (L1): intent + summary visible.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running the test suite");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
-  // The intent trigger controls the body (expanded), so aria-expanded=false
-  // while the body is collapsed.
+  // The intent trigger controls the summary: aria-expanded=true (open).
   const trigger = screen.getByTestId("tool-row-trigger");
-  expect(trigger.getAttribute("aria-expanded")).toBe("false");
-  // No separate body trigger at tools level — the intent button IS the toggle.
-  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  // A separate body trigger controls the body (expanded), collapsed by default.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("false");
+  // Clicking the body trigger opens the body (L2).
+  fireEvent.click(bodyTrigger);
+  expect(bodyTrigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
 });
 
 test("at the chat level an intent-bearing row defaults summaryOpen=false (only intent visible)", () => {
@@ -1208,7 +1210,7 @@ test("an intent-less row at the chat level forces summaryOpen=true (summary visi
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
 });
 
-test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens (tools level, legacy toggle)", () => {
+test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens (tools level)", () => {
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
@@ -1220,20 +1222,19 @@ test("a shell row with summaryHiddenWhenExpanded hides the summary when the body
       output: "hi\n[exit 0]",
     }),
   );
-  // At tools level, the intent trigger controls the body (legacy behavior).
-  // The summary is visible while the body is collapsed.
+  // At tools level, summaryOpen defaults true (L1): the summary is visible.
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 
-  // Expand the body via the intent trigger (the row's click target).
+  // Expand the body via the body trigger (the .bodyTrigger chevron).
   // With summaryHiddenWhenExpanded, the summary disappears.
-  const trigger = screen.getByTestId("tool-row-trigger");
-  fireEvent.click(trigger);
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  fireEvent.click(bodyTrigger);
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
 });
 
-test("switching from chat to tools ignores persisted summary close (summary always visible at tools+)", () => {
+test("defaults apply at each level; an explicit summary choice persists across level changes", () => {
   registerToolRenderer({ match: "tci_summary_switch", summary: () => "Ran tests", body: () => <div>body</div> });
   const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
@@ -1243,24 +1244,35 @@ test("switching from chat to tools ignores persisted summary close (summary alwa
     description: "Running the test suite",
   });
 
-  // At chat level, close the summary (persist a false choice).
+  // At chat level, summary defaults closed (L0): only intent visible.
   const { rerender } = renderWithConfig(chatConfig, toolItem);
   const trigger = screen.getByTestId("tool-row-trigger");
-  // Summary starts hidden (chat defaults summaryOpen=false).
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 
-  // Switch to tools level — the persisted close must NOT win.
-  // summaryConfigDefault=true forces summaryOpen=true regardless.
+  // Switch to tools level — no explicit choice yet, so the default applies:
+  // summaryOpen defaults true (L1).
   rerender(
     <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="test:summary">
       <ToolCallItem item={toolItem} turn={turn} live={false} />
     </TranscriptRenderProvider>,
   );
-  // The summary is visible at tools level.
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
-  // The intent trigger controls the body (legacy behavior, aria-expanded=false while collapsed).
   const toolsTrigger = screen.getByTestId("tool-row-trigger");
+  expect(toolsTrigger.getAttribute("aria-expanded")).toBe("true");
+  // A body trigger now exists (twoLevel is always enabled).
+  expect(screen.queryByTestId("tool-row-body-trigger")).not.toBeNull();
+
+  // Explicitly close the summary at tools level (persist a false choice).
+  fireEvent.click(toolsTrigger);
   expect(toolsTrigger.getAttribute("aria-expanded")).toBe("false");
-  // No body trigger at tools level.
-  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+
+  // Switch back to chat — the explicit close persists; summary stays closed.
+  rerender(
+    <TranscriptRenderProvider config={chatConfig} surface="readOnly" disclosureScope="test:summary">
+      <ToolCallItem item={toolItem} turn={turn} live={false} />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });

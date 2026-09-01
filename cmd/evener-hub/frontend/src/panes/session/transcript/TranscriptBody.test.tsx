@@ -576,7 +576,7 @@ describe("TranscriptBody", () => {
     const firstToolExpanded = () =>
       screen
         .getAllByTestId("tool-call-item")[0]
-        ?.querySelector('[data-testid="tool-row-trigger"]')
+        ?.querySelector('[data-testid="tool-row-body-trigger"]')
         ?.getAttribute("aria-expanded");
     rerender(
       <TranscriptBody

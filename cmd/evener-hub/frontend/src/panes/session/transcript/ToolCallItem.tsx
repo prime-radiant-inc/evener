@@ -277,20 +277,18 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
-  // Two-level disclosure (Task 5): the summary line has its own open/closed
-  // state, independent of the body disclosure. At verbosity levels where
-  // toolCalls is true (tools/activity/full) the summary defaults open; at
-  // chat/intent it defaults closed, showing only the intent. An intent-less
-  // row has no separate intent line to toggle, so its summary is forced open
-  // regardless of the config default — the summary IS its only line.
-  // At levels where the summary defaults open (tools/activity/full), the
-  // summary has no separate toggle (twoLevel is false), so a persisted
-  // close from a lower level (chat/intent) must NOT win — the summary is
-  // always visible at these levels.
+  // Two-level disclosure: the summary line has its own open/closed state,
+  // independent of the body disclosure. At verbosity levels where toolCalls is
+  // true (tools/activity/full) the summary defaults open; at chat/intent it
+  // defaults closed, showing only the intent. An intent-less row has no
+  // separate intent line to toggle, so its summary is forced open regardless
+  // of the config default. An explicit user choice (open or close) persists
+  // across verbosity level changes — the default only applies when there is
+  // no explicit choice.
   const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
   const summaryConfigDefault = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryConfigDefault);
-  const summaryOpen = statedIntent === undefined || summaryConfigDefault ? true : summaryDisclosureOpen;
+  const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
   // A descriptor whose summary duplicates its expanded body (shell: the raw
   // command vs the body's pretty-printed block) hides the summary while the
   // body is open — the body is the single representation. ToolRow's own
@@ -378,9 +376,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
-        onToggleSummary={
-          summaryConfigDefault ? undefined : () => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)
-        }
+        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
         summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
