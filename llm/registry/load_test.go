@@ -1,12 +1,16 @@
 package registry
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -36,6 +40,23 @@ func fixtureLoad(t *testing.T, env map[string]string, config string, extra ...Op
 	return r
 }
 
+func embeddedLoad(t *testing.T, extra ...Option) *Registry {
+	t.Helper()
+	opts := []Option{
+		WithStateRoot(t.TempDir()),
+		WithEnv(mapEnv(nil)),
+		WithNoUserLayer(),
+		WithOffline(true),
+		WithoutCache(),
+	}
+	opts = append(opts, extra...)
+	r, err := Load(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func mapEnv(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 }
@@ -52,6 +73,226 @@ func layerTags(rec *record) []string {
 		out = append(out, l.tag+":"+l.owner)
 	}
 	return out
+}
+
+func TestLoad_EmbeddedSourcesDoNotShareLiveState(t *testing.T) {
+	first, second := embeddedLoad(t), embeddedLoad(t)
+	first.ApplyLive("ollama", []Model{{ID: "only-on-first"}})
+	if got := second.LiveModels("ollama"); len(got) != 0 {
+		t.Fatalf("second registry inherited live models: %+v", got)
+	}
+}
+
+func TestLoad_EmbeddedSourcesDoNotShareInjectedInstances(t *testing.T) {
+	first := embeddedLoad(t, WithInstances(map[string]Provider{
+		"only-first": {Base: "openai"},
+	}))
+	second := embeddedLoad(t, WithInstances(map[string]Provider{
+		"only-second": {Base: "openai"},
+	}))
+
+	if _, err := first.ResolveInstance("only-first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.ResolveInstance("only-first"); err == nil {
+		t.Fatal("second registry inherited first registry's injected instance")
+	}
+	if _, err := second.ResolveInstance("only-second"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProvider_ReturnsIndependentValue(t *testing.T) {
+	registry := embeddedLoad(t)
+	provider, ok := registry.Provider("openai")
+	if !ok {
+		t.Fatal("openai provider is missing")
+	}
+	before, err := json.Marshal(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id := range provider.Models {
+		delete(provider.Models, id)
+		break
+	}
+	if provider.Implicit != nil {
+		*provider.Implicit = !*provider.Implicit
+	}
+
+	assertUnchanged := func(label string, got Provider) {
+		t.Helper()
+		data, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, before) {
+			t.Fatalf("%s provider changed after mutating a returned value", label)
+		}
+	}
+	sameRegistry, _ := registry.Provider("openai")
+	assertUnchanged("same registry", sameRegistry)
+	newRegistry, _ := embeddedLoad(t).Provider("openai")
+	assertUnchanged("new registry", newRegistry)
+}
+
+func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
+	provider := Provider{
+		ID:            "example",
+		InheritModels: new(true),
+		Implicit:      new(true),
+		APIKeyEnv:     []string{"EXAMPLE_API_KEY"},
+		Headers:       map[string]string{"provider": "header"},
+		Transport: Transport{
+			Vars: map[string]string{"region": "test"},
+			Body: map[string]any{
+				"nested": map[string]any{"enabled": true},
+				"tables": []map[string]any{{"name": "first"}},
+			},
+		},
+		Caps: Caps{
+			ContextWindow:     new(1000),
+			ReasoningControls: []string{"effort"},
+			Fields:            map[string]bool{"reasoning.effort": true},
+			Cost:              &Cost{Tiers: []CostTier{{InputTokensAbove: 100}}},
+			ChatTemplateKwargs: map[string]any{
+				"options": map[string]any{"mode": "fast"},
+			},
+		},
+		Models: map[string]Model{
+			"model": {
+				Headers: map[string]string{"model": "header"},
+				Caps:    Caps{Tools: new(true)},
+				Transport: &Transport{
+					Body: map[string]any{"model": map[string]any{"enabled": true}},
+				},
+			},
+		},
+	}
+	registry := &Registry{curated: map[string]*record{"example": {head: provider}}}
+	want, err := json.Marshal(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := registry.Provider("example")
+	if !ok {
+		t.Fatal("example provider is missing")
+	}
+	*got.InheritModels = false
+	got.APIKeyEnv[0] = "CHANGED"
+	got.Headers["provider"] = "changed"
+	got.Transport.Vars["region"] = "changed"
+	got.Transport.Body["nested"].(map[string]any)["enabled"] = false
+	got.Transport.Body["tables"].([]map[string]any)[0]["name"] = "changed"
+	*got.Caps.ContextWindow = 2000
+	got.Caps.ReasoningControls[0] = "changed"
+	got.Caps.Fields["reasoning.effort"] = false
+	got.Caps.Cost.Tiers[0].InputTokensAbove = 200
+	got.Caps.ChatTemplateKwargs["options"].(map[string]any)["mode"] = "slow"
+	model := got.Models["model"]
+	model.Headers["model"] = "changed"
+	*model.Caps.Tools = false
+	model.Transport.Body["model"].(map[string]any)["enabled"] = false
+	got.Models["model"] = model
+
+	unchanged, _ := registry.Provider("example")
+	data, err := json.Marshal(unchanged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatal("provider changed after mutating nested values in a returned view")
+	}
+}
+
+func TestLoad_EmbeddedOverridesBypassParsedDefaults(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("snapshot", func(t *testing.T) {
+		defaults := embeddedLoad(t)
+		custom := embeddedLoad(t, WithSnapshot(data))
+		if _, ok := defaults.Provider("302ai"); !ok {
+			t.Fatal("default embedded catalog has no 302ai provider")
+		}
+		if _, ok := custom.Provider("302ai"); ok {
+			t.Fatal("custom snapshot unexpectedly used the embedded catalog")
+		}
+	})
+
+	t.Run("overlay", func(t *testing.T) {
+		defaults := embeddedLoad(t)
+		custom := embeddedLoad(t, WithOverlay(overlayWith(
+			"[providers.plan-review-only]\nbase = \"openai\"\n",
+		)))
+		if _, ok := defaults.Provider("plan-review-only"); ok {
+			t.Fatal("default overlay contains test provider")
+		}
+		if _, ok := custom.Provider("plan-review-only"); !ok {
+			t.Fatal("custom overlay provider is missing")
+		}
+	})
+}
+
+func TestLoad_EmbeddedSourcesSupportConcurrentLoads(t *testing.T) {
+	const workers = 8
+	stateRoot := t.TempDir()
+	errs := make(chan error, workers)
+	ready := make(chan struct{}, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for worker := range workers {
+		wg.Go(func() {
+			ready <- struct{}{}
+			<-start
+			r, err := Load(
+				WithStateRoot(stateRoot),
+				WithEnv(mapEnv(nil)),
+				WithNoUserLayer(),
+				WithOffline(true),
+				WithoutCache(),
+			)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resolved, err := r.Resolve("openai/gpt-5.6")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if resolved.ProviderID != "openai" || resolved.Protocol != ProtocolOpenAIResponses {
+				errs <- fmt.Errorf("worker %d resolved %+v", worker, resolved)
+			}
+		})
+	}
+	for range workers {
+		<-ready
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+func BenchmarkLoadEmbeddedDefaults(b *testing.B) {
+	stateRoot := b.TempDir()
+	for b.Loop() {
+		if _, err := Load(
+			WithStateRoot(stateRoot),
+			WithEnv(mapEnv(nil)),
+			WithNoUserLayer(),
+			WithOffline(true),
+		); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
