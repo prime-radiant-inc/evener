@@ -73,7 +73,12 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 	case "shell":
 		cmd := str("command")
 		cmd = stripRedundantCd(cmd, cwd)
+		// "purpose" was "intent"'s name before the 2026-08-29 rename
+		// (7512a736e); fall back so pre-rename transcripts still show it
+		// (issue #709).
 		if d := str("intent"); d != "" {
+			desc = trunc(d, 80)
+		} else if d := str("purpose"); d != "" {
 			desc = trunc(d, 80)
 		} else {
 			// Show first line as desc; full command as detail if multi-line.

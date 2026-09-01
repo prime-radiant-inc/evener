@@ -268,6 +268,32 @@ func TestRenderToolCallShowsIntentAsFirstBodyLine(t *testing.T) {
 	}
 }
 
+// TestRenderToolCallFallsBackToPurposeAsFirstBodyLine (issue #709): tool
+// calls recorded before the purpose->intent rename (7512a736e, 2026-08-29)
+// carry the model's stated reason under "purpose", not "intent". A resumed
+// session's transcript can span both eras, so the intent body line must
+// still render for the pre-rename shape instead of silently disappearing.
+func TestRenderToolCallFallsBackToPurposeAsFirstBodyLine(t *testing.T) {
+	withTestColorProfile(t)
+	tc := transcript.ToolCallInfo{
+		Name:     "exec_command",
+		RawArgs:  `{"command":"go test ./cmd/evener-tui","purpose":"Verify tool renderer intent display"}`,
+		Output:   "ok",
+		Duration: 50 * time.Millisecond,
+		Done:     true,
+		Expanded: true,
+	}
+
+	got := RenderToolCall(tc, 100, false)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected intent body line under header, got %q", got)
+	}
+	if !strings.Contains(lines[1], "Verify tool renderer intent display") {
+		t.Fatalf("first body line = %q, want legacy purpose text; full render:\n%q", lines[1], got)
+	}
+}
+
 // TestWrapText_FitsOnOneLine checks no wrapping when text fits.
 func TestWrapText_FitsOnOneLine(t *testing.T) {
 	lines := wrapText("hello world", 20, 20)

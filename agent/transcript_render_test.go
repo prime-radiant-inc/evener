@@ -1035,6 +1035,22 @@ func TestRenderMarkdown_IntentField(t *testing.T) {
 			t.Errorf("expected intent from intent arg, got:\n%s", out)
 		}
 	})
+
+	// Issue #709: entries recorded before the purpose->intent tool-param
+	// rename (7512a736e, 2026-08-29) carry the model's stated reason under
+	// "purpose", not "intent". read_transcript renders those pre-rename
+	// entries too (a resumed session's transcript file spans both eras), so
+	// the intent line must still appear instead of silently dropping.
+	t.Run("intent falls back to purpose for pre-rename entries", func(t *testing.T) {
+		entries := []transcript.Entry{
+			toolCallEntry(call("c1", "shell", `{"command":"ls","purpose":"list the directory"}`)),
+			toolResultEntry(result("c1", "shell", "file.go", false)),
+		}
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		if !strings.Contains(out, "intent: list the directory") {
+			t.Errorf("expected intent segment from legacy purpose arg, got:\n%s", out)
+		}
+	})
 }
 
 // TestToolInputSummary verifies per-tool input summaries.
