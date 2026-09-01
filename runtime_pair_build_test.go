@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -464,7 +465,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 		t.Fatalf("create held Node readiness pipe: %v", err)
 	}
 	command.ExtraFiles = []*os.File{readyWriter}
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -545,7 +546,7 @@ func TestMakeTestWebBrowserInterruptWaitsForNodeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish held browser fixture cleanup: %v; output = %s", err, output.String())
 	}
-	if retained := fullLogsPath(output.Bytes()); retained != browserRoot {
+	if retained := fullLogsPath([]byte(output.String())); retained != browserRoot {
 		t.Errorf("interrupted browser logs = %q, want retained process-owned root %q; output = %s", retained, browserRoot, output.String())
 	}
 	if _, err := os.Stat(browserRoot); err != nil {
@@ -724,7 +725,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 		"EVENER_TEST_NPM_READY="+readyPath,
 		"EVENER_TEST_NPM_PID="+pidPath,
 	)
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -751,7 +752,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 		t.Fatalf("interrupted make test-web did not reap checks: %v; output = %s", err, output.String())
 	}
 
-	retained := fullLogsPath(output.Bytes())
+	retained := fullLogsPath([]byte(output.String()))
 	if retained == "" || !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
 		t.Fatalf("interrupted web logs = %q, want retained path beneath %q; output = %s", retained, fixture.root, output.String())
 	}
@@ -821,7 +822,7 @@ kill() {
 		"EVENER_TEST_SHELL_WAIT_RELEASE="+waitRelease,
 		"EVENER_TEST_SHELL_KILLED_REAPED="+killedReaped,
 	)
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -980,7 +981,7 @@ jobs() {
 		"EVENER_TEST_WEB_WAIT_REAPED="+waitReapedPath,
 		"EVENER_TEST_WEB_STALE_JOB="+staleJobControl,
 	)
-	var output bytes.Buffer
+	var output syncBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -1053,7 +1054,7 @@ jobs() {
 	if _, err := os.Stat(waitReapedPath); err != nil {
 		t.Fatalf("exact wait/reap evidence missing: %v; output = %s", err, output.String())
 	}
-	if retained := fullLogsPath(output.Bytes()); retained == "" {
+	if retained := fullLogsPath([]byte(output.String())); retained == "" {
 		t.Fatalf("interrupted test-web did not retain evidence; output = %s", output.String())
 	}
 }
@@ -1126,7 +1127,7 @@ func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
 				"EVENER_TEST_WEB_CLEANUP_RELEASE="+releasePath,
 				"EVENER_TEST_WEB_CLEANUP_PID="+pidPath,
 			)
-			var output bytes.Buffer
+			var output syncBuffer
 			command.Stdout = &output
 			command.Stderr = &output
 			if err := command.Start(); err != nil {
@@ -1432,6 +1433,33 @@ func startChild(command *exec.Cmd) *childRun {
 func (c *childRun) wait() error {
 	<-c.done
 	return c.err
+}
+
+// syncBuffer guards a live child's captured stdout/stderr with a mutex. Every
+// helper below wires one buffer as both Stdout and Stderr of a still-running
+// command and then reads it from a failure path — a readiness tripwire, a
+// lost-signal assertion — that can fire before the command's own Wait (via
+// childRun's run.done, or an inline waitDone channel) confirms the process
+// has exited. Wait does not return until the goroutine exec.Cmd runs to copy
+// the pipe into the buffer has itself finished, so a read that races ahead
+// of that signal races the copy under -race. A bare bytes.Buffer here is
+// what PR #766's race-root job caught; this type keeps every read and write
+// serialized regardless of which side gets there first.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func waitForPathOrExit(path string, run *childRun, tripwire time.Duration) error {
