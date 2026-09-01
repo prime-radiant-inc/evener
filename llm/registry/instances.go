@@ -104,150 +104,185 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 
 // firstPartyEndpoint reports whether the endpoint a specific resolution
 // actually reaches - transport, the fully resolved Transport buildTransport
-// produced (row-level overrides included, not just the instance's own
-// rec.head.Transport), resolved for proto against row rowID - is its
-// provider's (r.curated[rec.providerID], which is rec itself for a curated
-// record) own first-party endpoint: a vendor's hosted tools run on the
-// vendor's own infrastructure, so a resolution reaching anywhere else does
-// not get to carry them (WebSearch's gate, resolve.go's gateWebSearch,
-// applies this; spec §10's credential endpoint stop is the analogous rule
-// for the API key). TestResolve_WebSearchEndpointGate pins the case
-// catalog this has to get right; the invariants below are the ones a
-// reader would not derive from the code alone.
+// produced, with config layers, glob rows, environment overrides, host
+// rules, and alias imports all folded in - is its provider's own
+// first-party endpoint: a vendor's hosted tools run on the vendor's own
+// infrastructure, so a resolution reaching anywhere else does not get to
+// carry them (WebSearch's gate, resolve.go's gateWebSearch, applies this;
+// spec §10's credential endpoint stop is the analogous rule for the API
+// key).
 //
-// ownOverride is true when anything rec's own config replaced the
-// provider's base_url template outright - literally (rec.ownBaseURL) or on
-// the resolved row (row.Transport's own BaseURL) - rather than merely
-// supplying values for it. base_url is compared against the provider's own
-// template resolved with only its curated vars (spec §10's "after
-// substituting the curated defaults"); trailing slashes are trimmed on
-// both sides first, mirroring protocolhttp.URL's own
-// strings.TrimRight(BaseURL, "/") rather than inventing a broader
-// canonicalization. A provider whose template needs only
-// deployment-specific variables with no curated default (Vertex, Bedrock)
-// has no default to diverge from - the template alone being intact is
-// first-party there, unless the record redirects the one variable that is
-// not deployment-specific (vertexHostOverridden).
+// The judgment is first-party by construction, not by override-detection:
+// config is compositional, so the channels that can redirect a request are
+// combinatorial and enumerating them cannot converge. Instead the
+// provider's curated layers alone (r.curated[rec.providerID]: the
+// snapshot/cache and overlay data, never the user's config or environment)
+// are resolved through the same transport machinery into the canonical
+// transport for (proto, rowID), and the actual transport must equal it:
+// base_url componentwise (sameEndpointURL) and each request-carrying
+// endpoint path exactly (Endpoint, StreamEndpoint, CountTokensEndpoint;
+// ModelsEndpoint is excluded because ListModels is a bodyless GET that can
+// never carry WebSearch). Any difference means the request lands somewhere
+// the vendor's own data does not describe. An override that reproduces the
+// canonical endpoint verbatim compares equal, so spec §10's "copying the
+// default is not different" needs no special case; neither does trusting a
+// curated record, whose actual resolution is the canonical one unless the
+// environment redirects it - which must strip, and does, by comparing
+// unequal. A record with no curated provider at all (a from-scratch
+// [providers.X] with its own base_url) has no vendor endpoint to diverge
+// from and is trivially first-party; only its own explicit web_search can
+// grant the capability anyway.
 //
-// A resolved base_url is not the whole story: its own endpoint,
-// stream_endpoint, or count_tokens_endpoint can send the same
-// web-search-bearing request body elsewhere while base_url stays
-// canonical. All three are judged the same way base_url is: against what
-// buildTransport produces for the provider's own record with no instance
-// overrides, for proto (which already applies the cross-protocol rule,
-// spec §4.2, so a legitimately cross-protocol instance is judged against
-// its own protocol's defaults) and the matching curated row
-// (base.head.Models[rowID]) rather than no row at all - a non-curated
-// instance that inherits a curated row with its own transport (a custom
-// instance with base = "google-vertex" resolving a Claude model, whose row
-// genuinely carries the vertex-anthropic preset from the models.dev
-// npm-to-preset conversion) is judged against that row, not a row-less
-// baseline that could never reproduce it; rowID == "" (ResolveInstance's
-// model-less path) falls back to the row-less comparison a provider-level
-// resolution needs anyway. ModelsEndpoint is excluded from this class:
-// ListModels is always a bodyless GET, so it can never carry WebSearch.
+// The canonical resolution admits values from the actual resolution's own
+// variable lookup only where they cannot move the request off the vendor's
+// infrastructure (canonicalVarLookup): path-position vars pass through
+// verbatim, authority-position vars resolve only from curated defaults or
+// a host rule's own derivation and otherwise stay unexpanded, failing the
+// comparison against any actually-resolved URL - fail closed.
 //
-// A curated record (rec.curated) is trusted outright once base_url checks
-// out, endpoint comparison included: it is compared against itself
-// (base == rec), so the comparison would be trivially true anyway, but
-// skipping it also skips the row lookup, which matters when rowID names a
-// row the curated record's own config (not a user's) supplies.
-func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID string, ownOverride bool) bool {
+// ref and altID feed the canonical glob replay (canonicalRow) so curated
+// glob rows match the same ids they matched in the actual resolution;
+// rowID names the resolved row - the alias target's row when an alias
+// imported its transport (resolveOn's canonicalRowID). All three empty is
+// ResolveInstance's model-less path, judged row-less on both sides.
+// TestResolve_WebSearchEndpointGate and TestResolve_WebSearchCanonicalGate
+// pin the case catalog this has to get right.
+func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID, ref, altID string) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
 		return true
 	}
-	own := strings.TrimRight(transport.BaseURL, "/")
-	if own == "" {
-		return true
-	}
-	// missing (not just defaults) decides which switch case applies, and
-	// both come from this one resolveBaseURLWith call - a second call
-	// keyed on missing == 0 would just repeat this same work, not skip it -
-	// so defaults sits unused in the len(missing) > 0 case rather than
-	// being computed twice.
-	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
-	defaults = strings.TrimRight(defaults, "/")
-	switch {
-	case len(missing) > 0:
-		// rec.curated is a belt-and-suspenders guard, not load-bearing
-		// against today's data (a curated record never folds a
-		// LayerConfig layer, so ownOverride/vertexHostOverridden are
-		// already false for one) - kept explicit so a future curated row
-		// with its own base_url or GOOGLE_VERTEX_HOST is trusted the same
-		// way the vendor's provider-level template already is.
-		if !rec.curated && (ownOverride || r.vertexHostOverridden(rec, base)) {
-			return false
-		}
-	case own != defaults:
-		return false
-	}
-	if rec.curated {
-		return true
-	}
 	var row Model
-	if rowID != "" {
-		row = base.head.Models[rowID]
+	if rowID != "" || ref != "" {
+		row = r.canonicalRow(base, ref, altID, rowID, proto)
 	}
-	canonical, _ := r.buildTransport(base, row, proto)
-	return transport.Endpoint == canonical.Endpoint &&
+	canonical := r.transportShape(base, row, proto)
+	lookup := r.canonicalVarLookup(rec, base, canonical.BaseURL)
+	noEnv := func(string) (string, bool) { return "", false }
+	baseURL, _, _ := r.resolveBaseURLVia(canonical, lookup, noEnv)
+	canonical.BaseURL = baseURL
+	for _, field := range []*string{&canonical.Endpoint, &canonical.StreamEndpoint, &canonical.CountTokensEndpoint} {
+		expanded, _ := expandTemplate(*field, lookup)
+		*field = expanded
+	}
+	return sameEndpointURL(transport.BaseURL, canonical.BaseURL) &&
+		transport.Endpoint == canonical.Endpoint &&
 		transport.StreamEndpoint == canonical.StreamEndpoint &&
 		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
 }
 
-// vertexHostOverridden reports whether rec's own GOOGLE_VERTEX_HOST
-// diverges from Vertex's real, location-derived infrastructure - the
-// derivation the vertex-location host rule exists to perform
-// (resolveBaseURLWith's HostRuleVertexLocation case, load.go) - by either
-// of two means:
-//
-//   - rec's own host_rule differs from base's: swapping to a different
-//     rule (the only other one today, ollama-host) does not intercept
-//     GOOGLE_VERTEX_HOST at all, so a literal value supplied alongside it
-//     flows straight through unresolved-by-derivation. Because that swap
-//     also disables the direct-override check below (a record inspecting
-//     its own, now-different rule would never even look), the swap itself
-//     counts as divergence rather than being trusted to self-report.
-//   - a supplied GOOGLE_VERTEX_HOST does not parse as exactly
-//     vertexHost(LOCATION)'s scheme and authority, with nothing else: no
-//     path, query, fragment, or userinfo. The canonical form vertexHost
-//     itself produces is authority-only (e.g. "https://aiplatform.googleapis.com",
-//     never a trailing slash or anything after it), so that is the whole
-//     comparison - not a prefix of the assembled base_url, which a value
-//     like "https://aiplatform.googleapis.com/proxy" would pass (the
-//     template's own "/v1/projects/..." continuation makes an injected
-//     path segment indistinguishable from the real one once the two are
-//     concatenated and read back as one string). Comparing the
-//     un-concatenated GOOGLE_VERTEX_HOST value on its own, component by
-//     component, closes that: a path, a different port, or userinfo all
-//     fail the check on their own terms, and a value that happens to
-//     equal the derivation's own answer is not an override (copying the
-//     default verbatim is not "different", spec §10).
-//
-// This check is Vertex-specific by necessity, not by choice: it is the
-// only host rule with both a missing curated base_url default and a
-// provider that sets web_search today. A future provider sharing that
-// shape - no curated default, host routed through its own env var, kept
-// template - would need an equivalent check of its own; nothing here
-// generalizes to it automatically.
-func (r *Registry) vertexHostOverridden(rec, base *record) bool {
-	if rec.head.Transport.HostRule != base.head.Transport.HostRule {
+// canonicalRow replays the provider's curated layers alone into the row the
+// canonical resolution resolves: the merged curated exact row, plus every
+// curated glob row applied in the order resolveOn applies them (top-level
+// globs once per layer tag, the layer's own globs, then the exact row),
+// matching against the same reference and alias-target ids the actual
+// resolution matched. base's layers are curated by construction, so no
+// LayerConfig contribution - the channel the gate exists to judge - can
+// reach the result.
+func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) Model {
+	var row Model
+	if rowID != "" {
+		if m, ok := base.head.Models[rowID]; ok {
+			row = cloneModel(m)
+		}
+	}
+	// The caps and provenance sinks are discarded: only the transport
+	// fields applyGlobs and applyRowScalars merge matter here.
+	caps := Caps{}
+	prov := map[string]string{}
+	crossProto := proto != base.head.Protocol
+	seenTag := map[string]bool{}
+	for _, layer := range base.layers {
+		if !seenTag[layer.tag] {
+			seenTag[layer.tag] = true
+			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref, altID, proto, crossProto, prov)
+		}
+		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref, altID, proto, crossProto, prov)
+		if rowID != "" {
+			if lr, ok := layer.rows[rowID]; ok {
+				applyRowScalars(&row, lr, layer.tag, prov)
+			}
+		}
+	}
+	return row
+}
+
+// canonicalVarLookup supplies variable values for the canonical resolution
+// of the base_url template tpl. Path-position vars take the actual
+// resolution's own value (rec's full lookup: user vars, environment,
+// curated defaults) - both sides then expand identically, and a path value
+// can never rewrite the authority the template terminated before the var
+// began. Authority-position vars (authorityVars) take only the provider's
+// curated default, never a user- or environment-supplied value; a host
+// rule may still derive one (resolveBaseURLVia's vertex-location case
+// derives vertexHost(GOOGLE_VERTEX_LOCATION) - a path-position lookup -
+// when this lookup declines GOOGLE_VERTEX_HOST), and a var with neither
+// default nor derivation stays unexpanded, so the canonical URL cannot
+// equal any actually-resolved one: fail closed.
+func (r *Registry) canonicalVarLookup(rec, base *record, tpl string) func(string) (string, bool) {
+	authority := authorityVars(tpl)
+	actual := r.varLookup(rec)
+	defaults := r.defaultVarLookup(base)
+	return func(name string) (string, bool) {
+		if authority[name] {
+			return defaults(name)
+		}
+		return actual(name)
+	}
+}
+
+// authorityVars names the {VAR} placeholders in tpl's authority region -
+// at or before the end of scheme://host[:port], where an expanded value
+// could supply or alter the scheme, host, or port. A template that does
+// not begin with a literal scheme starts with a placeholder that expands
+// to one ({BASE_URL}, {GOOGLE_VERTEX_HOST}, {OLLAMA_HOST}), so its
+// authority begins at position 0. A placeholder at or past the first
+// path, query, or fragment delimiter cannot escape into the authority -
+// the template already terminated it - and is not listed.
+func authorityVars(tpl string) map[string]bool {
+	out := map[string]bool{}
+	start := 0
+	if i := strings.Index(tpl, "://"); i >= 0 {
+		start = i + 3
+	}
+	end := len(tpl)
+	for _, d := range "/?#" {
+		if i := strings.IndexRune(tpl[start:], d); i >= 0 && start+i < end {
+			end = start + i
+		}
+	}
+	for _, m := range placeholderRe.FindAllStringSubmatchIndex(tpl, -1) {
+		if m[0] < end {
+			out[tpl[m[2]:m[3]]] = true
+		}
+	}
+	return out
+}
+
+// sameEndpointURL reports whether two resolved base URLs name the same
+// endpoint. Trailing slashes are trimmed first, mirroring the HTTP
+// builder's own strings.TrimRight(BaseURL, "/") (protocolhttp.URL) rather
+// than inventing a broader canonicalization. Equal strings are the same
+// endpoint - an unresolved template equals only the identically unresolved
+// template - and anything else must parse on both sides and match on every
+// URL component, where a bare trailing "?" or "#" differs from their
+// absence (ForceQuery, Fragment) even with nothing after them, and the
+// escaped path preserves percent-encoding rather than comparing decoded
+// forms.
+func sameEndpointURL(a, b string) bool {
+	a, b = strings.TrimRight(a, "/"), strings.TrimRight(b, "/")
+	if a == b {
 		return true
 	}
-	raw := r.varLookupWith(rec, func(string) {})
-	given, ok := raw("GOOGLE_VERTEX_HOST")
-	if !ok {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil {
 		return false
 	}
-	loc, ok := raw("GOOGLE_VERTEX_LOCATION")
-	if !ok {
-		return false
-	}
-	u, err := url.Parse(given)
-	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return true
-	}
-	return u.Scheme+"://"+u.Host != vertexHost(loc)
+	return ua.Scheme == ub.Scheme && ua.Opaque == ub.Opaque &&
+		ua.User.String() == ub.User.String() && ua.Host == ub.Host &&
+		ua.EscapedPath() == ub.EscapedPath() && ua.ForceQuery == ub.ForceQuery &&
+		ua.RawQuery == ub.RawQuery && ua.Fragment == ub.Fragment
 }
 
 // envCandidates lists, in the order credential resolution tries them, every

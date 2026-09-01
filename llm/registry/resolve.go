@@ -237,13 +237,13 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	// rowID "" falls firstPartyEndpoint's endpoint comparison back to
-	// protocol defaults on both sides (no row to diverge on), so it is
-	// effectively a no-op here - correctly so: ListModels and credential
-	// probes, this path's only callers, never build a body, so there is no
-	// WebSearch tool for a row-level endpoint override to redirect. The
-	// base_url check above it still applies in full.
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", rec.ownBaseURL != ""); w != "" {
+	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
+	// and glob-less, mirroring the row-less buildTransport call above -
+	// correctly so: ListModels and credential probes, this path's only
+	// callers, never build a body, so there is no WebSearch tool for a
+	// row-level override to redirect. The base_url and endpoint-path
+	// comparison still applies in full.
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
 	cred, cw := r.credential(rec)
@@ -309,8 +309,8 @@ func webSearchExplicit(prov map[string]string) bool {
 //
 // Returns the warning naming why WebSearch was stripped; empty when
 // nothing fired, including when the value was already false.
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID string, ownOverride bool) string {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ownOverride) {
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID, ref, altID string) string {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ref, altID) {
 		return ""
 	}
 	if !*caps.WebSearch {
@@ -415,7 +415,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, rec.ownBaseURL != "" || rec.rowOwnBaseURL(hit.rowID)); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
@@ -591,9 +591,13 @@ func (r *Registry) applyLive(c *Caps, rec *record, model string, hit lookupHit, 
 	mergeCaps(c, lr.Caps, LayerLive, prov)
 }
 
-// buildTransport applies the cross-protocol rule, the row transport, the
-// protocol defaults, and variable substitution (spec §9.1).
-func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transport, []string) {
+// transportShape assembles the unexpanded transport for rec resolving row on
+// proto: the record's head transport under the cross-protocol rule, the row
+// transport merged on top, and the protocol's default endpoints filled in.
+// It is the shared front half of buildTransport and of the canonical
+// first-party resolution (firstPartyEndpoint, instances.go), which expand
+// it with different variable lookups.
+func (r *Registry) transportShape(rec *record, row Model, proto string) Transport {
 	t := cloneTransport(rec.head.Transport)
 	if proto != rec.head.Protocol {
 		clearProtocolTransport(&t)
@@ -611,6 +615,13 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	setIfEmpty(&t.StreamEndpoint, d.StreamEndpoint)
 	setIfEmpty(&t.ModelsEndpoint, d.ModelsEndpoint)
 	setIfEmpty(&t.CountTokensEndpoint, d.CountTokensEndpoint)
+	return t
+}
+
+// buildTransport applies the cross-protocol rule, the row transport, the
+// protocol defaults, and variable substitution (spec §9.1).
+func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transport, []string) {
+	t := r.transportShape(rec, row, proto)
 	// The templates, captured before substitution, are the authoritative list
 	// of variables Resolved may expose (URL parts such as a region, resource,
 	// or project). Resolved is serialized by `evener models inspect`, so no
