@@ -251,6 +251,28 @@ func TestScanEvents_ManyNonJobEventsExceedEventLimit(t *testing.T) {
 	}
 }
 
+// TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit is the
+// MaxEvents counterpart of the byte-limit priority test above: the same
+// coincidence risk applies to the event-count check. With MaxEvents=1, the
+// limit fires on line 2's iteration (line 1 fits, incrementing len(events)
+// to 1; line 2's check then sees len(events)>=MaxEvents) — two top-of-loop
+// ctx checks (line 1's and line 2's) must see nil before the third call, the
+// one guarding the limit-triggered return itself, is the one that reports
+// canceled.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	writeScanEvents(t, path, 5, func(i int) Event {
+		return Event{Kind: EventWatchSendPending, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+	ctx := &countdownContext{Context: context.Background(), allow: 2}
+
+	_, err := ScanEvents(ctx, path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the event limit", err)
+	}
+}
+
 // TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError covers the
 // degrade-to-partial contract a caller needs to truncate gracefully instead
 // of hard-failing: when MaxEvents is hit, ScanEvents returns both the
@@ -299,6 +321,41 @@ func TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError(t *testing.T) {
 	}
 	if len(events) == 0 || len(events) >= 200 {
 		t.Fatalf("got %d partial events, want a nonzero prefix short of the full 200", len(events))
+	}
+}
+
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit covers
+// roborev's finding on #448: if ctx is canceled during the ReadBytes call
+// whose chunk ALSO happens to push totalBytes past MaxBytes, the next
+// iteration's ctx.Err() check never gets a chance to run — ScanEvents would
+// return ErrScanLimitExceeded, silently swallowing the fact that the caller
+// had already asked to stop. A second ctx check belongs right at the
+// byte-limit return itself, not only at the top of the next iteration.
+func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	event := func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	}
+	// MaxBytes set to exactly line 1's size: line 1 fits (totalBytes ==
+	// MaxBytes, not over), so the limit fires on line 2's byte check —
+	// deterministically, not by guessing a fraction of the whole file's size.
+	writeScanEvents(t, path, 1, event)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneLineSize := info.Size()
+	writeScanEvents(t, path, 5, event)
+	// allow:2 lets exactly two ctx.Err() calls through as nil — the
+	// top-of-iteration checks for lines 1 and 2 — then reports canceled on
+	// every call after, including a check placed right before the
+	// byte-limit return on line 2's iteration.
+	ctx := &countdownContext{Context: context.Background(), allow: 2}
+
+	_, err = ScanEvents(ctx, path, ScanLimits{MaxBytes: oneLineSize})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled (not ErrScanLimitExceeded) when cancellation coincides with the byte limit", err)
 	}
 }
 

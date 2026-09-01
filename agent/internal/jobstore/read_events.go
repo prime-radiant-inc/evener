@@ -98,6 +98,16 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 		lineNum++
 		totalBytes += int64(len(chunk))
 		if limits.MaxBytes > 0 && totalBytes > limits.MaxBytes {
+			// A cancellation landing during the ReadBytes call just above,
+			// on the very chunk that also pushed totalBytes over the limit,
+			// would otherwise never get a chance to be seen: the next
+			// iteration's top-of-loop ctx check never runs, because this
+			// return happens first. Check here too so cancellation always
+			// wins over a coincident limit, not just when the two are
+			// spaced further apart (roborev finding on #448).
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return events, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
 		}
 		line := chunk
@@ -111,6 +121,10 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 			continue
 		}
 		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
+			// Same coincidence risk as the byte-limit check above.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return events, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
 		}
 		var e Event
