@@ -1012,16 +1012,37 @@ func (s *Session) reflectDurableClientSteering() {
 }
 
 // snapshotHasPendingUserSteering reports whether the durable store holds user
-// steering still waiting to be delivered -- the steering a Stop has something
-// to park. It answers over the same records clientSteeringFromSnapshot
-// materializes into the in-memory queue, so the two never disagree about what
-// is pending, and it reads the durable store rather than s.steeringQueue
-// because a steer is recorded there first (clientMutationSteer commits, then
-// reflects) and stays there across a restart.
-func snapshotHasPendingUserSteering(snapshot *clientMutationSnapshot) bool {
+// steering that could still be delivered -- the steering a Stop has something
+// to park. It reads the durable store rather than s.steeringQueue because a
+// steer is recorded there first (clientMutationSteer commits, then reflects)
+// and stays there across a restart, which is the delivery this answer governs.
+//
+// cancelledTurnID names the turn a Stop is ending, or is empty when nobody is
+// stopping anything (the restore normalization).
+//
+// "Accepted" is the resting state clientSteeringFromSnapshot materializes into
+// the in-memory queue. "Claimed" is the window popSteeringHead opens: the
+// claim commits before consumeSteeringMessage appends the transcript entry
+// that finalizes it, and restoreDurableClientMutationQueues returns a claim
+// that never landed to accepted -- so a claimed steer is still deliverable
+// across a restart and still needs parking. The one exception is the steer
+// whose own reserved id IS the turn being cancelled: that steer is the
+// steering-carrier turn the Stop is ending rather than a passenger it has to
+// hold back, and its record disappears as soon as its append finalizes, so
+// parking for it would leave a hold naming nothing.
+func snapshotHasPendingUserSteering(snapshot *clientMutationSnapshot, cancelledTurnID string) bool {
 	for _, id := range snapshot.SteeringOrder {
-		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.ExecutionState == "accepted" {
+		pending, ok := snapshot.PendingExecutions[id]
+		if !ok {
+			continue
+		}
+		switch pending.ExecutionState {
+		case "accepted":
 			return true
+		case "claimed":
+			if cancelledTurnID == "" || pending.TurnID != cancelledTurnID {
+				return true
+			}
 		}
 	}
 	return false
@@ -1105,6 +1126,19 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			}
 			record.ExecutionState = "accepted"
 			snapshot.Journal[id] = record
+		}
+		// Release a steering hold the loop above left naming nothing. A
+		// snapshot written before #710 could park steering unconditionally at
+		// Stop, so a restored hold can name no pending steer at all -- and a
+		// hold naming nothing swallows every steer the resumed session accepts
+		// afterwards. This runs after the claimed-steering returns above, so a
+		// claim that never landed still counts as parked.
+		//
+		// Release only, never arm: restore is not a Stop, and a session that
+		// was never stopped must keep waking for the steering it is holding
+		// (TestRestoredSteeringWakesWhenTheDaemonAttaches).
+		if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
+			snapshot.SteeringHeld = false
 		}
 		snapshot.QueueRevision++
 		return nil
