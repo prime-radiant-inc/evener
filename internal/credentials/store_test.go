@@ -1,9 +1,11 @@
 package credentials
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -137,6 +139,58 @@ func TestStore_PathIsTheFileItReadsAndWrites(t *testing.T) {
 	}
 	if got := s.Path(); got != path {
 		t.Errorf("Path = %q, want %q", got, path)
+	}
+}
+
+// TestStore_ConcurrentAccessIsRaceFree drives Set/Get/Clear/Names from many
+// goroutines against one Store: the hub's auth controller shares exactly one
+// Store across every evener/auth/* RPC plus evener/instance/remove, and
+// AppWire serializes requests only within a single connection - two browser
+// tabs (or a browser and the TUI) calling ApiKeySet/Logout/ApiKeyClear/
+// Remove/Status concurrently must not race the underlying map or corrupt
+// the on-disk file via colliding .tmp writes. `go test -race` is what makes
+// this test meaningful; without it, a torn map access can pass silently.
+func TestStore_ConcurrentAccessIsRaceFree(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+
+	const goroutines = 8
+	const iterations = 50
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		name := fmt.Sprintf("provider-%d", g)
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			for range iterations {
+				if err := s.Set(name, "sk-test"); err != nil {
+					t.Errorf("Set(%s): %v", name, err)
+				}
+				// Get/Names only need to not race or panic here - a
+				// concurrent Clear from another goroutine legitimately owns
+				// whether this particular read observes the key.
+				s.Get(name)
+				s.Names()
+				if err := s.Clear(name); err != nil {
+					t.Errorf("Clear(%s): %v", name, err)
+				}
+			}
+		}(name)
+	}
+	wg.Wait()
+
+	// The store must still be in a coherent, reloadable state: every
+	// goroutine's last op was Clear, so nothing should remain, and the file
+	// itself must parse (not a half-written .tmp left over from a collision).
+	reloaded, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore after concurrent access: %v", err)
+	}
+	if names := reloaded.Names(); len(names) != 0 {
+		t.Errorf("Names after concurrent access = %v, want none", names)
 	}
 }
 

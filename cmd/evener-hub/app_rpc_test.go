@@ -11013,11 +11013,23 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	// A temp-dir-backed credentials store, shared with the registry below:
+	// the dispatch loop further down calls every expected method with empty
+	// params, including the credential-mutating evener/auth/* handlers
+	// (apiKey/set, logout, apiKey/clear). A nil CredsStore makes
+	// newHubAuthControllerWithStore fall back to the real on-disk default
+	// (~/.config/evener/credentials.toml via the ambient HOME/XDG env) -
+	// this test must never read or write a developer's actual store.
+	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	if loadErr != nil {
+		t.Fatalf("LoadStore: %v", loadErr)
+	}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
