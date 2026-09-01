@@ -1,10 +1,12 @@
 package hubedge
 
 import (
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +45,21 @@ func okHandler() http.Handler {
 	})
 }
 
+// realAuthMux builds the same route shape web.go wires in production: a
+// real http.ServeMux with /auth/ mounted to HandleAuth and every other path
+// behind AuthGuard. Driving requests through an actual ServeMux — rather
+// than invoking HandleAuth or AuthGuard directly, as most tests in this
+// file do — exercises ServeMux's own path cleaning: it 301-redirects,
+// never dispatches, a request whose path contains a "." or ".." segment or
+// a repeated slash, the same normalization a browser applies to a typed or
+// scanned URL before the request is even sent.
+func realAuthMux(token string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/", HandleAuth(token))
+	mux.Handle("/", okHandler())
+	return AuthGuard(token)(mux)
+}
+
 func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	root := t.TempDir()
 	a, err := LoadOrCreateAuthToken(root)
@@ -65,6 +82,42 @@ func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	}
 	if a != b {
 		t.Errorf("token not stable: %q vs %q", a, b)
+	}
+}
+
+// A persisted token that doesn't match loadOrCreateAuthToken's own
+// generated shape (unpadded base64url of 32 random bytes) must never
+// surface verbatim: "." isn't part of that alphabet, so a stray ".."
+// written to the token file — however it got there — must be replaced
+// with a freshly generated, well-formed token rather than handed to
+// callers (and from there into AuthURLFor's path segment, where a raw
+// ".." becomes a dot-segment that ServeMux and browsers normalize away
+// before HandleAuth ever sees it). This mirrors the existing convention
+// for an empty token file: silently regenerate rather than error.
+func checkLoadOrCreateAuthToken_RegeneratesMalformedPersistedToken(t *testing.T) {
+	root := t.TempDir()
+	tokenPath := filepath.Join(root, TokenFileName)
+	if err := os.WriteFile(tokenPath, []byte("..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadOrCreateAuthToken(root)
+	if err != nil {
+		t.Fatalf("LoadOrCreateAuthToken: %v", err)
+	}
+	if got == ".." {
+		t.Fatalf("malformed persisted token surfaced verbatim: %q", got)
+	}
+	if decoded, decErr := base64.RawURLEncoding.DecodeString(got); decErr != nil || len(decoded) != 32 {
+		t.Errorf("regenerated token is not well-formed base64url(32 bytes): %q (decode err=%v)", got, decErr)
+	}
+
+	onDisk, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read back token file: %v", err)
+	}
+	if strings.TrimSpace(string(onDisk)) != got {
+		t.Errorf("token file not updated with the regenerated token: disk = %q, returned = %q", strings.TrimSpace(string(onDisk)), got)
 	}
 }
 
@@ -319,6 +372,71 @@ func checkAuthURLFor(t *testing.T) {
 	want := "http://magic-kingdom:9180/auth/tok"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// AuthURLFor's output must actually work when routed through the real
+// production ServeMux, not just when HandleAuth is invoked directly (as
+// checkHandleAuth_ValidatesAndSetsCookie and
+// checkAuthGuard_PathFormAuthenticatesEndToEnd do) — ServeMux applies its
+// own path cleaning ahead of any handler, and a well-formed generated
+// token must survive that untouched.
+func checkAuthURLFor_AuthenticatesThroughRealMux(t *testing.T) {
+	token, err := LoadOrCreateAuthToken(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreateAuthToken: %v", err)
+	}
+	authURL := AuthURLFor("http://hub.example.test:9180", token)
+
+	req := httptest.NewRequest(http.MethodGet, authURL, nil)
+	rec := httptest.NewRecorder()
+	realAuthMux(token).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302 (AuthURLFor's URL should authenticate through the real mux)", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != cookieName(token) || cookies[0].Value != token {
+		t.Errorf("real-mux auth should set the auth cookie, got %+v", cookies)
+	}
+}
+
+// A persisted token that doesn't match the generator's own shape (here,
+// "..") must never make it into a URL AuthURLFor builds — not as a raw
+// dot-segment that ServeMux or a browser would normalize away before
+// HandleAuth ever sees it. loadOrCreateAuthToken's regenerate-on-malformed
+// load (checkLoadOrCreateAuthToken_RegeneratesMalformedPersistedToken) is
+// what makes this true: every token AuthURLFor ever builds a URL from has
+// the generator's well-formed shape. This drives the real mux to prove the
+// guarantee holds end to end, not just at loadOrCreateAuthToken's return
+// value.
+func checkAuthURLFor_MalformedTokenNeverYieldsDotSegmentURL(t *testing.T) {
+	root := t.TempDir()
+	tokenPath := filepath.Join(root, TokenFileName)
+	if err := os.WriteFile(tokenPath, []byte("..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := LoadOrCreateAuthToken(root)
+	if err != nil {
+		t.Fatalf("LoadOrCreateAuthToken: %v", err)
+	}
+
+	authURL := AuthURLFor("http://hub.example.test:9180", token)
+	u, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("AuthURLFor produced an unparseable URL %q: %v", authURL, err)
+	}
+	for seg := range strings.SplitSeq(u.Path, "/") {
+		if seg == "." || seg == ".." {
+			t.Fatalf("auth URL has a raw dot-segment ServeMux/browsers would normalize away: %q", authURL)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, authURL, nil)
+	rec := httptest.NewRecorder()
+	realAuthMux(token).ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302 (regenerated token's URL should authenticate through the real mux, not get normalized away)", rec.Code)
 	}
 }
 

@@ -80,6 +80,19 @@ func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 	return loadOrCreateAuthToken(hubStateRoot, rand.Reader, os.Rename)
 }
 
+// isWellFormedToken reports whether tok has the exact shape
+// loadOrCreateAuthToken generates below: the unpadded base64url encoding
+// (RFC 4648 §5) of 32 random bytes. A persisted token that doesn't decode
+// to that shape can't be trusted — RawURLEncoding's alphabet excludes "."
+// and "/", so this also catches a dot-segment (".", "..") or path
+// separator smuggled into the token file, which url.PathEscape
+// (AuthURLFor) leaves unescaped and which browsers and http.ServeMux
+// normalize out of a URL path before HandleAuth ever sees it.
+func isWellFormedToken(tok string) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(tok)
+	return err == nil && len(decoded) == 32
+}
+
 func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(string, string) error) (string, error) {
 	if strings.TrimSpace(hubStateRoot) == "" {
 		return "", errors.New("hub state root not configured")
@@ -90,7 +103,11 @@ func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(st
 	path := filepath.Join(hubStateRoot, TokenFileName)
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if tok := strings.TrimSpace(string(data)); tok != "" {
+		// A malformed persisted token (wrong shape, or empty) is never
+		// returned: fall through and regenerate, the same as a missing
+		// file. This is a load-time normalize, not a validation error,
+		// matching how an empty file is already handled below.
+		if tok := strings.TrimSpace(string(data)); isWellFormedToken(tok) {
 			return tok, nil
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
