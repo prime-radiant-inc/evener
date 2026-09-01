@@ -88,7 +88,8 @@ providers="${providers//,/ }"
 evener_bin="${EVENER_FUZZ_EVENER_BIN:-}"
 harvest_bin="${EVENER_FUZZ_HARVEST_BIN:-}"
 gh="${EVENER_FUZZ_GH:-gh}"
-# Backoff sleep is a seam so the self-test can make retries instant.
+# Backoff sleep is a seam so a caller (e.g. a future test) can make retries
+# instant instead of paying the real delay.
 sleep_cmd="${EVENER_FUZZ_DRIVE_SLEEP:-sleep}"
 timeout_cmd="${EVENER_FUZZ_DRIVE_TIMEOUT:-timeout}"
 

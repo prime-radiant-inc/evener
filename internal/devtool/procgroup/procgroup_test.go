@@ -150,7 +150,7 @@ func TestStopNeverSignalsAnAlreadyReapedChild(t *testing.T) {
 	// closed, Stop must send it nothing. (The shell runner was immune by
 	// construction — single-threaded blank-after-wait; the Go guard's
 	// remaining check-vs-reap window is microseconds and needs an
-	// immediate pid wraparound, the same residue wave.go documents.)
+	// immediate pid wraparound.)
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "ready")
 	marker := filepath.Join(dir, "signalled")
