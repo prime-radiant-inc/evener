@@ -170,6 +170,20 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, R
 			diagnostics.TornTail = true
 			break
 		}
+		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
+			// Checked BEFORE decoding this line, not after (roborev finding
+			// on #807): a batch line can hold many events, so checking only
+			// once the line is already fully decoded would still let a
+			// MaxEvents: 1 scan materialize an oversized (or malformed —
+			// see TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted)
+			// later batch just to discover afterward that the budget was
+			// already spent.
+			if err := ctx.Err(); err != nil {
+				return nil, ReadDiagnostics{}, err
+			}
+			limitErr = fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+			break
+		}
 		line := chunk[:len(chunk)-1]
 		var batch batchRecord
 		if err := decodeJSONLine(line, &batch); err != nil {
@@ -178,20 +192,19 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, R
 		if len(batch.Events) == 0 {
 			return nil, ReadDiagnostics{}, fmt.Errorf("delegatestore: batch line %d has no events", lineNum)
 		}
-		if limits.MaxEvents > 0 && len(events)+len(batch.Events) > limits.MaxEvents {
-			// Same coincidence risk as the byte-limit check above.
-			if err := ctx.Err(); err != nil {
-				return nil, ReadDiagnostics{}, err
-			}
-			limitErr = fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
-			break
-		}
 		events = append(events, batch.Events...)
 	}
 
-	if _, err := Fold(events); err != nil {
-		return nil, diagnostics, fmt.Errorf("delegatestore: fold: %w", err)
-	}
+	// No internal Fold call here (roborev finding on #807): scanRootDelegateState,
+	// this function's only caller, already folds the returned events itself,
+	// so folding here too was pure duplicated work — and worse, it could
+	// silently replace a genuine ErrScanLimitExceeded with a Fold error
+	// whenever the partial prefix a limit degrades to didn't happen to fold
+	// cleanly on its own (e.g. ending mid-relationship, referencing a
+	// delegate whose Created event is in a later, never-read batch),
+	// defeating the documented degrade-to-partial contract in exactly the
+	// cases it exists for. Folding — and deciding what an unfoldable
+	// partial prefix means — is the caller's job.
 	cloned := cloneEvents(events)
 	if limitErr != nil {
 		return cloned, diagnostics, limitErr
