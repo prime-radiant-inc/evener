@@ -432,6 +432,111 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildren
+// covers roborev's finding on #807's saturation commit: buildActivityFullSnapshot
+// computes its load-phase depth from len(visited)-1 -- the ancestor chain
+// from the ORIGINAL root -- while projection resets depth to 0 at the
+// continuation target (startDepth = -len(cont.Path), reaching 0 exactly at
+// the target). A continuation whose path reaches exactly activityMaxNewDepth
+// hops therefore has the LOAD phase treat the target's OWN children as
+// already past the depth bound (depth == activityMaxNewDepth), replacing
+// them with empty placeholders, even though projection -- and any sane
+// reading of "how deep beneath the page I'm resuming into" -- would allow a
+// full activityMaxNewDepth further beneath the target.
+func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildren(t *testing.T) {
+	stateDir := t.TempDir()
+	started := time.Unix(700, 0).UTC()
+
+	// index activityMaxNewDepth is the continuation TARGET (reached via
+	// exactly activityMaxNewDepth hops from the root); index
+	// activityMaxNewDepth+1 is the target's OWN child -- the node the
+	// roborev finding says gets silently placeholder'd instead of loaded.
+	const chainLen = activityMaxNewDepth + 2
+	sessionIDs := make([]string, chainLen)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("maxdepthchain%d", i)
+	}
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		s1cov_writeJobLog(t, stateDir, id,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started},
+		)
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+
+	// writePastStableDelegates assigns delegate IDs as "dlg_" + childSessionID.
+	path := make([]string, activityMaxNewDepth)
+	for i := range path {
+		path[i] = "dlg_" + sessionIDs[i+1]
+	}
+	targetID := sessionIDs[activityMaxNewDepth]
+	cont := activityContinuation{
+		Version: activityContinuationV1, RootID: sessionIDs[0], SessionID: targetID, Path: path,
+	}
+	token := encodeActivityContinuation(cont)
+
+	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: token})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+
+	// Descend Root -> Child -> Child -> ... exactly activityMaxNewDepth
+	// times to reach the continuation target's own projected node.
+	session := got.Root
+	for i := range activityMaxNewDepth {
+		var delegate *appwire.JobActivityDelegate
+		for j := range session.Entries {
+			if session.Entries[j].Delegate != nil {
+				delegate = session.Entries[j].Delegate
+			}
+		}
+		if delegate == nil || delegate.Child == nil {
+			t.Fatalf("descent stopped at hop %d, want to reach the continuation target at hop %d", i, activityMaxNewDepth)
+		}
+		session = *delegate.Child
+	}
+	if session.SessionID != targetID {
+		t.Fatalf("reached session %q, want the continuation target %q", session.SessionID, targetID)
+	}
+
+	// The target's OWN child (one level beneath it, well within
+	// activityMaxNewDepth relative to the target) must be genuinely
+	// loaded -- not a depth-truncated placeholder.
+	var targetDelegate *appwire.JobActivityDelegate
+	for i := range session.Entries {
+		if session.Entries[i].Delegate != nil {
+			targetDelegate = session.Entries[i].Delegate
+		}
+	}
+	if targetDelegate == nil {
+		t.Fatal("continuation target has no delegate entry for its own child")
+	}
+	if targetDelegate.Branch.Truncated {
+		t.Fatalf("target's own child branch.Truncated = true, want false -- it is only 1 level beneath the continuation target, nowhere near activityMaxNewDepth relative to it")
+	}
+	if targetDelegate.Child == nil {
+		t.Fatal("target's own child was not loaded at all")
+	}
+	wantJobID := "job_" + sessionIDs[activityMaxNewDepth+1]
+	found := false
+	for _, entry := range targetDelegate.Child.Entries {
+		if entry.Job != nil && entry.Job.JobID == wantJobID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("target's own child entries = %+v, want to find job %q -- the child was loaded as an empty placeholder instead of its real content", targetDelegate.Child.Entries, wantJobID)
+	}
+}
+
 // TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant covers
 // #448's regression finding: a canceled request must surface as a real
 // error even when the cancellation lands while loading a DESCENDANT (not the

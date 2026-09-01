@@ -744,6 +744,7 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 		Jobs:            []*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}},
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "task")},
 		Diagnostics:     []string{"diag1"},
+		LoadTruncated:   true,
 	}
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child"}
 	filtered := activityFilterSnapshotToDelegate(base, "dlg_1", child)
@@ -761,6 +762,12 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	}
 	if filtered.SessionID != "root" || filtered.Revision != 7 {
 		t.Fatalf("filtered identity lost: %+v", filtered)
+	}
+	// roborev finding on #807's saturation commit: a continuation resolving
+	// through a load-truncated parent must not hide that incompleteness --
+	// filtered must carry base's LoadTruncated forward.
+	if !filtered.LoadTruncated {
+		t.Fatalf("filtered.LoadTruncated = false, want true (copied from base)")
 	}
 	// Missing delegateID results in no stable delegates or children.
 	filtered2 := activityFilterSnapshotToDelegate(base, "dlg_missing", child)

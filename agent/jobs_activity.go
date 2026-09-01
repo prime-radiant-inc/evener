@@ -243,7 +243,7 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
-		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache)
+		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
 		return snapshot, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
@@ -264,16 +264,27 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 // (LoadTruncated below) can mint a continuation token identical in shape to
 // projection's markActivitySessionTruncated, regardless of which phase
 // decided the response had to be partial.
-func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
+//
+// depth is loc's own depth, explicit rather than derived from
+// len(visited)-1 (roborev finding on #807's saturation commit): visited
+// keeps growing across a continuation's whole hop chain for cycle
+// detection, but projection resets ITS depth to 0 at the continuation
+// target (loadActivitySnapshotForParams's startDepth = -len(cont.Path),
+// reaching 0 exactly at the target — see decodeActivityContinuation).
+// Deriving depth from len(visited)-1 here counted the ancestor chain
+// leading UP TO a continuation target as part of the target's own depth,
+// so a max-length continuation could make the target's own children look
+// already past activityMaxNewDepth and load them as empty placeholders
+// instead of the next page, even though projection treats the target as a
+// fresh depth-0 root. Every caller passes 0 for a session that is
+// projection's own depth-0 node (an ordinary tree root, OR a continuation
+// target reached via any number of hops); the recursive call below passes
+// depth+1 for an actual child.
+func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool, cache *historicalActivityCache, depth int) (*activitySessionSnapshot, error) {
 	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
 		return nil, err
 	}
-	// visited already includes loc's own session (every caller adds it
-	// before recursing), so its size is loc's 1-indexed position in the
-	// chain — depth 0 for root, matching the depth projectActivitySessionAt
-	// is called with for the same node.
-	depth := len(visited) - 1
 	snapshot := loaded.snapshot
 	snapshot.Children = make(map[string]*activitySessionSnapshot)
 	snapshot.Errors = make(map[string]error)
@@ -348,7 +359,7 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		}
 		nextVisited := cloneActivityVisited(visited)
 		nextVisited[childID] = true
-		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true, cache)
+		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true, cache, depth+1)
 		if err != nil {
 			// A canceled request must surface as a real error all the way to
 			// the caller, not be laundered into a per-child branch error
@@ -374,7 +385,9 @@ func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activity
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required, cache)
+		// No hops: loc IS the continuation target, projection's own
+		// depth-0 node (see buildActivityFullSnapshot's doc comment).
+		return buildActivityFullSnapshot(loc, visited, required, cache, 0)
 	}
 	return buildActivityContinuationAt(loc, cont, 0, visited, required, cache)
 }
@@ -384,7 +397,11 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required, cache)
+		// loc is the continuation target: projection's own depth-0 node
+		// (see buildActivityFullSnapshot's doc comment) regardless of how
+		// many hops led here — NOT len(visited)-1, which would count the
+		// whole ancestor chain as depth already consumed.
+		return buildActivityFullSnapshot(loc, visited, required, cache, 0)
 	}
 	// Charge this hop against the shared load budget the same way
 	// buildActivityFullSnapshot charges each child it visits (roborev
@@ -573,6 +590,10 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		Diagnostics:     append([]string(nil), base.Diagnostics...),
 		Children:        make(map[string]*activitySessionSnapshot),
 		Errors:          make(map[string]error),
+		// roborev finding on #807's saturation commit: a continuation
+		// resolving through a load-truncated parent must not hide that
+		// incompleteness from the response.
+		LoadTruncated: base.LoadTruncated,
 	}
 	if row, ok := base.StableDelegates[delegateID]; ok {
 		filtered.StableDelegates[delegateID] = row
@@ -961,12 +982,15 @@ func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
 
 // activityBudgetRemaining is how many more work units budget has left before
 // activityConsumeWorkUnit starts refusing. Used by the LOAD phase (#448
-// finding 1) to size a session's own journal scan so a single session can't
-// decode past the aggregate tree-wide budget either — the same budget
-// projection already enforces, just consulted one phase earlier. An
-// unbounded budget (nil, or bounded==false) has no ceiling to report; callers
-// treat that as "don't restrict this scan," so this only needs to return a
-// sentinel they won't mistake for zero remaining.
+// finding 1) as a pure skip/no-skip gate on a session's own journal scan
+// (roborev finding on #807's saturation commit: this once fed a raw
+// MaxEvents ceiling, "sizing" the scan — it no longer does; the scan itself
+// always uses the fixed historicalJobScanLimits, and this only decides
+// whether to run it at all once the tree-wide budget is already exhausted)
+// — the same budget projection already enforces, just consulted one phase
+// earlier. An unbounded budget (nil, or bounded==false) has no ceiling to
+// report; callers treat that as "don't skip this scan," so this only needs
+// to return a sentinel they won't mistake for zero remaining.
 func activityBudgetRemaining(budget *activityBudget) int {
 	if budget == nil || !budget.bounded {
 		return -1
