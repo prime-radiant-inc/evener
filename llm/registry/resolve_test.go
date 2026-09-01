@@ -331,12 +331,10 @@ surface = "anthropic"
 // hosted-tool definition the gateway does not implement fails the whole
 // request, so a *_BASE_URL environment override that keeps the template is
 // just as untrustworthy here even though credentials keep flowing through
-// it. vertexgw is the regression case for a prior version of this gate,
-// which exempted every google-vertex-anthropic/google-vertex-based record
-// unconditionally (missing a curated default for GOOGLE_VERTEX_PROJECT/
-// LOCATION was read as "nothing to compare", regardless of whether the
-// record's own base_url ever touched the template) - the exact #738 failure
-// shape, one vendor over.
+// it. vertexgw guards the vars-only carve-out: a provider with no curated
+// default for its base_url vars (GOOGLE_VERTEX_PROJECT/LOCATION) must stay
+// gated when its own base_url replaced the template - the exact #738
+// failure shape, one vendor over.
 func TestResolve_WebSearchEndpointGate(t *testing.T) {
 	cfg := `
 [providers.bedrock]

@@ -109,7 +109,7 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // be available from openai as openai." A vendor's hosted search runs on the
 // vendor's own infrastructure, so any redirection away from it forfeits
 // the capability, however the redirection is expressed - unlike the
-// endpoint stop below, which only fires for a literal base_url override
+// endpoint stop above, which only fires for a literal base_url override
 // and lets a *_BASE_URL environment override inherit the key normally
 // (an unused credential is merely wasted; a hosted-tool definition the
 // gateway does not implement fails the whole request).
@@ -135,12 +135,10 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 //     reproduces the curated default byte for byte (copying the default
 //     verbatim is not "different", spec §10). A provider with no curated
 //     default has nothing a literal override could legitimately reproduce,
-//     so this is never first-party - the fix for the gap a prior version of
-//     this check left open: a missing curated default used to make every
-//     google-vertex-anthropic/google-vertex-based record "first-party" by
-//     default, literal override or not, because the check never
-//     distinguished "the template has no default" from "rec kept the
-//     template".
+//     so this is never first-party: a missing curated default must not be
+//     read as "nothing to compare", or every google-vertex-anthropic and
+//     google-vertex-based record would be first-party by default, literal
+//     override or not.
 func (r *Registry) firstPartyEndpoint(rec *record) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
