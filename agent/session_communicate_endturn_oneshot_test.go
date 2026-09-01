@@ -66,6 +66,45 @@ func endTurnWarningWithRunningJob(t *testing.T, s *Session) (warning, jobID stri
 	return got, shellOut.JobID
 }
 
+// newSessionWithRunningDelegates builds a session whose delegates park on a
+// gate: a child's single turn blocks until cleanup releases it, so a delegate
+// started through the real delegate tool — by the session itself or by one of
+// its own delegates — stays lifecycle-running for the whole test.
+func newSessionWithRunningDelegates(t *testing.T, maxSubagentDepth int) *Session {
+	t.Helper()
+
+	gate := make(chan struct{})
+	childAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				<-gate
+				return toolCallResponse(communicateCall("delegate-done", "delegate done"))
+			},
+		},
+	}
+	childClient := llm.NewClient()
+	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
+
+	s := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: maxSubagentDepth,
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			childClientFactory:  func() *llm.Client { return childClient },
+		},
+	}))
+	// Registered after newSession (whose t.Cleanup(sess.Close) ran first): LIFO
+	// releases the parked turns before Close waits on them.
+	t.Cleanup(func() { close(gate) })
+	return s
+}
+
 // TestCommunicate_EndTurnWarningIsHonestInOneShot pins the correction to the
 // warn-first text for a session whose process exits with the turn. The old
 // wording promised "each job remains notification-armed and will report
@@ -179,58 +218,7 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 // #585): a live delegate is session-owned work exactly like a background job,
 // so the warning must name both by id, not just the shell job.
 func TestCommunicate_EndTurnWarnsForLiveDelegate(t *testing.T) {
-	gate := make(chan struct{})
-	childAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				<-gate
-				return toolCallResponse(communicateCall("child-done", "child done"))
-			},
-		},
-	}
-	childClient := llm.NewClient()
-	childClient.Register(childAdapter)
-	registerTestSessionNamer(childClient)
-
-	s := newSession(t, withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
-		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			childClientFactory:  func() *llm.Client { return childClient },
-		},
-	}))
-	// Registered after newSession (whose t.Cleanup(sess.Close) ran first): LIFO
-	// releases the child's blocked turn before Close waits on it.
-	t.Cleanup(func() { close(gate) })
-
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID  string `json:"job_id"`
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	if shellOut.JobID == "" || shellOut.Status != "running" {
-		t.Fatalf("shell output = %+v, want a running job", shellOut)
-	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
+	s := newSessionWithRunningDelegates(t, 1)
 
 	delegateRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "delegate",
@@ -251,24 +239,9 @@ func TestCommunicate_EndTurnWarnsForLiveDelegate(t *testing.T) {
 		t.Fatalf("delegate output = %+v, want a running delegate", delegateOut)
 	}
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("end-turn-warning", map[string]any{
-		"message":  "done for now",
-		"end_turn": true,
-	}))
-	if res.IsError {
-		t.Fatalf("communicate error: %s", res.Output)
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
-		t.Fatalf("unmarshal communicate output: %v", err)
-	}
-	warning, ok := resp["warning"].(string)
-	if !ok || warning == "" {
-		t.Fatalf("expected a non-empty warning naming the running shell job and delegate, got: %v", resp)
-	}
-	if !strings.Contains(warning, shellOut.JobID) {
-		t.Fatalf("warning = %q, want it to name shell job id %q", warning, shellOut.JobID)
-	}
+	// Starts the background shell job and asserts the warning names it; the live
+	// delegate must be named alongside it.
+	warning, _ := endTurnWarningWithRunningJob(t, s)
 	if !strings.Contains(warning, delegateOut.DelegateID) {
 		t.Fatalf("warning = %q, want it to name live delegate id %q", warning, delegateOut.DelegateID)
 	}
@@ -339,35 +312,7 @@ func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 // sessionRunningJobIDs already gives shell jobs (a session's own job manager
 // only ever lists jobs it launched itself, never a child's).
 func TestCommunicate_EndTurnWarnsForLiveGrandchildDelegate(t *testing.T) {
-	gate := make(chan struct{})
-	childAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				<-gate
-				return toolCallResponse(communicateCall("grandchild-done", "grandchild done"))
-			},
-		},
-	}
-	childClient := llm.NewClient()
-	childClient.Register(childAdapter)
-	registerTestSessionNamer(childClient)
-
-	root := newSession(t, withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
-		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			childClientFactory:  func() *llm.Client { return childClient },
-		},
-	}))
-	// Registered after newSession (whose t.Cleanup(sess.Close) ran first): LIFO
-	// releases the grandchild's blocked turn before Close waits on it.
-	t.Cleanup(func() { close(gate) })
+	root := newSessionWithRunningDelegates(t, 2)
 
 	parentRes := root.reg.ExecuteCall(context.Background(), root.env, llm.ToolCallData{
 		ID:        "delegate-parent",
