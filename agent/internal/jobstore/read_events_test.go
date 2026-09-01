@@ -72,6 +72,17 @@ func TestReadEvents_TolerateTrailingPartial(t *testing.T) {
 	}
 }
 
+func TestReadEventsWithDiagnosticsAcceptsCompleteUnterminatedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"job_started","seq":1,"job_id":"j1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events, diagnostics, err := ReadEventsWithDiagnostics(path)
+	if err != nil || len(events) != 1 || diagnostics.TornTail || diagnostics.Corrupt {
+		t.Fatalf("events=%d diagnostics=%+v err=%v", len(events), diagnostics, err)
+	}
+}
+
 func TestReadEvents_ErrorsOnDefinitiveTrailingCorruption(t *testing.T) {
 	for _, trailing := range []string{
 		"not-json",

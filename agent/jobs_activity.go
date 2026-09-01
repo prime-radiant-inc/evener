@@ -801,7 +801,7 @@ func activityOwnedRecords(sessionID string, records []*jobstore.JobRecord) []*jo
 		if rec == nil {
 			continue
 		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID && rec.Authority != jobstore.AuthorityForwardedFallback && rec.Authority != jobstore.AuthorityLegacyUnknown {
 			continue
 		}
 		owned = append(owned, rec)
@@ -1032,19 +1032,22 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs
 		// (their records never store one) and passes through a stored ref
 		// (delegate turns point at the child session) unchanged.
-		TranscriptRef: jobTranscriptRef(rec),
-		Type:          string(rec.Type),
-		Status:        string(rec.Status),
-		Outcome:       outcome,
-		Terminal:      terminal,
-		Background:    rec.Background,
-		HasOutput:     rec.OutputPath != "" || rec.OutputBytes > 0,
-		Description:   description,
-		Command:       rec.Command,
-		Task:          rec.Task,
-		Reason:        rec.Reason,
-		StartedAt:     rec.StartedAt.UTC().Format(time.RFC3339),
-		OutputBytes:   rec.OutputBytes,
+		TranscriptRef:    jobTranscriptRef(rec),
+		Type:             string(rec.Type),
+		Status:           string(rec.Status),
+		Authority:        string(rec.Authority),
+		Incomplete:       rec.Incomplete,
+		IntegrityReasons: append([]string(nil), rec.IntegrityReasons...),
+		Outcome:          outcome,
+		Terminal:         terminal,
+		Background:       rec.Background,
+		HasOutput:        rec.OutputPath != "" || rec.OutputBytes > 0,
+		Description:      description,
+		Command:          rec.Command,
+		Task:             rec.Task,
+		Reason:           rec.Reason,
+		StartedAt:        rec.StartedAt.UTC().Format(time.RFC3339),
+		OutputBytes:      rec.OutputBytes,
 	}
 	if rec.EndedAt != nil {
 		job.EndedAt = rec.EndedAt.UTC().Format(time.RFC3339)

@@ -21,7 +21,7 @@ func Fold(events []Event) map[string]*JobRecord {
 		}
 		r := recs[e.JobID]
 		if r == nil {
-			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
+			r = &JobRecord{JobID: e.JobID, DurableSeq: e.Seq, NotifyState: NotifyNotArmed}
 			recs[e.JobID] = r
 		}
 		applyEvent(r, e)
@@ -45,7 +45,7 @@ func FoldOrdered(events []Event) []*JobRecord {
 		}
 		r := recs[e.JobID]
 		if r == nil {
-			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
+			r = &JobRecord{JobID: e.JobID, DurableSeq: e.Seq, NotifyState: NotifyNotArmed}
 			recs[e.JobID] = r
 			order = append(order, e.JobID)
 		}

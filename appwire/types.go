@@ -1657,24 +1657,27 @@ type JobActivityBranchState struct {
 }
 
 type JobActivityJob struct {
-	JobID          string `json:"jobId"`
-	OwnerSessionID string `json:"ownerSessionId"`
-	OwnerRef       string `json:"ownerRef"`
-	TranscriptRef  string `json:"transcriptRef,omitempty"`
-	Type           string `json:"type"`
-	Status         string `json:"status"`
-	Outcome        string `json:"outcome,omitempty"`
-	Terminal       bool   `json:"terminal"`
-	Background     bool   `json:"background"`
-	HasOutput      bool   `json:"hasOutput"`
-	Description    string `json:"description"`
-	Command        string `json:"command,omitempty"`
-	Task           string `json:"task,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	StartedAt      string `json:"startedAt"`
-	EndedAt        string `json:"endedAt,omitempty"`
-	ExitCode       *int   `json:"exitCode,omitempty"`
-	OutputBytes    int64  `json:"outputBytes"`
+	JobID            string   `json:"jobId"`
+	OwnerSessionID   string   `json:"ownerSessionId"`
+	OwnerRef         string   `json:"ownerRef"`
+	TranscriptRef    string   `json:"transcriptRef,omitempty"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	Authority        string   `json:"authority,omitempty"`
+	Incomplete       bool     `json:"incomplete,omitempty"`
+	IntegrityReasons []string `json:"integrityReasons,omitempty"`
+	Outcome          string   `json:"outcome,omitempty"`
+	Terminal         bool     `json:"terminal"`
+	Background       bool     `json:"background"`
+	HasOutput        bool     `json:"hasOutput"`
+	Description      string   `json:"description"`
+	Command          string   `json:"command,omitempty"`
+	Task             string   `json:"task,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	StartedAt        string   `json:"startedAt"`
+	EndedAt          string   `json:"endedAt,omitempty"`
+	ExitCode         *int     `json:"exitCode,omitempty"`
+	OutputBytes      int64    `json:"outputBytes"`
 	// LastOutputAt is the RFC3339 timestamp of the job's most recent
 	// parent-observable output/activity. Live-only: retained jobs omit it, and
 	// clients fall back to startedAt (or hide quiet time for terminal rows).

@@ -70,7 +70,6 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	var jobEvents []jobstore.Event
 	if _, err := historicalJobsStat(jobsPath); err != nil {
 		if !os.IsNotExist(err) {
 			return activityLoadedBase{}, err
@@ -78,16 +77,46 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		if required {
 			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
 		}
-	} else {
-		var err error
-		jobEvents, err = jobstore.ReadEvents(jobsPath)
-		if err != nil {
-			return activityLoadedBase{}, err
-		}
 	}
+	jobRecords, authorityDiagnostics, err := loadRetainedJobHistory(stateDir, sessionID)
+	if err != nil {
+		return activityLoadedBase{}, err
+	}
+	jobs := make([]*jobstore.JobRecord, 0, len(jobRecords))
+	for _, record := range jobRecords {
+		jobs = append(jobs, record)
+	}
+	sort.SliceStable(jobs, func(i, j int) bool {
+		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
+			return jobs[i].DurableSeq < jobs[j].DurableSeq
+		}
+		return jobs[i].StartedAt.Before(jobs[j].StartedAt)
+	})
 	stable, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
+	}
+	activityDiagnostics := make([]string, 0, len(authorityDiagnostics.Mismatches)+len(authorityDiagnostics.TornTails)+len(authorityDiagnostics.CorruptBranches)+len(authorityDiagnostics.InvalidOwners)+len(authorityDiagnostics.LifecycleErrors)+len(authorityDiagnostics.MissingOwners)+len(authorityDiagnostics.Compatibility))
+	for _, id := range authorityDiagnostics.Mismatches {
+		activityDiagnostics = append(activityDiagnostics, "job_authority_mismatch:"+id)
+	}
+	for _, id := range authorityDiagnostics.TornTails {
+		activityDiagnostics = append(activityDiagnostics, "job_branch_torn_tail:"+id)
+	}
+	for _, id := range authorityDiagnostics.CorruptBranches {
+		activityDiagnostics = append(activityDiagnostics, "job_branch_corrupt:"+id)
+	}
+	for _, id := range authorityDiagnostics.InvalidOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_invalid_owner:"+id)
+	}
+	for _, reason := range authorityDiagnostics.LifecycleErrors {
+		activityDiagnostics = append(activityDiagnostics, "job_lifecycle_invalid:"+reason)
+	}
+	for _, id := range authorityDiagnostics.MissingOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_missing:"+id)
+	}
+	for _, id := range authorityDiagnostics.Compatibility {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_compatibility:"+id)
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:       sessionID,
@@ -95,11 +124,11 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 		Label:           activityLabelFromMeta(sessionID, meta, metaErr),
 		RootID:          rootID,
 		Revision:        activityRevisionFromMeta(meta),
-		Jobs:            jobstore.FoldOrdered(jobEvents),
+		Jobs:            jobs,
 		LiveJobs:        map[string]*jobstore.JobRecord{},
 		StableDelegates: stable,
 		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
-		Diagnostics:     diagnostics,
+		Diagnostics:     append(diagnostics, activityDiagnostics...),
 	}}, nil
 }
 
