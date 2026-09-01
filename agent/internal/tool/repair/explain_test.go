@@ -348,6 +348,39 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			keyword:          "enum",
 			want:             `my_tool: argument "flag" is not one of the allowed values: true, false. Value is "yes".`,
 		},
+		{
+			// A genuinely typed Go slice (not []any) renders the same as its
+			// []any equivalent: schema compilation accepts this shape and
+			// preserves it through cloning, so formatEnumValues must too.
+			name:     "typed []int slice enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"n": map[string]any{"type": "integer", "enum": []int{1, 2, 3}},
+				},
+				"required": []string{"n"},
+			},
+			args:             map[string]any{"n": 5},
+			instanceLocation: "n",
+			keyword:          "enum",
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+		},
+		{
+			name:     "typed []bool slice enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"flag": map[string]any{"type": "boolean", "enum": []bool{true, false}},
+				},
+				"required": []string{"flag"},
+			},
+			args:             map[string]any{"flag": "yes"},
+			instanceLocation: "flag",
+			keyword:          "enum",
+			want:             `my_tool: argument "flag" is not one of the allowed values: true, false. Value is "yes".`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

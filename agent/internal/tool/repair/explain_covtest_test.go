@@ -636,6 +636,13 @@ func TestFormatEnumValues(t *testing.T) {
 		// contract, not decimal notation at every magnitude.
 		{"[]any large float stays decimal", []any{1e20}, []string{"100000000000000000000"}},
 		{"[]any float past json.Marshal's decimal range", []any{1e21}, []string{"1e+21"}},
+		// A genuinely typed slice or array (not []any) renders the same as
+		// its []any equivalent — reflection walks any slice/array kind
+		// uniformly, so these need no dedicated case in formatEnumValues.
+		{"[]int", []int{1, 2, 3}, []string{"1", "2", "3"}},
+		{"[]bool", []bool{true, false}, []string{"true", "false"}},
+		{"[]float64", []float64{1.5, 2.5}, []string{"1.5", "2.5"}},
+		{"[3]int array (not slice)", [3]int{1, 2, 3}, []string{"1", "2", "3"}},
 		{"nil", nil, nil},
 		{"string", "hello", nil},
 		{"int", 42, nil},
