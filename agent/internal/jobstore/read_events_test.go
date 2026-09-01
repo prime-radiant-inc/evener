@@ -251,6 +251,57 @@ func TestScanEvents_ManyNonJobEventsExceedEventLimit(t *testing.T) {
 	}
 }
 
+// TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError covers the
+// degrade-to-partial contract a caller needs to truncate gracefully instead
+// of hard-failing: when MaxEvents is hit, ScanEvents returns both the
+// successfully decoded prefix AND ErrScanLimitExceeded, so a caller that
+// understands this specific error can keep what was read rather than
+// discarding it. (Callers that don't recognize the error still fail safe:
+// checking err first, as every existing caller does, ignores the events.)
+func TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	writeScanEvents(t, path, 50, func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+
+	events, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 10})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) != 10 {
+		t.Fatalf("got %d partial events, want exactly the 10 decoded before the limit fired", len(events))
+	}
+	for i, e := range events {
+		if e.WatchID != fmt.Sprintf("w%d", i) {
+			t.Fatalf("partial events out of order: event %d = %+v", i, e)
+		}
+	}
+}
+
+// TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError is the byte-
+// ceiling counterpart: events decoded before the byte limit fired are still
+// returned alongside the error.
+func TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	writeScanEvents(t, path, 200, func(i int) Event {
+		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
+	})
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+	if len(events) == 0 || len(events) >= 200 {
+		t.Fatalf("got %d partial events, want a nonzero prefix short of the full 200", len(events))
+	}
+}
+
 // TestScanEvents_RefusesRawByteLimit covers the raw-limit-refusal acceptance
 // test: a journal over the byte ceiling is refused before being retained.
 func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
@@ -273,12 +324,17 @@ func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
 // TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
 // unterminated-final-chunk path specifically: a single line with no trailing
 // newline at all, longer than MaxBytes, must be refused rather than
-// tolerated as an in-flight partial write.
+// tolerated as an in-flight partial write. 5 MB matches the scale the
+// adversarial review empirically probed bufio.Reader.ReadBytes at (it has no
+// internal cap, unlike Scanner's MaxScanTokenSize, so it will buffer a line
+// of any length before returning it) — the underlying reader must itself be
+// bounded via io.LimitReader so this refusal doesn't require buffering the
+// whole 5 MB line first.
 func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
 	// One line, no trailing newline, far longer than the byte ceiling below.
-	content := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"` + strings.Repeat("w", 10_000) + `"}`)
+	content := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"` + strings.Repeat("w", 5_000_000) + `"}`)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}

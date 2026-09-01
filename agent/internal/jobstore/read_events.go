@@ -48,6 +48,15 @@ func ReadEvents(path string) ([]Event, error) {
 // unterminated, syntactically incomplete final line from an in-flight append
 // being tolerated rather than treated as corruption — matches ReadEvents
 // exactly.
+//
+// When a byte or event ceiling is hit, ScanEvents returns the events
+// successfully decoded before the limit fired ALONGSIDE ErrScanLimitExceeded
+// (a non-nil slice with a non-nil error), not nil — so a caller that
+// specifically recognizes ErrScanLimitExceeded can degrade to a truncated-
+// but-honest partial result instead of discarding everything already read.
+// Ordinary callers, which check err before touching the result (every
+// existing caller of ReadEvents does), are unaffected: they never look at
+// the partial slice.
 func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -58,7 +67,19 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 	}
 	defer func() { _ = f.Close() }()
 
-	reader := bufio.NewReader(f)
+	// Bound the underlying reader too, not just the per-chunk byte count
+	// below: bufio.Reader.ReadBytes has no size cap of its own (unlike
+	// Scanner's MaxScanTokenSize) — it keeps growing its fragment buffer
+	// until it finds '\n' or hits EOF, so a single pathologically long
+	// unterminated line would otherwise be buffered in full before the
+	// MaxBytes check ever runs. Capping the source at MaxBytes+1 means the
+	// worst a single line can force us to hold is MaxBytes+1 bytes, and the
+	// check below still sees and reports the overage on the next read.
+	var src io.Reader = f
+	if limits.MaxBytes > 0 {
+		src = io.LimitReader(f, limits.MaxBytes+1)
+	}
+	reader := bufio.NewReader(src)
 	events := make([]Event, 0)
 	var totalBytes int64
 	lineNum := 0
@@ -77,7 +98,7 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 		lineNum++
 		totalBytes += int64(len(chunk))
 		if limits.MaxBytes > 0 && totalBytes > limits.MaxBytes {
-			return nil, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
+			return events, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
 		}
 		line := chunk
 		if terminated {
@@ -90,7 +111,7 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 			continue
 		}
 		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
-			return nil, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+			return events, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
 		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
