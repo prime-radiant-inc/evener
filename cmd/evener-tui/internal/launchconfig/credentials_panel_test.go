@@ -613,11 +613,11 @@ func TestCredentialsPanel_GroupsEachProviderOnce(t *testing.T) {
 	}
 }
 
-// TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL: evener/instance/edit
-// reads an empty baseUrl as "leave unchanged" (spec §11.3,
-// appwire.InstanceEditParams), so submitting a cleared field would report
-// success and change nothing. The form says so instead of sending it.
-func TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL(t *testing.T) {
+// TestCredentialsPanelEditClearsAnAuthoredBaseURL: evener/instance/edit now
+// has an additive ClearBaseURL flag (#711) alongside BaseURL's unchanged
+// "empty means unchanged" (v3), so emptying a previously set field and
+// submitting sends an explicit clear instead of being refused.
+func TestCredentialsPanelEditClearsAnAuthoredBaseURL(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
@@ -643,24 +643,30 @@ func TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL(t *testing.T) {
 		p = panel.(CredentialsPanel)
 	}
 
-	if note := flattenPanelText(p.View()); !strings.Contains(note, "remove and re-add the instance to change its endpoint back to the default") {
-		t.Fatalf("the form does not say how to reach the default endpoint:\n%s", p.View())
+	if note := flattenPanelText(p.View()); !strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("the form does not say emptying resets to the default endpoint:\n%s", p.View())
 	}
 
 	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
-	if cmd != nil {
-		if msg, ok := cmd().(InstanceEditSubmitMsg); ok {
-			t.Fatalf("the cleared field was submitted anyway: %+v", msg.Params)
-		}
+	if cmd == nil {
+		t.Fatal("the cleared field was not submitted")
 	}
-	if !p.formOpen {
-		t.Fatal("the form closed on a submit it refused")
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.Name != "work" || msg.Params.BaseURL != "" || !msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want ClearBaseURL true and BaseURL empty", msg.Params)
+	}
+	if p.formOpen {
+		t.Fatal("the form stayed open after a submit it accepted")
 	}
 }
 
 // TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet: an instance with
-// no base_url of its own has nothing to clear, so the empty field is honest.
+// no base_url of its own has nothing to clear, so the empty field is honest
+// and submitting it untouched sends neither BaseURL nor ClearBaseURL.
 func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewCredentialsPanel()
@@ -673,8 +679,8 @@ func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
 
-	if note := flattenPanelText(p.View()); strings.Contains(note, "remove and re-add the instance") {
-		t.Fatalf("nothing was cleared, so the form must not warn:\n%s", p.View())
+	if note := flattenPanelText(p.View()); strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("nothing was cleared, so the form must not note a reset:\n%s", p.View())
 	}
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -684,8 +690,84 @@ func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
 	}
-	if msg.Params.Name != "work" || msg.Params.BaseURL != "" {
-		t.Fatalf("params = %+v", msg.Params)
+	if msg.Params.Name != "work" || msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL", msg.Params)
+	}
+}
+
+// TestCredentialsPanelEditOfAnImplicitInstanceLeavesBaseURLUnchanged is
+// #711 (roborev): the edit form pre-fills formBaseURL with the instance's
+// displayed base URL, which for an implicit instance is its resolved
+// registry default, not an authored override. A save that never touches
+// the field must send neither BaseURL nor ClearBaseURL — sending the
+// displayed default back as a literal BaseURL would author it and stop
+// spec §10's credential inheritance on an instance the user only meant to
+// leave alone.
+func TestCredentialsPanelEditOfAnImplicitInstanceLeavesBaseURLUnchanged(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "groq", ProviderID: "groq", Protocol: "openai-chat", BaseURL: "https://api.groq.com/openai/v1", Implicit: true, CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "https://api.groq.com/openai/v1" {
+		t.Fatalf("formBaseURL = %q, want the implicit instance's resolved default", p.formBaseURL)
+	}
+
+	// Advance past protocol to the baseURL field and submit without typing
+	// anything into either field.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL: saving without touching the field must not author the displayed default as a literal override", msg.Params)
+	}
+}
+
+// TestCredentialsPanelEditOfAHiddenInstanceLeavesBaseURLUnchanged is #711
+// (roborev): a hidden or otherwise unresolvable authored instance can
+// display this field empty while a real base_url is still authored
+// underneath (InstanceEntry.Hidden: "no resolvable base URL in this
+// environment"). A save that never touches the field must not read that
+// display quirk as a deliberate clear.
+func TestCredentialsPanelEditOfAHiddenInstanceLeavesBaseURLUnchanged(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "work", ProviderID: "anthropic", Protocol: "anthropic", BaseURL: "", Hidden: true, CredentialRequired: true, AuthModes: []string{"apiKey"}},
+	}}})
+	p := updated.(CredentialsPanel)
+
+	panel, _ := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	p = panel.(CredentialsPanel)
+	if p.formBaseURL != "" {
+		t.Fatalf("formBaseURL = %q, want empty: a hidden instance's real base_url does not display", p.formBaseURL)
+	}
+
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(CredentialsPanel)
+	if cmd == nil {
+		t.Fatal("the edit was not submitted")
+	}
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.BaseURL != "" || msg.Params.ClearBaseURL {
+		t.Fatalf("params = %+v, want neither BaseURL nor ClearBaseURL: an untouched empty display must not silently clear a real authored base_url the pane could not show", msg.Params)
 	}
 }
 

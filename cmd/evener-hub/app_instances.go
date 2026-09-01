@@ -203,24 +203,32 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // Create authors a new instance entry. APIKeyEnv is a variable name and
 // CredentialHeader must reference a $VAR: a literal secret never crosses this
 // boundary, and none is ever written to the file (spec §11.2).
+//
+// Every refusal that blames the fields the caller sent comes back as a wire
+// error naming its class — InvalidParams for a field that is malformed or
+// names something that does not exist, Conflict for a name already taken —
+// matching how hubDirsCreate and the pin-section store classify the same
+// shapes. A refusal about the hub's own state (the registry not loaded, a
+// read or write failure) stays a plain error: that is not the caller's to
+// fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
 	if !registry.ValidInstanceName(name) {
-		return fmt.Errorf("invalid instance name %q (lowercase, no slash)", params.Name)
+		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 	base := strings.TrimSpace(params.Base)
 	if _, ok := c.reg.Get().Provider(base); !ok {
-		return fmt.Errorf("unknown base provider %q", params.Base)
+		return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 	}
 	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
 	if err != nil {
 		return err
 	}
 	if err := validVarNames(params.Vars); err != nil {
-		return err
+		return appwire.InvalidParams(err.Error())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -229,7 +237,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		return err
 	}
 	if _, exists := l.Providers[name]; exists {
-		return fmt.Errorf("instance %q already exists", name)
+		return appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
 	}
 	p := registry.Provider{
 		ID:       name,
@@ -268,6 +276,13 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// before is an independent parse from l below — a fresh read sharing no
+	// maps with it — so if the edit parses fine but fails to load (#711),
+	// writing it back restores exactly what was on disk before this call.
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -279,7 +294,14 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 		p = registry.Provider{ID: name}
 	}
-	if v := strings.TrimSpace(params.BaseURL); v != "" {
+	if params.ClearBaseURL {
+		// Drops the authored override and goes back to the registry
+		// default, restoring spec §10's credential inheritance from the
+		// base provider (#711). Additive over BaseURL's existing "empty
+		// means unchanged" (v3): the two are never both meaningful in the
+		// same request (appwire.InstanceEditParams doc comment).
+		p.Transport.BaseURL = ""
+	} else if v := strings.TrimSpace(params.BaseURL); v != "" {
 		p.Transport.BaseURL = v
 	}
 	if v := strings.TrimSpace(params.Protocol); v != "" {
@@ -298,7 +320,24 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	return c.reg.Reload()
+	if err := c.reg.Reload(); err != nil {
+		// writeLoadable's dry parse only checks TOML syntax against the
+		// registry schema; it does not resolve the config the way Reload
+		// does. A standalone instance (no base, and its own name is not a
+		// registry id either) that just lost its only base_url is a config
+		// that parses fine but cannot resolve an endpoint (llm/registry:
+		// "no base URL: set base_url = … or base = <registry id>"), and one
+		// bad instance record fails the whole reload, not just this one
+		// (#711). Restore the file this call just overwrote instead of
+		// leaving every instance operation refused by a config only this
+		// edit produced.
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("this edit would leave %q unable to load: %v", name, err))
+	}
+	return nil
 }
 
 // Remove deletes an authored instance, its stored key and its OAuth record.

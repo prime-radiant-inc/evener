@@ -667,6 +667,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
+| `clearBaseUrl` | `bool` | yes |  |
 | `protocol` | `string` | yes |  |
 | `surface` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |

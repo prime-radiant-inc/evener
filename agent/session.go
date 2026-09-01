@@ -1320,22 +1320,10 @@ func (s *Session) validateVisionModelRefLocked(ref string) error {
 	if ok && (prov == "" || model == "") {
 		return fmt.Errorf("invalid vision model ref %q: want \"model\" or \"provider/model\"", ref)
 	}
-	if ok && !strings.EqualFold(prov, s.profile.ID()) && !sessionClientHasProvider(s.client, prov) {
+	if ok && !strings.EqualFold(prov, s.profile.ID()) && !s.client.HasProvider(prov) {
 		return fmt.Errorf("vision model provider %q is not configured or has no credential (active provider %q)", prov, s.profile.ID())
 	}
 	return nil
-}
-
-func sessionClientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // VisionModel returns the session's configured vision side-channel setting

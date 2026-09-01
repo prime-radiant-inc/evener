@@ -48,7 +48,12 @@ func scanEnvRefs(value string, lit func(string), ref func(string)) error {
 			}
 			name := value[i+2 : i+2+end]
 			if !envNameRe.MatchString(name) {
-				return fmt.Errorf("invalid environment variable name %q", name)
+				// name is whatever the author put between the braces: exactly
+				// the content a misplaced secret would occupy, e.g.
+				// "${sk-live-...}" pasted where "${VAR}" belonged. Unlike
+				// every other error in this file, it must not be
+				// interpolated into the message.
+				return errors.New("invalid environment variable name in ${...} reference: must start with a letter or underscore, then only letters, digits, or underscores")
 			}
 			ref(name)
 			i += 2 + end + 1

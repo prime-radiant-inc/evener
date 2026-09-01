@@ -301,17 +301,28 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		// Submit.
-		if p.clearedBaseURL() {
-			// evener/instance/edit reads an empty baseUrl as "unchanged", so
-			// sending this would report a success that changed nothing.
-			return p, nil
-		}
 		p.formOpen = false
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
 				Name:     p.formName,
 				Protocol: p.formProtocol,
-				BaseURL:  p.formBaseURL,
+			}
+			switch {
+			case strings.TrimSpace(p.formBaseURL) == strings.TrimSpace(p.formBaseURLWas):
+				// Untouched: send neither field. formBaseURLWas is the
+				// instance's displayed base URL, which for an implicit
+				// instance is its resolved default (not an authored
+				// override) — sending it back unedited would author it as a
+				// literal one and stop spec §10's credential inheritance.
+				// For a hidden or unresolvable instance the display can be
+				// empty while a real base_url is still authored underneath,
+				// so an untouched empty field must not read as a clear
+				// either (#711).
+			case p.clearedBaseURL():
+				// Deliberately emptied a field that had something displayed.
+				params.ClearBaseURL = true
+			default:
+				params.BaseURL = p.formBaseURL
 			}
 			return p, func() tea.Msg { return InstanceEditSubmitMsg{Params: params} }
 		}
@@ -557,10 +568,11 @@ func (p CredentialsPanel) formView() string {
 	return strings.Join(lines, "\n")
 }
 
-// clearedBaseURLNote is what the form says instead of submitting an emptied
-// base URL. The wire has no way to express a clear (appwire.InstanceEditParams),
-// so re-creating the instance is the only route back to the default endpoint.
-const clearedBaseURLNote = "Emptying this leaves the endpoint unchanged — remove and re-add the instance to change its endpoint back to the default."
+// clearedBaseURLNote tells the user what submitting an emptied base URL will
+// do: appwire.InstanceEditParams.BaseURL clears the authored override on an
+// explicit empty value (#711), so the instance falls back to its provider's
+// default endpoint.
+const clearedBaseURLNote = "Emptying this resets the endpoint to the provider's default."
 
 // clearedBaseURL reports whether the edit form would submit an emptied base
 // URL for an instance that had one.
