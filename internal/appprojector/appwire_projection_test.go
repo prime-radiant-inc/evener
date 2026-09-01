@@ -1847,6 +1847,30 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			notContains: []string{"fill_required:output:filled message", "adjusted the"},
 		},
 		{
+			name: "tool call repaired: fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output:filled message",
+					"fill_required:output:filled data",
+					"fill_required:output:filled artifacts",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{
+				"fill_required:output:filled message",
+				"fill_required:output:filled data",
+				"fill_required:output:filled artifacts",
+				"adjusted the",
+			},
+		},
+		{
 			name: "tool call repaired: multiple changes",
 			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
 				ToolName: "communicate",
