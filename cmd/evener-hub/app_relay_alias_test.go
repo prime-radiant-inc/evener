@@ -212,6 +212,7 @@ func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) 
 			t.Fatalf("subscribe client to %s: %v", ref, err)
 		}
 	}
+	awaitLiveHubSubscriptions(t, appServer, 2)
 
 	started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
 		"turnId": "turn-image",
