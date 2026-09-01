@@ -16,7 +16,7 @@ func TestWatchesTargeting_SendMatch(t *testing.T) {
 		},
 		terminalFlush: map[*watchConfig]bool{},
 	}
-	if !jm.watchesTargeting("dlg_target") {
+	if !jm.watchesTargeting("dlg_target", "") {
 		t.Fatal("expected true for send.To match")
 	}
 }
@@ -33,7 +33,7 @@ func TestWatchesTargeting_PendingMatch(t *testing.T) {
 		},
 		terminalFlush: map[*watchConfig]bool{},
 	}
-	if !jm.watchesTargeting("dlg_target") {
+	if !jm.watchesTargeting("dlg_target", "") {
 		t.Fatal("expected true for pending match")
 	}
 }
@@ -49,7 +49,7 @@ func TestWatchesTargeting_TerminalFlushMatch(t *testing.T) {
 		watches:       map[watchKey]*watchConfig{},
 		terminalFlush: map[*watchConfig]bool{cfg: true},
 	}
-	if !jm.watchesTargeting("dlg_target") {
+	if !jm.watchesTargeting("dlg_target", "") {
 		t.Fatal("expected true for terminalFlush match")
 	}
 }
@@ -67,7 +67,7 @@ func TestWatchesTargeting_NoMatch(t *testing.T) {
 		},
 		terminalFlush: map[*watchConfig]bool{},
 	}
-	if jm.watchesTargeting("dlg_target") {
+	if jm.watchesTargeting("dlg_target", "") {
 		t.Fatal("expected false for no match")
 	}
 }
@@ -83,7 +83,7 @@ func TestWatchesTargeting_SendNil(t *testing.T) {
 		},
 		terminalFlush: map[*watchConfig]bool{},
 	}
-	if jm.watchesTargeting("dlg_target") {
+	if jm.watchesTargeting("dlg_target", "") {
 		t.Fatal("expected false for nil send and empty pending")
 	}
 }
@@ -96,7 +96,7 @@ func TestSubtreeWatchesTargeting_NilJobManagerWithSubagents(t *testing.T) {
 			subs: map[string]*subagent{},
 		},
 	}
-	if s.subtreeWatchesTargeting("dlg_test") {
+	if s.subtreeWatchesTargeting("dlg_test", "") {
 		t.Fatal("expected false with nil jobManager and empty subagents")
 	}
 }
@@ -106,7 +106,7 @@ func TestSubtreeWatchesTargeting_NilSubagents(t *testing.T) {
 	s := &Session{
 		subagents: &subagentManager{subs: map[string]*subagent{}},
 	}
-	if s.subtreeWatchesTargeting("dlg_test") {
+	if s.subtreeWatchesTargeting("dlg_test", "") {
 		t.Fatal("expected false with empty subagents")
 	}
 }
@@ -125,7 +125,93 @@ func TestSubtreeWatchesTargeting_JobManagerMatch(t *testing.T) {
 		jobManager: jm,
 		subagents:  &subagentManager{subs: map[string]*subagent{}},
 	}
-	if !s.subtreeWatchesTargeting("dlg_target") {
+	if !s.subtreeWatchesTargeting("dlg_target", "") {
 		t.Fatal("expected true for jobManager match")
+	}
+}
+
+// TestWatchesTargeting_ReceiverMatch covers the watchConfigMatchesReceiver
+// branch (#695): a stable-receiver watch's send.To is the
+// stableWatchReceiverTarget sentinel, never the delegate id, so only
+// receiver-identity matching catches it.
+func TestWatchesTargeting_ReceiverMatch(t *testing.T) {
+	jm := &jobManager{
+		watches: map[watchKey]*watchConfig{
+			{Target: "job_1"}: {
+				send:               &watchSendArgs{To: stableWatchReceiverTarget},
+				receiverSessionID:  "child-session",
+				receiverDelegateID: "dlg_target",
+			},
+		},
+		terminalFlush: map[*watchConfig]bool{},
+	}
+	if !jm.watchesTargeting("dlg_target", "child-session") {
+		t.Fatal("expected true for receiver-identity match despite sentinel send.To")
+	}
+}
+
+// TestWatchesTargeting_ReceiverSessionMismatch covers watchConfigMatchesReceiver
+// requiring BOTH receiverSessionID and receiverDelegateID: a delegate-id match
+// alone, with the wrong session, must not count as targeting.
+func TestWatchesTargeting_ReceiverSessionMismatch(t *testing.T) {
+	jm := &jobManager{
+		watches: map[watchKey]*watchConfig{
+			{Target: "job_1"}: {
+				send:               &watchSendArgs{To: stableWatchReceiverTarget},
+				receiverSessionID:  "other-session",
+				receiverDelegateID: "dlg_target",
+			},
+		},
+		terminalFlush: map[*watchConfig]bool{},
+	}
+	if jm.watchesTargeting("dlg_target", "child-session") {
+		t.Fatal("expected false: receiverDelegateID matches but receiverSessionID does not")
+	}
+}
+
+// TestWatchesTargeting_TerminalFlushReceiverMatch covers the receiver-identity
+// check in the terminalFlush loop.
+func TestWatchesTargeting_TerminalFlushReceiverMatch(t *testing.T) {
+	cfg := &watchConfig{
+		receiverSessionID:  "child-session",
+		receiverDelegateID: "dlg_target",
+	}
+	jm := &jobManager{
+		watches:       map[watchKey]*watchConfig{},
+		terminalFlush: map[*watchConfig]bool{cfg: true},
+	}
+	if !jm.watchesTargeting("dlg_target", "child-session") {
+		t.Fatal("expected true for terminalFlush receiver-identity match")
+	}
+}
+
+// TestSubtreeWatchesTargeting_ReceiverMatchInSubagent covers receiverSessionID
+// propagating unchanged through the subagent recursion (#695): a
+// receiver-routed watch armed in a subagent's own job manager must still be
+// found from the ancestor's subtree scan.
+func TestSubtreeWatchesTargeting_ReceiverMatchInSubagent(t *testing.T) {
+	childJM := &jobManager{
+		watches: map[watchKey]*watchConfig{
+			{Target: "job_1"}: {
+				send:               &watchSendArgs{To: stableWatchReceiverTarget},
+				receiverSessionID:  "child-session",
+				receiverDelegateID: "dlg_target",
+			},
+		},
+		terminalFlush: map[*watchConfig]bool{},
+	}
+	child := &Session{
+		jobManager: childJM,
+		subagents:  &subagentManager{subs: map[string]*subagent{}},
+	}
+	s := &Session{
+		subagents: &subagentManager{
+			subs: map[string]*subagent{
+				"child-session": {sess: child},
+			},
+		},
+	}
+	if !s.subtreeWatchesTargeting("dlg_target", "child-session") {
+		t.Fatal("expected true for a receiver-routed watch armed in a subagent's job manager")
 	}
 }

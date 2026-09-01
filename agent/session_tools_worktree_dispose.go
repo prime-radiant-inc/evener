@@ -127,7 +127,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
 	}
-	if s.subtreeWatchesTargeting(id) {
+	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s is the target of an armed or pending watch send; clear the watch before disposing", id)
 	}
 
@@ -400,22 +400,35 @@ func laneAheadCount(run worktree.GitRunner, lanePath, baseSHA string) (n int, ok
 	return n, true
 }
 
-func (s *Session) subtreeWatchesTargeting(id string) bool {
-	if s.jobManager != nil && s.jobManager.watchesTargeting(id) {
+// subtreeWatchesTargeting reports whether any watch anywhere in s's subtree
+// targets id, the delegate being disposed. receiverSessionID is id's own
+// child session ID (the receiver identity a stable-receiver watch on id
+// carries; #695), threaded unchanged through the recursion.
+func (s *Session) subtreeWatchesTargeting(id, receiverSessionID string) bool {
+	if s.jobManager != nil && s.jobManager.watchesTargeting(id, receiverSessionID) {
 		return true
 	}
 	for _, sub := range s.subagents.directSubagents() {
-		if sub.sess != nil && sub.sess.subtreeWatchesTargeting(id) {
+		if sub.sess != nil && sub.sess.subtreeWatchesTargeting(id, receiverSessionID) {
 			return true
 		}
 	}
 	return false
 }
 
-// watchesTargeting reports whether any armed watch config sends to id, or any
-// pending/terminal-flush watch-send frame resolves send_to id, in this job
-// manager. Read under jm.mu.
-func (jm *jobManager) watchesTargeting(id string) bool {
+// watchesTargeting reports whether any armed watch config sends to id, any
+// pending/terminal-flush watch-send frame resolves send_to id, or any watch's
+// receiver identity names id, in this job manager. Read under jm.mu.
+//
+// A stable-receiver watch (the observer-sidecar class, #655) synthesizes
+// send.To as the stableWatchReceiverTarget sentinel, never the delegate ID
+// (applyStableReceiverWatchSend), so the plain send.To/ResolvedSendTo checks
+// above never match id for that class of watch. watchConfigMatchesReceiver —
+// the same receiver-keyed matching liveWatchSummariesForReceiver and the
+// #655 job_stop live-watch inventory use — catches it by receiver identity
+// instead: id plus receiverSessionID (id's own child session ID, resolved by
+// the caller).
+func (jm *jobManager) watchesTargeting(id, receiverSessionID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, cfg := range jm.watches {
@@ -427,12 +440,18 @@ func (jm *jobManager) watchesTargeting(id string) bool {
 				return true
 			}
 		}
+		if watchConfigMatchesReceiver(cfg, receiverSessionID, id) {
+			return true
+		}
 	}
 	for cfg := range jm.terminalFlush {
 		for key := range cfg.pending {
 			if key.ResolvedSendTo == id {
 				return true
 			}
+		}
+		if watchConfigMatchesReceiver(cfg, receiverSessionID, id) {
+			return true
 		}
 	}
 	return false
