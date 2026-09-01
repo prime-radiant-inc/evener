@@ -290,13 +290,18 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			want:             `ask_user: argument "questions" exceeds maxItems (4). Value has 5 items.`,
 		},
 		{
+			// Allowed values render JSON-faithfully: a string enum's members
+			// are JSON-quoted (adversarial review of issue #625, F1 — an
+			// unquoted string list here while branchRequirement quoted
+			// everything was itself an inconsistency between the two enum
+			// call sites the fix touches).
 			name:             "enum",
 			toolName:         "task_list",
 			params:           taskListParamsForExplain(),
 			args:             map[string]any{"action": "bogus"},
 			instanceLocation: "action",
 			keyword:          "enum",
-			want:             `task_list: argument "action" is not one of the allowed values: view, append, update. Value is "bogus".`,
+			want:             `task_list: argument "action" is not one of the allowed values: "view", "append", "update". Value is "bogus".`,
 		},
 		{
 			name:     "nested enum",
@@ -308,14 +313,16 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			},
 			instanceLocation: "updates/0/status",
 			keyword:          "enum",
-			want:             `task_list: argument "updates[0].status" is not one of the allowed values: open, in_progress, done, cancelled. Value is "bogus".`,
+			want:             `task_list: argument "updates[0].status" is not one of the allowed values: "open", "in_progress", "done", "cancelled". Value is "bogus".`,
 		},
 		{
 			// Issue #625: asStringSlice dropped non-string enum values, so an
 			// integer enum's allowed list came out empty and constraintMessage
 			// fell back to the generic "wrong type or value" message. Enum
 			// values arrive as float64 here (as they do when a tool schema is
-			// JSON-decoded into map[string]any).
+			// JSON-decoded into map[string]any). Numbers render bare (no
+			// quotes) — JSON-faithful, so the model can copy a value straight
+			// back into the argument.
 			name:     "integer enum",
 			toolName: "my_tool",
 			params: map[string]any{
@@ -329,6 +336,25 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			instanceLocation: "n",
 			keyword:          "enum",
 			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+		},
+		{
+			// Adversarial review of issue #625, F1: a boolean enum's allowed
+			// values must also render bare. Quoting them ("true", "false")
+			// would visually assert a JSON string, coaching a retry with
+			// {"flag": "true"} that fails validation again the same way.
+			name:     "boolean enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"flag": map[string]any{"type": "boolean", "enum": []any{true, false}},
+				},
+				"required": []string{"flag"},
+			},
+			args:             map[string]any{"flag": "yes"},
+			instanceLocation: "flag",
+			keyword:          "enum",
+			want:             `my_tool: argument "flag" is not one of the allowed values: true, false. Value is "yes".`,
 		},
 	}
 	for _, tc := range tests {

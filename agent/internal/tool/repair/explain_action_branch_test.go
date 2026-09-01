@@ -169,7 +169,7 @@ func TestExplainSchemaError_ConstraintKeywordInWrongBranchGolden(t *testing.T) {
 		}},
 	}
 	got := ExplainSchemaError("task_list", taskListParams(), args, "tasks/0/type", "enum")
-	want := "task_list: argument \"tasks[0].type\" is not one of the allowed values: research, implement, verify, fix. Value is \"bogus\". " +
+	want := "task_list: argument \"tasks[0].type\" is not one of the allowed values: \"research\", \"implement\", \"verify\", \"fix\". Value is \"bogus\". " +
 		"(this failure is in the array for action \"append\"; your action \"update\" takes \"updates\", not tasks)"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)

@@ -229,7 +229,7 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		call := llm.ToolCallData{ID: "c4", Name: "task_list",
 			Arguments: json.RawMessage(`{"update":[{"id":1,"status":"bogus"}]}`)}
 		res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "communicate", "")
-		want := "task_list: argument \"update[0].status\" is not one of the allowed values: open, in_progress, done, cancelled. Value is \"bogus\"."
+		want := "task_list: argument \"update[0].status\" is not one of the allowed values: \"open\", \"in_progress\", \"done\", \"cancelled\". Value is \"bogus\"."
 		if res.PrevalErr != want {
 			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
 		}

@@ -98,10 +98,61 @@ func delegateOneOfIntEnumArgs() map[string]any {
 // branch's enum-constrained properties, which silently dropped non-string
 // enum values. An integer-enum branch requirement rendered as `send all of
 // "n"` with no allowed-values clause at all. The branch requirement must
-// name the allowed values regardless of their JSON type.
+// name the allowed values regardless of their JSON type — bare (unquoted),
+// per the adversarial review's F1: quoting a number here would visually
+// assert a JSON string and coach a retry with {"n": "1"}, which fails
+// validation again the same way.
 func TestExplainSchemaError_OneOfBranchNamesIntegerEnumValues(t *testing.T) {
 	msg := ExplainSchemaError("delegate", delegateOneOfIntEnumParams(), delegateOneOfIntEnumArgs(), "", "not")
-	if !strings.Contains(msg, `"n" must be one of "1", "2", "3"`) {
-		t.Fatalf("message must render branch 1's integer enum allowed values: %q", msg)
+	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
+		t.Fatalf("message must render branch 1's integer enum allowed values bare (not quoted): %q", msg)
+	}
+}
+
+// delegateOneOfBoolEnumParams mirrors delegateOneOfIntEnumParams but with a
+// boolean-enum property ("flag") — the exact shape the adversarial review's
+// F1 finding traced through the real joinQuoted/branchRequirement bodies to
+// demonstrate the quoting defect (a boolean rendered as "true", "false"
+// reads as a JSON string enum, not a JSON boolean one).
+func delegateOneOfBoolEnumParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string"},
+			"flag": map[string]any{"type": "boolean", "enum": []any{true, false}},
+		},
+		"required": []any{"task"},
+		"oneOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{"flag"}}},
+			map[string]any{
+				"required": []string{"flag"},
+				"properties": map[string]any{
+					"flag": map[string]any{"enum": []any{true, false}},
+				},
+			},
+		},
+	}
+}
+
+func delegateOneOfBoolEnumArgs() map[string]any {
+	return map[string]any{
+		"task": "ping",
+		"flag": "true",
+	}
+}
+
+// Adversarial review of issue #625, F1: branchRequirement quoted every enum
+// value regardless of JSON type, so a boolean-enum branch requirement
+// rendered `"flag" must be one of "true", "false"` — indistinguishable from
+// how the same code renders a string enum, even though the schema requires
+// a bare JSON boolean. The branch requirement must render bare true/false.
+func TestExplainSchemaError_OneOfBranchNamesBooleanEnumValues(t *testing.T) {
+	msg := ExplainSchemaError("delegate", delegateOneOfBoolEnumParams(), delegateOneOfBoolEnumArgs(), "", "not")
+	if !strings.Contains(msg, `"flag" must be one of true, false`) {
+		t.Fatalf("message must render branch 1's boolean enum allowed values bare (not quoted): %q", msg)
+	}
+	if strings.Contains(msg, `"true", "false"`) {
+		t.Fatalf("message quoted the boolean enum values, visually asserting the wrong JSON type: %q", msg)
 	}
 }
