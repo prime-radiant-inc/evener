@@ -49,6 +49,10 @@ export function expandDetailsByDefault(config: TranscriptDisplayConfigV1): boole
   return contentVectorForConfig(config).expandByDefault;
 }
 
+export function summaryOpenByDefault(config: TranscriptDisplayConfigV1): boolean {
+  return contentVectorForConfig(config).toolCalls;
+}
+
 /** Keep direct leaf renders session-isolated while a caller is still using the
  * transition default. Shared TranscriptBody callers provide their own scope. */
 export function disclosureScopeForSession(

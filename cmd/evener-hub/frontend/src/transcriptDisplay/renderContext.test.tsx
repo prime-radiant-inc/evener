@@ -12,6 +12,7 @@ import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfi
 import type { TranscriptMetadataVisibility } from "./projector";
 import {
   expandDetailsByDefault,
+  summaryOpenByDefault,
   type TranscriptRenderContextValue,
   TranscriptRenderProvider,
   useTranscriptRenderContext,
@@ -225,4 +226,16 @@ test("refreshes snapshot-derived renderer inputs when only ThreadModel identity 
   expect(observedContext).not.toBe(firstContextValue);
   expect(screen.getByTestId("context-probe").getAttribute("data-cwd")).toBe("/second");
   expect(screen.getByTestId("context-probe").getAttribute("data-delegates")).toBe("2");
+});
+
+test("summaryOpenByDefault returns false for chat/intent and true for tools/activity/full", () => {
+  expect(summaryOpenByDefault({ content: { kind: "preset", level: "chat" } } as TranscriptDisplayConfigV1)).toBe(false);
+  expect(summaryOpenByDefault({ content: { kind: "preset", level: "intent" } } as TranscriptDisplayConfigV1)).toBe(
+    false,
+  );
+  expect(summaryOpenByDefault({ content: { kind: "preset", level: "tools" } } as TranscriptDisplayConfigV1)).toBe(true);
+  expect(summaryOpenByDefault({ content: { kind: "preset", level: "activity" } } as TranscriptDisplayConfigV1)).toBe(
+    true,
+  );
+  expect(summaryOpenByDefault({ content: { kind: "preset", level: "full" } } as TranscriptDisplayConfigV1)).toBe(true);
 });
