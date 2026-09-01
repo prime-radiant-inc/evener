@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -253,6 +254,14 @@ func defaultFileOps() fileOps {
 }
 
 func decodeLog(raw []byte, tolerateUnterminatedTail bool) ([]Event, error) {
+	return decodeLogContext(context.Background(), raw, tolerateUnterminatedTail, 0)
+}
+
+// decodeLogContext is decodeLog's context-aware, event-bounded counterpart:
+// it checks ctx between batch lines so a canceled scan stops before decoding
+// the rest of a large journal, and refuses to retain more than maxEvents
+// events (0 means unlimited) before Fold ever sees them.
+func decodeLogContext(ctx context.Context, raw []byte, tolerateUnterminatedTail bool, maxEvents int) ([]Event, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("delegatestore: missing version header")
 	}
@@ -281,12 +290,18 @@ func decodeLog(raw []byte, tolerateUnterminatedTail bool) ([]Event, error) {
 
 	var events []Event
 	for i, line := range lines[1:] {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var batch batchRecord
 		if err := decodeJSONLine(line, &batch); err != nil {
 			return nil, fmt.Errorf("delegatestore: decode batch line %d: %w", i+2, err)
 		}
 		if len(batch.Events) == 0 {
 			return nil, fmt.Errorf("delegatestore: batch line %d has no events", i+2)
+		}
+		if maxEvents > 0 && len(events)+len(batch.Events) > maxEvents {
+			return nil, fmt.Errorf("%w: batch line %d would exceed %d events", ErrScanLimitExceeded, i+2, maxEvents)
 		}
 		events = append(events, batch.Events...)
 	}
