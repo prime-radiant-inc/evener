@@ -114,7 +114,7 @@ func watchLostAtRestartMessage(target string, status jobstore.Status) string {
 	)
 }
 
-const callbackWatchesCancelledAtRestartMessage = "<system-notification>All your callback watches were cancelled because the agent restarted. No further deliveries will occur. If you still want a callback, re-register it with the job_watch tool.</system-notification>"
+var callbackWatchesCancelledAtRestartMessage = systemNotification("All your callback watches were cancelled because the agent restarted. No further deliveries will occur. If you still want a callback, re-register it with the job_watch tool.")
 
 // watchLostAtRestartSessionMessage is the restart end-notice text for a
 // session-target watch (source "self" or "parent"): its target is this

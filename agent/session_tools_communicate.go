@@ -192,7 +192,7 @@ func registerSkillTool(reg *tool.Registry, deps *toolDeps) {
 				if err != nil {
 					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
 				}
-				return fmt.Sprintf("Skill: %s\nLocation: %s\n\n---\n\n%s", skillName, meta.Dir, body), nil
+				return systemNotificationf("Paths referenced in this skill are relative to the skill directory: %q", meta.Dir) + "\n\n" + body, nil
 			},
 		})
 	}
