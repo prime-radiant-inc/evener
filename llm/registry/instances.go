@@ -101,6 +101,33 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	return rec.ownAPIKeyEnv
 }
 
+// baseURLDiverged reports whether rec's actually-resolved base URL differs
+// from what its provider (r.curated[rec.providerID], which is rec itself
+// for a curated record) resolves to using only the curated defaults - no
+// vars, no environment. It is WebSearch's analog of the endpoint stop
+// above (spec §10; gateWebSearch in resolve.go applies it), but broader: an
+// unused api_key_env is merely wasted, so the stop above fires only for a
+// literal base_url override, letting a *_BASE_URL environment override
+// (Bedrock's and Vertex's vars, or a same-shaped proxy) inherit the vendor
+// key normally. A hosted-tool definition the gateway does not implement
+// instead fails the whole request (issue #738), so this check also catches
+// that narrower environment-only case. When the provider's own template
+// cannot fully resolve without vars only a real deployment supplies
+// (Vertex's project, Bedrock's region), there is no baseline to compare
+// against, so nothing is reported as diverged.
+func (r *Registry) baseURLDiverged(rec *record) bool {
+	base, ok := r.curated[rec.providerID]
+	if !ok {
+		return false
+	}
+	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
+	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
+	if own == "" || len(missing) > 0 {
+		return false
+	}
+	return own != defaults
+}
+
 // envCandidates lists, in the order credential resolution tries them, every
 // environment variable name that could supply rec's key: its effective
 // api_key_env, then (only for a name that is not itself a registry id, spec

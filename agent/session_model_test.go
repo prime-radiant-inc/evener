@@ -918,6 +918,62 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	}
 }
 
+// TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges covers issue #738: an
+// instance with its own base_url no longer inherits the vendor's
+// provider-level web_search (llm/registry's endpoint gate), so the request
+// this session builds must not carry the flag - a gateway that does not
+// implement the hosted tool rejects it and, before this fix, ended the
+// session on turn one. "gw" is the fixture's base=openai instance pointed at
+// a different base_url (profile_testhelpers_test.go); it never sets
+// web_search itself.
+func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "gw",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return wrapCommunicateResponse(llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
+					},
+					Finish: llm.FinishReason{Reason: "stop"},
+					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+				})
+			},
+		},
+	}
+	c.Register(f)
+
+	profile := resolveTestProfile("gw", nil, "gpt-5.2")
+	if profile.SupportsWebSearch() {
+		t.Fatal("pre-condition: gw must not resolve web_search (its base_url diverges from openai's default)")
+	}
+
+	sess, err := NewSession(c, withTestSessionNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "hello", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatalf("no requests captured")
+	}
+	if reqs[0].WebSearch {
+		t.Fatalf("WebSearch flag set on request for a base_url-diverged instance")
+	}
+}
+
 func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

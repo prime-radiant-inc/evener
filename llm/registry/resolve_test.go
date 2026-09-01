@@ -320,6 +320,68 @@ surface = "anthropic"
 	}
 }
 
+// TestResolve_WebSearchEndpointGate covers issue #738: WebSearch is a
+// platform-side capability, not a wire-protocol fact (spec §4.2 says
+// explicitly it is not one of the facts an alias imports), so an instance
+// whose resolved base_url diverges from its provider's own default must not
+// inherit it - the same family as spec §10's credential endpoint stop, but
+// not limited to a literal base_url override: sending an unused credential
+// to the wrong endpoint is merely wasted, while sending a hosted-tool
+// definition the gateway does not implement fails the whole request, so a
+// *_BASE_URL environment override that keeps the template is just as
+// untrustworthy here even though credentials keep flowing through it.
+func TestResolve_WebSearchEndpointGate(t *testing.T) {
+	cfg := `
+[providers.bedrock]
+base = "openai"
+base_url = "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+api_key_env = ["OPENAI_API_KEY"]
+
+[providers.same]
+base = "openai"
+base_url = "https://api.openai.com/v1"
+
+[providers.optedin]
+base = "openai"
+base_url = "https://gw.example/v1"
+web_search = true
+
+[providers.optedout]
+base = "anthropic"
+web_search = false
+
+[providers.vertex]
+base = "google-vertex-anthropic"
+[providers.vertex.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+`
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
+	cases := []struct {
+		ref  string
+		want string
+		desc string
+	}{
+		{"bedrock/us.openai.gpt-5.6-luna", "nil", "a literal base_url naming a different endpoint must not inherit web_search"},
+		{"openai/gpt-5.5", "true", "openai itself, unmodified, must keep web_search"},
+		{"same/gpt-5.5", "true", "copying the default base_url verbatim is not different (spec §10)"},
+		{"optedin/gpt-5.5", "true", "an explicit web_search = true must still opt a proxy in"},
+		{"optedout/claude-opus-5", "false", "an explicit web_search = false must still be the escape hatch"},
+		{"vertex/claude-opus-5", "true", "vertex keeps the template and supplies vars, so it inherits normally"},
+	}
+	for _, c := range cases {
+		res := mustResolve(t, r, c.ref)
+		if got := bp(res.Caps.WebSearch); got != c.want {
+			t.Errorf("%s: web_search = %s, want %s (%s)", c.ref, got, c.want, c.desc)
+		}
+	}
+
+	proxy := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://proxy.example/v1"}, "")
+	if res := mustResolve(t, proxy, "openai/gpt-5.5"); bp(res.Caps.WebSearch) != "nil" {
+		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: web_search = %s, want nil (a gateway that merely speaks the protocol cannot honor it)", bp(res.Caps.WebSearch))
+	}
+}
+
 func TestFindModel(t *testing.T) {
 	state := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(state, "auth"), 0o700)
