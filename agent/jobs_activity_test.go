@@ -275,3 +275,36 @@ func TestActivityTreeJSONOmitsLegacyDelegateTurns(t *testing.T) {
 		t.Fatalf("activity JSON exposed a legacy delegate job turn: %s", raw)
 	}
 }
+
+// TestProjectActivitySessionAt_LoadTruncatedSuppressesContinuation covers
+// roborev's finding on #807: LoadTruncated sets Branch.Truncated with the
+// documented intent of minting NO continuation (a resumed load rescans
+// this session's own journal from byte zero with a fresh budget, so a
+// token would never actually advance). But the shell/delegate loops below
+// that check use a SEPARATE, projection-phase activityBudget instance from
+// the load-phase one LoadTruncated was set against — so a session can be
+// BOTH load-truncated AND independently exhaust the projection budget
+// while rendering its own entries, and markActivitySessionTruncated
+// unconditionally mints a continuation whenever that happens, regardless
+// of LoadTruncated. Two delegates with a one-work-unit projection budget
+// forces exactly that: the first delegate exhausts the budget immediately.
+func TestProjectActivitySessionAt_LoadTruncatedSuppressesContinuation(t *testing.T) {
+	t.Parallel()
+	delegates := map[string]delegateSnapshot{
+		"dlg_a": stableActivitySnapshot("dlg_a", "root", "child_a", "task"),
+		"dlg_b": stableActivitySnapshot("dlg_b", "root", "child_b", "task"),
+	}
+	snap := activitySessionSnapshot{
+		SessionID: "root", Ref: "local:root", RootID: "root",
+		StableDelegates: delegates, LoadTruncated: true,
+	}
+	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC())
+	budget.maxWorkUnits = 1
+	projected := projectActivitySessionAt(snap, budget, 0, nil)
+	if !projected.Branch.Truncated {
+		t.Fatalf("Branch.Truncated = false, want true")
+	}
+	if projected.Branch.Continuation != "" {
+		t.Fatalf("Branch.Continuation = %q, want empty — LoadTruncated must suppress the continuation even when the (separate) projection budget also trips on this same session", projected.Branch.Continuation)
+	}
+}
