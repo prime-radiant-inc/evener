@@ -434,9 +434,10 @@ func TestConnectionLogfAppendsToLogFile(t *testing.T) {
 }
 
 // TestConnectionLogfDiscardsWithoutLogFile proves the sink is a safe no-op
-// when no --log-file/EVENER_TUI_LOG_FILE was configured, matching
-// WriteStartupDiagnostic's own behavior — nothing is created on disk and
-// nothing panics.
+// when no --log-file/EVENER_TUI_LOG_FILE was configured: with no path to
+// append to there is nothing to create, and the call must return without
+// panicking rather than falling back to stderr, matching
+// WriteStartupDiagnostic's own behavior.
 func TestConnectionLogfDiscardsWithoutLogFile(t *testing.T) {
 	logf := connectionLogf("")
 	logf("appwire: keepalive ping failed: %v", errors.New("boom"))

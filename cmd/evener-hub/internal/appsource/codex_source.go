@@ -45,13 +45,12 @@ func defaultAppwireDial(ctx context.Context, endpoint string, client *http.Clien
 	return appwire.DialWebSocketWithHeaders(ctx, endpoint, client, header)
 }
 
-// appsourceConnectionLogf is the appwire.Client connection-lifecycle sink
-// (see appwire.Client.SetLogf) for every source's dialed connections
-// (codex, local daemon). The hub is a plain daemon, never a TUI rendering
-// over an interactive terminal, so its own stderr — labelled like every
-// other hub diagnostic — is a safe destination, unlike the TUI's stderr
-// (issue #783).
-func appsourceConnectionLogf(format string, args ...any) {
+// hubConnectionLogf is the appwire.Client connection-lifecycle sink (see
+// appwire.Client.SetLogf) for every source's dialed connections (codex,
+// local daemon). The hub is a plain daemon, never a TUI rendering over an
+// interactive terminal, so its own stderr — labelled like every other hub
+// diagnostic — is a safe destination, unlike the TUI's stderr (issue #783).
+func hubConnectionLogf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 }
 
@@ -709,7 +708,7 @@ func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() erro
 		return nil, nil, codexSourceDialError(err)
 	}
 	client := appwire.NewClient(transport)
-	client.SetLogf(appsourceConnectionLogf)
+	client.SetLogf(hubConnectionLogf)
 	client.Start(context.WithoutCancel(ctx))
 	var initialized appwire.InitializeResponse
 	if err := client.Request(ctx, appwire.MethodInitialize, struct {
