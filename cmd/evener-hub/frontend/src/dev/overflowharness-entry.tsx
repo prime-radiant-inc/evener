@@ -273,10 +273,13 @@ navigationStore.setState({
 });
 initTranscriptDisplay();
 // The browser guard must not inherit a developer's local transcript settings.
-// Activity plus both diagnostic families keeps the real system-prompt and raw
-// notification disclosure fixtures mounted in both layout classes.
+// Tools plus both diagnostic families keeps the real system-prompt and raw
+// notification disclosure fixtures mounted in both layout classes. Tools
+// (not activity) because activity now has expandByDefault=true, which would
+// auto-open the notification card and the harness's click-to-expand step
+// would then close it.
 const guardTranscriptConfig = makeTranscriptDisplayConfig(
-  { kind: "preset", level: "activity" },
+  { kind: "preset", level: "tools" },
   {
     systemEvents: true,
     promptEvents: true,

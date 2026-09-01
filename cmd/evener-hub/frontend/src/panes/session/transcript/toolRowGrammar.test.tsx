@@ -7,9 +7,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
 import { statedIntentOf, ToolRow } from "./ToolRow";
@@ -38,6 +41,20 @@ function rowCss(): string {
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
+}
+
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — bodies auto-expand. Tests that need a
+// collapsed-by-default row use a tools-level config where expandByDefault
+// is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="trg:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
 }
 
 // --- A1: one row grammar, composed not copied -----------------------------
@@ -574,7 +591,9 @@ test("a descriptor's monoSummary flag puts its summary in fixed-width - shell's 
 
 test("an expandable row exposes aria-expanded reflecting its state", () => {
   registerToolRenderer({ match: "trg_aria", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_aria" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded transition.
+  renderTools(<ToolCallItem item={item({ toolName: "trg_aria" })} turn={turn} live={false} />);
   const trigger = screen.getByTestId("tool-row-trigger");
   expect(trigger.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(trigger);
@@ -599,7 +618,9 @@ test("an expandable row shows a disclosure chevron; a non-expandable row shows n
 
 test("the chevron reports its open state for the stylesheet's rotation, and is hidden from AT", () => {
   registerToolRenderer({ match: "trg_chev_state", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_chev_state" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded chevron state transition.
+  renderTools(<ToolCallItem item={item({ toolName: "trg_chev_state" })} turn={turn} live={false} />);
   const chevron = screen.getByTestId("tool-row-chevron");
   expect(chevron.getAttribute("aria-hidden")).toBe("true");
   expect(chevron.getAttribute("data-open")).toBe("false");

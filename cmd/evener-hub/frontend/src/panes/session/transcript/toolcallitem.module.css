@@ -277,6 +277,31 @@
    container. flex-shrink:1 and flex-basis:auto let the summary shrink to fit
    alongside the flex:none body trigger; min-width:0 + the .clamped
    overflow:hidden clip the nowrap text to the shrunken width. */
+.summaryLine[data-body-trigger="true"] {
+  position: relative;
+}
+
+.summaryLine[data-body-trigger="true"] .bodyTrigger {
+  position: absolute;
+  inset: 0;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.summaryLine[data-body-trigger="true"] .summary {
+  position: relative;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}
+
+.summaryLine[data-body-trigger="true"] .summary a,
+.summaryLine[data-body-trigger="true"] .summary button,
+.summaryLine[data-body-trigger="true"] .summary input,
+.summaryLine[data-body-trigger="true"] .summary select,
+.summaryLine[data-body-trigger="true"] .summary textarea {
+  pointer-events: auto;
+}
+
 .summaryLine[data-body-trigger="true"] .demoted {
   flex: 0 1 auto;
   min-width: 0;

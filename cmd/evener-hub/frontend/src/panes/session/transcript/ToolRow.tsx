@@ -488,8 +488,11 @@ export function ToolRow({
     .join(" ");
   // The .bodyTrigger chevron button: a separate disclosure for the body that
   // coexists with the intent button's summary disclosure in two-level mode.
-  // It carries its own chevron (without the tool-row-chevron testid, so the
-  // intent button's inline chevron stays the unique match for that testid).
+  // On the summary line it is an OVERLAY (absolute, full width/height) so the
+  // entire summary line is clickable to toggle the body — same pattern as the
+  // intent-less overlay trigger. The chevron rides at the end as a visual
+  // indicator. On the intent line (summary hidden, body expanded) it is a
+  // normal flex item beside the intent button.
   const bodyTriggerButton = twoLevel ? (
     <button
       type="button"
@@ -569,8 +572,8 @@ export function ToolRow({
       )}
       {hasIntent && twoLevel && bodyTriggerOnSummaryLine && (
         <div id={summaryRegionId} className={CLASS.summaryLine} data-body-trigger="true">
-          {summaryContent}
           {bodyTriggerButton}
+          {summaryContent}
         </div>
       )}
       {hasIntent && !twoLevel && !showIntentTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}

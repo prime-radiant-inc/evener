@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import {
@@ -76,6 +77,20 @@ function expandRow(): void {
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
 }
 
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — bodies auto-expand. Tests that need a
+// collapsed-by-default row (e.g. to test the collapsed→expanded transition)
+// use a tools-level config where expandByDefault is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="test:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
 // The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
 // not a native <details>/<summary> - the open/closed state is
 // read off aria-expanded on the tool-row, and toggled by clicking it. These
@@ -99,7 +114,7 @@ test("falls back to the default descriptor (raw output body) for an unregistered
     />,
   );
   expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   const body = screen.getByTestId("tool-call-body");
   const blocks = body.querySelectorAll("pre > code");
   expect(blocks).toHaveLength(2);
@@ -116,7 +131,7 @@ test("the default descriptor keeps both arguments and output visible for a settl
       live={false}
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
 
   const body = screen.getByTestId("tool-call-body");
   const argsBlock = within(body).getByRole("region", { name: "Tool call arguments" });
@@ -157,7 +172,7 @@ test("passes live through to the descriptor's body component", () => {
   }
   registerToolRenderer({ match: "tci_live_echo", summary: () => "s", body: LiveEcho });
   render(<ToolCallItem item={item({ toolName: "tci_live_echo" })} turn={turn} live={true} />);
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   expect(screen.getByTestId("live-echo").textContent).toBe("true");
 });
 
@@ -174,7 +189,7 @@ test("dedicated renderers do not get MCP argument blocks", () => {
       live={false}
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   const body = screen.getByTestId("tool-call-body");
   expect(within(body).queryByRole("region", { name: "Tool call arguments" })).toBeNull();
   expect(screen.getByTestId("dedicated-body").textContent).toBe("body output");
@@ -198,7 +213,7 @@ test("passes sessionRef through to the descriptor's body component", () => {
       sessionRef="ref_parent_1"
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   expect(screen.getByTestId("session-ref-echo").textContent).toBe("ref_parent_1");
 });
 
@@ -208,7 +223,7 @@ test("sessionRef is undefined at the descriptor's body when ToolCallItem itself 
   }
   registerToolRenderer({ match: "tci_session_ref_echo_2", summary: () => "s", body: SessionRefEcho });
   render(<ToolCallItem item={item({ toolName: "tci_session_ref_echo_2" })} turn={turn} live={false} />);
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   expect(screen.getByTestId("session-ref-echo-2").textContent).toBe("(none)");
 });
 
@@ -249,14 +264,18 @@ test("suppress returning false renders the row normally", () => {
 
 test("a row with a body starts collapsed", () => {
   registerToolRenderer({ match: "tci_collapsed", summary: () => "s", body: () => <div>body text</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_collapsed" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level (expandByDefault=false)
+  // to verify the collapsed default.
+  renderTools(<ToolCallItem item={item({ toolName: "tci_collapsed" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
 });
 
 test("the disclosure trigger controls the mounted body by its stable ID", () => {
   registerToolRenderer({ match: "tci_controls_body", summary: () => "s", body: () => <div>body</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_controls_body" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded transition.
+  renderTools(<ToolCallItem item={item({ toolName: "tci_controls_body" })} turn={turn} live={false} />);
   const trigger = screen.getByTestId("tool-row-trigger");
   expect(trigger.getAttribute("aria-controls")).toBeTruthy();
   expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBe(null);
@@ -269,11 +288,13 @@ test("the disclosure trigger controls the mounted body by its stable ID", () => 
 
 test("Full establishes one open baseline, preserves a later manual close, and opens new eligible rows", () => {
   registerToolRenderer({ match: "tci_baseline", summary: () => "s", body: () => <div>body text</div> });
-  const activity = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  // At activity level expandByDefault is now true, so use tools level
+  // (expandByDefault=false) to verify the collapsed baseline.
+  const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
   const first = item({ id: "baseline_first", toolName: "tci_baseline" });
   const second = item({ id: "baseline_second", toolName: "tci_baseline" });
-  const renderBody = (config: typeof activity, items: ItemModel[]) => (
+  const renderBody = (config: typeof tools, items: ItemModel[]) => (
     <TranscriptRenderProvider
       config={config}
       surface="readOnly"
@@ -286,7 +307,7 @@ test("Full establishes one open baseline, preserves a later manual close, and op
     </TranscriptRenderProvider>
   );
 
-  const { rerender } = render(renderBody(activity, [first]));
+  const { rerender } = render(renderBody(tools, [first]));
   expect(rowIsOpen()).toBe(false);
   toggleRow();
   toggleRow();
@@ -320,7 +341,9 @@ test("omitted disclosure scopes remain isolated by live, readOnly, and preview s
 
 test("clicking the summary manually expands a collapsed row", () => {
   registerToolRenderer({ match: "tci_manual_open", summary: () => "s", body: () => <div>body text</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_manual_open" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded transition.
+  renderTools(<ToolCallItem item={item({ toolName: "tci_manual_open" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
   toggleRow(details);
@@ -333,12 +356,14 @@ test("clicking the summary manually expands a collapsed row", () => {
 test("an expanded tool row stays expanded across an unmount+remount with the same item id (store-backed)", () => {
   registerToolRenderer({ match: "tci_remount", summary: () => "s", body: () => <div>body text</div> });
   const toolItem = item({ id: "item_remount_1", toolName: "tci_remount" });
-  const { unmount } = render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to test the
+  // store-backed expanded state.
+  const { unmount } = renderTools(<ToolCallItem item={toolItem} turn={turn} live={false} />);
   toggleRow(screen.getByTestId("tool-call-item"));
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 
   unmount();
-  render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
+  renderTools(<ToolCallItem item={toolItem} turn={turn} live={false} />);
   // Still open after the remount - the state came from the store, not useState.
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
@@ -346,11 +371,15 @@ test("an expanded tool row stays expanded across an unmount+remount with the sam
 test("the same tool item id has independent disclosure state in different sessions", () => {
   registerToolRenderer({ match: "tci_session_isolation", summary: () => "s", body: () => <div>body text</div> });
   const shared = item({ id: "same_item", toolName: "tci_session_isolation" });
+  // At activity level the body auto-expands; use tools level (expandByDefault=false)
+  // to test independent disclosure state (both start collapsed). Do NOT set a
+  // custom disclosureScope so disclosureScopeForSession creates per-session scopes.
+  const toolsConfigScoped = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   render(
-    <>
+    <TranscriptRenderProvider config={toolsConfigScoped} surface="readOnly">
       <ToolCallItem item={shared} turn={turn} live={false} sessionRef="session_a" />
       <ToolCallItem item={shared} turn={turn} live={false} sessionRef="session_b" />
-    </>,
+    </TranscriptRenderProvider>,
   );
 
   const rows = screen.getAllByTestId("tool-call-item");
@@ -378,7 +407,9 @@ test("shell: a failing exit code auto-expands the row once it settles (the real 
 
 test("shell: a clean exit does not auto-expand", () => {
   const output = "stdout\n[exit 0]";
-  render(
+  // At activity level the body auto-expands; use tools level (expandByDefault=false)
+  // to verify a clean exit does not auto-expand.
+  renderTools(
     <ToolCallItem
       item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "true" }), output })}
       turn={turn}
@@ -411,7 +442,7 @@ test("a tool call's outputImages render as gallery thumbnails", () => {
       live={false}
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
 
@@ -443,7 +474,7 @@ test("other tools' outputImages keep the default 96px thumbnail size", () => {
       live={false}
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   const thumb = screen.getByTestId("image-gallery-thumb");
   expect(thumb.className.split(/\s+/)).not.toContain(galleryStyles.thumbLarge);
 });
@@ -463,7 +494,7 @@ test("outputImages render even for a body-less descriptor (the row still becomes
       live={false}
     />,
   );
-  expandRow();
+  // At activity level the body auto-expands (expandByDefault=true).
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
 });
 
@@ -502,7 +533,9 @@ test("an errored tool row earns a failure marker in its summary", () => {
 
 test("a clean tool call earns NO failure marker and stays collapsed (success recedes)", () => {
   registerToolRenderer({ match: "tci_ok_glyph", summary: () => "did a thing", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_ok_glyph" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to verify a
+  // clean call stays collapsed.
+  renderTools(<ToolCallItem item={item({ toolName: "tci_ok_glyph" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
   expect(screen.queryByTestId("failure-glyph")).toBe(null);
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
@@ -558,7 +591,9 @@ test("an expanded shell row drops the one-line summary - the body's pretty-print
 });
 
 test("a collapsed shell row keeps the one-line summary; opening the row drops it", () => {
-  render(
+  // At activity level the body auto-expands; use tools level to test the
+  // collapsed→expanded transition.
+  renderTools(
     <ToolCallItem
       item={item({
         toolName: "shell",
@@ -609,7 +644,9 @@ test('old-daemon reload: error present but status still "completed" is treated a
 
 test("an empty-string error is not a failure (the wire only stamps failed when error is non-empty)", () => {
   registerToolRenderer({ match: "tci_empty_err", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_empty_err", error: "" })} turn={turn} live={false} />);
+  // At activity level the body auto-expands; use tools level to verify a
+  // non-failed row stays collapsed.
+  renderTools(<ToolCallItem item={item({ toolName: "tci_empty_err", error: "" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
@@ -640,7 +677,9 @@ test("a preval-only failure superseded by a later same-tool success starts colla
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  // At activity level the body auto-expands; use tools level to verify the
+  // superseded failure starts collapsed.
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
   const details = screen.getByTestId("tool-call-item");
   // Still attributable: the failure marker never goes away.
@@ -720,7 +759,9 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   });
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  // At activity level the body auto-expands; use tools level so the only
+  // thing keeping the row open is the preval failure's autoExpand.
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 
   const okItem: ItemModel = {
@@ -754,7 +795,9 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  // At activity level the body auto-expands; use tools level so the
+  // superseded failure starts collapsed (autoDefault is false).
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
 
@@ -875,7 +918,9 @@ test("clicking Open beside does not toggle the row open (the summary's own toggl
   resetThreadsStoreForTests();
   seedThreadCwd("ref_a", "/home/proj");
   vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
-  render(
+  // At activity level the body auto-expands; use tools level to verify the
+  // row starts collapsed and Open beside does not toggle it.
+  renderTools(
     <ToolCallItem
       item={item({
         toolName: "read_file",
@@ -920,7 +965,9 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
 test("a read_file card's Open beside control rides inline between the file name and the line range", () => {
   resetThreadsStoreForTests();
   seedThreadCwd("ref_a", "/home/proj");
-  render(
+  // At activity level the body auto-expands (no head/tail split); use tools
+  // level to test the collapsed summary's trailingAfter placement.
+  renderTools(
     <ToolCallItem
       item={item({
         toolName: "read_file",
