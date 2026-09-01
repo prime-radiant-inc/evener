@@ -780,10 +780,16 @@ func RefreshSidecarFromFullScan(path, expectedSessionID string) error {
 		return fmt.Errorf("scan transcript for sidecar refresh: %w", err)
 	}
 	// The anchor write needs the file open (its second stat and its anchors
-	// read through it); the writer owns it, so close only after.
-	writeSidecarAfterFullScan(path, f, info, scan, expectedSessionID)
+	// read through it); the writer owns it, so close only after. The write
+	// error is returned, not swallowed: a sidecar that cannot be written is
+	// the one failure a caller can report (the resume itself already
+	// succeeded, and the next one simply falls back to the full scan).
+	writeErr := writeSidecarAfterFullScan(path, f, info, scan, expectedSessionID)
 	if err := writer.Close(); err != nil {
 		return fmt.Errorf("close transcript after sidecar refresh: %w", err)
+	}
+	if writeErr != nil {
+		return fmt.Errorf("write sidecar after full scan: %w", writeErr)
 	}
 	return nil
 }
@@ -865,8 +871,10 @@ func OpenWriterForResume(path, expectedSessionID string) (*Writer, ResumeView, e
 	// the last checkpoint's offset), so the sidecar it writes carries
 	// complete snapshots and the NEXT resume of this session can be
 	// windowed. A write failure is non-fatal — this resume already
-	// succeeded, and the next one simply falls back to another full scan.
-	writeSidecarAfterFullScan(path, f, info, scan, expectedSessionID)
+	// succeeded, and the next one simply falls back to another full scan —
+	// so the error is deliberately discarded here (the refresh path reports
+	// its own; this one has no caller to tell).
+	_ = writeSidecarAfterFullScan(path, f, info, scan, expectedSessionID)
 	return writer, ResumeView{Entries: scan.entries, PrefixEntryCount: 0, SidecarUsed: false}, nil
 }
 
@@ -887,31 +895,31 @@ func OpenWriterForResume(path, expectedSessionID string) (*Writer, ResumeView, e
 // ordinal is 0 (the anchor is written by the transcript package, which has
 // no fork knowledge; a fork child's file never validates this sidecar
 // anyway, because its file identity differs from the parent's).
-func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan scanResult, expectedSessionID string) {
+func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan scanResult, expectedSessionID string) error {
 	entries := scan.entries
 	// The sidecar must only be written over a file whose current state this
 	// scan vouches for. A partial tail was truncated by resumeWriter; stat
 	// again so TranscriptSize reflects the post-truncation size.
 	current, err := f.Stat()
 	if err != nil {
-		return
+		return nil
 	}
 	// The scan recorded where the last checkpoint entry starts; no second
 	// file pass. No checkpoint means every entry is live history — no
 	// sidecar.
 	offset := scan.lastCheckpointOffset
 	if offset <= 0 {
-		return
+		return nil
 	}
 	checkpointIdx := lastCheckpointEntry(entries)
 	if checkpointIdx < 0 {
-		return
+		return nil
 	}
 	prefix := entries[:checkpointIdx]
 	if len(prefix) == 0 {
 		// A checkpoint-first transcript (nothing before the checkpoint)
 		// has no prefix to skip either.
-		return
+		return nil
 	}
 	boundarySeq := prefix[len(prefix)-1].Seq
 	// The exact prefix-turn count: the prelude rule is header-derived (a
@@ -953,14 +961,17 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 	// broken fold produced.
 	pending, commits, mutations, foldOK := foldSnapshotForSidecar(entries)
 	if !foldOK {
-		return
+		return nil
 	}
 	sidecar.PendingAttention, sidecar.DeliveryCommits, sidecar.ClientMutationTurns = pending, commits, mutations
 	sidecar.FirstAnchor, sidecar.TailAnchor = sidecarAnchors(f, offset)
 	if sidecar.FirstAnchor.Length <= 0 || sidecar.TailAnchor.Length <= 0 {
-		return
+		return nil
 	}
-	_ = WriteSidecar(path, sidecar)
+	if err := WriteSidecar(path, sidecar); err != nil {
+		return err
+	}
+	return nil
 }
 
 // lastCheckpointEntry returns the index of the first entry of the last
@@ -1001,17 +1012,41 @@ func prefixTurnCount(header Header, entries []Entry) int {
 
 // projectsThreadItems reports whether the AppWire projector emits at least
 // one thread item for a turn — whether the entry carrying it occupies a turn
-// position. The kind rules restated from ProjectTurn: the marker kinds emit
-// nothing when they carry no text (a checkpoint with empty text renders no
-// row), while every conversation kind (user, assistant, steering, tool
-// results, failure, resolution) always projects.
+// position. The kind rules restated from ProjectTurn, exactly as it emits:
+//
+//   - TurnAttentionResolution and TurnSystem have no case in ProjectTurn's
+//     switch — both fall to its default and emit nothing, so a prefix holding
+//     either occupies no position (every delegate session writes resolution
+//     turns; counting them inflated the count and duplicated turns at the
+//     hub paging seam).
+//   - The marker kinds (checkpoint, summary, model switch, environment, hook)
+//     emit nothing without text; a hook-completed turn can also render from
+//     its Hook announcement alone.
+//   - Tool and tool-results turns emit one item per tool RESULT part except
+//     communicate results, which the projector skips — so a turn whose parts
+//     are all communicate results (or that has none) emits nothing.
+//   - Every other conversation kind (user, steering, assistant, failure)
+//     always projects at least one item.
 func projectsThreadItems(turn schema.Turn) bool {
 	switch turn.Kind {
-	case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnModelSwitch, schema.TurnEnvironment, schema.TurnHookCompleted:
-		if strings.TrimSpace(turn.Message.Text()) != "" {
-			return true
+	case schema.TurnAttentionResolution, schema.TurnSystem:
+		return false
+	case schema.TurnCheckpoint, schema.TurnSummary, schema.TurnModelSwitch, schema.TurnEnvironment:
+		return strings.TrimSpace(turn.Message.Text()) != ""
+	case schema.TurnHookCompleted:
+		return strings.TrimSpace(turn.Message.Text()) != "" || turn.Hook != nil
+	case schema.TurnTool, schema.TurnToolResults:
+		for _, part := range turn.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			// A communicate result is skipped by the projector; every other
+			// tool result emits an item.
+			if part.ToolResult.Name != "communicate" {
+				return true
+			}
 		}
-		return turn.Kind == schema.TurnHookCompleted && turn.Hook != nil
+		return false
 	default:
 		return true
 	}

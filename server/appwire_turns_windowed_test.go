@@ -99,24 +99,40 @@ func TestWindowedSnapshotLatestLimitBetweenWindowAndTotal(t *testing.T) {
 // prefix the hub serves from disk, and a front insertion would shift every
 // window position into the prefix's cursor space.
 func TestWindowedSnapshotPreludeNotificationDoesNotShiftPositions(t *testing.T) {
-	snapshot := &appTurnSnapshot{threadID: "th_p"}
-	window := []appwire.Turn{{ID: "turn_6", Items: []appwire.ThreadItem{{ID: "i1"}}, ItemsView: "full", Status: appwire.TurnStatusCompleted}}
-	snapshot.SeedWindowed(window, 5)
-
-	// A prelude-announcing notification (e.g. plugin loaded, bundled into
-	// the prelude turn by the projector).
-	snapshot.Apply([]appserver.SequencedNotification{{
+	// The real shape that reaches ensureTurn's prelude branch: a
+	// turn/item-started notification whose turn id is the prelude's
+	// (appwire.SystemPreludeTurnID) — the projector routes prelude-eligible
+	// startup announcements there. A made-up method would be dropped by
+	// applyLocked's switch before the guard under test ever ran, and the
+	// test would pass vacuously.
+	preludeNotification := appserver.SequencedNotification{
 		Notification: appwire.Notification{
-			Method: "plugin/loaded",
-			Params: []byte(`{"name":"x"}`),
+			Method: appwire.NotifyItemStarted,
+			Params: []byte(`{"threadId":"th_p","turnId":"` + appwire.SystemPreludeTurnID + `","item":{"id":"item_system_prompt_0","type":"systemMessage","status":"inProgress"}}`),
 		},
-	}})
-
-	if len(snapshot.turns) != 1 {
-		t.Fatalf("windowed snapshot grew to %d turns after a prelude notification; the prelude must not enter the window", len(snapshot.turns))
 	}
-	if snapshot.turns[0].ID != "turn_6" {
-		t.Fatalf("window turn changed: %q", snapshot.turns[0].ID)
+
+	// Windowed: the prelude belongs to the unseen prefix the hub serves from
+	// disk — the notification must NOT insert it into the window.
+	windowed := &appTurnSnapshot{threadID: "th_p"}
+	window := []appwire.Turn{{ID: "turn_6", Items: []appwire.ThreadItem{{ID: "i1"}}, ItemsView: "full", Status: appwire.TurnStatusCompleted}}
+	windowed.SeedWindowed(window, 5)
+	windowed.Apply([]appserver.SequencedNotification{preludeNotification})
+	if len(windowed.turns) != 1 {
+		t.Fatalf("windowed snapshot grew to %d turns after a prelude notification; the prelude must not enter the window", len(windowed.turns))
+	}
+	if windowed.turns[0].ID != "turn_6" {
+		t.Fatalf("window turn changed: %q", windowed.turns[0].ID)
+	}
+
+	// Non-windowed control: the SAME notification must insert the prelude —
+	// this is what proves the windowed branch above suppressed it rather
+	// than the notification being dead on arrival.
+	plain := &appTurnSnapshot{threadID: "th_p"}
+	plain.SeedWindowed(window, 0)
+	plain.Apply([]appserver.SequencedNotification{preludeNotification})
+	if len(plain.turns) != 2 || plain.turns[0].ID != appwire.SystemPreludeTurnID {
+		t.Fatalf("non-windowed control: turns=%v, want the prelude inserted at the front — otherwise the windowed assertion above proved nothing", plain.turns)
 	}
 }
 
@@ -247,11 +263,36 @@ func TestTurnsFromEntriesWindowedCountMatchesFullProjection(t *testing.T) {
 	// anchors AT the checkpoint entry, so the checkpoint is the SUFFIX's
 	// first entry (ResumeHistory's window starts at it) and the prefix is
 	// everything before it.
+	// An attention resolution turn: ProjectTurn has NO case for it — the
+	// default emits nothing — so it occupies no turn position. Written by
+	// production for every delegate session that resolves an attention.
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "att1", Disposition: "consumed"}
+	// A tool-results turn whose only part is a communicate result: the
+	// projector skips communicate results, so it emits nothing.
+	communicateOnly := schema.NewTurn(schema.TurnToolResults, llm.User("results"))
+	communicateOnly.Message.Content = []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "communicate", Content: "spoken"},
+	}}
+	// A steering turn (a delegate attention's durable record) projects.
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("steer"))
+	steering.AttentionID = "att1"
 	prefix := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("one"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("two"))},
 		// Empty-text environment turn: ProjectTurn emits nothing.
 		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnEnvironment, llm.User("   "))},
+		// A steering turn (a delegate attention's durable record) projects.
+		{Kind: "entry", Seq: 3, Turn: steering},
+		// The attention opened above, resolved. ProjectTurn has NO case for
+		// the resolution kind — the default emits nothing — so it occupies no
+		// turn position. Written by production for every delegate session
+		// that resolves an attention.
+		{Kind: "entry", Seq: 4, Turn: resolution},
+		// A system turn: also unhandled by ProjectTurn, also no position.
+		{Kind: "entry", Seq: 5, Turn: schema.NewTurn(schema.TurnSystem, llm.System("sys"))},
+		{Kind: "entry", Seq: 6, Turn: communicateOnly},
 	}
 	suffix := []transcript.Entry{
 		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction summary"))},
