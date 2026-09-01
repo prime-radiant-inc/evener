@@ -159,9 +159,9 @@ func TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot(t *tes
 
 	var delegateScans int32
 	original := scanDelegateJournal
-	scanDelegateJournal = func(ctx context.Context, path string, limits delegatestore.ScanLimits) ([]delegatestore.Event, delegatestore.ReadDiagnostics, error) {
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
 		atomic.AddInt32(&delegateScans, 1)
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanDelegateJournal = original }()
 
@@ -213,10 +213,10 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 	ctx, cancel := context.WithCancel(context.Background())
 	var scannedPaths []string
 	original := scanJobJournal
-	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
 		scannedPaths = append(scannedPaths, path)
 		cancel() // cancel once the first session's own journal is reached
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanJobJournal = original }()
 
@@ -229,24 +229,17 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 }
 
 // TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget is
-// #448's own root-cause reproduction: a session's jobs.jsonl carries more
-// valid job_started records than activityMaxWorkUnits, followed by one
-// malformed trailing line. Before this fix, the per-file scan ceiling
-// (100,000 events) was unrelated to activityMaxWorkUnits (2000), so decoding
-// ran past the budget line and only failed on the malformed content past it
-// — proving the projection budget did not bound input scanning. Loading must
-// now stop at the work-unit budget itself and report a truncated (not
-// failed) tree, never reaching the malformed line.
-// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget
-// covers projection's own work-unit truncation of a single session's
-// entries. It no longer appends a malformed trailing line: that relied on
-// the pre-#807 behavior where the RAW scan's own MaxEvents was tied to the
-// remaining work-unit budget, so decoding always stopped (at
-// activityMaxWorkUnits) before ever reaching a later, malformed line.
-// Roborev's finding on #807 separated the two: historicalJobScanLimits is
-// now independent of the work budget, so the raw scan reads the whole
-// (valid) file regardless, and it is PROJECTION alone that renders only
-// the first activityMaxWorkUnits entries.
+// #448's incremental-fold round's replacement for the original per-file-
+// ceiling regression test: a session's jobs.jsonl carries more valid
+// job_started records than activityMaxWorkUnits. Jesse's ruling on this
+// round (200k events is a normal Tuesday; truncating legit history is
+// unacceptable) means LOADING no longer stops at the budget at all — the
+// whole session folds via historicalJobFoldCache regardless of size — so
+// what this test now proves is that PROJECTION alone still bounds one
+// response page at activityMaxWorkUnits entries, AND (the #812 fix this
+// round closes) mints a continuation that actually advances: decoding it
+// back out must show ResumeIndex == activityMaxWorkUnits, not an opaque
+// token a client can't reason about.
 func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootbudget"
@@ -273,47 +266,56 @@ func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *t
 	if len(got.Root.Entries) != activityMaxWorkUnits {
 		t.Fatalf("got %d entries, want exactly activityMaxWorkUnits=%d", len(got.Root.Entries), activityMaxWorkUnits)
 	}
+	if got.Root.Branch.Continuation == "" {
+		t.Fatal("Root.Branch.Continuation is empty, want a real, advancing continuation")
+	}
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, rootID)
+	if err != nil {
+		t.Fatalf("decodeActivityContinuation: %v", err)
+	}
+	if cont.ResumeIndex != activityMaxWorkUnits {
+		t.Fatalf("continuation ResumeIndex = %d, want %d (all %d rendered entries accounted for)", cont.ResumeIndex, activityMaxWorkUnits, activityMaxWorkUnits)
+	}
 }
 
 // TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted covers
-// the aggregate, cross-session half of #448's finding 1: the root session
-// alone consumes the entire tree-wide work-unit budget, so a delegate child
-// must never even be visited (its jobs.jsonl must never be opened) —
-// previously only cycle detection bounded the number of sessions visited
-// during load, so an unbounded tree of small sessions still forced O(sessions)
-// file opens before projection's budget ever applied.
+// the load-phase traversal-breadth bound: a root with more direct delegate
+// children than activityMaxWorkUnits must stop VISITING them (never open
+// the ones past the budget) rather than only trimming the rendered page
+// afterward — previously only cycle detection bounded the number of
+// sessions visited during load, so an unbounded tree of small sessions
+// still forced O(sessions) file opens before projection's budget ever
+// applied. #448's incremental-fold round changed what this budget counts
+// during load (one unit per session VISITED, not one per job record loaded
+// — see historicalActivityCache's doc comment — since a session's own
+// journal is no longer capped at load time at all), so this now uses many
+// CHILDREN rather than many JOBS to exhaust it, unlike before.
 func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootwidebudget"
 	started := time.Unix(600, 0).UTC()
-
-	events := make([]jobstore.Event, 0, activityMaxWorkUnits)
-	for i := range activityMaxWorkUnits {
-		jobID := fmt.Sprintf("job_%d", i)
-		events = append(events, jobstore.Event{
-			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
-			OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
-		})
-	}
-	s1cov_writeJobLog(t, stateDir, rootID, events...)
-
-	childID := "childwidebudget"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "should never be opened"))
-	childJobsPath := s1cov_writeJobLog(t, stateDir, childID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
-	before, err := os.Stat(childJobsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	savePastActivityMeta(t, stateDir, rootID, "Root")
-	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+
+	descriptors := make([]delegatestore.Descriptor, 0, activityMaxWorkUnits+1)
+	childJobsPaths := make([]string, 0, activityMaxWorkUnits+1)
+	for i := range activityMaxWorkUnits + 1 {
+		childID := fmt.Sprintf("childwidebudget%d", i)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "may never be opened"))
+		childJobsPaths = append(childJobsPaths, s1cov_writeJobLog(t, stateDir, childID,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID, Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+		))
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
 
 	var scannedPaths []string
 	original := scanJobJournal
-	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
 		scannedPaths = append(scannedPaths, path)
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanJobJournal = original }()
 
@@ -321,18 +323,30 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 	if err != nil {
 		t.Fatalf("LoadSessionJobActivityTree: %v", err)
 	}
-	if len(scannedPaths) != 1 {
-		t.Fatalf("scanned %d job journals, want exactly 1 (root only; budget exhausted before the child delegate is ever visited): %v", len(scannedPaths), scannedPaths)
-	}
-	after, err := os.Stat(childJobsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.ModTime() != before.ModTime() || after.Size() != before.Size() {
-		t.Fatalf("child job log changed despite never being opened: before=%v/%d after=%v/%d", before.ModTime(), before.Size(), after.ModTime(), after.Size())
-	}
+	// Root's own rendered page ALSO truncates: 1 job + activityMaxWorkUnits+1
+	// delegate entries is itself over the (separate, projection-side)
+	// activityMaxWorkUnits budget.
 	if !got.Root.Branch.Truncated {
 		t.Fatalf("Root.Branch.Truncated = false, want true")
+	}
+	// root's own journal (1) + at most activityMaxWorkUnits children (the
+	// load-phase budget's own unit count), never all activityMaxWorkUnits+1.
+	wantScanned := activityMaxWorkUnits + 1
+	if len(scannedPaths) != wantScanned {
+		t.Fatalf("scanned %d job journals, want exactly %d (root plus at most activityMaxWorkUnits=%d children; at least one child must never be visited): %v", len(scannedPaths), wantScanned, activityMaxWorkUnits, scannedPaths)
+	}
+	openedChildJournal := make(map[string]bool, len(scannedPaths))
+	for _, p := range scannedPaths {
+		openedChildJournal[p] = true
+	}
+	neverOpened := 0
+	for _, p := range childJobsPaths {
+		if !openedChildJournal[p] {
+			neverOpened++
+		}
+	}
+	if neverOpened != 1 {
+		t.Fatalf("%d child journals were never opened, want exactly 1 (activityMaxWorkUnits+1 children, activityMaxWorkUnits budget)", neverOpened)
 	}
 }
 
@@ -374,9 +388,9 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 
 	var scannedPaths []string
 	original := scanJobJournal
-	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
 		scannedPaths = append(scannedPaths, path)
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanJobJournal = original }()
 
@@ -571,14 +585,14 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	original := scanJobJournal
-	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
 		calls++
 		if calls == 2 {
 			// Cancel while loading child1's OWN journal — a descendant, not
 			// the root — the exact case the swallow-into-Errors bug missed.
 			cancel()
 		}
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanJobJournal = original }()
 
@@ -590,51 +604,62 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 	}
 }
 
-// TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit
-// covers the ceilings decision for #448: delegatestore.Descriptor embeds the
-// FULL FrozenRolePrompt/FrozenSkillBodies text on every delegate_created
-// event, so a legitimately heavy-delegating root can plausibly approach the
-// scan ceiling over time with no adversarial input at all. Hitting it must
-// degrade the response (a diagnostic, tree still returned) rather than hard-
-// failing the WHOLE activity tree for that root.
-func TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "rootdlgpartial"
-	started := time.Unix(900, 0).UTC()
-
-	restoreLimits := historicalDelegateScanLimits
-	historicalDelegateScanLimits = delegatestore.ScanLimits{MaxEvents: 5}
-	defer func() { historicalDelegateScanLimits = restoreLimits }()
-
-	// Each delegate its own writePastStableDelegates call (its own
-	// AppendBatch, its own batch line): MaxEvents is checked once per
-	// batch line (roborev finding on #807's fix), so 10 delegates in ONE
-	// batch line would all decode together regardless of the ceiling.
-	for i := range 10 {
-		writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, fmt.Sprintf("childdlgpartial%d", i), "task"))
+// TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth covers
+// roborev's finding on #807: continuation paths are client-controlled, so
+// without this cap a long valid path could force buildActivityContinuationAt
+// to open arbitrarily many historical sessions' files with no bound at all
+// (ordinary, non-continuation traversal's own depth limit is enforced by
+// buildActivityFullSnapshot's recursion, which this path-following code
+// doesn't go through).
+func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
+	path := make([]string, activityMaxNewDepth+1)
+	for i := range path {
+		path[i] = fmt.Sprintf("hop%d", i)
 	}
+	token := encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV1, RootID: "root", SessionID: "session", Path: path,
+	})
+	if _, err := decodeActivityContinuation(token, "root"); err == nil {
+		t.Fatal("expected an error for a continuation path longer than activityMaxNewDepth")
+	}
+}
+
+// TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops
+// covers roborev's finding on #807: each continuation hop must be charged
+// against the shared load budget the same way buildActivityFullSnapshot
+// charges each child it visits -- otherwise loadActivityBase (which opens
+// files) runs once per hop with no bound of its own. A budget that is
+// already exhausted before ANY hop is resolved must stop immediately,
+// never reaching loadActivityBase for even the first one.
+func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "budgetpathroot"
+	childID := "budgetpathchild"
+	started := time.Unix(6_000_000_000, 0).UTC()
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "task"))
 	s1cov_writeJobLog(t, stateDir, rootID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
 	)
+	// The child has its own valid, readable jobs.jsonl too: without this,
+	// loadActivityBase's "child session unavailable" error (a MISSING FILE,
+	// unrelated to budget) would make this test pass for the wrong reason.
+	s1cov_writeJobLog(t, stateDir, childID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+	)
 	savePastActivityMeta(t, stateDir, rootID, "Root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 
-	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree: %v, want a degraded tree, not a hard error", err)
-	}
-	// Root's own shell job still renders: the delegate-journal ceiling must
-	// not sink data this session owns directly.
-	if len(got.Root.Entries) == 0 {
-		t.Fatalf("Root.Entries is empty, want the root's own shell job to still render")
-	}
-	found := false
-	for _, d := range got.Root.Diagnostics {
-		if strings.Contains(d, "delegate_journal") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("Diagnostics = %v, want a delegate-journal-scan-limit diagnostic", got.Root.Diagnostics)
+	cache := newHistoricalActivityCache(context.Background(), rootID)
+	cache.budget.usedWork = cache.budget.maxWorkUnits // pre-exhausted
+
+	// Path holds the DELEGATE ID (writePastStableDelegates assigns
+	// "dlg_" + childSessionID here), not the child session ID itself --
+	// buildActivityContinuationAt looks each hop up in
+	// loaded.snapshot.StableDelegates, which is keyed by delegate ID.
+	cont := activityContinuation{Version: activityContinuationV1, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
+	root := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
+	if _, _, _, err := buildActivityContinuationAt(root, cont, 0, map[string]bool{rootID: true}, false, cache); err == nil {
+		t.Fatal("expected an error: the load budget is already exhausted before resolving even the first continuation hop")
 	}
 }
 
@@ -732,193 +757,5 @@ func writeRawSessionMeta(t *testing.T, path string, meta schema.SessionMeta) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write meta: %v", err)
-	}
-}
-
-// TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth covers
-// roborev's finding on #807: continuation paths are client-controlled and,
-// before this fix, unbounded in length -- a long valid path could force
-// buildActivityContinuationAt to open many historical sessions' files with
-// no depth limit at all, independent of activityMaxNewDepth's own bound on
-// ordinary (non-continuation) traversal.
-func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
-	path := make([]string, activityMaxNewDepth+1)
-	for i := range path {
-		path[i] = fmt.Sprintf("hop%d", i)
-	}
-	token := encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "session", Path: path,
-	})
-	if _, err := decodeActivityContinuation(token, "root"); err == nil {
-		t.Fatal("expected an error for a continuation path longer than activityMaxNewDepth")
-	}
-}
-
-// TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops
-// covers roborev's finding on #807: each continuation hop must be charged
-// against the shared load budget the same way buildActivityFullSnapshot
-// charges each child it visits -- otherwise loadActivityBase (which opens
-// files) runs once per hop with no bound of its own. A budget that is
-// already exhausted before ANY hop is resolved must stop immediately,
-// never reaching loadActivityBase for even the first one.
-func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "budgetpathroot"
-	childID := "budgetpathchild"
-	started := time.Unix(6_000_000_000, 0).UTC()
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "task"))
-	s1cov_writeJobLog(t, stateDir, rootID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
-	)
-	// The child has its own valid, readable jobs.jsonl too: without this,
-	// loadActivityBase's "child session unavailable" error (a MISSING FILE,
-	// unrelated to budget) would make this test pass for the wrong reason.
-	s1cov_writeJobLog(t, stateDir, childID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
-	)
-	savePastActivityMeta(t, stateDir, rootID, "Root")
-	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
-
-	cache := newHistoricalActivityCache(context.Background(), rootID)
-	cache.budget.usedWork = cache.budget.maxWorkUnits // pre-exhausted
-
-	// Path holds the DELEGATE ID (writePastStableDelegates assigns
-	// "dlg_" + childSessionID here), not the child session ID itself --
-	// buildActivityContinuationAt looks each hop up in
-	// loaded.snapshot.StableDelegates, which is keyed by delegate ID.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
-	root := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
-	if _, err := buildActivityContinuationAt(root, cont, 0, map[string]bool{rootID: true}, false, cache); err == nil {
-		t.Fatal("expected an error: the load budget is already exhausted before resolving even the first continuation hop")
-	}
-}
-
-// TestLoadHistoricalActivityBase_RawScanLimitIndependentOfWorkBudget covers
-// roborev's finding on #807: loadHistoricalActivityBase used the remaining
-// WORK-UNIT budget (roughly one per rendered job record) directly as the
-// raw journal scanner's MaxEvents -- but non-job-record event kinds (watch
-// events here) consume raw-event budget without ever counting as work, so
-// a session with many of them ahead of its real jobs could have its scan
-// ceiling hit before any of those later, legitimate jobs were ever read,
-// even though the work budget meant for THOSE jobs was nowhere near spent.
-// 50 watch events followed by 3 real jobs, with the work budget capped at
-// 5: the pre-fix scan reads only 5 raw events (all watch, zero job
-// records, LoadTruncated=true, Jobs=[]); the fix reads the whole file
-// (bounded by a raw ceiling independent of the work budget) and loads all
-// 3 jobs untruncated.
-func TestLoadHistoricalActivityBase_RawScanLimitIndependentOfWorkBudget(t *testing.T) {
-	stateDir := t.TempDir()
-	sessionID := "rawscanroot"
-	started := time.Unix(5_000_000_000, 0).UTC()
-	events := make([]jobstore.Event, 0, 53)
-	for i := range 50 {
-		events = append(events, jobstore.Event{Kind: jobstore.EventWatchRegistered, TS: started, WatchID: fmt.Sprintf("w%d", i)})
-	}
-	for i := range 3 {
-		jobID := fmt.Sprintf("job_real_%d", i)
-		events = append(events, jobstore.Event{
-			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
-			OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &started,
-		})
-	}
-	s1cov_writeJobLog(t, stateDir, sessionID, events...)
-	savePastActivityMeta(t, stateDir, sessionID, "Root")
-
-	cache := newHistoricalActivityCache(context.Background(), sessionID)
-	cache.budget.maxWorkUnits = 5
-
-	loaded, err := loadHistoricalActivityBase(stateDir, sessionID, false, cache)
-	if err != nil {
-		t.Fatalf("loadHistoricalActivityBase: %v", err)
-	}
-	if loaded.snapshot.LoadTruncated {
-		t.Fatalf("LoadTruncated = true, want false: 53 raw events is well inside the scan's own (work-budget-independent) ceiling")
-	}
-	if len(loaded.snapshot.Jobs) != 3 {
-		t.Fatalf("got %d job records, want all 3 real jobs (a raw-event ceiling tied to the 5-unit work budget would stop at the 50 watch events and never reach them)", len(loaded.snapshot.Jobs))
-	}
-}
-
-// TestLoadHistoricalActivityBase_TruncatedDelegateJournalMarksLoadTruncated
-// covers roborev's finding on #807: a truncated delegate journal was
-// surfaced only as a diagnostic string; Branch.Truncated (derived from
-// LoadTruncated) stayed false, so a client could see Counts.Complete=true
-// despite delegates having been silently dropped by the scan ceiling. This
-// forces scanRootDelegateState's own ceiling by overriding
-// historicalDelegateScanLimits to MaxEvents: 1 against two delegates
-// written as two SEPARATE batch lines (two writePastStableDelegates calls,
-// each appending): MaxEvents is checked once per batch line, so two
-// delegates in the SAME batch line would both decode together regardless
-// of the ceiling (M4's own fix on #807 checks the budget between lines,
-// not within one).
-func TestLoadHistoricalActivityBase_TruncatedDelegateJournalMarksLoadTruncated(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "delegatetruncroot"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childdelegatetrunc0", "task"))
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childdelegatetrunc1", "task"))
-	savePastActivityMeta(t, stateDir, rootID, "Root")
-
-	restore := historicalDelegateScanLimits
-	historicalDelegateScanLimits = delegatestore.ScanLimits{MaxEvents: 1}
-	defer func() { historicalDelegateScanLimits = restore }()
-
-	cache := newHistoricalActivityCache(context.Background(), rootID)
-	loaded, err := loadHistoricalActivityBase(stateDir, rootID, false, cache)
-	if err != nil {
-		t.Fatalf("loadHistoricalActivityBase: %v", err)
-	}
-	if !loaded.snapshot.LoadTruncated {
-		t.Fatalf("LoadTruncated = false, want true: the delegate journal scan hit its own ceiling with a delegate omitted")
-	}
-}
-
-// TestLoadSessionJobActivityTree_OverBudgetSessionStillExhaustsBudget covers
-// the saturation edge of the aggregate work budget: a single session whose
-// owned-shell count EXCEEDS the remaining budget must still exhaust it, so
-// sibling/descendant sessions are skipped. Refuse-without-consuming semantics
-// (activityConsumeWorkUnit's contract, which projection relies on) would
-// otherwise leave the whole budget unspent here and every later journal would
-// still be opened and scanned.
-func TestLoadSessionJobActivityTree_OverBudgetSessionStillExhaustsBudget(t *testing.T) {
-	stateDir := t.TempDir()
-	rootID := "rootoverbudget"
-	started := time.Unix(600, 0).UTC()
-
-	count := activityMaxWorkUnits + 1
-	events := make([]jobstore.Event, 0, count)
-	for i := range count {
-		jobID := fmt.Sprintf("job_%d", i)
-		events = append(events, jobstore.Event{
-			Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
-			OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
-		})
-	}
-	s1cov_writeJobLog(t, stateDir, rootID, events...)
-
-	childID := "childoverbudget"
-	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "should never be opened"))
-	s1cov_writeJobLog(t, stateDir, childID,
-		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
-	)
-	savePastActivityMeta(t, stateDir, rootID, "Root")
-	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
-
-	var scannedPaths []string
-	original := scanJobJournal
-	scanJobJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
-		scannedPaths = append(scannedPaths, path)
-		return original(ctx, path, limits)
-	}
-	defer func() { scanJobJournal = original }()
-
-	got, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree: %v", err)
-	}
-	if len(scannedPaths) != 1 {
-		t.Fatalf("scanned %d job journals, want exactly 1 (root only; an over-budget session must saturate the budget so the child delegate is never visited): %v", len(scannedPaths), scannedPaths)
-	}
-	if !got.Root.Branch.Truncated {
-		t.Fatalf("Root.Branch.Truncated = false, want true")
 	}
 }

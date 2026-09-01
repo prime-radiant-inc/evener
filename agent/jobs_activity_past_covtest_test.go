@@ -240,9 +240,10 @@ func TestLoadHistoricalStableActivityWithAttention_SkipNonMatching(t *testing.T)
 // #448's regression finding that this function — reachable from the hub's
 // ThreadRead RPC via LoadSessionDelegateStatus — still did a fully
 // unbounded, non-cancelable delegatestore.ReadEventsWithDiagnostics read of
-// the same delegates.jsonl the issue names as evidence. It must now go
-// through scanDelegateJournal with historicalDelegateScanLimits, the same
-// bounded scanner the job-activity tree loader uses.
+// the same delegates.jsonl the issue names as evidence. It must go through
+// scanDelegateJournal (delegatestore.ScanEventsFrom, ctx-aware and, via
+// historicalDelegateFoldCache, incremental) — never the raw,
+// context-blind ReadEventsWithDiagnostics — exactly once for one read.
 func TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "attnbounded"
@@ -250,12 +251,9 @@ func TestLoadHistoricalStableActivityWithAttention_UsesBoundedScan(t *testing.T)
 
 	var calls int32
 	original := scanDelegateJournal
-	scanDelegateJournal = func(ctx context.Context, path string, limits delegatestore.ScanLimits) ([]delegatestore.Event, delegatestore.ReadDiagnostics, error) {
+	scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
 		atomic.AddInt32(&calls, 1)
-		if limits != historicalDelegateScanLimits {
-			t.Errorf("scanDelegateJournal called with limits=%+v, want historicalDelegateScanLimits=%+v", limits, historicalDelegateScanLimits)
-		}
-		return original(ctx, path, limits)
+		return original(ctx, path, fromOffset, limits)
 	}
 	defer func() { scanDelegateJournal = original }()
 
@@ -460,7 +458,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	}
 	_ = f.Close()
 
-	_, diags, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
+	_, _, diags, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

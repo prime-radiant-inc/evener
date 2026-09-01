@@ -25,11 +25,31 @@ const (
 	activityContinuationV1  = 1
 )
 
+// activityContinuation is a real, checked cursor position (#448's
+// incremental-fold round, closing #812 on this surface): resuming from one
+// re-enters the exact session a prior page's mid-list cutoff stopped at
+// (RootID/SessionID/Path, the pre-existing navigational shape) AND skips
+// exactly the entries that session already rendered (ResumeIndex), instead
+// of re-rendering that session's list from its own top with a fresh budget
+// the way the pre-#448 mid-list continuation always has. JobsEpoch/
+// DelegatesEpoch are the fold-cache generations (foldcache.Result.Epoch —
+// see historicalJobFoldCache/historicalDelegateFoldCache in
+// jobs_activity_past.go) SessionID's own jobs.jsonl and RootID's shared
+// delegates.jsonl were at when this token was minted; loadActivitySnapshotForParams
+// rejects a resume whose epochs no longer match what the fold caches
+// currently report for those same paths, rather than silently applying
+// ResumeIndex to a journal that was rewritten or shrunk out from under it.
+// An ordinary append never bumps epoch (see foldcache.Result.Epoch's own
+// doc comment) — append-only growth is exactly the case a resume must
+// tolerate, not treat as staleness.
 type activityContinuation struct {
-	Version   int      `json:"v"`
-	RootID    string   `json:"root"`
-	SessionID string   `json:"session"`
-	Path      []string `json:"path"`
+	Version        int      `json:"v"`
+	RootID         string   `json:"root"`
+	SessionID      string   `json:"session"`
+	Path           []string `json:"path"`
+	ResumeIndex    int      `json:"idx,omitempty"`
+	JobsEpoch      uint64   `json:"jobs_epoch,omitempty"`
+	DelegatesEpoch uint64   `json:"dlg_epoch,omitempty"`
 }
 
 // activitySessionSnapshot is the lock-free input to the activity projection.
@@ -45,19 +65,18 @@ type activitySessionSnapshot struct {
 	StableDelegates map[string]delegateSnapshot
 	Usage           *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
 	Diagnostics     []string
-	// LoadTruncated reports that THIS session's own journal scan hit a raw
-	// byte/event ceiling during load and Jobs is a partial prefix, not the
-	// complete list (#448 finding 1's degrade-to-partial contract — see
-	// jobstore.ScanEvents/loadHistoricalActivityBase). projectActivitySessionAt
-	// surfaces it as Branch.Truncated the same way projection's own
-	// work-unit exhaustion does. Deliberately no continuation for this case
-	// (see the doc comment on the Branch.Truncated assignment below): a
-	// resumed load rescans this session's own journal from byte zero with a
-	// fresh budget, so a minted token would never actually advance past what
-	// this page already showed.
-	LoadTruncated bool
-	Children      map[string]*activitySessionSnapshot // child session ID
-	Errors        map[string]error                    // child session ID
+	// JobsEpoch and DelegatesEpoch are historicalJobFoldCache's and
+	// historicalDelegateFoldCache's current generation counters for this
+	// session's own jobs.jsonl and its root's shared delegates.jsonl,
+	// respectively (0 for a LIVE session's own snapshot — loadLiveActivityBase
+	// reads neither cache, and a live root's own data is always current, never
+	// stale in the sense these caches guard against). Carried into any
+	// continuation a mid-list cutoff on THIS session mints — see
+	// activityContinuation and markActivitySessionTruncated.
+	JobsEpoch      uint64
+	DelegatesEpoch uint64
+	Children       map[string]*activitySessionSnapshot // child session ID
+	Errors         map[string]error                    // child session ID
 }
 
 type activitySessionLocator struct {
@@ -137,6 +156,9 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	if len(cont.Path) > activityMaxNewDepth {
 		return activityContinuation{}, fmt.Errorf("continuation path length %d exceeds %d", len(cont.Path), activityMaxNewDepth)
 	}
+	if cont.ResumeIndex < 0 {
+		return activityContinuation{}, fmt.Errorf("continuation resume index %d is negative", cont.ResumeIndex)
+	}
 	if expectedRoot != "" && cont.RootID != expectedRoot {
 		return activityContinuation{}, fmt.Errorf("continuation root %q does not match %q", cont.RootID, expectedRoot)
 	}
@@ -190,31 +212,31 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 		// (cmd/evener/serve.go's SetJobsFunc hook) takes no context to
 		// thread through in the first place, so even a bounded LoadOrdered
 		// would only gain the byte/event ceilings here, not cancellation.
-		snapshot, startDepth, err := loadActivitySnapshotForParams(context.Background(), root, params)
+		snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(context.Background(), root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now)
+		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, resumeIndex, 0, now)
 	}
-	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, error) {
+	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, int, error) {
 		return loadActivitySnapshotForParams(context.Background(), root, params)
 	})
 }
 
-func projectStableLiveActivityTree(clock *jobActivityClock, rootID string, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
+func projectStableLiveActivityTree(clock *jobActivityClock, rootID string, load func() (*activitySessionSnapshot, int, int, error)) (appwire.JobActivityTree, error) {
 	return projectStableLiveActivityTreeAt(clock, rootID, time.Now().UTC(), load)
 }
 
-func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
+func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, int, error)) (appwire.JobActivityTree, error) {
 	for range 8 {
 		before := activityCurrentRootRevision(clock)
-		snapshot, startDepth, err := load()
+		snapshot, startDepth, resumeIndex, err := load()
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		after := activityCurrentRootRevision(clock)
 		if before == after {
-			return projectBoundedActivityTree(*snapshot, rootID, startDepth, after, now)
+			return projectBoundedActivityTree(*snapshot, rootID, startDepth, resumeIndex, after, now)
 		}
 	}
 	return appwire.JobActivityTree{}, errors.New("activity tree changed while snapshot was being built; retry")
@@ -238,32 +260,38 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 // ctx and threads it through the whole recursive load, so the shared root
 // delegate journal is scanned once no matter how many sessions this one
 // build visits, and a canceled ctx stops before opening a later session's
-// files (checked in loadHistoricalActivityBase).
-func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, error) {
+// files (checked in loadHistoricalActivityBase). It returns the resumeIndex
+// a continuation's mid-list cutoff carried (0 for a fresh, non-continuation
+// load), for projectBoundedActivityTree to apply against the target
+// session's own entries.
+func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, error) {
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
 		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
-		return snapshot, 0, err
+		return snapshot, 0, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	visited := map[string]bool{root.sessionID: true}
-	snapshot, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
+	snapshot, jobsEpoch, delegatesEpoch, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return snapshot, -len(cont.Path), nil
+	// The target session's fold-cache generations must still match what the
+	// continuation was minted against: an ordinary append never moves
+	// either epoch (see activityContinuation's doc comment), so this only
+	// ever rejects a resume whose underlying journal was rewritten or
+	// shrunk since — exactly the case ResumeIndex is unsafe to apply to.
+	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
+		return nil, 0, 0, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
+	}
+	return snapshot, -len(cont.Path), cont.ResumeIndex, nil
 }
 
-// buildActivityFullSnapshot loads loc's full subtree. path is the delegate-ID
-// chain from the traversal root down to loc (nil at the root), the same
-// shape projection's own path threads — needed so a load-phase truncation
-// (LoadTruncated below) can mint a continuation token identical in shape to
-// projection's markActivitySessionTruncated, regardless of which phase
-// decided the response had to be partial.
+// buildActivityFullSnapshot loads loc's full subtree.
 //
 // depth is loc's own depth, explicit rather than derived from
 // len(visited)-1 (roborev finding on #807's saturation commit): visited
@@ -380,28 +408,42 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 	return &snapshot, nil
 }
 
-func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
+// buildActivityContinuationSnapshot re-enters the session cont's Path chain
+// points at and returns its ROOT-shaped, single-child-filtered snapshot for
+// the wire — the pre-existing navigational shape — ALONGSIDE the TARGET
+// session's own JobsEpoch/DelegatesEpoch (not the outer root's; the target
+// is what ResumeIndex was minted against and what it must be checked
+// against on resume — see loadActivitySnapshotForParams).
+func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, uint64, uint64, error) {
 	if len(cont.Path) == 0 {
 		if loc.sessionID != cont.SessionID {
-			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
+			return nil, 0, 0, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
 		}
 		// No hops: loc IS the continuation target, projection's own
 		// depth-0 node (see buildActivityFullSnapshot's doc comment).
-		return buildActivityFullSnapshot(loc, visited, required, cache, 0)
+		snapshot, err := buildActivityFullSnapshot(loc, visited, required, cache, 0)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		return snapshot, snapshot.JobsEpoch, snapshot.DelegatesEpoch, nil
 	}
 	return buildActivityContinuationAt(loc, cont, 0, visited, required, cache)
 }
 
-func buildActivityContinuationAt(loc activitySessionLocator, cont activityContinuation, hop int, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
+func buildActivityContinuationAt(loc activitySessionLocator, cont activityContinuation, hop int, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, uint64, uint64, error) {
 	if hop == len(cont.Path) {
 		if loc.sessionID != cont.SessionID {
-			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
+			return nil, 0, 0, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
 		// loc is the continuation target: projection's own depth-0 node
 		// (see buildActivityFullSnapshot's doc comment) regardless of how
 		// many hops led here — NOT len(visited)-1, which would count the
 		// whole ancestor chain as depth already consumed.
-		return buildActivityFullSnapshot(loc, visited, required, cache, 0)
+		snapshot, err := buildActivityFullSnapshot(loc, visited, required, cache, 0)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		return snapshot, snapshot.JobsEpoch, snapshot.DelegatesEpoch, nil
 	}
 	// Charge this hop against the shared load budget the same way
 	// buildActivityFullSnapshot charges each child it visits (roborev
@@ -411,35 +453,35 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 	// loadActivityBase below opens files, and without this, that happened
 	// unconditionally, once per hop, with no bound of its own.
 	if !activityConsumeWorkUnit(cache.budget, 1) {
-		return nil, errors.New("continuation path exhausted the load budget")
+		return nil, 0, 0, errors.New("continuation path exhausted the load budget")
 	}
 	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	delegateID := cont.Path[hop]
 	if row, ok := loaded.snapshot.StableDelegates[delegateID]; ok {
 		childID, err := activityChildSessionForStable(row)
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 		if visited[childID] {
-			return nil, errors.New("cycle detected")
+			return nil, 0, 0, errors.New("cycle detected")
 		}
 		childLoc, err := resolveActivityChildByID(loc, loaded, childID)
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 		nextVisited := cloneActivityVisited(visited)
 		nextVisited[childID] = true
-		child, err := buildActivityContinuationAt(childLoc, cont, hop+1, nextVisited, true, cache)
+		child, jobsEpoch, delegatesEpoch, err := buildActivityContinuationAt(childLoc, cont, hop+1, nextVisited, true, cache)
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 		filtered := activityFilterSnapshotToDelegate(loaded.snapshot, delegateID, child)
-		return &filtered, nil
+		return &filtered, jobsEpoch, delegatesEpoch, nil
 	}
-	return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
+	return nil, 0, 0, fmt.Errorf("continuation path hop %q not found", delegateID)
 }
 
 func loadActivityBase(loc activitySessionLocator, required bool, cache *historicalActivityCache) (activityLoadedBase, error) {
@@ -590,10 +632,6 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		Diagnostics:     append([]string(nil), base.Diagnostics...),
 		Children:        make(map[string]*activitySessionSnapshot),
 		Errors:          make(map[string]error),
-		// roborev finding on #807's saturation commit: a continuation
-		// resolving through a load-truncated parent must not hide that
-		// incompleteness from the response.
-		LoadTruncated: base.LoadTruncated,
 	}
 	if row, ok := base.StableDelegates[delegateID]; ok {
 		filtered.StableDelegates[delegateID] = row
@@ -604,9 +642,9 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 	return filtered
 }
 
-func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int, revision uint64, now time.Time) (appwire.JobActivityTree, error) {
+func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth, resumeIndex int, revision uint64, now time.Time) (appwire.JobActivityTree, error) {
 	budget := newBoundedActivityBudget(rootID, now)
-	root := projectActivitySessionAt(snapshot, budget, startDepth, nil)
+	root := projectActivitySessionAt(snapshot, budget, startDepth, nil, resumeIndex)
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
 	return trimActivityTreeToFit(tree, rootID)
 }
@@ -749,12 +787,41 @@ func activityRecordBefore(left, right *jobstore.JobRecord) bool {
 }
 
 func projectActivitySession(snapshot activitySessionSnapshot, budget *activityBudget) appwire.JobActivitySession {
-	return projectActivitySessionAt(snapshot, budget, 0, nil)
+	return projectActivitySessionAt(snapshot, budget, 0, nil, 0)
 }
 
-func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activityBudget, depth int, path []string) appwire.JobActivitySession {
+// projectActivitySessionAt renders snapshot's own entries (its owned shell
+// jobs, then its stable delegates — the fixed order every entryIndex below
+// counts against) into one appwire.JobActivitySession, recursing into each
+// delegate's child subtree. resumeIndex skips that many leading entries
+// without consuming budget or rendering them — the #448/#812 fix: a
+// continuation minted by markActivitySessionTruncated below carries exactly
+// this position, so a resumed page picks up where the truncated one left
+// off instead of re-rendering snapshot's list from the top with a fresh
+// budget.
+//
+// resumeIndex is meaningful only for the ONE session a continuation names —
+// but for a continuation whose Path has hops (the truncated session was a
+// nested delegate, not the tree's own root), that session is reached only
+// after buildActivityContinuationAt's filtered ancestor chain is
+// re-descended through len(Path) recursive projectStableActivityDelegate
+// calls, not at THIS function's own top-level call. depth carries exactly
+// that position already (loadActivitySnapshotForParams sets the top-level
+// call's startDepth to -len(cont.Path), so depth reaches 0 exactly once,
+// at the same node a plain, non-continuation load would call depth 0 — its
+// own root, or here, the continuation's target session) — so resumeIndex
+// is threaded UNCHANGED through every recursive call below and applied only
+// where depth == 0, rather than being reset to 0 for children: a
+// zero-hop continuation (target IS the root) needs it applied at THIS
+// call's depth 0 too, which passing 0 to every recursive call would miss
+// whenever depth's OWN starting point was already negative.
+func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivitySession {
 	if budget == nil {
 		budget = newActivityBudget()
+	}
+	effectiveResumeIndex := 0
+	if depth == 0 {
+		effectiveResumeIndex = resumeIndex
 	}
 	projected := appwire.JobActivitySession{
 		SessionID:   snapshot.SessionID,
@@ -762,19 +829,6 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		Label:       snapshot.Label,
 		Entries:     make([]appwire.JobActivityEntry, 0),
 		Diagnostics: append([]string(nil), snapshot.Diagnostics...),
-	}
-	if snapshot.LoadTruncated {
-		// The load phase itself stopped decoding this session's journal at a
-		// raw byte/event ceiling (#448 finding 1) — that has to reach the
-		// wire even when, as here, projection's OWN work-unit accounting has
-		// nothing left to trim (the loaded prefix fits the budget exactly).
-		// Deliberately no continuation: a resumed load rescans this same
-		// session's own journal from byte zero with a fresh budget (roborev
-		// finding — verified empirically that this doesn't advance past what
-		// this page already showed), so minting one would invite a client to
-		// poll forever for data it will never receive. Honest
-		// Truncated-with-no-continuation beats a token that goes nowhere.
-		projected.Branch.Truncated = true
 	}
 
 	cycleKey := snapshot.SessionID + "\x00" + snapshot.Ref
@@ -789,6 +843,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	budget.visiting[cycleKey] = true
 	defer delete(budget.visiting, cycleKey)
 
+	entryIndex := 0
 	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
 	for _, rec := range records {
 		if rec == nil {
@@ -796,11 +851,16 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		}
 		switch rec.Type {
 		case jobstore.JobShell:
+			if entryIndex < effectiveResumeIndex {
+				entryIndex++
+				continue
+			}
 			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, snapshot.LoadTruncated)
+				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.JobsEpoch, snapshot.DelegatesEpoch)
 				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 				return projected
 			}
+			entryIndex++
 			job := projectActivityJob(rec, snapshot.Ref)
 			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
 		default:
@@ -808,12 +868,17 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		}
 	}
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
+		if entryIndex < effectiveResumeIndex {
+			entryIndex++
+			continue
+		}
 		if !activityConsumeWorkUnit(budget, 1) {
-			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, snapshot.LoadTruncated)
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.JobsEpoch, snapshot.DelegatesEpoch)
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 			return projected
 		}
-		delegate := projectStableActivityDelegate(snapshot, snapshot.StableDelegates[delegateID], budget, depth, path)
+		entryIndex++
+		delegate := projectStableActivityDelegate(snapshot, snapshot.StableDelegates[delegateID], budget, depth, path, resumeIndex)
 		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &delegate})
 	}
 
@@ -821,7 +886,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	return projected
 }
 
-func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string) appwire.JobActivityDelegate {
+func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivityDelegate {
 	descriptor := row.descriptor
 	status := projectStableDelegateStatus(budget.now, row)
 	delegate := appwire.JobActivityDelegate{
@@ -926,7 +991,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath)
 		return delegate
 	}
-	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath)
+	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
 	delegate.Child = &projectedChild
 	return delegate
 }
@@ -1019,28 +1084,47 @@ func activityOwnedShellCount(sessionID string, jobs []*jobstore.JobRecord) int {
 	return count
 }
 
-// markActivitySessionTruncated marks a mid-list cutoff within a session's
-// own entries. loadTruncated must be the snapshot's own LoadTruncated: when
-// true, the LOAD phase already decided this session's data is a partial
-// prefix with deliberately no continuation (a resumed load rescans this
-// same session's own journal from byte zero with a fresh budget, so a
-// minted token would never actually advance), and this call's own
-// (separate, projection-phase) budget can independently trip on the very
-// same session — roborev's finding on #807: the load and projection
-// phases use separate activityBudget instances, so both firing on one
-// session is not a corner case, and unconditionally minting a continuation
-// here would silently defeat LoadTruncated's whole point.
-func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, loadTruncated bool) {
+// markActivitySessionTruncated marks a mid-list cutoff within sessionID's
+// own entries (jobs then delegates, projectActivitySessionAt's iteration
+// order) and mints a REAL, advancing continuation: resumeIndex is how many
+// of sessionID's entries have now been accounted for across every page up
+// to and including this one (projectActivitySessionAt's entryIndex at the
+// moment the budget ran out), so a resume picks up exactly where this page
+// stopped instead of re-rendering from the top (#812's fix on this
+// surface — the round-3 "Truncated with no continuation" state this
+// replaced existed only because, before #448's incremental-fold round, a
+// resumed load re-scanned this same session's own journal from byte zero
+// with a fresh budget and could never actually advance; folding through
+// historicalJobFoldCache/historicalDelegateFoldCache instead of rescanning
+// removes that reason). jobsEpoch/delegatesEpoch are the fold-cache
+// generations (see activityContinuation) sessionID's own jobs.jsonl and the
+// root's shared delegates.jsonl were at when this snapshot was built —
+// carried in the continuation so a later resume can detect a rewrite that
+// invalidates resumeIndex's meaning rather than silently applying it to
+// different data (checked in loadActivitySnapshotForParams).
+//
+// This also closes roborev's separate #807 finding that a LOAD-phase
+// truncation (snapshot.LoadTruncated, in the pre-incremental-fold design)
+// could coincide with a projection-phase budget trip on the same session
+// and mint a non-advancing continuation: that scenario cannot arise here,
+// because there is no more silent load-phase truncation to coincide with —
+// loadHistoricalActivityBase now either loads a session's full history
+// through the fold caches or fails loudly (ErrLineTooLong), never silently
+// degrades to a partial LoadTruncated snapshot.
+func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, resumeIndex int, jobsEpoch, delegatesEpoch uint64) {
 	if session == nil {
 		return
 	}
 	session.Branch.Truncated = true
-	if !loadTruncated && budget != nil && budget.rootID != "" {
+	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    budget.rootID,
-			SessionID: sessionID,
-			Path:      append([]string(nil), path...),
+			Version:        activityContinuationV1,
+			RootID:         budget.rootID,
+			SessionID:      sessionID,
+			Path:           append([]string(nil), path...),
+			ResumeIndex:    resumeIndex,
+			JobsEpoch:      jobsEpoch,
+			DelegatesEpoch: delegatesEpoch,
 		})
 	}
 }
