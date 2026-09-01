@@ -43,7 +43,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
 ## Steps
 
 1. **Open the spawn pane** (browser): navigate
-   `$HUB/auth?token=$TOKEN&next=/new` and wait for
+   `$HUB/auth/$TOKEN?next=/new` and wait for
    `[data-testid="spawn-prompt-card"]`. The prompt textarea inside it is
    `[aria-label="Prompt"]` (`Spawn.tsx:529`).
 

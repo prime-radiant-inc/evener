@@ -34,7 +34,7 @@ no pane handle on `window`, and the opener is `paneActions.openBeside`
 
 ## Steps
 
-1. **Open the row.** Navigate `$HUB/auth?token=$TOKEN&next=/s/local:$SID`,
+1. **Open the row.** Navigate `$HUB/auth/$TOKEN?next=/s/local:$SID`,
    locate the tool row
    (`[data-testid="tool-call-item"][data-tool-name="read_file"]`, or
    `write_file`), and expand it — the gallery only exists while the row is

@@ -72,7 +72,7 @@ The hub guards the web UI with a token. At startup it prints an authorization
 URL:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
 ```
 
 Open that URL. It sets a long-lived cookie, and later visits to

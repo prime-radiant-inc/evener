@@ -545,7 +545,7 @@ fact.
 ### Authenticated navigation
 
 ```text
-navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
 await_element [data-testid="composer-input-card"]
 ```
 

@@ -59,7 +59,7 @@ HUB=http://127.0.0.1:$PORT
    the spawn/second-turn sequence that reliably produces a slow turn.
 2. Wait until `/api/sessions/local:$SID` reports `state=active` with a
    non-empty `active_turn_id`.
-3. Open `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
+3. Open `/auth/$TOKEN?next=/s/local:$SID` and wait for
    `[data-testid="composer-steer"]` — the button renders only while the turn
    is genuinely in flight (`Composer.tsx:382`), so waiting on it is the
    hydration check.

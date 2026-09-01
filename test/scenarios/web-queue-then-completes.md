@@ -41,7 +41,7 @@ HUB=http://127.0.0.1:$PORT
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
      | jq '{state, active_turn_id, send: .capabilities.send, queue: .capabilities.queue}'
    ```
-3. Open `/auth?token=$TOKEN&next=/s/local:$SID` and wait for
+3. Open `/auth/$TOKEN?next=/s/local:$SID` and wait for
    `[data-testid="composer-submit"]`.
 4. **Queue a message.** Type `then: write a haiku about Go testing` and press
    the submit chord — `Enter` when the `evener.prefs.enterToSend` preference is

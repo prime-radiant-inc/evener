@@ -135,7 +135,7 @@ done
 3. **[browser] The same action through the real UI.** Authenticate and open
    the session:
    ```text
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
    await_element [data-testid="composer-input-card"]
    ```
    (Use the literal token from `~/.evener/auth-token`, not the path. Note the

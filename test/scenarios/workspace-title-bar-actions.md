@@ -86,7 +86,7 @@ head and runs it as a fresh user turn.
    - **[browser-free]** dial `ws://127.0.0.1:$PORT/rpc` with
      `Authorization: Bearer $TOKEN`, `initialize`, then call
      `turn/queue{ref:"local:<SID>", ...}` directly; or
-   - **[browser]** navigate to `/auth?token=$TOKEN&next=/s/local:$SID`, type
+   - **[browser]** navigate to `/auth/$TOKEN?next=/s/local:$SID`, type
      into the textarea inside `[data-testid="composer-input-card"]` and click
      `[data-testid="composer-submit"]` — **Send** routes to `turn/queue`
      while a turn is running and `turn/start` otherwise

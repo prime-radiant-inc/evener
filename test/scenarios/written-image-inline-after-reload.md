@@ -52,7 +52,7 @@ with the vanilla frontend (`660376f78`).
    `Authorization: Bearer $TOKEN`.
 
 5. **Browser, live then reloaded (qualitative).** With the session open at
-   `$HUB/auth?token=$TOKEN&next=/s/local:$SID`, expand the `write_file` row
+   `$HUB/auth/$TOKEN?next=/s/local:$SID`, expand the `write_file` row
    (`[data-testid="tool-call-item"][data-tool-name="write_file"]` — see Sharp
    edges) and note the thumbnail. Hard-refresh, expand the same row again, and
    compare:

@@ -90,7 +90,7 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
 
 ### Part B — the live contract (browser)
 
-2. Navigate to `/auth?token=$TOKEN&next=/new` and wait for
+2. Navigate to `/auth/$TOKEN?next=/new` and wait for
    `[data-testid="spawn-prompt-card"]`. Set the working directory to the
    path from Pre-state that exists, and leave Advanced options closed
    (see Sharp edges — that section is the one part of this pane with a

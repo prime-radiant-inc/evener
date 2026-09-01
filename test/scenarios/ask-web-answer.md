@@ -112,7 +112,7 @@ gesture.
 3. **(browser)** Authenticate a tab and open the session. Note the ref form — a bare
    `/s/<SID>` renders "Page not found" by design:
    ```
-   navigate $HUB/auth?token=<TOKEN>&next=/s/local:<SID>
+   navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
    await_element [data-ask-response-dock]
    ```
 4. **(browser)** Inspect the rendered question. Options are plain radios labelled by the

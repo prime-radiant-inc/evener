@@ -96,7 +96,7 @@ The hub listens on `127.0.0.1:9180` and prints an authorization URL at
 startup:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
 ```
 
 Open that URL. It sets a cookie that authorizes the browser; later visits to

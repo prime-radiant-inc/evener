@@ -42,7 +42,7 @@ runs mount-only (Spawn's mount-only stale-model sweep), so seed before you open
   `validateEvenerLaunchModel` fails open, so nothing is ever classified
   stale and the sweep silently does nothing.
 - A frontend built with `make build-web` before the hub binary.
-- Browser authed via `/auth?token=...`.
+- Browser authed via `/auth/...`.
 
 ## Steps
 

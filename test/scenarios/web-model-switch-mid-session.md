@@ -38,7 +38,7 @@ mid-turn, and this card previously asserted that it was.
 ## Steps
 
 1. **[browser] Open two tabs on the same session.**
-   `navigate $HUB/auth?token=$TOKEN&next=/s/local:$SID` (tab 1), `new_tab`
+   `navigate $HUB/auth/$TOKEN?next=/s/local:$SID` (tab 1), `new_tab`
    the same URL (tab 2). Confirm both tabs' model readouts show model A:
    ```javascript
    ({

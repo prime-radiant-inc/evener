@@ -63,7 +63,7 @@ a browser, and only assert what the rail renders.
    Re-read the AppWire navigation manifest.
 4. **Unarchive `$A`.** Send the same AppWire request with `"archived":false`.
    Re-read the AppWire navigation manifest.
-5. **Browser, baseline.** Navigate to `/auth?token=$TOKEN&next=/`. Read the
+5. **Browser, baseline.** Navigate to `/auth/$TOKEN?next=/`. Read the
    section shapes:
    ```javascript
    ({

@@ -59,7 +59,7 @@ frontend (`660376f78`); "no thumbnail" now means no
    (`paths.go:103-111`) is what refuses that one.
 
 4. **Browser (qualitative).** Navigate
-   `$HUB/auth?token=$TOKEN&next=/s/local:$SID`, find the shell row, **expand
+   `$HUB/auth/$TOKEN?next=/s/local:$SID`, find the shell row, **expand
    it** (see Sharp edges — a collapsed row proves nothing here, in either
    direction), and read:
    ```javascript
