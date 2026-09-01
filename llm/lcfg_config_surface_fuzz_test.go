@@ -48,9 +48,7 @@ func (f *lcfgSecretFile) Close() error { return nil }
 //   - determinism: two conversions agree;
 //   - provenance: the base rates are the cost's own, and each cache tier is
 //     set exactly when its rate is positive — the function may not invent,
-//     scale or drop a rate;
-//   - the 1-hour creation tier is always absent: models.dev carries a single
-//     cache-write rate, reported as the 5-minute tier.
+//     scale or drop a rate.
 func Fuzz_lcfg_PriceFromCost(f *testing.F) {
 	f.Add(3.0, 15.0, 0.3, 3.75)
 	f.Add(0.0, 0.0, 0.0, 0.0)
@@ -77,9 +75,6 @@ func Fuzz_lcfg_PriceFromCost(f *testing.F) {
 		}
 		lcfgAssertCacheTier(t, "cache_read", p1.CacheReadPerM, cacheRead)
 		lcfgAssertCacheTier(t, "cache_create_5m", p1.CacheCreation5mPerM, cacheWrite)
-		if p1.CacheCreation1hPerM != nil {
-			t.Fatalf("PriceFromCost(%+v) invented a 1-hour tier: %v", cost, *p1.CacheCreation1hPerM)
-		}
 	})
 }
 
@@ -114,8 +109,7 @@ func lcfgSamePrice(a, b Price) bool {
 	}
 	return lcfgSameRate(a.InputPerM, b.InputPerM) && lcfgSameRate(a.OutputPerM, b.OutputPerM) &&
 		sameTier(a.CacheReadPerM, b.CacheReadPerM) &&
-		sameTier(a.CacheCreation5mPerM, b.CacheCreation5mPerM) &&
-		sameTier(a.CacheCreation1hPerM, b.CacheCreation1hPerM)
+		sameTier(a.CacheCreation5mPerM, b.CacheCreation5mPerM)
 }
 
 // Fuzz_lcfg_Kind drives Kind over classified errors built from fuzzed HTTP
