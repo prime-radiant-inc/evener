@@ -196,6 +196,17 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     expect(JSON.stringify(credentialsStore.getState())).not.toContain("sk-secret");
   });
 
+  test("clearStoredKey() calls evener/auth/apiKey/clear and returns its response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    const result = await credentialsStore.getState().clearStoredKey("work");
+    expect(result.activeSource).toBe("oauth");
+    expect(result.hasStoredOAuth).toBe(true);
+  });
+
   test("logout() calls evener/auth/logout", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/logout", (params) => {

@@ -47,6 +47,10 @@ export interface AttentionSummary {
   working: number;
 }
 
+export interface AuthApiKeyClearParams {
+  provider: string;
+}
+
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
@@ -2074,6 +2078,7 @@ export const METHOD_NAMES = [
   "evener/auth/logout",
   "evener/auth/list",
   "evener/auth/apiKey/set",
+  "evener/auth/apiKey/clear",
   "evener/auth/device/start",
   "evener/auth/device/poll",
   "evener/launch/resolve",
@@ -2250,6 +2255,7 @@ export interface MethodTypes {
   "evener/auth/logout": { params: AuthLogoutParams; result: AuthLogoutResponse };
   "evener/auth/list": { params: EmptyParams; result: AuthListResponse };
   "evener/auth/apiKey/set": { params: AuthApiKeySetParams; result: AuthStatusResponse };
+  "evener/auth/apiKey/clear": { params: AuthApiKeyClearParams; result: AuthStatusResponse };
   "evener/auth/device/start": { params: AuthDeviceStartParams; result: AuthDeviceStartResponse };
   "evener/auth/device/poll": { params: AuthDevicePollParams; result: AuthDevicePollResponse };
   "evener/launch/resolve": { params: LaunchConfigResolveParams; result: LaunchConfigResolved };

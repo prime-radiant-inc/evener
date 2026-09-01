@@ -69,6 +69,11 @@ export interface CredentialsStoreState {
   // refresh()" sequencing, and surfaces failures as inline errors/toasts
   // itself rather than this store swallowing them into an `error` field.
   setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
+  // clearStoredKey removes only the credentials.toml entry, leaving any
+  // OAuth/ADC/env credential untouched - the counterpart to setApiKey, and
+  // the narrow alternative to logout() for a stray stored key shadowed
+  // behind an active oauth/adc sign-in (issue #713).
+  clearStoredKey(provider: string): Promise<AuthStatusResponse>;
   logout(provider: string): Promise<AuthLogoutResponse>;
   loginStart(provider: string): Promise<AuthLoginStartResponse>;
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
@@ -145,6 +150,11 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   async setApiKey(provider, value) {
     const client = requireClient();
     return client.request("evener/auth/apiKey/set", { provider, value });
+  },
+
+  async clearStoredKey(provider) {
+    const client = requireClient();
+    return client.request("evener/auth/apiKey/clear", { provider });
   },
 
   async logout(provider) {

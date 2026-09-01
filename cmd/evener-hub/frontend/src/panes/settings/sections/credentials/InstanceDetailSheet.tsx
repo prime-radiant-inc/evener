@@ -3,12 +3,12 @@
 // carried: the layered credential display (the effective source, plus an
 // environment variable shadowed behind it), the meta table, and every
 // per-instance ACTION (test, set/replace key, sign in/refresh OAuth, edit,
-// make default, clear, remove). A right side Sheet on desktop, a bottom
-// Sheet on mobile (useIsMobile, the shell's own source). The instance is
-// read from the store by name so cross-client changes land live, and the
-// sheet closes itself when the instance disappears (its own Remove
-// completing, or another client's) - an inspector is only as alive as its
-// subject.
+// make default, clear, clear stored key, remove). A right side Sheet on
+// desktop, a bottom Sheet on mobile (useIsMobile, the shell's own source).
+// The instance is read from the store by name so cross-client changes land
+// live, and the sheet closes itself when the instance disappears (its own
+// Remove completing, or another client's) - an inspector is only as alive
+// as its subject.
 // Presentation only - the section owns what each action DOES (opening an
 // editor, a confirm dialog, or calling the store), same division of labor
 // as the old InstanceRow.
@@ -51,6 +51,7 @@ export interface InstanceDetailSheetProps {
   onOAuthStart: () => void;
   onEdit: () => void;
   onClear: () => void;
+  onClearStoredKey: () => void;
   onRemove: () => void;
   onSetDefault: () => void;
   onTestCredentials: () => void;
@@ -58,8 +59,8 @@ export interface InstanceDetailSheetProps {
   testCredentialsResult?: AuthTestResponse;
   /** Disables Edit/Remove/make default while providers.toml cannot be
    * written (InstanceListResponse.writesRefused, spec §11.3) - Set key/Sign
-   * in/Clear/Test credentials are unaffected: they write the credentials
-   * store or an OAuth record, never providers.toml. */
+   * in/Clear/Clear stored key/Test credentials are unaffected: they write
+   * the credentials store or an OAuth record, never providers.toml. */
   writesRefused?: boolean;
 }
 
@@ -70,6 +71,7 @@ export function InstanceDetailSheet({
   onOAuthStart,
   onEdit,
   onClear,
+  onClearStoredKey,
   onRemove,
   onSetDefault,
   onTestCredentials,
@@ -95,10 +97,21 @@ export function InstanceDetailSheet({
   const supportsApiKey = instance !== undefined && (instance.authModes ?? []).includes("apiKey");
   const supportsOAuth = instance !== undefined && (instance.authModes ?? []).includes("oauth");
   const showClear = instance !== undefined && (instance.activeSource === "store" || instance.activeSource === "oauth");
-  // The danger zone is Clear + Remove under a divider; an implicit instance
-  // with nothing stored offers neither, and a divider over nothing reads as
-  // a rendering bug.
-  const showDangerZone = instance !== undefined && (showClear || !instance.implicit);
+  // showClearStoredKey: a stray stored key sits shadowed behind whatever IS
+  // active (the same condition credentialLayers uses to render that second,
+  // non-effective layer above) - true for an oauth/adc login with a leftover
+  // credentials.toml entry, and just as much for a signed-out Codex row a
+  // previous Clear left stranded (Clear's Codex branch removes the OAuth
+  // record, not the file, when one is active; issue #713). Clear alone
+  // cannot reach this state: on a Codex row it would drop the active login
+  // instead of the stray key, and on an adc/api_key/env row it never shows
+  // at all. This action always targets the store layer only, so it is safe
+  // to offer regardless of what is effective.
+  const showClearStoredKey = instance !== undefined && instance.hasStoredFile && instance.activeSource !== "store";
+  // The danger zone is Clear + Clear stored key + Remove under a divider; an
+  // implicit instance with nothing stored offers none of them, and a divider
+  // over nothing reads as a rendering bug.
+  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   const safeTestResult = testCredentialsResult
@@ -178,6 +191,13 @@ export function InstanceDetailSheet({
             <>
               <hr className={CLASS.divider} />
               <div className={CLASS.actionRows}>
+                {showClearStoredKey && (
+                  <div className={CLASS.fullRow}>
+                    <Button variant="dangerQuiet" onClick={onClearStoredKey}>
+                      Clear stored key
+                    </Button>
+                  </div>
+                )}
                 {showClear && (
                   <div className={CLASS.fullRow}>
                     <Button variant="dangerQuiet" onClick={onClear}>

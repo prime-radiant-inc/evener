@@ -77,6 +77,7 @@ const (
 	MethodEvenerAuthLogout            = "evener/auth/logout"
 	MethodEvenerAuthList              = "evener/auth/list"
 	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
+	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
 	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
 	MethodEvenerLaunchResolve         = "evener/launch/resolve"
@@ -2488,6 +2489,11 @@ type AuthListResponse struct {
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+}
+
+// AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
+type AuthApiKeyClearParams struct {
+	Provider string `json:"provider"`
 }
 
 // AuthDeviceStartParams is the params for evener/auth/device/start.
