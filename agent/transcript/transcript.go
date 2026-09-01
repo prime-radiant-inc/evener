@@ -1041,6 +1041,10 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 	commits = nil
 	mutations = map[string]string{}
 	commitIDs := map[string]string{}
+	// The reverse of commitIDs (tool call → delivery), so the per-commit
+	// conflict check is a lookup instead of a scan over every prior commit —
+	// the scan made the snapshot quadratic over delivery-heavy transcripts.
+	commitToolCalls := map[string]string{}
 	for i := range entries {
 		turn := entries[i].Turn
 		if turn.ClientMutationID != "" {
@@ -1074,12 +1078,11 @@ func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention,
 					}
 					continue
 				}
-				for deliveryID, toolCallID := range commitIDs {
-					if toolCallID == commit.ToolCallID && deliveryID != commit.DeliveryID {
-						return nil, nil, nil, false
-					}
+				if other, claimed := commitToolCalls[commit.ToolCallID]; claimed && other != commit.DeliveryID {
+					return nil, nil, nil, false
 				}
 				commitIDs[commit.DeliveryID] = commit.ToolCallID
+				commitToolCalls[commit.ToolCallID] = commit.DeliveryID
 				commits = append(commits, SidecarDeliveryCommit{DeliveryID: commit.DeliveryID, ToolCallID: commit.ToolCallID})
 			}
 		}

@@ -281,16 +281,18 @@ func delegateAttentionFuzzEntries(program []byte) []transcript.Entry {
 		case 3:
 			turn = delegateAttentionResolutionTurn(attentionID, delegateAttentionDiscarded)
 		case 4:
-			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
-			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID, DeliveryID: deliveryID}}
+			// An invalid disposition: both folds must refuse it.
+			turn = delegateAttentionResolutionTurn(attentionID, "archived")
 		case 5:
-			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
-			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID + "-wrong", DeliveryID: deliveryID}}
+			// A resolution-kind turn with a nil pointer: both folds must
+			// refuse it ("attention resolution turn has no resolution").
+			turn = schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
 		case 6:
-			turn = schema.NewTurn(schema.TurnUserInput, llm.User("wrong-kind"))
+			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
 			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID, DeliveryID: deliveryID}}
 		case 7:
-			turn = schema.NewTurn(schema.TurnHookCompleted, llm.System("presentational"))
+			turn = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "delegate_send", "done", false))
+			turn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID + "-wrong", DeliveryID: deliveryID}}
 		}
 		entries = append(entries, transcript.Entry{Seq: index, Turn: turn})
 	}

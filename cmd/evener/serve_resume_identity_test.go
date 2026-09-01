@@ -405,3 +405,79 @@ func TestServeResumeCompactionFallbackSurvivesRefreshFailure(t *testing.T) {
 		t.Fatalf("failed refresh mutated the sidecar: prefixTurns=%d complete=%v, want -1 and false", surviving.PrefixTurnCount, surviving.SnapshotsComplete)
 	}
 }
+
+// TestServeResumeFailedIdentitySkipsSidecarRefresh pins the refresh's
+// placement AFTER the identity projection's error gate: a startup whose
+// projection fails is about to abort, so it must not pay the second full
+// transcript scan the refresh performs. The ordering is otherwise
+// invisible — both orders produce identical observable state on success —
+// so the assertion records WHICH ran via order-sensitive probe fields.
+func TestServeResumeFailedIdentitySkipsSidecarRefresh(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedWindowedResumableSession(t, stateDir, sessionID)
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	sidecar, ok := transcript.ReadSidecar(path)
+	if !ok {
+		t.Fatalf("sidecar missing after seeded first resume")
+	}
+	sidecar.PrefixTurnCount = -1
+	sidecar.SnapshotsComplete = false
+	sidecar.PendingAttention = nil
+	sidecar.DeliveryCommits = nil
+	sidecar.ClientMutationTurns = nil
+	if err := transcript.WriteSidecar(path, sidecar); err != nil {
+		t.Fatalf("rewrite sidecar with compaction-anchor shape: %v", err)
+	}
+
+	probe := &serveResumeIdentityProbe{}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+	var cancel context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		cancel = stop
+		return next, stop
+	}
+	// The projection fails: the daemon must abort startup.
+	fileForm := deps.prepareAppIdentity
+	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
+		probe.fileFormUsed = true
+		// Run the real projection for its side effects, then fail: the
+		// failure is what the gate under test observes.
+		if _, err := fileForm(sourceID, threadID, ref, transcriptPath); err != nil {
+			t.Logf("underlying projection also failed: %v", err)
+		}
+		return server.PreparedAppIdentity{}, errors.New("simulated identity projection failure")
+	}
+	// The refresh, if it ran, would record it.
+	deps.refreshResumeSidecar = func(transcriptPath, sessionID string) error {
+		probe.refreshUsed = true
+		return nil
+	}
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		cancel()
+		return http.ErrServerClosed
+	}
+	args := []string{
+		"--model", "openai/gpt-test",
+		"--addr", "127.0.0.1:0",
+		"--resume", sessionID,
+		"--dir", t.TempDir(),
+		"--state-dir", stateDir,
+		"--run-dir", t.TempDir(),
+		"--no-project-prompts",
+	}
+	serveErr := runServeWithDeps(args, deps)
+	if serveErr == nil {
+		t.Fatal("a failing identity projection must fail serve startup")
+	}
+	if !strings.Contains(serveErr.Error(), "prepare app identity") {
+		t.Fatalf("serve error = %v, want the projection failure", serveErr)
+	}
+	if probe.refreshUsed {
+		t.Fatal("the sidecar refresh ran for a startup whose projection failed — it must sit after the error gate")
+	}
+}
