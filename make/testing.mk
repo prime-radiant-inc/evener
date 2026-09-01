@@ -87,18 +87,23 @@ RACE_SCOPE ?= all
 RACE_MODULES_all := $(GO_MODULES)
 RACE_MODULES_root := .
 RACE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
+RACE_MODULES_agent := $(filter agent,$(GO_MODULES))
+RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ## The permanent -race gate across every non-fuzz module.
 ## proves: Data races in the non-fuzz modules surface; frontend is
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
 ##   AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI
-##   under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses root
-##   and nonroot on separate runners, both derived from GO_MODULES.
+##   under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the
+##   explicit root scope plus agent and nonagent on separate runners. The two
+##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
-	@case "$(RACE_SCOPE)" in all|root|nonroot) ;; *) echo "make test-race: RACE_SCOPE must be all, root, or nonroot (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
-		MODULES="$(RACE_MODULES_$(RACE_SCOPE))" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
+	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
+		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
+		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
+		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged

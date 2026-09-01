@@ -112,6 +112,17 @@ jobs:
   race-root:
     runs-on: ubuntu-latest
     steps:
+      - name: Record pull request candidate identity
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_MERGE_SHA: ${{ github.sha }}
+        run: |
+          echo "PR_HEAD_SHA=$PR_HEAD_SHA"
+          echo "PR_BASE_SHA=$PR_BASE_SHA"
+          echo "PR_MERGE_SHA=$PR_MERGE_SHA"
+
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
@@ -119,15 +130,33 @@ jobs:
       - name: Test (race detector — root module)
         run: make test-race RACE_SCOPE=root
 
-  race-modules:
+  race-module-shards:
+    name: race-modules / ${{ matrix.scope }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        scope: [agent, nonagent]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Test (race detector — non-root go.work modules)
-        run: make test-race RACE_SCOPE=nonroot
+      - name: Test (race detector — ${{ matrix.scope }})
+        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+
+  race-modules:
+    if: always()
+    needs: [race-module-shards]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every non-root race lane
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   tests:
     runs-on: ubuntu-latest
