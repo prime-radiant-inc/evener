@@ -5,11 +5,10 @@ Breaking changes and migration notes for evener.
 ## Unreleased — Tool `purpose` param renamed to `intent`
 
 The shared tool parameter that carries the agent's stated reason for a call
-was renamed from `purpose` to `intent`. Readers read only `intent` — there is
-deliberately no backward-compat fallback. Transcripts recorded before
-2026-08-29 render tool calls without an intent line in the hub, the TUI, and
-`evener doctor`; the data is not lost — it remains in the transcript under
-`purpose`.
+was renamed from `purpose` to `intent`. New tool calls carry `intent` only.
+Readers fall back to `purpose` when `intent` is absent, so transcripts
+recorded before 2026-08-29 still render their tool-intent line in the hub,
+the TUI, and `evener doctor`.
 
 ## Unreleased — Binary consolidation
 
