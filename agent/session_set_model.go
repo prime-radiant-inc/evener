@@ -80,9 +80,17 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // the network latency/timeout budget per switch and open a TOCTOU window where
 // the provider's model list could change between the metadata-fill call and
 // the membership-check call, letting the two disagree about availability.
-func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
+// sessionID attributes the canonical API-log attempt this listing produces
+// (llm.WithAPILogContext), matching resolveLiveModelProfileWithEnumerationTimeout's
+// pre-session counterpart — every caller here (SetModel, subagent model
+// selection) runs on an already-existing session, so sessionID is always that
+// session's own id.
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
+	if sessionID != "" {
+		ctx = llm.WithAPILogContext(ctx, sessionID)
+	}
 	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
 	if enumeration.err != nil {
 		// Fail open unconditionally: an instance that cannot be listed at all
