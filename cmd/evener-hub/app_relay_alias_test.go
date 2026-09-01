@@ -65,6 +65,7 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	if _, err := fresh.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
 		t.Fatalf("subscribe fresh client: %v", err)
 	}
+	awaitLiveHubSubscriptions(t, appServer, 3)
 
 	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
 		ThreadID:     "root-thread",
@@ -78,8 +79,9 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool.emit(t, appwire.Notification{Method: appwire.NotifyReasoningSummaryDelta, Params: params})
-	// Every alias fanout has acknowledged and enqueued the delta before emit
-	// returns. This connection-wide marker is therefore an ordered drain barrier.
+	// Every subscription is live, so each alias fanout has acknowledged and
+	// enqueued the delta on its connection before emit returns. This
+	// connection-wide marker is therefore an ordered drain barrier.
 	appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 
 	if got := aliasDeltaCountUntilBarrier(t, longLived, "one logical delta"); got != 1 {
