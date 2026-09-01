@@ -71,7 +71,7 @@ func (s *Session) selectSubagentModel(
 			if crossProvider {
 				resolved = resolved.WithCommunicateOverridesFrom(base)
 			}
-			resolved, err = resolveModelSwitchTarget(s.client, resolved)
+			resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id)
 			if err != nil {
 				return subagentModelSelection{}, fmt.Errorf("model override %q: %w", explicitModel, err)
 			}
@@ -114,7 +114,7 @@ func (s *Session) selectSubagentModel(
 	if crossProvider {
 		resolved = resolved.WithCommunicateOverridesFrom(base)
 	}
-	resolved, err = resolveModelSwitchTarget(s.client, resolved)
+	resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id)
 	if err != nil {
 		return subagentModelSelection{}, fmt.Errorf("model override %q: %w", explicitModel, err)
 	}

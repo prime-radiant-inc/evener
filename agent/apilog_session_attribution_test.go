@@ -474,6 +474,83 @@ func TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog(t *testi
 	}
 }
 
+// newModelSwitchAttributionSession builds a session whose id is pre-reserved
+// (the same cfg.spawn.sessionID contract TestPreSessionLiveModelListingAttribution's
+// delegate subtest uses), so NewSession's own construction-time listing lands
+// in the session's own log rather than the unattributed bucket. That keeps
+// the unattributed bucket untouched by anything but the switch-path listing a
+// TestModelSwitchLiveListingAttribution subtest drives afterward, letting it
+// reuse assertSessionAPILogAttributed unmodified.
+func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir string) *Session {
+	t.Helper()
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         stateDir,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}
+	cfg.spawn.sessionID = identifier.MustNewSessionID()
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+// TestModelSwitchLiveListingAttribution pins issue #754: resolveModelSwitchTarget
+// (agent/session_set_model.go), used by SetModel and by subagent
+// explicit-model-override selection (selectSubagentModel), lists the switch
+// target's instance with a bare context.Background() even though every call
+// site runs on an already-existing session with a real s.id in scope — the
+// same unattributed-API-log defect TestPreSessionLiveModelListingAttribution
+// pins for pre-session listings (issue #745 / PR #752), but here session
+// attribution is trivially available rather than sometimes structurally
+// absent.
+func TestModelSwitchLiveListingAttribution(t *testing.T) {
+	t.Run("SetModel", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		sess := newModelSwitchAttributionSession(t, client, stateDir)
+		if err := sess.SetModel("gpt-5.2"); err != nil {
+			t.Fatalf("SetModel: %v", err)
+		}
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertSessionAPILogAttributed(t, stateDir, sess.ID())
+	})
+
+	t.Run("subagent explicit model override", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		sess := newModelSwitchAttributionSession(t, client, stateDir)
+		if _, err := sess.selectSubagentModel(context.Background(), "gpt-5.2", ""); err != nil {
+			t.Fatalf("selectSubagentModel: %v", err)
+		}
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertSessionAPILogAttributed(t, stateDir, sess.ID())
+	})
+}
+
 func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 	stateDir := t.TempDir()
 	client := llm.NewClient()
