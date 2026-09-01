@@ -427,11 +427,37 @@ describe("transcript projector", () => {
 
     const projection = projectThread(model, config);
     expect(projection.metadata).toEqual(config.advanced);
-    expect(projection.eligibleDisclosureIds).toEqual(["tool", "think", "system", "prompt", "timing", "hook"]);
+    expect(projection.eligibleDisclosureIds).toEqual([
+      "tool",
+      "summary:tool",
+      "think",
+      "system",
+      "prompt",
+      "timing",
+      "hook",
+    ]);
     expect(projection.turns[0]?.entries.find((entry) => entry.id === "timing")).toMatchObject({
       kind: "item",
       item: { raw: { roundTimings: { round: 1 } } },
     });
+  });
+
+  test("eligibleDisclosureIds includes summary: keys only for commandExecution items", () => {
+    const model = threadWith(
+      item("cmd-1", "commandExecution", { description: "Run a command" }),
+      item("think-1", "reasoning"),
+      item("cmd-2", "commandExecution", { description: "Another command" }),
+    );
+    const projection = projectThread(model, preset("full"));
+    const ids = projection.eligibleDisclosureIds;
+    // commandExecution items get both their own id and a summary: id.
+    expect(ids).toContain("cmd-1");
+    expect(ids).toContain("summary:cmd-1");
+    expect(ids).toContain("cmd-2");
+    expect(ids).toContain("summary:cmd-2");
+    // reasoning items get only their own id, no summary: key.
+    expect(ids).toContain("think-1");
+    expect(ids).not.toContain("summary:think-1");
   });
 
   test("filters before projection indexes and preserves anchors in source coordinates", () => {
