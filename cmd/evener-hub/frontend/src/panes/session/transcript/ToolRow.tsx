@@ -568,7 +568,7 @@ export function ToolRow({
         </button>
       )}
       {hasIntent && twoLevel && bodyTriggerOnSummaryLine && (
-        <div id={summaryRegionId} className={CLASS.summaryLine}>
+        <div id={summaryRegionId} className={CLASS.summaryLine} data-body-trigger="true">
           {summaryContent}
           {bodyTriggerButton}
         </div>

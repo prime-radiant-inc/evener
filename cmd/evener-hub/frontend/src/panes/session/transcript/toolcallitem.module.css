@@ -271,6 +271,17 @@
   line-height: var(--line-height-title);
 }
 
+/* When a .bodyTrigger chevron shares the summary line (two-level disclosure at
+   tools/activity/full), the demoted summary must leave room for it instead of
+   demanding 100% — otherwise the chevron's intrinsic width overflows the
+   container. flex-shrink:1 and flex-basis:auto let the summary shrink to fit
+   alongside the flex:none body trigger; min-width:0 + the .clamped
+   overflow:hidden clip the nowrap text to the shrunken width. */
+.summaryLine[data-body-trigger="true"] .demoted {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
  * middle-truncate, not an end-truncate. The line becomes a two-span flex row
  * - the head ellipsis-clamps under pressure, the tail never shrinks, so the

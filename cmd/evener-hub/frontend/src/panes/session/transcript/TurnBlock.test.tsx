@@ -128,9 +128,10 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   // output is proof of dispatch only once the row is opened. The dispatch itself
   // is what this test is about; the row above is already evidence of it, and the
   // output confirms the descriptor's body ran rather than an empty shell.
-  // At activity level the intent trigger controls the body directly (legacy
-  // behavior — summaryOpen defaults true, no separate body trigger).
-  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  // At activity level the item has intent (auto-added by the item() helper),
+  // so twoLevel is enabled: the intent button toggles the summary (already open
+  // at activity level) and the .bodyTrigger chevron toggles the body.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
   expect(screen.getByText("tool output")).toBeTruthy();
 });
 
