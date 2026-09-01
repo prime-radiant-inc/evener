@@ -492,6 +492,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				routing    relayNotificationRouting
 			}
 			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
+			// routeChangeWait is the wake-up a parked frame waits on.
+			// signalRouteChangeLocked closes handle.routeChanged and installs a
+			// fresh one, so this must be taken before the routes are read that
+			// decide to park: a capture taken afterwards can be the replacement
+			// channel, and the frame then sleeps through the very publication it
+			// is waiting for until unrelated traffic on the same key wakes it.
+			// A capture that is already closed by the time the loop selects on
+			// it just costs one extra resolution pass.
+			var routeChangeWait <-chan struct{}
+			captureRouteChange := func() {
+				relayMu.Lock()
+				routeChangeWait = handle.routeChanged
+				relayMu.Unlock()
+			}
 			acknowledge := func(delivery appsource.RelayDelivery) {
 				if delivery.Acknowledge != nil {
 					delivery.Acknowledge()
@@ -605,6 +619,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				acknowledge(delivery)
 			}
 			processPending := func() {
+				captureRouteChange()
 				kept := pendingDeliveries[:0]
 				for _, pending := range pendingDeliveries {
 					targets, wait := lookupTargets(pending.routingKey, pending.routing)
@@ -625,6 +640,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				return false
 			}
 			acceptDelivery := func(delivery appsource.RelayDelivery) {
+				captureRouteChange()
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
 				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
 					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
@@ -725,9 +741,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				var routeChanged <-chan struct{}
 				if len(pendingDeliveries) != 0 {
-					relayMu.Lock()
-					routeChanged = handle.routeChanged
-					relayMu.Unlock()
+					routeChanged = routeChangeWait
 				}
 				select {
 				case <-handle.ctx.Done():
