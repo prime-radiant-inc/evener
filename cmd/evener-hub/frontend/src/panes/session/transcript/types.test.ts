@@ -83,5 +83,5 @@ test("ItemRenderProps no longer has a hideIntent field", () => {
   // @ts-expect-error — hideIntent is removed from ItemRenderProps
   props.hideIntent;
   // Runtime sanity: the field is simply absent on a freshly-constructed props.
-  expect((props as Record<string, unknown>).hideIntent).toBeUndefined();
+  expect((props as unknown as Record<string, unknown>).hideIntent).toBeUndefined();
 });

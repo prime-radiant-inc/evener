@@ -128,7 +128,10 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   // output is proof of dispatch only once the row is opened. The dispatch itself
   // is what this test is about; the row above is already evidence of it, and the
   // output confirms the descriptor's body ran rather than an empty shell.
-  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  // Two-level disclosure: the intent trigger toggles summaryOpen, the
+  // body-trigger chevron toggles the body. Click the body trigger to mount
+  // the body and confirm the descriptor's output rendered.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
   expect(screen.getByText("tool output")).toBeTruthy();
 });
 
@@ -479,6 +482,7 @@ test("intent row shows a tool icon and drills down to a tool-call row on click",
   fireEvent.click(trigger);
   expect(screen.getByTestId("intent-tool-call-row").getAttribute("data-open")).toBe("true");
   // The ToolCallItem is now rendered (with hideIntent, so no duplicated intent).
+  // The ToolCallItem is now rendered inside the expanded intent row.
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   // The private output is still hidden (the tool-call body is not yet expanded).
   expect(screen.queryByText("private file output")).toBeNull();

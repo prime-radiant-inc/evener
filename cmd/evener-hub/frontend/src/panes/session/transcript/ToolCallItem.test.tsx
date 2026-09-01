@@ -1147,3 +1147,85 @@ test("a live, unsettled delegate call renders a running/working status dot (neve
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   expect(screen.queryByText("unknown")).toBeNull();
 });
+
+// --- two-level disclosure: summaryOpen defaults by verbosity level --------
+// Task 5: ToolCallItem computes summaryOpen from summaryOpenByDefault(config)
+// (tools level → true, chat level → false) and passes it to ToolRow, whose
+// intent button toggles the summary line independently of the body chevron.
+// Intent-less rows force summaryOpen=true (their only line is the summary).
+
+// A render helper that wraps ToolCallItem in a TranscriptRenderProvider so the
+// verbosity level's content vector drives summaryOpenByDefault(config).
+function renderWithConfig(config: ReturnType<typeof makeTranscriptDisplayConfig>, toolItem: ItemModel) {
+  return render(
+    <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope="test:summary">
+      <ToolCallItem item={toolItem} turn={turn} live={false} />
+    </TranscriptRenderProvider>,
+  );
+}
+
+test("at the tools level an intent-bearing row defaults summaryOpen=true (summary visible)", () => {
+  registerToolRenderer({ match: "tci_summary_tools", summary: () => "Ran tests", body: () => <div>body</div> });
+  const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  renderWithConfig(
+    toolsConfig,
+    item({ id: "summary_tools", toolName: "tci_summary_tools", description: "Running the test suite" }),
+  );
+  // summaryOpen=true → the summary line is visible alongside the intent.
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running the test suite");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
+  // The intent trigger controls summaryOpen (not the body), so its aria-expanded
+  // reflects the summary disclosure state.
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+test("at the chat level an intent-bearing row defaults summaryOpen=false (only intent visible)", () => {
+  registerToolRenderer({ match: "tci_summary_chat", summary: () => "Ran tests", body: () => <div>body</div> });
+  const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  renderWithConfig(
+    chatConfig,
+    item({ id: "summary_chat", toolName: "tci_summary_chat", description: "Running the test suite" }),
+  );
+  // summaryOpen=false → only the intent line is visible, summary hidden.
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running the test suite");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("an intent-less row at the chat level forces summaryOpen=true (summary visible)", () => {
+  registerToolRenderer({ match: "tci_summary_no_intent", summary: () => "Ran tests", body: () => <div>body</div> });
+  const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  renderWithConfig(chatConfig, item({ id: "summary_no_intent", toolName: "tci_summary_no_intent" }));
+  // No description → no intent line; the summary is the row's only line and
+  // must be visible regardless of the verbosity level.
+  expect(screen.queryByTestId("tool-row-intent")).toBeNull();
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
+});
+
+test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens even if summaryOpen=true", () => {
+  const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  renderWithConfig(
+    toolsConfig,
+    item({
+      id: "summary_shell_hidden",
+      toolName: "shell",
+      description: "Running a command",
+      argumentsJSON: JSON.stringify({ command: "echo hi" }),
+      output: "hi\n[exit 0]",
+    }),
+  );
+  // summaryOpen defaults to true at tools level; the summary is visible while
+  // the body is collapsed.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
+
+  // Expand the body via the body chevron (the .bodyTrigger button). With
+  // summaryHiddenWhenExpanded, the summary disappears even though summaryOpen
+  // is still true.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  fireEvent.click(bodyTrigger);
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+  // The intent line stays.
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
+});

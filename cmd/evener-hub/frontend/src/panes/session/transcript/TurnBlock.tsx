@@ -113,10 +113,10 @@ export interface ProjectedIntentGroupProps {
 // verbosity levels below "tools". Collapsed, it shows the agent's stated
 // intent plus the tool-family icon and a chevron — the same ToolRow headline a
 // full tool-call row uses, but with no summary line. Expanded, it reveals the
-// real ToolCallItem with hideIntent so the intent does not appear twice: it
-// was already the collapsed headline, and the expanded body shows the
-// tool-call summary + body instead. This is the "verbosity = expansion"
-// contract: each click peels one more layer (intent → tool summary → body).
+// real ToolCallItem so the intent does not appear twice: it was already the
+// collapsed headline, and the expanded body shows the tool-call summary +
+// body instead. This is the "verbosity = expansion" contract: each click
+// peels one more layer (intent → tool summary → body).
 function IntentToolCallRow({
   entry,
   sessionRef,
@@ -166,7 +166,6 @@ function IntentToolCallRow({
             turn={miniTurn}
             live={live}
             sessionRef={sessionRef}
-            hideIntent
             renderContext={renderContext ?? context}
             thread={thread}
             threadFingerprint={threadFingerprintForItem(item, thread, descriptor.summarySuffix?.(item, thread))}
