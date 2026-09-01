@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-timing-budget-selftest.sh — exercises scripts/test-timing-budget.sh's
+# test-timing-budget-selftest.sh — exercises scripts/gate/test-timing-budget.sh's
 # comparison contract against fixture "already-measured" duration rows and
 # fixture testing-budget.json files, via --measured (test-timing-budget.sh's
 # own reuse-shaped seam — see coverage-floor.sh's web row for the same
