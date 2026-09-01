@@ -272,7 +272,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	}
 	name := strings.TrimSpace(params.Name)
 	if err := validVarNames(params.Vars); err != nil {
-		return err
+		return appwire.InvalidParams(err.Error())
 	}
 
 	c.mu.Lock()
