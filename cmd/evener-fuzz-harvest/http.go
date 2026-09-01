@@ -60,6 +60,19 @@ func reverseMapHTTP(method, reqPath, rawQuery string) (uint8, string, bool) {
 	if method != http.MethodGet {
 		return 0, "", false
 	}
+	if isAuthBootstrapPath(reqPath) {
+		// /auth and /auth/<token> authenticate the request (see
+		// cmd/evener-hub/internal/hubedge.HandleAuth); the token itself rides
+		// in the path. /auth has no entry in fuzzReadOnlyRoutes, so without
+		// this guard it falls through the longest-prefix match below to the
+		// "/" catch-all and the token becomes the harvested suffix — gated
+		// only by known-secret regexes (entropy-checking is off for this
+		// surface; see gateString), none of which matches a bare high-entropy
+		// token. Drop it instead: /auth was never a fuzzed route anyway
+		// (AuthGuard intercepts it ahead of the SPA shell), so this costs no
+		// coverage. Issue #795.
+		return 0, "", false
+	}
 	best := -1
 	for i, base := range fuzzReadOnlyRoutes {
 		if strings.HasPrefix(reqPath, base) && (best < 0 || len(base) > len(fuzzReadOnlyRoutes[best])) {
@@ -82,4 +95,14 @@ func reverseMapHTTP(method, reqPath, rawQuery string) (uint8, string, bool) {
 		rem = dec
 	}
 	return uint8(best), rem, true
+}
+
+// isAuthBootstrapPath reports whether reqPath is the hub's auth bootstrap
+// endpoint: bare /auth or /auth/<token>. Mirrors how AuthGuard recognizes it
+// (cmd/evener-hub/internal/hubedge/auth_token.go's isAuthExempt checks the
+// bare form; HandleAuth's mux registration and its
+// strings.TrimPrefix(r.URL.Path, "/auth/") define the path-token form). Not
+// importable directly: hubedge is internal to cmd/evener-hub.
+func isAuthBootstrapPath(reqPath string) bool {
+	return reqPath == "/auth" || strings.HasPrefix(reqPath, "/auth/")
 }

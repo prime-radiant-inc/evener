@@ -231,6 +231,63 @@ func scenarioReverseHTTPNoMatchAndBadQuery(t *testing.T) {
 	}
 }
 
+// A hub bearer token riding in the URL path (as /auth/<token> authenticates,
+// cmd/evener-hub/internal/hubedge.HandleAuth) has no entry in
+// fuzzReadOnlyRoutes, so without a guard it falls through reverseMapHTTP's
+// longest-prefix match to the "/" catch-all and its suffix — the token itself
+// — is gated by gateString with entropyCheck hard-disabled, which only the
+// known-secret regexes (harvest.go/sanitize.go) can catch, and none matches a
+// bare high-entropy token. Regression for issue #795: the token must never
+// survive into a committed corpus seed. Uses a synthetic token, never a real
+// one.
+func scenarioReverseHTTPAuthPathTokenNeverHarvested(t *testing.T) {
+	const syntheticToken = "synTHETIC_9mK3vL8pR2nW5tY0cF6hJ4bD1gA7eSqZx" // fake; base64url-shaped, ~43 chars like a real hub token
+
+	d := t.TempDir()
+	log := filepath.Join(d, "http")
+	mustHarvestWrite(t, log, marshalLine(t, recordedHTTPRequest{Method: "GET", Path: "/auth/" + syntheticToken})+"\n")
+
+	out := t.TempDir()
+	r := newRunner(out, NewEmitter(false, defaultMaxSeedBytes), nil)
+	harvestHTTP(r, []string{log})
+
+	_ = filepath.WalkDir(out, func(path string, ent fs.DirEntry, err error) error { //nolint:errcheck
+		if err != nil || ent.IsDir() {
+			return nil //nolint:nilerr // skip unreadable/dir entries during the scan
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil //nolint:nilerr
+		}
+		if bytes.Contains(raw, []byte(syntheticToken)) {
+			t.Fatalf("synthetic auth token leaked into committed seed %s:\n%s", path, raw)
+		}
+		return nil
+	})
+}
+
+// A legitimate high-entropy path component on an ordinary (non-/auth) route —
+// e.g. a session ID in /s/<id>, the same 22-char base62 shape
+// identifier.NewSessionID produces — must still be harvested normally. This
+// guards against "fixing" #795 by broadly enabling entropyCheck for the http
+// surface instead of excluding /auth: session IDs routinely exceed the
+// entropy threshold, so that approach would drop most legitimate
+// session-ID-bearing seeds across every route, not just /auth.
+func scenarioReverseHTTPLegitimateSessionSuffixNotRedacted(t *testing.T) {
+	const sessionLikeSuffix = "034H8eMmMT7fAzLo5EkvY3" // synthetic; 22-char base62 shape (see identifier.NewSessionID)
+
+	d := t.TempDir()
+	log := filepath.Join(d, "http")
+	mustHarvestWrite(t, log, marshalLine(t, recordedHTTPRequest{Method: "GET", Path: "/s/" + sessionLikeSuffix})+"\n")
+
+	r := newRunner(t.TempDir(), NewEmitter(false, defaultMaxSeedBytes), nil)
+	harvestHTTP(r, []string{log})
+
+	if st := r.stat("http"); st.seeds != 1 || st.leaks != 0 {
+		t.Fatalf("legitimate session-shaped suffix was over-redacted: seeds=%d leaks=%d skipped=%d", st.seeds, st.leaks, st.skipped)
+	}
+}
+
 func scenarioForEachJSONLineOpenAndEmpty(t *testing.T) {
 	if err := forEachJSONLine(filepath.Join(t.TempDir(), "missing"), func([]byte) {}); err == nil {
 		t.Fatal("open")
