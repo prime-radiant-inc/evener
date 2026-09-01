@@ -525,7 +525,9 @@ func cloneModelView(m Model) Model {
 }
 
 func cloneTransportView(t Transport) Transport {
-	out := cloneTransport(t)
+	out := t
+	out.Vars = mergeStringMap(nil, t.Vars)
+	out.VarsEnv = mergeStringMap(nil, t.VarsEnv)
 	out.Body = cloneAnyMap(t.Body)
 	return out
 }
