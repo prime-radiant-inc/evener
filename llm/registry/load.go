@@ -48,6 +48,27 @@ type options struct {
 	noCache     bool
 }
 
+type parsedCatalog struct {
+	providers []Provider
+	meta      Meta
+}
+
+var loadEmbeddedCatalog = sync.OnceValues(func() (parsedCatalog, error) {
+	raw, meta, err := EmbeddedSnapshot()
+	if err != nil {
+		return parsedCatalog{}, err
+	}
+	providers, err := FromModelsDev(raw)
+	if err != nil {
+		return parsedCatalog{}, err
+	}
+	return parsedCatalog{providers: providers, meta: meta}, nil
+})
+
+var loadEmbeddedOverlay = sync.OnceValues(func() (*Layer, error) {
+	return ParseOverlay(EmbeddedOverlay())
+})
+
 // WithConfigPath reads providers.toml from path instead of
 // EVENER_PROVIDERS_CONFIG / the default config root.
 func WithConfigPath(path string) Option {
@@ -194,39 +215,51 @@ func Load(opts ...Option) (*Registry, error) {
 		curated: map[string]*record{}, explicit: map[string]*record{},
 		env: o.env, creds: o.creds, stateRoot: o.stateRoot,
 	}
-	raw, meta := o.snapshot, Meta{}
-	if raw == nil {
+	var upstream []Provider
+	meta := Meta{}
+	if o.snapshot == nil {
+		catalog, err := loadEmbeddedCatalog()
+		if err != nil {
+			return nil, err
+		}
+		upstream, meta = catalog.providers, catalog.meta
+	} else {
 		var err error
-		raw, meta, err = EmbeddedSnapshot()
+		upstream, err = FromModelsDev(o.snapshot)
 		if err != nil {
 			return nil, err
 		}
 	}
 	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
-	if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); !o.noCache && ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
-		if _, err := FromModelsDev(cachedRaw); err != nil {
-			jsonPath, _ := cachePaths(o.stateRoot)
-			r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
-		} else {
-			raw, meta = cachedRaw, cachedMeta
-			r.catalogTag, r.catalogMeta = LayerCache, cachedMeta
+	if !o.noCache {
+		if cachedRaw, cachedMeta, ok := readCache(o.stateRoot); ok && cachedMeta.FetchedAt.After(meta.FetchedAt) {
+			candidate, err := FromModelsDev(cachedRaw)
+			if err != nil {
+				jsonPath, _ := cachePaths(o.stateRoot)
+				r.warnings = append(r.warnings, fmt.Sprintf("ignoring corrupt catalog cache %s: %v", jsonPath, err))
+			} else {
+				upstream = candidate
+				r.catalogTag, r.catalogMeta = LayerCache, cachedMeta
+			}
 		}
-	}
-	upstream, err := FromModelsDev(raw)
-	if err != nil {
-		return nil, err
 	}
 	upstreamByID := make(map[string]Provider, len(upstream))
 	for _, p := range upstream {
 		upstreamByID[p.ID] = p
 	}
-	overlayData := o.overlay
-	if overlayData == nil {
-		overlayData = EmbeddedOverlay()
-	}
-	ov, err := ParseOverlay(overlayData)
-	if err != nil {
-		return nil, err
+	var ov *Layer
+	if o.overlay == nil {
+		var err error
+		ov, err = loadEmbeddedOverlay()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		ov, err = ParseOverlay(o.overlay)
+		if err != nil {
+			return nil, err
+		}
 	}
 	r.presets, r.defaultOrder, r.topGlobs[LayerOverlay] = ov.Transports, ov.DefaultOrder, ov.TopGlobs
 
