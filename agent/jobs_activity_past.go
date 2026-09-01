@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -22,70 +23,168 @@ import (
 // child transcript.
 var activityUsageCache = apptranscript.NewTurnCache()
 
-// historicalJobScanLimits bounds one session's jobs.jsonl scan during
-// activity-tree loading, independent of activityMaxWorkUnits (roborev
-// finding on #807 — an earlier round tied MaxEvents directly to the
-// traversal's remaining work-unit budget instead: remaining is a count of
-// roughly one unit per RENDERED job record, but a raw scan reads every
-// jobstore event kind, including non-job-record ones like watch events
-// (jobstore.isJobRecordEventKind) that consume raw-event budget without
-// ever counting as work, and a single job record itself can span several
-// events — started, finished, message-sent, notification... So a session
-// with many non-job events ahead of its real jobs could have its scan
-// ceiling hit long before any of those later, legitimate jobs were ever
-// read, even with plenty of the work budget those jobs would have used
-// left unspent. The scan's own ceiling is now a fixed, generous safety
-// valve, not a proxy for how many job records the traversal still wants.
-//
-// MaxBytes is generous relative to any legitimate journal — the largest
-// observed in production was 6.99 MiB / 562 jobs (#448) — but finite, so a
-// single pathologically large record can't force unbounded decoding.
-// MaxEvents at 100,000 is 50x activityMaxWorkUnits: generous headroom for
-// multi-event jobs and non-job events, while still a real safety valve
-// against truly pathological input.
-var historicalJobScanLimits = jobstore.ScanLimits{MaxBytes: 32 << 20, MaxEvents: 100_000}
-
-// historicalDelegateScanLimits bounds the shared root delegates.jsonl scan.
-// Unlike jobs.jsonl, this ceiling is NOT tied to activityMaxWorkUnits — a
-// delegate isn't "work" in that sense, and a delegate_created event embeds
-// the FULL FrozenRolePrompt/FrozenSkillBodies text (not a reference) on
-// every occurrence (agent/internal/delegatestore/record.go), so its size is
-// dominated by prompt/skill content rather than event count. At a
-// conservative ~10 KB/event (a couple of skill bodies plus a role prompt) an
-// append-only journal — this store has no compaction or rotation — could
-// plausibly approach a much smaller ceiling over months of legitimate, heavy
-// delegation, with no adversarial input at all (#448 ceilings review).
-// 128 MiB / ~10 KB ≈ 13,000 delegate-lifetime events of headroom, which is
-// intentionally generous: hitting it now degrades to a partial, diagnosed
-// result (historicalActivityCache.rootDelegates) rather than the total,
-// hard failure an earlier, tighter ceiling risked, so the cost of erring
-// generous here is a slower scan on truly pathological input, not lost
-// data.
-var historicalDelegateScanLimits = delegatestore.ScanLimits{MaxBytes: 128 << 20, MaxEvents: 200_000}
-
 // scanJobJournal and scanDelegateJournal are package vars — like
 // historicalJobsStat below — so tests can count or intercept scans (proving
-// the shared delegate journal is read once per root, or that cancellation
-// stops before a later session's file is opened) without instrumenting the
-// filesystem.
-var scanJobJournal = jobstore.ScanEvents
-var scanDelegateJournal = delegatestore.ScanEvents
+// a journal is read incrementally, or that cancellation stops before a
+// later session's file is opened) without instrumenting the filesystem.
+// Both wrap the *From variant: #448's incremental-fold round reads every
+// journal through historicalJobFoldCache/historicalDelegateFoldCache below,
+// which always resumes from a byte offset (0 on first touch).
+var scanJobJournal = jobstore.ScanEventsFrom
+var scanDelegateJournal = delegatestore.ScanEventsFrom
 
-// rootDelegateIndex is one root's delegates.jsonl decoded and folded once,
-// then indexed by OwnerSessionID so every visited session in the tree looks
-// up its own rows without re-reading or re-folding the shared journal.
+// historicalJobFoldCacheEntries and historicalDelegateFoldCacheEntries bound
+// the two fold caches below by NUMBER OF DISTINCT JOURNALS retained, not by
+// byte size. This is a real, honest tradeoff, not a "small so it's fine"
+// claim: neither jobstore.FoldOrdered's []Event slice nor a
+// delegatestore.State's *Aggregate values (which retain the full
+// FrozenRolePrompt/FrozenSkillBodies text delegate_created embeds — Apply
+// clones the descriptor verbatim, and the delegate-restart path in
+// subagents.go needs that full text later, so this cache does not strip it)
+// are small in the worst case. What bounds worst-case memory to a KNOWN,
+// finite quantity is the entry count: at most N journals resident at once,
+// LRU-evicted, regardless of how large any one of them is. Sizing:
+//   - Job sessions: the largest observed in production was 6.99 MiB / 562
+//     jobs (#448); a "Tuesday" 200k-job session is the stress case this
+//     round is explicitly built to survive, not the common one. 256 distinct
+//     sessions comfortably covers a hub actively serving many concurrent
+//     job-activity-tree views without needing to reread any of them on the
+//     next poll.
+//   - Delegate roots: one entry per ROOT (shared across every visited
+//     session under it, not per-session), and each can plausibly carry
+//     ~10 KB/event of frozen prompt/skill text (#448 ceilings review) — a
+//     smaller number is the deliberate tradeoff for a per-entry cost that
+//     can run larger. 64 distinct roots is still generous for how many
+//     independently-rooted trees a hub process realistically has open at
+//     once.
+//
+// TurnCache (internal/apptranscript), the same per-file-identity memoization
+// shape for transcripts, defaults to 32 total — these two split that budget
+// across TWO caches with different per-entry cost profiles rather than
+// reusing one number for both.
+const (
+	historicalJobFoldCacheEntries      = 256
+	historicalDelegateFoldCacheEntries = 64
+)
+
+// historicalJobFold is jobstore's fold-cache payload: the raw events read so
+// far. FoldOrdered runs fresh over the full accumulated slice on every Get
+// rather than folding incrementally — unlike delegatestore's Apply (see
+// historicalDelegateFold below), jobstore.Fold/FoldOrdered are already a
+// cheap single sorted pass with no per-event state-cloning cost, so an
+// incremental merge would only add complexity for no measurable gain.
+type historicalJobFold struct {
+	events []jobstore.Event
+	// records is jobstore.FoldOrdered(events), computed once per Extend
+	// call (i.e., once per OBSERVED append), not once per Get call.
+	// FoldOrdered is cheap on its own (a single sorted pass — unlike
+	// delegatestore's Apply, it does not re-clone and re-diff the whole
+	// state per event, see historicalDelegateFold's doc comment) but it is
+	// still O(total events), and a hub polling an unchanged file must not
+	// pay that cost on every request just because it asked again:
+	// foldcache.Cache.Get's own "true hit" path already skips calling
+	// Extend at all when nothing changed, so caching the fold alongside
+	// the events it came from is what actually lets a hit return in O(1)
+	// instead of O(total events) every time.
+	records []*jobstore.JobRecord
+}
+
+var historicalJobFoldCache = foldcache.New[historicalJobFold](historicalJobFoldCacheEntries)
+
+// extendHistoricalJobFold is historicalJobFoldCache's foldcache.Extend: it
+// reads only the events appended since fromOffset, appends them to a FRESH
+// copy of prior's (never mutates prior.events in place, since
+// foldcache.Cache may still be holding prior as another caller's Result),
+// and folds the combined history once.
+func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, error) {
+	delta, toOffset, err := scanJobJournal(ctx, path, fromOffset, jobstore.ScanLimits{})
+	if err != nil {
+		return historicalJobFold{}, 0, err
+	}
+	events := make([]jobstore.Event, 0, len(prior.events)+len(delta))
+	events = append(events, prior.events...)
+	events = append(events, delta...)
+	return historicalJobFold{events: events, records: jobstore.FoldOrdered(events)}, toOffset, nil
+}
+
+// loadCachedJobRecords returns jobsPath's complete, folded history via
+// historicalJobFoldCache, replaying only what was appended since the last
+// call for this path in this process (and re-folding only when something
+// was — see historicalJobFold.records). The returned epoch is
+// historicalJobFoldCache's generation counter for jobsPath at the moment of
+// this read — see foldcache.Result.Epoch and activityContinuation.JobsEpoch.
+func loadCachedJobRecords(ctx context.Context, jobsPath string) ([]*jobstore.JobRecord, uint64, error) {
+	result, err := historicalJobFoldCache.Get(ctx, jobsPath, extendHistoricalJobFold)
+	if err != nil {
+		return nil, 0, err
+	}
+	return result.Value.records, result.Epoch, nil
+}
+
+// historicalDelegateFold is delegatestore's fold-cache payload. Unlike
+// historicalJobFold, this retains the FOLDED delegatestore.State directly
+// (not raw events), extended incrementally via delegatestore.Apply for each
+// new event: delegatestore.Apply/Fold internally clone the ENTIRE state and
+// re-diff it on every single event applied (agent/internal/delegatestore/
+// fold.go), so re-folding a growing root's full event history from scratch
+// on every request — the same treatment jobstore gets above — would cost
+// O(events x aggregates) per request instead of O(new events x aggregates).
+// eventCount tracks how many events have been applied so far, so a delta can
+// still be checked for sequence continuity (event.Seq must equal
+// eventCount+1 as each is applied) the same way delegatestore.Fold checks a
+// from-scratch scan, even though Fold itself cannot be called on a
+// non-1-based delta (see delegatestore.ScanEventsFrom's doc comment).
+type historicalDelegateFold struct {
+	state      delegatestore.State
+	eventCount int
+	tornTail   bool
+}
+
+var historicalDelegateFoldCache = foldcache.New[historicalDelegateFold](historicalDelegateFoldCacheEntries)
+
+// extendHistoricalDelegateFold is historicalDelegateFoldCache's
+// foldcache.Extend. maps.Clone(prior.state) before Apply is load-bearing,
+// not defensive boilerplate: Apply mutates the map it is given in place
+// (agent/internal/delegatestore/fold.go), and foldcache.Cache may still be
+// holding prior.state as another caller's already-returned Result.Value —
+// mutating it in place would race that caller. Apply itself deep-clones
+// each *Aggregate internally before writing back into whatever map it was
+// given, so a SHALLOW maps.Clone here (copying the map's pointers, not each
+// Aggregate) is sufficient: the clone becomes Apply's write target, the
+// original prior.state and its aggregates are never touched.
+func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, error) {
+	delta, toOffset, readDiagnostics, err := scanDelegateJournal(ctx, path, fromOffset, delegatestore.ScanLimits{})
+	if err != nil {
+		return historicalDelegateFold{}, 0, err
+	}
+	state := maps.Clone(prior.state)
+	if state == nil {
+		state = make(delegatestore.State)
+	}
+	count := prior.eventCount
+	for _, event := range delta {
+		count++
+		if event.Seq != uint64(count) {
+			return historicalDelegateFold{}, 0, fmt.Errorf("delegatestore: delegate event sequence %d, want %d", event.Seq, count)
+		}
+		if err := delegatestore.Apply(state, event); err != nil {
+			return historicalDelegateFold{}, 0, fmt.Errorf("delegate event %d: %w", event.Seq, err)
+		}
+	}
+	return historicalDelegateFold{state: state, eventCount: count, tornTail: readDiagnostics.TornTail}, toOffset, nil
+}
+
+// rootDelegateIndex is one root's delegates.jsonl folded via the shared
+// cache, then indexed by OwnerSessionID so every visited session in the
+// tree looks up its own rows without re-folding the shared journal itself
+// (historicalDelegateFoldCache already avoids the underlying re-READ; this
+// index avoids repeating the small O(delegates) grouping pass per session
+// within one traversal).
 type rootDelegateIndex struct {
 	byOwner     map[string][]string // ownerSessionID -> sorted delegate IDs
 	state       delegatestore.State
+	epoch       uint64
 	diagnostics []string
-	// truncated reports that the shared delegate journal scan hit its own
-	// ceiling and state is a partial prefix, not the complete set of
-	// delegates (roborev finding on #807: this used to surface only as a
-	// diagnostic string, leaving Branch.Truncated false and
-	// Counts.Complete potentially true despite delegates having been
-	// silently dropped — see loadHistoricalActivityBase, which now ORs
-	// this into LoadTruncated).
-	truncated bool
 }
 
 // historicalActivityCache threads cancellation and shares per-traversal
@@ -93,19 +192,29 @@ type rootDelegateIndex struct {
 // loaders that both the live and persisted activity-tree entry points share.
 // It is created fresh for one loadActivitySnapshotForParams call and never
 // outlives it, the same traversal-local scope activityBudget already uses in
-// jobs_activity.go.
+// jobs_activity.go. This is distinct from (and much shorter-lived than)
+// historicalJobFoldCache/historicalDelegateFoldCache above, which persist
+// for the whole process so a LATER traversal — a different request, a later
+// poll of the same tree — benefits from what an EARLIER one already read.
 type historicalActivityCache struct {
 	ctx           context.Context
 	delegateIndex map[string]*rootDelegateIndex // rootSessionID -> index, lazy
-	// budget bounds the aggregate LOAD-phase traversal — decoded job records
-	// and visited-session depth — across this whole cache's lifetime (#448
-	// finding 1). It reuses activityBudget/activityConsumeWorkUnit, the same
-	// primitives projectBoundedActivityTree already applies afterward, so
-	// load-phase and projection-phase accounting can never drift apart: they
-	// count the identical thing (owned, shell-typed job records; one
-	// delegate visit) the same way, just one phase earlier. rootID/now are
-	// irrelevant here (only read by the projection-side continuation/status
-	// helpers this budget instance never calls).
+	// budget bounds the LOAD-phase traversal's breadth and depth — how many
+	// distinct sessions and delegates get VISITED at all — across this
+	// whole cache's lifetime. It reuses activityBudget/
+	// activityConsumeWorkUnit, the same primitives
+	// projectBoundedActivityTree applies afterward for a DIFFERENT purpose
+	// (how much of what WAS visited gets rendered in one page). #448's
+	// incremental-fold round removed this budget's OTHER former role —
+	// capping how much of ONE session's OWN journal gets read, via
+	// activityBudgetRemaining feeding a scan's MaxEvents — because folding
+	// a session's complete history is now cheap (historicalJobFoldCache
+	// above), so there is no remaining reason to cut it short at load
+	// time; a wide or deep TREE can still force unbounded traversal work
+	// (file opens, cache lookups) independent of how cheap any one file's
+	// own read is, which is what this budget still exists to bound.
+	// rootID/now are irrelevant here (only read by the projection-side
+	// continuation/status helpers this budget instance never calls).
 	budget *activityBudget
 }
 
@@ -113,8 +222,10 @@ type historicalActivityCache struct {
 // loadActivitySnapshotForParams call. rootID only flows into
 // newBoundedActivityBudget for parity with that constructor's other
 // (projection-side) caller — the load-phase budget itself never reads
-// activityBudget.rootID, since #448's load-phase truncation mints no
-// continuation (see the LoadTruncated doc comment in jobs_activity.go).
+// activityBudget.rootID, since load-phase truncation mints no continuation
+// (there is no such thing anymore: #448's incremental-fold round moved ALL
+// truncation to projection, which always mints a real, advancing one — see
+// jobs_activity.go's activityContinuation).
 func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalActivityCache {
 	return &historicalActivityCache{
 		ctx:           ctx,
@@ -123,57 +234,39 @@ func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalA
 	}
 }
 
-// scanRootDelegateState reads and folds rootSessionID's shared
-// delegates.jsonl under the bounded scanner, returning the folded state and
-// the diagnostics the scan itself produced. Both readers of that journal —
-// the memoized traversal index (rootDelegates) and the single-shot status
-// read (loadHistoricalStableActivityWithAttention) — go through here so the
-// scan ceiling, the degrade-to-partial rule, and the diagnostic wording stay
-// defined once instead of drifting between two copies.
-//
-// When the ceiling fires the scan degrades to partial rather than
-// hard-failing the whole read: a delegate_created event embeds the full
-// frozen role prompt and skill bodies
-// (agent/internal/delegatestore/record.go), so a long-lived,
-// heavily-delegating root can plausibly approach the ceiling through
-// entirely legitimate use, not just adversarial input (#448 ceilings
-// review). ScanEvents already returns whatever it decoded before the ceiling
-// fired, so that prefix is folded and reported with a scan_truncated
-// diagnostic.
-func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, []string, bool, error) {
+// scanRootDelegateState folds rootSessionID's shared delegates.jsonl via
+// historicalDelegateFoldCache, returning the folded state, the fold-cache's
+// current epoch for this path (see activityContinuation.DelegatesEpoch), and
+// the diagnostics the fold observed. Both readers of that journal — the
+// memoized traversal index (rootDelegates) and the single-shot status read
+// (loadHistoricalStableActivityWithAttention) — go through here so the
+// diagnostic wording stays defined once instead of drifting between two
+// copies.
+func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, uint64, []string, error) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
-	events, readDiagnostics, err := scanDelegateJournal(ctx, path, historicalDelegateScanLimits)
-	scanTruncated := false
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
-		if !errors.Is(err, delegatestore.ErrScanLimitExceeded) {
-			return nil, nil, false, err
-		}
-		scanTruncated = true
-	}
-	state, err := delegatestore.Fold(events)
-	if err != nil {
-		return nil, nil, false, err
+		return nil, 0, nil, err
 	}
 	var diagnostics []string
-	if readDiagnostics.TornTail {
+	if result.Value.tornTail {
 		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
 	}
-	if scanTruncated {
-		diagnostics = append(diagnostics, "delegate_journal_scan_truncated: exceeds the scan limit, some delegates may be missing")
-	}
-	return state, diagnostics, scanTruncated, nil
+	return result.Value.state, result.Epoch, diagnostics, nil
 }
 
-// rootDelegates returns rootSessionID's delegate index, scanning and folding
-// delegates.jsonl on the first request for that root and reusing the result
-// for every later visited session sharing the same root (#448: this file was
-// previously re-read and re-folded once per visited session, making loading
-// O(sessions x delegate events)).
+// rootDelegates returns rootSessionID's delegate index, folding
+// delegates.jsonl on the first request for that root THIS TRAVERSAL and
+// reusing the result for every later visited session sharing the same root
+// (#448: this file was previously re-read and re-folded once per visited
+// session, making loading O(sessions x delegate events); the fold itself is
+// now ALSO shared across traversals via historicalDelegateFoldCache, so this
+// index only needs to avoid repeating the cheap byOwner grouping pass).
 func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) (*rootDelegateIndex, error) {
 	if idx, ok := c.delegateIndex[rootSessionID]; ok {
 		return idx, nil
 	}
-	state, diagnostics, truncated, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
+	state, epoch, diagnostics, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +281,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	for owner := range byOwner {
 		sort.Strings(byOwner[owner])
 	}
-	idx := &rootDelegateIndex{byOwner: byOwner, state: state, diagnostics: diagnostics, truncated: truncated}
+	idx := &rootDelegateIndex{byOwner: byOwner, state: state, epoch: epoch, diagnostics: diagnostics}
 	c.delegateIndex[rootSessionID] = idx
 	return idx, nil
 }
@@ -216,7 +309,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	snapshot, startDepth, err := loadActivitySnapshotForParams(ctx, root, params)
+	snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
@@ -232,7 +325,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 		}
 		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
 	}
-	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC())
+	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, resumeIndex, revision, time.Now().UTC())
 }
 
 func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache *historicalActivityCache) (activityLoadedBase, error) {
@@ -253,8 +346,8 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	var jobEvents []jobstore.Event
-	loadTruncated := false
+	var jobs []*jobstore.JobRecord
+	var jobsEpoch uint64
 	if _, err := historicalJobsStat(jobsPath); err != nil {
 		if !os.IsNotExist(err) {
 			return activityLoadedBase{}, err
@@ -263,60 +356,29 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
 		}
 	} else {
-		// #448 finding 1: skip this session's scan entirely once the
-		// tree-wide load budget is already fully spent by earlier sessions
-		// — nothing it loads would ever be rendered anyway. This is a pure
-		// "should I even visit this session" traversal-breadth check,
-		// unrelated to the scan's OWN raw ceiling below (roborev finding on
-		// #807: remaining, a work-unit count, must not be used as the raw
-		// scanner's MaxEvents — see historicalJobScanLimits' doc comment).
-		if activityBudgetRemaining(cache.budget) == 0 {
-			loadTruncated = true
-		} else {
-			events, err := scanJobJournal(cache.ctx, jobsPath, historicalJobScanLimits)
-			if err != nil {
-				if !errors.Is(err, jobstore.ErrScanLimitExceeded) {
-					return activityLoadedBase{}, err
-				}
-				// Degrade to partial rather than hard-fail: events already
-				// holds everything decoded before the ceiling fired (see
-				// jobstore.ScanEvents' partial-result contract), so a
-				// malformed or merely enormous tail past
-				// historicalJobScanLimits' own (work-budget-independent)
-				// ceiling doesn't sink the whole tree — it marks this
-				// branch Truncated instead (see LoadTruncated below /
-				// projectActivitySessionAt).
-				loadTruncated = true
-			}
-			jobEvents = events
+		// #448's incremental-fold round: this session's COMPLETE job history
+		// loads unconditionally here — historicalJobFoldCache makes that
+		// O(events appended since the last read of this path in this
+		// process), not O(file size), so there is no remaining reason to cap
+		// it at the traversal's remaining work-unit budget the way an
+		// earlier round did. That budget still bounds how many SESSIONS get
+		// visited (buildActivityFullSnapshot's per-child
+		// activityConsumeWorkUnit, unchanged), just not how much of any ONE
+		// session's own journal gets read. How much of THIS session's jobs
+		// actually get RENDERED is now purely projectActivitySessionAt's
+		// call, backed by a real, advancing continuation instead of a
+		// load-time truncation with nothing to resume into.
+		records, epoch, err := loadCachedJobRecords(cache.ctx, jobsPath)
+		if err != nil {
+			return activityLoadedBase{}, err
 		}
+		jobs = records
+		jobsEpoch = epoch
 	}
-	jobs := jobstore.FoldOrdered(jobEvents)
-	// Consume from the SAME shared budget the scan above was gated on,
-	// using the identical accounting projection's own budget will apply to
-	// this same data (activityOwnedShellCount mirrors activityOwnedRecords +
-	// the JobShell case in projectActivitySessionAt) — so aggregate work
-	// across every session this traversal visits is bounded, not just this
-	// one file's own scan.
-	if count := activityOwnedShellCount(sessionID, jobs); !activityConsumeWorkUnit(cache.budget, count) && cache.budget != nil && cache.budget.bounded {
-		// The session's own records exceed what's left: refuse-without-consuming
-		// (the contract projection relies on) would leave the budget unspent and
-		// every later sibling's journal would still be opened. Saturate instead,
-		// so activityBudgetRemaining reports 0 for the rest of the traversal.
-		cache.budget.usedWork = cache.budget.maxWorkUnits
-	}
-	stable, diagnostics, delegatesTruncated, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
+	stable, delegatesEpoch, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
-	// roborev finding on #807: a truncated delegate journal used to surface
-	// only as a diagnostic string, leaving Branch.Truncated false (a client
-	// could see Counts.Complete=true despite delegates having been
-	// silently dropped). Folding it into the same LoadTruncated flag the
-	// jobs scan uses gets it the identical wire treatment (Truncated=true,
-	// no continuation — see markActivitySessionTruncated) without a
-	// parallel mechanism.
-	loadTruncated = loadTruncated || delegatesTruncated
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:       sessionID,
 		Ref:             encodeRef("", sessionID),
@@ -328,36 +390,42 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		StableDelegates: stable,
 		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
 		Diagnostics:     diagnostics,
-		LoadTruncated:   loadTruncated,
+		JobsEpoch:       jobsEpoch,
+		DelegatesEpoch:  delegatesEpoch,
 	}}, nil
 }
 
-// loadHistoricalStableActivity returns ownerSessionID's stable delegate rows
-// from rootSessionID's shared delegate journal, via cache so the journal
-// itself is scanned and folded at most once per root across the whole
-// traversal (see historicalActivityCache).
-func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, bool, error) {
+// loadHistoricalStableActivity returns ownerSessionID's stable delegate
+// rows from rootSessionID's shared delegate journal, via cache so the
+// journal itself is folded at most once per root across the whole
+// traversal (see historicalActivityCache), plus the fold-cache's current
+// epoch for that journal (see activityContinuation.DelegatesEpoch).
+func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, uint64, []string, error) {
 	idx, err := cache.rootDelegates(stateDir, rootSessionID)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, 0, nil, err
 	}
 	ids := idx.byOwner[ownerSessionID]
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
 		rows[id] = captureDelegateSnapshot(idx.state[id])
 	}
-	return rows, idx.diagnostics, idx.truncated, nil
+	return rows, idx.epoch, idx.diagnostics, nil
 }
 
 // loadHistoricalStableActivityWithAttention is LoadSessionDelegateStatus'
 // loader, reached from the hub's ThreadRead RPC — a separate, single-shot
 // read of the same shared delegates.jsonl the recursive job-activity-tree
-// walk indexes via historicalActivityCache.rootDelegates, so it gets the
-// same bounded scanner and degrade-to-partial treatment (#448 regression
-// review finding 2), even though it doesn't share that cache (this is one
-// read, not a multi-session traversal that benefits from memoizing it).
+// walk indexes via historicalActivityCache.rootDelegates, so it shares the
+// same fold cache (#448 regression review finding 2), even though it
+// doesn't share the traversal-local rootDelegateIndex (this is one read,
+// not a multi-session traversal that benefits from memoizing the byOwner
+// grouping too). Its own continuation contract has no epoch to check: the
+// hub's ThreadRead RPC this serves has no pagination/continuation concept
+// at all, so the epoch scanRootDelegateState returns is simply discarded
+// here.
 func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
-	state, diagnostics, _, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
+	state, _, diagnostics, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, nil, err
 	}

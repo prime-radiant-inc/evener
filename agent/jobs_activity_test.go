@@ -153,10 +153,10 @@ func TestProjectStableLiveActivityTree_RejectsSnapshotAfterBoundedRevisionChurn(
 	t.Parallel()
 	clock := newJobActivityClock("root")
 	loads := 0
-	load := func() (*activitySessionSnapshot, int, error) {
+	load := func() (*activitySessionSnapshot, int, int, error) {
 		loads++
 		clock.revision.Add(1)
-		return &activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root"}, 0, nil
+		return &activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root"}, 0, 0, nil
 	}
 	if _, err := projectStableLiveActivityTree(clock, "root", load); err == nil {
 		t.Fatal("revision churn produced an inconsistent snapshot")
@@ -174,7 +174,7 @@ func TestProjectActivitySession_TruncatesStableRowsWithScopedContinuation(t *tes
 		delegates[id] = stableActivitySnapshot(id, "root", "child_"+id, "task")
 	}
 	snap := activitySessionSnapshot{SessionID: "root", Ref: "local:root", RootID: "root", StableDelegates: delegates}
-	tree, err := projectBoundedActivityTree(snap, "root", 0, 1, time.Unix(1, 0).UTC())
+	tree, err := projectBoundedActivityTree(snap, "root", 0, 0, 1, time.Unix(1, 0).UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestProjectStableActivityDelegateCopiesChildUsage(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
 		Children:        map[string]*activitySessionSnapshot{"child": child},
 	}
-	delegate := projectStableActivityDelegate(snap, snap.StableDelegates["dlg_1"], newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, snap.StableDelegates["dlg_1"], newActivityBudget(), 0, nil, 0)
 	if delegate.Usage == nil || *delegate.Usage != *want || delegate.Usage == want {
 		t.Fatalf("delegate usage=%+v want copy of %+v", delegate.Usage, want)
 	}
@@ -273,38 +273,5 @@ func TestActivityTreeJSONOmitsLegacyDelegateTurns(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"jobId":"job_delegate`) {
 		t.Fatalf("activity JSON exposed a legacy delegate job turn: %s", raw)
-	}
-}
-
-// TestProjectActivitySessionAt_LoadTruncatedSuppressesContinuation covers
-// roborev's finding on #807: LoadTruncated sets Branch.Truncated with the
-// documented intent of minting NO continuation (a resumed load rescans
-// this session's own journal from byte zero with a fresh budget, so a
-// token would never actually advance). But the shell/delegate loops below
-// that check use a SEPARATE, projection-phase activityBudget instance from
-// the load-phase one LoadTruncated was set against — so a session can be
-// BOTH load-truncated AND independently exhaust the projection budget
-// while rendering its own entries, and markActivitySessionTruncated
-// unconditionally mints a continuation whenever that happens, regardless
-// of LoadTruncated. Two delegates with a one-work-unit projection budget
-// forces exactly that: the first delegate exhausts the budget immediately.
-func TestProjectActivitySessionAt_LoadTruncatedSuppressesContinuation(t *testing.T) {
-	t.Parallel()
-	delegates := map[string]delegateSnapshot{
-		"dlg_a": stableActivitySnapshot("dlg_a", "root", "child_a", "task"),
-		"dlg_b": stableActivitySnapshot("dlg_b", "root", "child_b", "task"),
-	}
-	snap := activitySessionSnapshot{
-		SessionID: "root", Ref: "local:root", RootID: "root",
-		StableDelegates: delegates, LoadTruncated: true,
-	}
-	budget := newBoundedActivityBudget("root", time.Unix(1, 0).UTC())
-	budget.maxWorkUnits = 1
-	projected := projectActivitySessionAt(snap, budget, 0, nil)
-	if !projected.Branch.Truncated {
-		t.Fatalf("Branch.Truncated = false, want true")
-	}
-	if projected.Branch.Continuation != "" {
-		t.Fatalf("Branch.Continuation = %q, want empty — LoadTruncated must suppress the continuation even when the (separate) projection budget also trips on this same session", projected.Branch.Continuation)
 	}
 }

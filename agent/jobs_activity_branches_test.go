@@ -175,7 +175,7 @@ func TestProjectStableActivityDelegate_TerminalPacketMetadata(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Outcome != "completed" || delegate.Reason != "done" || !delegate.Terminal {
 		t.Fatalf("delegate outcome = %q reason=%q terminal=%v", delegate.Outcome, delegate.Reason, delegate.Terminal)
 	}
@@ -219,7 +219,7 @@ func TestProjectStableActivityDelegate_InvalidMetadata(t *testing.T) {
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "metadata is invalid") {
 		t.Fatalf("expected invalid-metadata branch error, got %q", delegate.Branch.Error)
 	}
@@ -237,7 +237,7 @@ func TestProjectStableActivityDelegate_ChildMismatchErrors(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "wrong", Ref: "local:wrong"}},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "child link does not match") {
 		t.Fatalf("expected mismatch error, got %q", delegate.Branch.Error)
 	}
@@ -251,7 +251,7 @@ func TestProjectStableActivityDelegate_ChildUnavailable(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 		// No Children map entry for "child".
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" || !strings.Contains(delegate.Branch.Error, "unavailable") {
 		t.Fatalf("expected unavailable error, got %q", delegate.Branch.Error)
 	}
@@ -269,7 +269,7 @@ func TestProjectStableActivityDelegate_DepthTruncated(t *testing.T) {
 	// maxDepth is 32; set depth to 32 so the child is truncated. The path must
 	// not contain the delegate id yet: appendActivityPath adds row.id inside
 	// the projection, and decodeActivityContinuation rejects duplicate hops.
-	delegate := projectStableActivityDelegate(snap, row, budget, 32, nil)
+	delegate := projectStableActivityDelegate(snap, row, budget, 32, nil, 0)
 	if !delegate.Branch.Truncated || delegate.Branch.Continuation == "" {
 		t.Fatalf("expected truncation, got %+v", delegate.Branch)
 	}
@@ -301,7 +301,7 @@ func TestProjectStableActivityDelegate_MalformedChildLink(t *testing.T) {
 		SessionID: "root", Ref: "local:root", RootID: "root",
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error == "" {
 		t.Fatal("expected branch error for malformed child link")
 	}
@@ -315,7 +315,7 @@ func TestProjectStableActivityDelegate_ErrorFromParentSnapshot(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 		Errors:          map[string]error{"child": errActivityHistoryUnavailable},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.Branch.Error != errActivityHistoryUnavailable.Error() {
 		t.Fatalf("branch error = %q, want %q", delegate.Branch.Error, errActivityHistoryUnavailable.Error())
 	}
@@ -330,7 +330,7 @@ func TestProjectStableActivityDelegate_OutcomeWithoutEndedAt(t *testing.T) {
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": row},
 		Children:        map[string]*activitySessionSnapshot{"child": {SessionID: "child", Ref: "local:child"}},
 	}
-	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil)
+	delegate := projectStableActivityDelegate(snap, row, newActivityBudget(), 0, nil, 0)
 	if delegate.RunEndedAt != "" {
 		t.Errorf("RunEndedAt = %q, want empty for zero EndedAt", delegate.RunEndedAt)
 	}
@@ -744,7 +744,6 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 		Jobs:            []*jobstore.JobRecord{{JobID: "j1", OwnerSessionID: "root"}},
 		StableDelegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "task")},
 		Diagnostics:     []string{"diag1"},
-		LoadTruncated:   true,
 	}
 	child := &activitySessionSnapshot{SessionID: "child", Ref: "local:child"}
 	filtered := activityFilterSnapshotToDelegate(base, "dlg_1", child)
@@ -762,12 +761,6 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	}
 	if filtered.SessionID != "root" || filtered.Revision != 7 {
 		t.Fatalf("filtered identity lost: %+v", filtered)
-	}
-	// roborev finding on #807's saturation commit: a continuation resolving
-	// through a load-truncated parent must not hide that incompleteness --
-	// filtered must carry base's LoadTruncated forward.
-	if !filtered.LoadTruncated {
-		t.Fatalf("filtered.LoadTruncated = false, want true (copied from base)")
 	}
 	// Missing delegateID results in no stable delegates or children.
 	filtered2 := activityFilterSnapshotToDelegate(base, "dlg_missing", child)
