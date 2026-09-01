@@ -68,21 +68,21 @@ func FuzzThreadDataPass5(f *testing.F) {
 		switch variant % 6 {
 		case 0:
 			live := appwire.Thread{ID: id, Preview: id, Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
-			got := mergePastMetadataForList(cfg, "local", live)
+			got := mergePastMetadataForList(context.Background(), cfg, "local", live)
 			if got.Name != "Past title" || got.CWD == "" || got.Evener.Ref != "local:"+id {
 				t.Fatalf("merged metadata = %+v", got)
 			}
 			full := appwire.Thread{ID: id, SessionID: "keep", Preview: "keep", Name: "keep", ModelProvider: "keep", Path: "keep", CWD: "keep", Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + id, Profile: "keep"}}
-			if got := mergePastMetadataForList(cfg, "local", full); got.Name != "keep" {
+			if got := mergePastMetadataForList(context.Background(), cfg, "local", full); got.Name != "keep" {
 				t.Fatalf("live metadata overwritten: %+v", got)
 			}
-			bySession := mergePastMetadataForList(cfg, "local", appwire.Thread{SessionID: id})
+			bySession := mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{SessionID: id})
 			if bySession.ID != id {
 				t.Fatalf("session-id merge = %+v", bySession)
 			}
-			_ = mergePastMetadataForList(hubcore.WebConfig{}, "local", live)
-			_ = mergePastMetadataForList(cfg, "remote", live)
-			_ = mergePastMetadataForList(cfg, "local", appwire.Thread{ID: "missing"})
+			_ = mergePastMetadataForList(context.Background(), hubcore.WebConfig{}, "local", live)
+			_ = mergePastMetadataForList(context.Background(), cfg, "remote", live)
+			_ = mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{ID: "missing"})
 			for _, status := range []string{"active", "notloaded", "systemerror", " Custom "} {
 				_ = normalizeThreadListStatusFilter(status)
 			}
@@ -110,7 +110,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 			_ = appItemsFromReplayTurn("empty", 0, schema.Turn{}, nil)
 			_ = windowedReadResponse(appwire.Thread{Turns: []appwire.Turn{{ID: "one"}, {ID: "two"}}}, 1)
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
-				_, _, _ = pastThreadForRead(cfg, params)
+				_, _, _ = pastThreadForRead(context.Background(), cfg, params)
 			}
 			for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "local:x"}}, {Evener: appwire.EvenerThread{Ref: "bad"}}} {
 				_ = liveThreadCanMergeLocalPast(thread)

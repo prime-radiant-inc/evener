@@ -43,7 +43,7 @@ func TestPastThreadReadProjectsPersistedTaskAggregate(t *testing.T) {
 		t.Fatalf("complete persisted task: %v", err)
 	}
 
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead: thread=%+v found=%v err=%v", thread, ok, err)
 	}
@@ -74,7 +74,7 @@ func TestPastThreadReadProjectsFirstInProgressTask(t *testing.T) {
 		t.Fatalf("write persisted tasks: %v", err)
 	}
 
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
 	}
@@ -91,7 +91,7 @@ func TestPastThreadReadProjectsPersistedGoal(t *testing.T) {
 	}
 	entry.Meta.Goal = &schema.GoalSnapshot{Objective: "past goal objective", Status: "active", Iterations: 2}
 
-	thread, err := pastEntryThread(cfg, entry, false)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestPastThreadReadProjectsPersistedGoal(t *testing.T) {
 func TestPastThreadReadTaskAggregatePreservesAbsentAndZero(t *testing.T) {
 	t.Run("missing task file is unknown", func(t *testing.T) {
 		cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
-		thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+		thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
 		if err != nil || !ok {
 			t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
 		}
@@ -114,7 +114,7 @@ func TestPastThreadReadTaskAggregatePreservesAbsentAndZero(t *testing.T) {
 
 	t.Run("present empty task file is zero", func(t *testing.T) {
 		cfg, sessionID, _ := seedPastSessionWithTasks(t, []task.TaskInput{})
-		thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
+		thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + sessionID})
 		if err != nil || !ok {
 			t.Fatalf("pastThreadForRead: found=%v err=%v", ok, err)
 		}
@@ -178,7 +178,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatalf("rebuild past index: %v", err)
 	}
-	coldRead, found, err := pastThreadForRead(hubcore.WebConfig{Past: past}, appwire.ThreadReadParams{Ref: "local:" + sess.ID()})
+	coldRead, found, err := pastThreadForRead(context.Background(), hubcore.WebConfig{Past: past}, appwire.ThreadReadParams{Ref: "local:" + sess.ID()})
 	if err != nil || !found {
 		t.Fatalf("cold thread/read: found=%v err=%v", found, err)
 	}

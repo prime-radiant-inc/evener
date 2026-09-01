@@ -40,7 +40,7 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 		descriptor.ParentWatchGranted = true
 		descriptor.DelegationAllowance = 2
 	})
-	want, _, err := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+	want, _, err := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 	if err != nil {
 		t.Fatalf("cold stable status: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				}
 			}
 
-			cold, _, coldErr := LoadSessionDelegateStatus(fixture.stateDir, fixture.meta.ID)
+			cold, _, coldErr := LoadSessionDelegateStatus(context.Background(), fixture.stateDir, fixture.meta.ID)
 			if tt.wantColdError {
 				if coldErr == nil {
 					t.Fatal("cold delegate status accepted an eligible missing/unreadable transcript")

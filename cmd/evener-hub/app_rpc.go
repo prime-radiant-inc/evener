@@ -242,7 +242,7 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.ThreadReadResponse{}, err
 			}
-			resp, ok, pastErr := pastThreadReadResponse(cfg, params)
+			resp, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
 			}
@@ -254,7 +254,7 @@ func registerThreadHandlers(
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
 			if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
-				saved, ok, pastErr := pastThreadReadResponse(cfg, params)
+				saved, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
 				if pastErr != nil {
 					return appwire.ThreadReadResponse{}, pastErr
 				}
@@ -265,7 +265,7 @@ func registerThreadHandlers(
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp := read.response
-		resp.Thread, err = mergePastThreadForRead(cfg, params, resp.Thread)
+		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -351,7 +351,7 @@ func registerThreadHandlers(
 				return live, nil
 			}
 		}
-		saved, ok, pastErr := pastThreadTurnsList(cfg, params)
+		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
 			return appwire.ThreadTurnsListResponse{}, pastErr
 		}
@@ -373,7 +373,7 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
 			}
-			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
@@ -384,7 +384,7 @@ func registerThreadHandlers(
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}

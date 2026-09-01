@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"os"
@@ -47,12 +48,12 @@ func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cos
 	return costFor(cfg.Registry, entry.Meta.ProfileID, entry.Meta.Model)
 }
 
-func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
+func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.Thread{}, false, nil
 	}
-	thread, err := pastEntryThread(cfg, entry, params.IncludeTurns)
+	thread, err := pastEntryThread(ctx, cfg, entry, params.IncludeTurns)
 	if err != nil {
 		return thread, true, err
 	}
@@ -64,9 +65,9 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	return stampDerivedTotals(cfg, entry, thread), true, nil
 }
 
-func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	if !params.IncludeTurns || params.TurnLimit <= 0 {
-		thread, ok, err := pastThreadForRead(cfg, params)
+		thread, ok, err := pastThreadForRead(ctx, cfg, params)
 		if !ok {
 			return appwire.ThreadReadResponse{}, false, err
 		}
@@ -79,7 +80,7 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
 	}
-	thread, err := pastEntryThread(cfg, entry, false)
+	thread, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -93,14 +94,14 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
-func pastThreadTurnsList(cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
+func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
 	if params.Limit <= 0 {
 		entry, ok := pastEntryForRead(cfg, readParams)
 		if !ok {
 			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
-		thread, err := pastEntryThread(cfg, entry, true)
+		thread, err := pastEntryThread(ctx, cfg, entry, true)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -159,7 +160,7 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
+func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live, nil
 	}
@@ -181,7 +182,7 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
 	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
-	past, err := pastEntryThread(cfg, entry, includePastTurns)
+	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
@@ -335,7 +336,7 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 	return caps
 }
 
-func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
@@ -415,7 +416,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		},
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
-	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(entry)
+	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
@@ -441,7 +442,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	return thread, nil
 }
 
-func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
+func pastEntryDelegateStatus(ctx context.Context, entry hubcore.PastEntry) ([]agent.DelegateStatusInfo, []string, error) {
 	sessionID := strings.TrimSpace(entry.Meta.ID)
 	if schema.ValidateSessionID(sessionID) != nil {
 		return nil, nil, nil //nolint:nilerr // malformed stored metadata has no safe delegate projection; the thread itself remains readable
@@ -460,7 +461,7 @@ func pastEntryDelegateStatus(entry hubcore.PastEntry) ([]agent.DelegateStatusInf
 		}
 		return nil, nil, err
 	}
-	return agent.LoadSessionDelegateStatus(entry.StateDir, sessionID)
+	return agent.LoadSessionDelegateStatus(ctx, entry.StateDir, sessionID)
 }
 
 func appwireDelegateFromAgentStatus(delegate agent.DelegateStatusInfo) appwire.EvenerDelegateInfo {

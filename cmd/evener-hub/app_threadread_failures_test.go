@@ -208,7 +208,7 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 func TestPastEntryThread_DoesNotDeriveTheFailureCountOnTheListSweepPath(t *testing.T) {
 	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}, {1}})
 
-	thread, err := pastEntryThread(cfg, entry, false)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestPastThreadListDoesNotDiscoverSkills(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
-	if _, err := pastEntryThread(cfg, entry, false); err != nil {
+	if _, err := pastEntryThread(context.Background(), cfg, entry, false); err != nil {
 		t.Fatal(err)
 	}
 	sources := appsource.NewRegistry()
@@ -255,7 +255,7 @@ func TestPastThreadTurnsListDoesNotDiscoverSkills(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 
-	_, ok, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: "local:" + entry.Meta.ID, Limit: 1})
+	_, ok, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: "local:" + entry.Meta.ID, Limit: 1})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadTurnsList = %v, %v", err, ok)
 	}
@@ -274,7 +274,7 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	}
 	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}
-	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID, Evener: appwire.EvenerThread{Diagnostics: liveDiagnostics},
 	})
 	if err != nil {
@@ -290,7 +290,7 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 
 func TestMergePastThreadForReadUsesPastDiagnosticsWhenLiveAbsent(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID,
 	})
 	if err != nil {

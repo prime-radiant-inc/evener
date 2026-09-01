@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -80,7 +81,7 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 
 func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
 	}
@@ -121,7 +122,7 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 
 func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
-	response, ok, err := pastThreadReadResponse(cfg, appwire.ThreadReadParams{
+	response, ok, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
 	})
 	if err != nil || !ok {
@@ -253,7 +254,7 @@ func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testi
 		t.Fatal(err)
 	}
 
-	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
 	}
@@ -419,7 +420,7 @@ func TestHubThreadReadStableDelegateIsReadOnly(t *testing.T) {
 
 func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	t.Helper()
-	thread, found, err := pastThreadForRead(cfg, params)
+	thread, found, err := pastThreadForRead(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadForRead: %v", err)
 	}
@@ -428,7 +429,7 @@ func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwir
 
 func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadReadResponse: %v", err)
 	}
@@ -437,7 +438,7 @@ func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params a
 
 func requirePastThreadTurnsList(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool) {
 	t.Helper()
-	resp, found, err := pastThreadTurnsList(cfg, params)
+	resp, found, err := pastThreadTurnsList(context.Background(), cfg, params)
 	if err != nil {
 		t.Fatalf("pastThreadTurnsList: %v", err)
 	}
@@ -476,7 +477,7 @@ func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
 
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
 	t.Helper()
-	thread, err := pastEntryThread(cfg, entry, includeTurns)
+	thread, err := pastEntryThread(context.Background(), cfg, entry, includeTurns)
 	if err != nil {
 		t.Fatalf("pastEntryThread: %v", err)
 	}
@@ -1101,7 +1102,7 @@ func TestMergePastThreadForReadDoesNotReadSavedTurnsWhenLiveWindowPresent(t *tes
 	}
 	liveTurns := []appwire.Turn{{ID: "turn_live", ItemsView: "full"}}
 
-	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{
 		ID:        entry.Meta.ID,
 		SessionID: entry.Meta.ID,
 		Turns:     liveTurns,
@@ -1124,7 +1125,7 @@ func TestMergePastThreadForReadUsesSavedTurnsWhenLiveResponseHasNone(t *testing.
 		t.Fatal("past thread not found")
 	}
 
-	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,11 +1172,11 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, found, err := pastThreadReadResponse(cfg, params)
+	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
 		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
 	}
-	page, found, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
 	}
@@ -1209,7 +1210,7 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 		{"thread id absent from the index", hubcore.WebConfig{Past: emptyIndex}, appwire.ThreadReadParams{ThreadID: sessionID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			thread, found, err := pastThreadForRead(tc.cfg, tc.params)
+			thread, found, err := pastThreadForRead(context.Background(), tc.cfg, tc.params)
 			if found || err != nil || !reflect.DeepEqual(thread, appwire.Thread{}) {
 				t.Fatalf("pastThreadForRead = (%+v, %v, %v), want the empty not-found miss", thread, found, err)
 			}

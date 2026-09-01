@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -130,7 +131,7 @@ func BenchmarkPastThreadReadResponseCold(b *testing.B) {
 				}
 				pastTranscriptCache = apptranscript.NewTurnCache()
 				b.StartTimer()
-				response, found, err := pastThreadReadResponse(cfg, params)
+				response, found, err := pastThreadReadResponse(context.Background(), cfg, params)
 				if err != nil || !found {
 					b.Fatalf("pastThreadReadResponse = %v, %v", err, found)
 				}
