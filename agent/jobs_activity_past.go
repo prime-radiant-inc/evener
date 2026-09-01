@@ -226,7 +226,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx, sessionID))
+		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx, sessionID), 0)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
@@ -292,7 +292,7 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		}
 	}
 	jobs := jobstore.FoldOrdered(jobEvents)
-	// Consume from the SAME shared budget the scan above was sized against,
+	// Consume from the SAME shared budget the scan above was gated on,
 	// using the identical accounting projection's own budget will apply to
 	// this same data (activityOwnedShellCount mirrors activityOwnedRecords +
 	// the JobShell case in projectActivitySessionAt) — so aggregate work
