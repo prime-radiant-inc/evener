@@ -496,7 +496,7 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		arr, _ := value.([]any)
 		return fmt.Sprintf("%s: argument %q is below minItems (%d). Value has %d items.", toolName, displayPath, limit, len(arr))
 	case "enum":
-		allowed := asStringSlice(fieldSchema["enum"])
+		allowed := formatEnumValues(fieldSchema["enum"])
 		if len(allowed) == 0 {
 			return ""
 		}
@@ -794,8 +794,8 @@ func branchRequirement(branch any) string {
 	props := schemaProps(schema)
 	for _, name := range req {
 		prop := schemaMap(props, name)
-		if allowed := asStringSlice(prop["enum"]); len(allowed) > 0 {
-			parts = append(parts, fmt.Sprintf("%q must be one of %s", name, joinQuoted(allowed)))
+		if allowed := formatEnumValues(prop["enum"]); len(allowed) > 0 {
+			parts = append(parts, fmt.Sprintf("%q must be one of %s", name, strings.Join(allowed, ", ")))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -979,15 +979,18 @@ func examplePlaceholder(typ string) string {
 	}
 }
 
-// asStringSlice renders v — a schema's "required" list or "enum" list, in
-// either the []string a hand-built schema may carry or the []any a
-// JSON-decoded one unmarshals to — as a []string. Non-string elements are
-// formatted with fmt.Sprint (the value-rendering convention constraintMessage
-// already uses for a wrong-type instance value) rather than dropped: a
-// required list's entries are always already strings (JSON-Schema property
-// names), so this only changes output for an enum's non-string values — an
-// integer or boolean enum's allowed values must still render into the
-// constraint message instead of silently disappearing (issue #625).
+// asStringSlice renders v — a schema's "required" list — as a []string,
+// dropping any non-string element. Handles both the []string a hand-built
+// schema may carry and the []any a JSON-decoded one unmarshals to. Callers
+// render an "enum" list instead through formatEnumValues, never this: a
+// required list's entries are always already strings (JSON-Schema requires
+// it, and a schema violating that fails compilation before
+// ExplainSchemaError can ever run — issue #625's adversarial review, F4),
+// so dropping a non-string here is unreachable in practice, not a lossy
+// shortcut. Silently underreporting an impossible entry is preferable to
+// rendering it: this list's callers use its entries as bare property names,
+// and a formatted non-string among them (e.g. a stray "3") would read as a
+// property name that doesn't exist.
 func asStringSlice(v any) []string {
 	switch s := v.(type) {
 	case []string:
@@ -995,9 +998,67 @@ func asStringSlice(v any) []string {
 	case []any:
 		out := make([]string, 0, len(s))
 		for _, e := range s {
-			out = append(out, fmt.Sprint(e))
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
 		}
 		return out
 	}
 	return nil
+}
+
+// formatEnumValues renders a schema's "enum" list as JSON literals, one
+// string per value, ready to join with ", " into a message a model will
+// read as JSON syntax: a string value quoted ("open"), any other JSON type
+// (number, boolean, null, or a nested array/object) rendered as its own
+// JSON literal (1, true, null, [1,2]) — never Go's %v syntax. Handles both
+// the []string a hand-built schema may carry and the []any a JSON-decoded
+// one unmarshals to; unlike asStringSlice, every element here is
+// individually re-encoded, because a bare Go string isn't yet the
+// JSON-quoted form the message needs.
+//
+// This is the shared renderer for both of the enum-message call sites
+// (constraintMessage and branchRequirement) — issue #625's adversarial
+// review, F1: the two sites previously disagreed (one quoted every value,
+// the other quoted none), and quoting a non-string value either way
+// visually asserts the wrong JSON type, coaching the model to retry with a
+// value that fails validation again the same way. Routing both sites
+// through one function is what keeps them from re-diverging.
+func formatEnumValues(v any) []string {
+	switch s := v.(type) {
+	case []string:
+		out := make([]string, len(s))
+		for i, e := range s {
+			out[i] = formatEnumValue(e)
+		}
+		return out
+	case []any:
+		out := make([]string, len(s))
+		for i, e := range s {
+			out[i] = formatEnumValue(e)
+		}
+		return out
+	}
+	return nil
+}
+
+// formatEnumValue renders one enum value as its own JSON literal via
+// json.Marshal — the single source of truth for "what does this value look
+// like in JSON," rather than hand-rolled quoting rules. Every value reaching
+// here came from a compiled JSON-Schema's enum list (json.Unmarshal output,
+// or an equivalent Go literal built by this codebase's own schema
+// constructors), all of which are directly JSON-marshalable, so Marshal
+// cannot fail in practice; the fmt.Sprint fallback only guards that.
+//
+// A number outside roughly the 1e-6..1e21 magnitude range still renders in
+// scientific notation (json.Marshal's own choice, e.g. 1e21 -> "1e+21") —
+// valid JSON, so left as-is rather than special-cased: matching
+// json.Marshal's formatting is the JSON-faithful contract this function
+// exists to keep, not a promise of decimal notation at every magnitude.
+func formatEnumValue(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
 }
