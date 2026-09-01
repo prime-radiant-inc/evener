@@ -349,6 +349,15 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 	sort.Strings(ids)
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
+		// The delegate journal scan above is itself ctx-aware (#448), but a
+		// root can have many stable delegates, and an eligible one costs a
+		// transcript file read (delegateTranscriptPathFromRef +
+		// readExistingDelegateAttentionFold) — checking ctx only before the
+		// scan started would let this loop keep doing that work well after
+		// a caller has given up (roborev finding on #448).
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		aggregate := state[id]
 		row := captureDelegateSnapshot(aggregate)
 		row.needsAttention = false

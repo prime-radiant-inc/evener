@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -281,6 +282,51 @@ func TestLoadHistoricalStableActivityWithAttention_RespectsCancellation(t *testi
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
+	_, _, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, rootID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// countdownContext reports itself canceled once its Err method has been
+// called more times than allow, so a test can deterministically stop mid-
+// loop without depending on real time (mirrors the identically-named helper
+// in agent/internal/jobstore and agent/internal/delegatestore).
+type countdownContext struct {
+	context.Context
+	allow int32
+}
+
+func (c *countdownContext) Err() error {
+	if atomic.AddInt32(&c.allow, -1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAttentionLoop
+// covers roborev's finding on #448: unlike the test above (which cancels
+// before the call even starts, so it only proves the delegate-journal scan
+// itself is ctx-aware), this proves the attention-status loop AFTER that
+// scan completes also checks ctx — it can read one transcript file per
+// eligible delegate, so a root with many delegates must still stop
+// promptly on cancellation rather than working through all of them. All 30
+// delegate-created events here land in a single AppendBatch call, so they
+// occupy one journal batch line (a handful of ctx checks total to scan,
+// regardless of delegate count) — allow is set well past that fixed scan
+// cost but far short of 30 loop iterations, so cancellation is guaranteed
+// to land inside the attention loop, not the scan.
+func TestLoadHistoricalStableActivityWithAttention_ChecksCancellationDuringAttentionLoop(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "attnloopcancel"
+	const delegateCount = 30
+	descriptors := make([]delegatestore.Descriptor, delegateCount)
+	for i := range descriptors {
+		descriptors[i] = pastStableDescriptor(rootID, fmt.Sprintf("childattnloopcancel%d", i), "task")
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	ctx := &countdownContext{Context: context.Background(), allow: 10}
 
 	_, _, err := loadHistoricalStableActivityWithAttention(ctx, stateDir, rootID, rootID)
 	if !errors.Is(err, context.Canceled) {
