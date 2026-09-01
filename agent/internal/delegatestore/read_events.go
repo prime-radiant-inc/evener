@@ -17,7 +17,7 @@ type ReadDiagnostics struct {
 // unbounded scan (matching ReadEventsWithDiagnostics' behavior).
 type ScanLimits struct {
 	MaxBytes  int64 // raw bytes read from the file; 0 means unlimited
-	MaxEvents int   // decoded events retained; 0 means unlimited
+	MaxEvents int   // ceiling on retained events, checked per BATCH LINE not per event (see ScanEvents) — the final count can exceed this by up to one batch's worth; 0 means unlimited
 }
 
 // ErrScanLimitExceeded reports that ScanEvents stopped because a journal
@@ -177,7 +177,13 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, R
 			// MaxEvents: 1 scan materialize an oversized (or malformed —
 			// see TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted)
 			// later batch just to discover afterward that the budget was
-			// already spent.
+			// already spent. The tradeoff (roborev finding on #807's
+			// saturation commit): this check is per LINE, not per event, so
+			// a line that was allowed to decode because len(events) was
+			// still under the limit can push events past MaxEvents by up to
+			// that whole batch — deliberately not truncated mid-batch,
+			// since a batch's events are not independently safe to split
+			// for fold semantics (see ScanLimits.MaxEvents).
 			if err := ctx.Err(); err != nil {
 				return nil, ReadDiagnostics{}, err
 			}
