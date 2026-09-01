@@ -90,6 +90,50 @@ func TestSessionFileWithErrorNilCache(t *testing.T) {
 	}
 }
 
+// TestSessionFileWithErrorRecoversAfterTransientLockReleases covers issue #744:
+// a transient flock collision (ErrAPILogTargetLocked) must not latch a session
+// out of canonical logging the way a permanent failure does (contrast with
+// TestSessionFileWithErrorNilCache above). Once the contending holder releases
+// the lock, the next call must retry the open instead of replaying a cached
+// failure.
+func TestSessionFileWithErrorRecoversAfterTransientLockReleases(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Hold the flock on "unattributed"'s target file the way another evener
+	// process would (e.g. a hub-spawned serve daemon that reached this
+	// project's session log first) — same mechanism as
+	// TestCovOpenPrivateAPILogFileTargetLocked, aimed at the session route.
+	target := filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")
+	contender, err := openPrivateAPILogFile(target)
+	if err != nil {
+		t.Fatalf("open contender lock: %v", err)
+	}
+
+	// First call collides with the contender's flock and fails.
+	if _, err := logger.sessionFileWithError(""); !errors.Is(err, ErrAPILogTargetLocked) {
+		t.Fatalf("first sessionFileWithError = %v, want ErrAPILogTargetLocked", err)
+	}
+
+	// The contender releases the lock — e.g. the other process exits.
+	if err := contender.Close(); err != nil {
+		t.Fatalf("close contender: %v", err)
+	}
+
+	// A later call must retry the open, not replay the cached failure.
+	f, err := logger.sessionFileWithError("")
+	if err != nil {
+		t.Fatalf("sessionFileWithError after lock release = %v, want success", err)
+	}
+	if f == nil {
+		t.Fatal("sessionFileWithError after lock release returned a nil file")
+	}
+}
+
 // TestReserveSessionNoSessionsDir covers the empty sessionsDir path (lines 147-148).
 func TestReserveSessionNoSessionsDir(t *testing.T) {
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
