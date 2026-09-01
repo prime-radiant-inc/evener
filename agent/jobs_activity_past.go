@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -246,6 +247,24 @@ func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) 
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
+		if errors.Is(err, delegatestore.ErrLineTooLong) {
+			// roborev's #448 regression review, CRITICAL finding: this
+			// journal is shared by every session under rootSessionID, and
+			// both readers below (the recursive activity-tree walk via
+			// rootDelegates, and LoadSessionDelegateStatus's single-shot
+			// read via loadHistoricalStableActivityWithAttention, reached
+			// from the hub's ThreadRead RPC) used to propagate this
+			// unclassified -- one oversized line hard-failed the WHOLE
+			// activity tree, and separately the primary chat/transcript
+			// view (live or historical) for every session sharing this
+			// root. Posture ruling: loud but CONTAINED. Degrade to an
+			// empty delegate set (there is no partial result to salvage
+			// past a corrupt line ErrLineTooLong itself never returns
+			// one for) with a diagnostic that names the file and line
+			// (err's own message already carries both), rather than
+			// failing the caller outright.
+			return delegatestore.State{}, 0, []string{fmt.Sprintf("delegate_journal_line_too_long: %v", err)}, nil
+		}
 		return nil, 0, nil, err
 	}
 	var diagnostics []string
