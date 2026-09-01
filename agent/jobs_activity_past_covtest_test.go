@@ -460,7 +460,7 @@ func TestLoadHistoricalStableActivity_TornTailDiagnostic(t *testing.T) {
 	}
 	_ = f.Close()
 
-	_, diags, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
+	_, diags, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
 	// This is hard to construct directly, so we test the normal path
 	// with a valid delegate and verify the non-nil branch (line 118).
 	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "childnilagg", "nil test"))
-	rows, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
+	rows, _, _, err := loadHistoricalStableActivity(newHistoricalActivityCache(context.Background(), ""), stateDir, rootID, rootID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

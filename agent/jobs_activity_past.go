@@ -22,21 +22,28 @@ import (
 // child transcript.
 var activityUsageCache = apptranscript.NewTurnCache()
 
-// historicalJobScanLimits.MaxBytes bounds one session's jobs.jsonl scan
-// during activity-tree loading. It is generous relative to any legitimate
-// journal — the largest observed in production was 6.99 MiB / 562 jobs
-// (#448) — but finite, so a single pathologically large record (as opposed
-// to too many records — see MaxEvents below) can't force unbounded
-// decoding. jobstore.Event carries only modest string fields (command,
-// description, task, paths), so this is not expected to be reachable by
-// legitimate use at all.
+// historicalJobScanLimits bounds one session's jobs.jsonl scan during
+// activity-tree loading, independent of activityMaxWorkUnits (roborev
+// finding on #807 — an earlier round tied MaxEvents directly to the
+// traversal's remaining work-unit budget instead: remaining is a count of
+// roughly one unit per RENDERED job record, but a raw scan reads every
+// jobstore event kind, including non-job-record ones like watch events
+// (jobstore.isJobRecordEventKind) that consume raw-event budget without
+// ever counting as work, and a single job record itself can span several
+// events — started, finished, message-sent, notification... So a session
+// with many non-job events ahead of its real jobs could have its scan
+// ceiling hit long before any of those later, legitimate jobs were ever
+// read, even with plenty of the work budget those jobs would have used
+// left unspent. The scan's own ceiling is now a fixed, generous safety
+// valve, not a proxy for how many job records the traversal still wants.
 //
-// MaxEvents is left at 0 (unlimited) here deliberately: loadHistoricalActivityBase
-// computes it per call from the traversal's remaining activityMaxWorkUnits
-// budget instead of a fixed constant (#448 finding 1) — that ceiling is
-// already far smaller than any fixed safety valve would be, so a second,
-// independent event ceiling here would only ever be redundant.
-var historicalJobScanLimits = jobstore.ScanLimits{MaxBytes: 32 << 20}
+// MaxBytes is generous relative to any legitimate journal — the largest
+// observed in production was 6.99 MiB / 562 jobs (#448) — but finite, so a
+// single pathologically large record can't force unbounded decoding.
+// MaxEvents at 100,000 is 50x activityMaxWorkUnits: generous headroom for
+// multi-event jobs and non-job events, while still a real safety valve
+// against truly pathological input.
+var historicalJobScanLimits = jobstore.ScanLimits{MaxBytes: 32 << 20, MaxEvents: 100_000}
 
 // historicalDelegateScanLimits bounds the shared root delegates.jsonl scan.
 // Unlike jobs.jsonl, this ceiling is NOT tied to activityMaxWorkUnits — a
@@ -71,6 +78,14 @@ type rootDelegateIndex struct {
 	byOwner     map[string][]string // ownerSessionID -> sorted delegate IDs
 	state       delegatestore.State
 	diagnostics []string
+	// truncated reports that the shared delegate journal scan hit its own
+	// ceiling and state is a partial prefix, not the complete set of
+	// delegates (roborev finding on #807: this used to surface only as a
+	// diagnostic string, leaving Branch.Truncated false and
+	// Counts.Complete potentially true despite delegates having been
+	// silently dropped — see loadHistoricalActivityBase, which now ORs
+	// this into LoadTruncated).
+	truncated bool
 }
 
 // historicalActivityCache threads cancellation and shares per-traversal
@@ -125,19 +140,19 @@ func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalA
 // review). ScanEvents already returns whatever it decoded before the ceiling
 // fired, so that prefix is folded and reported with a scan_truncated
 // diagnostic.
-func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, []string, error) {
+func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, []string, bool, error) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
 	events, readDiagnostics, err := scanDelegateJournal(ctx, path, historicalDelegateScanLimits)
 	scanTruncated := false
 	if err != nil {
 		if !errors.Is(err, delegatestore.ErrScanLimitExceeded) {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		scanTruncated = true
 	}
 	state, err := delegatestore.Fold(events)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	var diagnostics []string
 	if readDiagnostics.TornTail {
@@ -146,7 +161,7 @@ func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) 
 	if scanTruncated {
 		diagnostics = append(diagnostics, "delegate_journal_scan_truncated: exceeds the scan limit, some delegates may be missing")
 	}
-	return state, diagnostics, nil
+	return state, diagnostics, scanTruncated, nil
 }
 
 // rootDelegates returns rootSessionID's delegate index, scanning and folding
@@ -158,7 +173,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	if idx, ok := c.delegateIndex[rootSessionID]; ok {
 		return idx, nil
 	}
-	state, diagnostics, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
+	state, diagnostics, truncated, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +188,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	for owner := range byOwner {
 		sort.Strings(byOwner[owner])
 	}
-	idx := &rootDelegateIndex{byOwner: byOwner, state: state, diagnostics: diagnostics}
+	idx := &rootDelegateIndex{byOwner: byOwner, state: state, diagnostics: diagnostics, truncated: truncated}
 	c.delegateIndex[rootSessionID] = idx
 	return idx, nil
 }
@@ -248,25 +263,17 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
 		}
 	} else {
-		// #448 finding 1: cap this session's OWN scan at what's left of the
-		// tree-wide work-unit budget (not the fixed, much larger
-		// historicalJobScanLimits.MaxEvents safety valve) — the same
-		// ceiling activityMaxWorkUnits already applies to the response, just
-		// enforced during decode instead of only after. A session that
-		// already has more raw events than the whole remaining budget can
-		// realistically fit is a session decoding will never fully use
-		// anyway. Byte ceiling stays the fixed, work-unit-independent safety
-		// valve: it bounds a different pathology (one huge record), not job
-		// count.
-		remaining := activityBudgetRemaining(cache.budget)
-		if remaining == 0 {
+		// #448 finding 1: skip this session's scan entirely once the
+		// tree-wide load budget is already fully spent by earlier sessions
+		// — nothing it loads would ever be rendered anyway. This is a pure
+		// "should I even visit this session" traversal-breadth check,
+		// unrelated to the scan's OWN raw ceiling below (roborev finding on
+		// #807: remaining, a work-unit count, must not be used as the raw
+		// scanner's MaxEvents — see historicalJobScanLimits' doc comment).
+		if activityBudgetRemaining(cache.budget) == 0 {
 			loadTruncated = true
 		} else {
-			limits := historicalJobScanLimits
-			if remaining > 0 {
-				limits.MaxEvents = remaining
-			}
-			events, err := scanJobJournal(cache.ctx, jobsPath, limits)
+			events, err := scanJobJournal(cache.ctx, jobsPath, historicalJobScanLimits)
 			if err != nil {
 				if !errors.Is(err, jobstore.ErrScanLimitExceeded) {
 					return activityLoadedBase{}, err
@@ -274,10 +281,11 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 				// Degrade to partial rather than hard-fail: events already
 				// holds everything decoded before the ceiling fired (see
 				// jobstore.ScanEvents' partial-result contract), so a
-				// malformed or merely enormous tail past the point this
-				// session's budget share would ever render doesn't sink the
-				// whole tree — it marks this branch Truncated instead (see
-				// LoadTruncated below / projectActivitySessionAt).
+				// malformed or merely enormous tail past
+				// historicalJobScanLimits' own (work-budget-independent)
+				// ceiling doesn't sink the whole tree — it marks this
+				// branch Truncated instead (see LoadTruncated below /
+				// projectActivitySessionAt).
 				loadTruncated = true
 			}
 			jobEvents = events
@@ -291,10 +299,18 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	// across every session this traversal visits is bounded, not just this
 	// one file's own scan.
 	activityConsumeWorkUnit(cache.budget, activityOwnedShellCount(sessionID, jobs))
-	stable, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
+	stable, diagnostics, delegatesTruncated, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
+	// roborev finding on #807: a truncated delegate journal used to surface
+	// only as a diagnostic string, leaving Branch.Truncated false (a client
+	// could see Counts.Complete=true despite delegates having been
+	// silently dropped). Folding it into the same LoadTruncated flag the
+	// jobs scan uses gets it the identical wire treatment (Truncated=true,
+	// no continuation — see markActivitySessionTruncated) without a
+	// parallel mechanism.
+	loadTruncated = loadTruncated || delegatesTruncated
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:       sessionID,
 		Ref:             encodeRef("", sessionID),
@@ -314,17 +330,17 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 // from rootSessionID's shared delegate journal, via cache so the journal
 // itself is scanned and folded at most once per root across the whole
 // traversal (see historicalActivityCache).
-func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
+func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, bool, error) {
 	idx, err := cache.rootDelegates(stateDir, rootSessionID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	ids := idx.byOwner[ownerSessionID]
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
 		rows[id] = captureDelegateSnapshot(idx.state[id])
 	}
-	return rows, idx.diagnostics, nil
+	return rows, idx.diagnostics, idx.truncated, nil
 }
 
 // loadHistoricalStableActivityWithAttention is LoadSessionDelegateStatus'
@@ -335,7 +351,7 @@ func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, root
 // review finding 2), even though it doesn't share that cache (this is one
 // read, not a multi-session traversal that benefits from memoizing it).
 func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
-	state, diagnostics, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
+	state, diagnostics, _, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, nil, err
 	}

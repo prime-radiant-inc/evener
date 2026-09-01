@@ -128,6 +128,15 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	if cont.RootID == "" || cont.SessionID == "" {
 		return activityContinuation{}, errors.New("continuation missing root or session")
 	}
+	// Continuation paths are client-controlled (roborev finding on #807):
+	// without this, a long valid path could force buildActivityContinuationAt
+	// to open many historical sessions' files with no bound at all, since
+	// ordinary (non-continuation) traversal's own depth limit
+	// (activityMaxNewDepth) is enforced by buildActivityFullSnapshot's
+	// recursion, which this path-following code doesn't go through.
+	if len(cont.Path) > activityMaxNewDepth {
+		return activityContinuation{}, fmt.Errorf("continuation path length %d exceeds %d", len(cont.Path), activityMaxNewDepth)
+	}
 	if expectedRoot != "" && cont.RootID != expectedRoot {
 		return activityContinuation{}, fmt.Errorf("continuation root %q does not match %q", cont.RootID, expectedRoot)
 	}
@@ -308,9 +317,20 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		//     reaches projection's identical exhaustion point on this same,
 		//     now-smaller tree — no placeholder needed.
 		if depth >= cache.budget.maxDepth {
+			// Ref must equal descriptor.TranscriptRef, not a hard-coded
+			// local ref (roborev finding on #807): projectStableActivityDelegate
+			// validates child.Ref != descriptor.TranscriptRef before its own
+			// depth check runs, so a placeholder built from a different ref
+			// shape than the descriptor's own would mismatch and fall into
+			// "child link does not match loaded session" instead of the
+			// honest depth-truncation branch. activityChildSessionForStable
+			// above already rejects a non-local TranscriptRef outright, so
+			// today row.descriptor.TranscriptRef is always
+			// encodeRef("", childID) too — this keeps the placeholder
+			// correct by construction rather than by that coincidence.
 			snapshot.Children[childID] = &activitySessionSnapshot{
 				SessionID:       childID,
-				Ref:             encodeRef("", childID),
+				Ref:             row.descriptor.TranscriptRef,
 				LiveJobs:        map[string]*jobstore.JobRecord{},
 				StableDelegates: map[string]delegateSnapshot{},
 				Children:        map[string]*activitySessionSnapshot{},
@@ -365,6 +385,16 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
 		return buildActivityFullSnapshot(loc, visited, required, cache)
+	}
+	// Charge this hop against the shared load budget the same way
+	// buildActivityFullSnapshot charges each child it visits (roborev
+	// finding on #807): decodeActivityContinuation's path-length cap bounds
+	// how many hops a SINGLE continuation can name, but says nothing about
+	// how much of the tree-wide load budget resolving them consumes --
+	// loadActivityBase below opens files, and without this, that happened
+	// unconditionally, once per hop, with no bound of its own.
+	if !activityConsumeWorkUnit(cache.budget, 1) {
+		return nil, errors.New("continuation path exhausted the load budget")
 	}
 	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
@@ -746,7 +776,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		switch rec.Type {
 		case jobstore.JobShell:
 			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path)
+				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, snapshot.LoadTruncated)
 				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 				return projected
 			}
@@ -758,7 +788,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	}
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
 		if !activityConsumeWorkUnit(budget, 1) {
-			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path)
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, snapshot.LoadTruncated)
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
 			return projected
 		}
@@ -965,12 +995,23 @@ func activityOwnedShellCount(sessionID string, jobs []*jobstore.JobRecord) int {
 	return count
 }
 
-func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string) {
+// markActivitySessionTruncated marks a mid-list cutoff within a session's
+// own entries. loadTruncated must be the snapshot's own LoadTruncated: when
+// true, the LOAD phase already decided this session's data is a partial
+// prefix with deliberately no continuation (a resumed load rescans this
+// same session's own journal from byte zero with a fresh budget, so a
+// minted token would never actually advance), and this call's own
+// (separate, projection-phase) budget can independently trip on the very
+// same session — roborev's finding on #807: the load and projection
+// phases use separate activityBudget instances, so both firing on one
+// session is not a corner case, and unconditionally minting a continuation
+// here would silently defeat LoadTruncated's whole point.
+func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *activityBudget, sessionID string, path []string, loadTruncated bool) {
 	if session == nil {
 		return
 	}
 	session.Branch.Truncated = true
-	if budget != nil && budget.rootID != "" {
+	if !loadTruncated && budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 			Version:   activityContinuationV1,
 			RootID:    budget.rootID,
