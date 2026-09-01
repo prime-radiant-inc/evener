@@ -580,6 +580,30 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	}
 }
 
+// TestClient_HasProvider pins the case-insensitive "is this provider
+// registered" check shared by every provider-name validation that needs one
+// (--fast-cheap-model, --vision-model, and their session-side twin): a single
+// Client method rather than three identical copies of this loop.
+func TestClient_HasProvider(t *testing.T) {
+	var nilClient *Client
+	if nilClient.HasProvider("openai") {
+		t.Error("nil client should never have a provider")
+	}
+
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	if !c.HasProvider("openai") {
+		t.Error("expected registered provider to be found")
+	}
+	// Match is case-insensitive.
+	if !c.HasProvider("OpenAI") {
+		t.Error("provider match should be case-insensitive")
+	}
+	if c.HasProvider("anthropic") {
+		t.Error("unregistered provider should not be found")
+	}
+}
+
 // TestNormalizeProviderName_GeminiNoRewrite verifies that after removing the
 // gemini→google routing alias, normalizeProviderName("gemini") returns "gemini"
 // unchanged. Routing now relies on the profile id being "google" (PRI-1880).

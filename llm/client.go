@@ -241,6 +241,22 @@ func (c *Client) ProviderNames() []string {
 	return out
 }
 
+// HasProvider reports whether name matches a provider ProviderNames lists,
+// case-insensitively. It is the shared check behind every "is this provider
+// configured (and credentialed)" validation — --fast-cheap-model,
+// --vision-model, and the session-side vision-model equivalent.
+func (c *Client) HasProvider(name string) bool {
+	if c == nil {
+		return false
+	}
+	for _, p := range c.ProviderNames() {
+		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchTarget is where one request goes: an override, a resolved record,
 // or both (spec §8.1).
 type dispatchTarget struct {
