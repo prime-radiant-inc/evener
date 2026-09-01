@@ -290,15 +290,28 @@ func webSearchExplicit(prov map[string]string) bool {
 // that does not separately re-derive it through BoolValue - a bare
 // Request.WebSearch = true, set without consulting the registry at all,
 // would still reach the wire. false is unambiguous at every layer that
-// reads it. prov's entry is repointed at the gate rather than deleted, so
-// Provenance still explains the value instead of looking unset.
+// reads it.
+//
+// The rewrite - prov's entry repointed at the gate, a warning returned -
+// happens only when the gate is the reason the value is false: caps.WebSearch
+// was true before it ran. When some earlier, non-config layer already set
+// false for its own reason (amazon-bedrock's *anthropic.* row glob: the
+// Messages endpoint simply lacks the capability, nothing to do with
+// whether this endpoint is first-party), the gate agrees with the outcome
+// but is not why it holds, so it leaves Provenance naming the real reason
+// and returns no warning - nothing changed here for an operator to be told
+// about.
 //
 // Returns the warning naming why WebSearch was stripped, so an operator
 // fronting a real first-party vendor with a mirror or audit gateway sees
 // why web_search went quiet instead of finding out only when the model
-// tries to use it and cannot; empty when nothing fired.
+// tries to use it and cannot; empty when nothing fired, including when the
+// value was already false.
 func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, resolvedBaseURL string, ownOverride bool) string {
 	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, resolvedBaseURL, ownOverride) {
+		return ""
+	}
+	if !*caps.WebSearch {
 		return ""
 	}
 	caps.WebSearch = new(false)
