@@ -414,6 +414,10 @@ base = "google-vertex-anthropic"
 "GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com"
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.bedrockgw]
+base = "amazon-bedrock"
+base_url = "https://bedrock-gateway.example/v1"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -443,6 +447,25 @@ base = "google-vertex-anthropic"
 		if got := hasWarning(res, "web_search disabled"); got != c.wantWarn {
 			t.Errorf("%s: web_search-disabled warning present = %v, want %v (%s): %v", c.ref, got, c.wantWarn, c.desc, res.Warnings)
 		}
+	}
+
+	// bedrockgw is diverged (a literal base_url, so not first-party) but
+	// resolves an *anthropic.* row: amazon-bedrock's own curated glob
+	// already sets web_search = false there for an unrelated reason (the
+	// Messages endpoint lacks the capability, providers_overlay.toml), not
+	// because of divergence. The gate must not restate a value that was
+	// already correct: no warning (nothing changed), and Provenance must
+	// keep naming the glob, not the gate, so a reader still finds the real
+	// reason.
+	bgw := mustResolve(t, r, "bedrockgw/anthropic.claude-sonnet-5")
+	if bp(bgw.Caps.WebSearch) != "false" {
+		t.Errorf("bedrockgw: web_search = %s, want false (unchanged - already false before the gate ran)", bp(bgw.Caps.WebSearch))
+	}
+	if got := bgw.Provenance["WebSearch"]; got != "overlay/glob:*anthropic.*" {
+		t.Errorf("bedrockgw: Provenance[WebSearch] = %q, want the original glob's tag preserved, not overwritten by the gate", got)
+	}
+	if hasWarning(bgw, "web_search disabled") {
+		t.Errorf("bedrockgw: unexpected web_search-disabled warning for a value the gate did not change: %v", bgw.Warnings)
 	}
 
 	proxy := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://proxy.example/v1"}, "")
