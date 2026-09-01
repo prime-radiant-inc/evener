@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
@@ -26,11 +27,21 @@ type providerSection struct {
 	APIKey string `toml:"api_key,omitempty"`
 }
 
-// Store is the in-memory + on-disk credentials.toml.
+// Store is the in-memory + on-disk credentials.toml. One Store is shared by
+// every evener/auth/* RPC handler plus evener/instance/remove on the hub's
+// single hubAuthController, and AppWire serializes requests only within a
+// single connection - two browser tabs, or a browser and the TUI, can call
+// Set/Clear/Get concurrently. mu guards data (a plain map, unsafe for
+// concurrent read+write) and serializes save()'s temp-file-then-rename pair,
+// so two racing writers can't interleave on the same .tmp path and corrupt
+// or drop each other's update. path and fs are set once at construction
+// (loadStoreFS) and never mutated again, so reading them needs no lock.
 type Store struct {
 	path string
-	data fileShape
 	fs   afero.Fs
+
+	mu   sync.RWMutex
+	data fileShape
 }
 
 // LoadStore reads path. Missing returns an empty Store. Non-missing files
@@ -73,6 +84,8 @@ func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
 // Get returns the file-layer key stored under name (an instance name, spec
 // §10). The environment is the registry's business, not the store's.
 func (s *Store) Get(name string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	p, ok := s.data.Providers[strings.ToLower(name)]
 	if !ok || strings.TrimSpace(p.APIKey) == "" {
 		return "", false
@@ -83,6 +96,8 @@ func (s *Store) Get(name string) (string, bool) {
 // Names lists every entry, sorted, so a caller can report entries that
 // name no instance (spec §14.1).
 func (s *Store) Names() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]string, 0, len(s.data.Providers))
 	for name := range s.data.Providers {
 		out = append(out, name)
@@ -96,6 +111,8 @@ func (s *Store) Path() string { return s.path }
 
 // Set writes an instance's API key into the in-memory store and persists.
 func (s *Store) Set(name, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	name = strings.ToLower(name)
 	if s.data.Providers == nil {
 		s.data.Providers = map[string]providerSection{}
@@ -106,11 +123,16 @@ func (s *Store) Set(name, value string) error {
 
 // Clear removes the entry. No error if absent.
 func (s *Store) Clear(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	name = strings.ToLower(name)
 	delete(s.data.Providers, name)
 	return s.save()
 }
 
+// save persists s.data. Callers must hold mu (Lock, not RLock): it both
+// reads data for encoding and is the only place two concurrent writers could
+// otherwise interleave on the same .tmp path.
 func (s *Store) save() error {
 	if s.path == "" {
 		return nil
