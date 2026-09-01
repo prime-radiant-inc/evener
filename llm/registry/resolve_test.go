@@ -335,6 +335,28 @@ surface = "anthropic"
 // default for its base_url vars (GOOGLE_VERTEX_PROJECT/LOCATION) must stay
 // gated when its own base_url replaced the template - the exact #738
 // failure shape, one vendor over.
+//
+// The case list also pins three properties the gate must hold beyond that:
+//   - the strip lands as an explicit false, never nil: every protocol
+//     adapter's own gate (caps.WebSearch == nil || *caps.WebSearch) treats
+//     nil as permissive, so nil'ing the cap only denies a caller that also
+//     rederives WebSearch from Caps (profile.SupportsWebSearch does; a
+//     caller that sets Request.WebSearch directly - cmd/llmcall's
+//     --web-search flag, for one - does not, and would still get the
+//     tool). Every "stripped" case below asserts "false", not "nil" (bp on
+//     a *bool distinguishes all three states).
+//   - a model row's own divergent base_url (rowdiverge, vertexrow) gates
+//     the same as an instance-level one: buildTransport merges a row's own
+//     base_url into the same endpoint the request actually reaches, so the
+//     gate has to judge that fully resolved endpoint, not just the
+//     instance's.
+//   - overriding a host-rule-computed variable directly (vertexhostgw)
+//     bypasses vertex-location's derivation (vertexHost(LOCATION)) the same
+//     way a literal base_url does, while leaving ownBaseURL empty - the
+//     vars-only carve-out trusts vars, but not the one var whose whole job
+//     is picking the host. vertexhostsame is the verbatim-match carve-out's
+//     Vertex analog: supplying the host rule's own answer by hand is not
+//     "different".
 func TestResolve_WebSearchEndpointGate(t *testing.T) {
 	cfg := `
 [providers.bedrock]
@@ -365,6 +387,33 @@ base = "google-vertex-anthropic"
 [providers.vertexgw]
 base = "google-vertex-anthropic"
 base_url = "https://vertex-gateway.example/v1"
+
+[providers.rowdiverge]
+base = "openai"
+[providers.rowdiverge.models."gpt-5.5"]
+base_url = "https://row-gateway.example/v1"
+
+[providers.vertexrow]
+base = "google-vertex-anthropic"
+[providers.vertexrow.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+[providers.vertexrow.models."claude-opus-5"]
+base_url = "https://row-gateway.example/v1"
+
+[providers.vertexhostgw]
+base = "google-vertex-anthropic"
+[providers.vertexhostgw.vars]
+"GOOGLE_VERTEX_HOST" = "https://vertex-gateway.example"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.vertexhostsame]
+base = "google-vertex-anthropic"
+[providers.vertexhostsame.vars]
+"GOOGLE_VERTEX_HOST" = "https://aiplatform.googleapis.com"
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -373,13 +422,18 @@ base_url = "https://vertex-gateway.example/v1"
 		wantWarn bool
 		desc     string
 	}{
-		{"bedrock/us.openai.gpt-5.6-luna", "nil", true, "a literal base_url naming a different endpoint must not inherit web_search"},
+		{"bedrock/us.openai.gpt-5.6-luna", "false", true, "a literal base_url naming a different endpoint must not inherit web_search, and must land as an explicit false, not nil"},
 		{"openai/gpt-5.5", "true", false, "openai itself, unmodified, must keep web_search"},
 		{"same/gpt-5.5", "true", false, "copying the default base_url verbatim is not different (spec §10)"},
 		{"optedin/gpt-5.5", "true", false, "an explicit web_search = true must still opt a proxy in, silently"},
 		{"optedout/claude-opus-5", "false", false, "an explicit web_search = false at a genuinely diverged base_url is still the escape hatch, silently"},
 		{"vertex/claude-opus-5", "true", false, "vertex keeps the template and supplies vars, so it inherits normally"},
-		{"vertexgw/claude-opus-5", "nil", true, "a literal base_url on a Vertex-based instance must not inherit web_search either - the vars-only carve-out must not swallow this"},
+		{"vertexgw/claude-opus-5", "false", true, "a literal base_url on a Vertex-based instance must not inherit web_search either - the vars-only carve-out must not swallow this"},
+		{"rowdiverge/gpt-5.5", "false", true, "a model row's own divergent base_url must strip web_search even though the instance itself is first-party"},
+		{"rowdiverge/gpt-5.6", "true", false, "a different model under the same first-party instance, with no row override, keeps web_search"},
+		{"vertexrow/claude-opus-5", "false", true, "a model row's own divergent base_url strips web_search on the vars-only-carve-out family too"},
+		{"vertexhostgw/claude-opus-5", "false", true, "overriding GOOGLE_VERTEX_HOST directly bypasses the location-derived host and must not be first-party"},
+		{"vertexhostsame/claude-opus-5", "true", false, "a GOOGLE_VERTEX_HOST override that reproduces the location-derived host verbatim is not different"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)
@@ -393,8 +447,8 @@ base_url = "https://vertex-gateway.example/v1"
 
 	proxy := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://proxy.example/v1"}, "")
 	res := mustResolve(t, proxy, "openai/gpt-5.5")
-	if bp(res.Caps.WebSearch) != "nil" {
-		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: web_search = %s, want nil (a gateway that merely speaks the protocol cannot honor it)", bp(res.Caps.WebSearch))
+	if bp(res.Caps.WebSearch) != "false" {
+		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: web_search = %s, want false, not nil (a gateway that merely speaks the protocol cannot honor it, and nil is fail-open at the adapter layer)", bp(res.Caps.WebSearch))
 	}
 	if !hasWarning(res, "web_search disabled") {
 		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: expected a web_search-disabled warning, got %v", res.Warnings)

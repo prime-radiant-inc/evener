@@ -55,7 +55,8 @@
     "max_tokens_field": "max_completion_tokens",
     "thinking_format": "zai",
     "reasoning_summary": "auto",
-    "strict_tools": true
+    "strict_tools": true,
+    "web_search": false
   },
   "headers": {
     "OpenAI-Organization": "org-golden",
@@ -72,6 +73,7 @@
     "StrictTools": "overlay/provider",
     "Surface": "derived",
     "ThinkingFormat": "config/row",
+    "WebSearch": "gate/first-party",
     "model": "row:glm-5.2-nvfp4"
   },
   "warnings": [

@@ -85,7 +85,8 @@
     "max_tokens_field": "max_completion_tokens",
     "reasoning_summary": "detailed",
     "strict_tools": true,
-    "image_detail": "original"
+    "image_detail": "original",
+    "web_search": false
   },
   "headers": {
     "OpenAI-Organization": "org-golden"
@@ -120,6 +121,7 @@
     "StructuredOutput": "snapshot/row",
     "Surface": "snapshot/row",
     "Tools": "snapshot/row",
+    "WebSearch": "gate/first-party",
     "model": "row:gpt-5.5"
   },
   "warnings": [
