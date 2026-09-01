@@ -1090,9 +1090,7 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 		t.Fatal("test-web wait mutation target changed; update the mechanism RED test")
 	}
 	data = bytes.Replace(data, []byte(old), []byte(deferredWaitBlock), 1)
-	if err := os.WriteFile(path, data, 0o755); err != nil {
-		t.Fatalf("write test-web mutation: %v", err)
-	}
+	writeTestFile(t, path, data, 0o755)
 }
 
 func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
@@ -1715,6 +1713,17 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
+	// Every fixture write lands here, including the scripts/*.sh copies and
+	// the go/npm/node/git toolchain shims that make test-web and make build
+	// exec by relative path (issue #609). os.WriteFile leaves an open write
+	// fd that a concurrent fork inherits until it execs, failing that exec
+	// with ETXTBSY (golang/go#22315); holding ForkLock for reading across
+	// the write excludes such a fork, as writeExecutable (install_test.go)
+	// does for its own callers. Nothing reaching this helper runs parallel
+	// today, so taking the lock on every write forecloses the hazard by
+	// construction instead of leaning on test ordering.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, data, mode); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
