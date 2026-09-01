@@ -2,9 +2,14 @@ package delegatestore
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -131,5 +136,122 @@ func TestReadEventsRejectsUnknownVersionWithoutMutation(t *testing.T) {
 	}
 	if got := mustReadFile(t, path); !bytes.Equal(got, raw) {
 		t.Fatalf("ReadEvents changed bytes:\n got %q\nwant %q", got, raw)
+	}
+}
+
+// countdownContext reports itself canceled once its Err method has been
+// called more times than allow, so a test can deterministically stop a scan
+// partway through a journal without depending on real time or file size.
+type countdownContext struct {
+	context.Context
+	allow int32
+}
+
+func (c *countdownContext) Err() error {
+	if atomic.AddInt32(&c.allow, -1) < 0 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// writeDelegateJournal writes a valid version header followed by n batch
+// lines, each holding one distinct top-level delegate-created event, so
+// scan-limit and cancellation tests can control the exact line count.
+func writeDelegateJournal(t *testing.T, path string, n int) {
+	t.Helper()
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	for i := range n {
+		event := createdEvent(fmt.Sprintf("dlg_%d", i), "")
+		event.Seq = uint64(i + 1)
+		batch, err := json.Marshal(batchRecord{Events: []Event{event}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(batch)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanEvents_WithinLimitsDecodesNormally(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 5)
+
+	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{MaxBytes: 1 << 20, MaxEvents: 100})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if diagnostics.TornTail {
+		t.Errorf("diagnostics.TornTail = true, want false for a terminated journal")
+	}
+	if len(events) != 5 {
+		t.Fatalf("got %d events, want 5", len(events))
+	}
+}
+
+func TestScanEvents_Missing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "delegates.jsonl")
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	if events != nil {
+		t.Fatalf("events = %#v, want nil", events)
+	}
+}
+
+// TestScanEvents_ChecksCancellationBetweenRecords covers #448's acceptance
+// criterion that a large-journal scan checks ctx between records (here, one
+// event per batch line), not just once per file.
+func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	const total = 200
+	writeDelegateJournal(t, path, total)
+
+	ctx := &countdownContext{Context: context.Background(), allow: 10}
+	events, _, err := ScanEvents(ctx, path, ScanLimits{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScanEvents error = %v, want context.Canceled", err)
+	}
+	if events != nil {
+		t.Fatalf("ScanEvents returned %d events despite cancellation, want none retained", len(events))
+	}
+}
+
+// TestScanEvents_RefusesRawEventLimit covers the raw-limit-refusal
+// acceptance test on the event-count dimension: a journal over the event
+// ceiling is refused before Fold ever sees it.
+func TestScanEvents_RefusesRawEventLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 50)
+
+	_, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 10})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_RefusesRawByteLimit covers the raw-limit-refusal acceptance
+// test on the byte dimension: a journal over the byte ceiling is refused
+// before being retained.
+func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 200)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxBytes: info.Size() / 2})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
 	}
 }
