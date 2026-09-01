@@ -325,6 +325,40 @@ func BenchmarkLoadEmbeddedDefaults(b *testing.B) {
 	}
 }
 
+var providerBenchmarkSink Provider
+
+func BenchmarkProviderCatalogViews(b *testing.B) {
+	stateRoot := b.TempDir()
+	registry, err := Load(
+		WithStateRoot(stateRoot),
+		WithEnv(mapEnv(nil)),
+		WithNoUserLayer(),
+		WithOffline(true),
+		WithoutCache(),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ids := registry.ProviderIDs()
+
+	b.Run("owned", func(b *testing.B) {
+		for b.Loop() {
+			for _, id := range ids {
+				providerBenchmarkSink, _ = registry.Provider(id)
+			}
+		}
+		b.ReportMetric(float64(len(ids)), "providers/op")
+	})
+	b.Run("shallow-reference", func(b *testing.B) {
+		for b.Loop() {
+			for _, id := range ids {
+				providerBenchmarkSink = registry.curated[id].head
+			}
+		}
+		b.ReportMetric(float64(len(ids)), "providers/op")
+	})
+}
+
 func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 	r := fixtureLoad(t, nil, "")
 	codex := r.curated["openai-codex"]
