@@ -1936,14 +1936,38 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 		t.Fatalf("replacement ThreadRead: %v", err)
 	}
 	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("notification during replacement read method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
-		}
+	case <-acknowledged:
 	case <-time.After(time.Second):
-		t.Fatal("changed-target notification was lost after replacement routes published")
+		t.Fatal("changed-target notification was not acknowledged after replacement routes published")
 	}
-	<-acknowledged
+	const barrierMethod = "test/remap-read-barrier"
+	appServer.BroadcastAll(barrierMethod, map[string]any{})
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	deltaCount := 0
+deliveryLoop:
+	for {
+		select {
+		case notification, ok := <-client.Notifications():
+			if !ok {
+				t.Fatal("client notification stream closed before remap-read barrier")
+			}
+			if notification.Method == barrierMethod {
+				if deltaCount != 1 {
+					t.Fatalf("changed-target notifications before remap-read barrier = %d, want 1", deltaCount)
+				}
+				break deliveryLoop
+			}
+			if notification.Method == appwire.NotifyAgentMessageDelta {
+				var params appwire.AgentMessageDeltaParams
+				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == "during read" {
+					deltaCount++
+				}
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for remap-read delivery barrier")
+		}
+	}
 	if got := replacementLease.listenCallCount(); got != 1 {
 		t.Fatalf("replacement Listen calls = %d, want 1", got)
 	}
