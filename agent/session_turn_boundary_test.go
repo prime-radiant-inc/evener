@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appprojector"
 )
 
 // boundaryRecorder collects the events a served session emits. Registering a
@@ -561,14 +562,12 @@ func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
 	}
 }
 
-// TestUnservedSessionNamesNoTurn keeps in-process subagents off both halves of
-// this machinery. They run EntryNotification per delegate wake and share the
-// parent's StateDir (subagents.go), so naming their turns would cost a durable
-// write per wake and publish turn frames on a thread no client can address.
-//
-// It asserts the gate (servedByDaemon) and its consequence (no name) together,
-// because the second is only correct while the first holds; split apart, either
-// half would keep passing after the other stopped being true.
+// TestUnservedSessionNamesNoTurn keeps in-process subagents from taking durable
+// mutation turn names. They run EntryNotification per delegate wake and share
+// the parent's StateDir (subagents.go), so naming their turns would cost a
+// durable write per wake. Their descendant projection still gets a turn
+// boundary with an empty name; AppEventProjector mints its read-side ID and
+// publishes the thread active.
 //
 // NOTE: `docs/superpowers/plans/2026-08-16-controllable-subagents.md` proposes
 // reversing this deliberately — delegates would take durable names so they can
@@ -588,39 +587,60 @@ func TestUnservedSessionNamesNoTurn(t *testing.T) {
 	}
 }
 
-// TestUnservedSessionAnnouncesNoBoundary pins the guard that keeps descendant
-// projections untouched — and it cannot be pinned through the events channel,
-// because an unserved session's events go nowhere a test can drain. It rides
-// the descendant hook instead, which is exactly the path that matters:
-// sendEvent forwards to descendantEvent regardless of authoritativeConsumer
-// (session_events.go), so an unguarded emit would push a boundary into every
-// in-process subagent's projection and close and reopen turns on a delegate
-// thread no client can address.
-func TestUnservedSessionAnnouncesNoBoundary(t *testing.T) {
-	s := newTestSessionForEnvctx(t) // no drain registered
+// TestUnservedSessionAnnouncesBoundary pins the boundary that makes an
+// in-process descendant's projected thread active while it works. It cannot be
+// observed through the events channel because an unserved session has no
+// authoritative consumer, so the test rides the descendant hook — the same
+// path a real child's events take into its root daemon's AppWire projection.
+func TestUnservedSessionAnnouncesBoundary(t *testing.T) {
+	parent := newTestSessionForEnvctx(t)
 
 	var mu sync.Mutex
-	var forwarded []events.EventKind
-	// descendantEvent is what a real child inherits from its parent
-	// (cfg.spawn.descendantEvent, installed at spawn); setting it here reaches
-	// the same sendEvent branch without standing a subagent up.
-	s.descendantEvent = func(ev events.SessionEvent) {
+	var forwarded []events.SessionEvent
+	parent.SetDescendantEventFunc(func(ev events.SessionEvent) {
 		mu.Lock()
 		defer mu.Unlock()
-		forwarded = append(forwarded, ev.Kind)
+		forwarded = append(forwarded, ev)
+	})
+	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
 	}
+	defer releasePreparedTreeSlot(prepared)
+	s := prepared.sub.sess
+	defer s.Close()
+
 	s.SteerKind("look at this", events.SteeringKindNotification)
 
-	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+	if _, err = s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if i := indexOf(forwarded, events.EventTurnStarted); i >= 0 {
-		t.Fatalf("an unserved session forwarded a turn boundary to its descendants at %d: %v", i, forwarded)
+	kinds := make([]events.EventKind, 0, len(forwarded))
+	for _, event := range forwarded {
+		kinds = append(kinds, event.Kind)
 	}
-	if indexOf(forwarded, events.EventSteeringInjected) < 0 {
-		t.Fatalf("the descendant hook saw no events at all (%v); the test would pass for the wrong reason", forwarded)
+	boundary := indexOf(kinds, events.EventTurnStarted)
+	if boundary < 0 {
+		t.Fatalf("the descendant hook saw no turn boundary: %v", kinds)
 	}
+	steering := indexOf(kinds, events.EventSteeringInjected)
+	if steering < 0 {
+		t.Fatalf("the descendant hook saw no events at all (%v); the test would pass for the wrong reason", kinds)
+	}
+	if boundary > steering {
+		t.Fatalf("turn boundary arrived after turn content: %v", kinds)
+	}
+
+	projector := appprojector.NewAppEventProjector(s.ID(), "local:"+s.ID())
+	for _, event := range forwarded {
+		for _, notification := range projector.Project(event) {
+			if params, ok := notification.Params.(appwire.ThreadStatusChangedParams); ok && params.Status.Type == appwire.ThreadStatusActive {
+				return
+			}
+		}
+	}
+	t.Fatalf("the descendant event stream never projected status %q: %v", appwire.ThreadStatusActive, kinds)
 }

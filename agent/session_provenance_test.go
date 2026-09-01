@@ -204,9 +204,16 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
 		t.Fatalf("active provenance = %+v, want notification provenance", s.activeCausalProvenance())
 	}
+	boundary := <-s.events
+	if boundary.Kind != events.EventTurnStarted {
+		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	}
+	if !provenance.ContainsWatch(boundary.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("boundary event provenance = %+v, want watch_A/wg_1", boundary.Provenance)
+	}
 	ev := <-s.events
 	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
 	}
 	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {
 		t.Fatalf("steering event provenance = %+v, want watch_A/wg_1", ev.Provenance)
@@ -226,9 +233,16 @@ func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), cfg.watchID, cfg.generation) {
 		t.Fatalf("active provenance = %+v, want caller watch-send state provenance", s.activeCausalProvenance())
 	}
+	boundary := <-s.events
+	if boundary.Kind != events.EventTurnStarted {
+		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	}
+	if !provenance.ContainsWatch(boundary.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("boundary event provenance = %+v, want %s/%s", boundary.Provenance, cfg.watchID, cfg.generation)
+	}
 	ev := <-s.events
 	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
 	}
 	if !provenance.ContainsWatch(ev.Provenance, cfg.watchID, cfg.generation) {
 		t.Fatalf("steering event provenance = %+v, want %s/%s", ev.Provenance, cfg.watchID, cfg.generation)
@@ -283,9 +297,16 @@ func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testi
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_restore", "wg_restore") {
 		t.Fatalf("active provenance = %+v, want restored watch-send state provenance", s.activeCausalProvenance())
 	}
+	boundary := <-s.events
+	if boundary.Kind != events.EventTurnStarted {
+		t.Fatalf("first event = %s, want TURN_STARTED", boundary.Kind)
+	}
+	if !provenance.ContainsWatch(boundary.Provenance, "watch_restore", "wg_restore") {
+		t.Fatalf("boundary event provenance = %+v, want restored watch provenance", boundary.Provenance)
+	}
 	ev := <-s.events
 	if ev.Kind != events.EventSteeringInjected {
-		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+		t.Fatalf("second event = %s, want STEERING_INJECTED", ev.Kind)
 	}
 	if !provenance.ContainsWatch(ev.Provenance, "watch_restore", "wg_restore") {
 		t.Fatalf("steering event provenance = %+v, want restored watch provenance", ev.Provenance)
