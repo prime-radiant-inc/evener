@@ -40,6 +40,12 @@ type Client struct {
 	hasher      *ContinuationHasher
 	hasherErr   error
 
+	// overridesMu guards overrides, pinnedDefault, and firstOverride. Register
+	// and SetDefaultProvider are meant to keep working after a client is
+	// shared, same as Use — and overrides is a plain map, so an unguarded
+	// Register racing any reader is worse than middlewareMu's slice case: a
+	// concurrent map write fatals the process outright, guard or not.
+	overridesMu   sync.RWMutex
 	overrides     map[string]ProviderAdapter
 	pinnedDefault string
 	firstOverride string
@@ -146,7 +152,10 @@ func (c *Client) Resolve(ref string) (registry.Resolved, error) {
 // model resolves except an id off the Codex allowlist).
 func (c *Client) CanServe(provider, model string) bool {
 	provider = normalizeProviderName(provider)
-	if _, ok := c.overrides[provider]; ok {
+	c.overridesMu.RLock()
+	_, ok := c.overrides[provider]
+	c.overridesMu.RUnlock()
+	if ok {
 		return true
 	}
 	_, err := c.Resolve(provider + "/" + model)
@@ -181,14 +190,16 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 // default instance. Adapters implementing Initializer are initialized
 // immediately with a background context.
 func (c *Client) Register(adapter ProviderAdapter) {
+	name := normalizeProviderName(adapter.Name())
+	c.overridesMu.Lock()
 	if c.overrides == nil {
 		c.overrides = map[string]ProviderAdapter{}
 	}
-	name := normalizeProviderName(adapter.Name())
 	c.overrides[name] = adapter
 	if c.firstOverride == "" {
 		c.firstOverride = name
 	}
+	c.overridesMu.Unlock()
 	if init, ok := adapter.(Initializer); ok {
 		_ = init.Initialize(context.Background())
 	}
@@ -197,22 +208,27 @@ func (c *Client) Register(adapter ProviderAdapter) {
 // SetDefaultProvider pins the default instance name for requests that
 // name none. A pin outranks both the registry and registration order.
 func (c *Client) SetDefaultProvider(name string) {
+	c.overridesMu.Lock()
 	c.pinnedDefault = normalizeProviderName(name)
+	c.overridesMu.Unlock()
 }
 
 // DefaultProvider is the pinned name, else the default instance of a
 // registry the client was given (spec §5.1), else the first registered
 // override, else "".
 func (c *Client) DefaultProvider() string {
-	if c.pinnedDefault != "" {
-		return c.pinnedDefault
+	c.overridesMu.RLock()
+	pinned, first := c.pinnedDefault, c.firstOverride
+	c.overridesMu.RUnlock()
+	if pinned != "" {
+		return pinned
 	}
 	if c.hasRegistry {
 		if name, _, err := c.registry.DefaultInstance(); err == nil && name != "" {
 			return name
 		}
 	}
-	return c.firstOverride
+	return first
 }
 
 // ProviderNames lists every override, plus every instance of a registry the
@@ -222,9 +238,11 @@ func (c *Client) ProviderNames() []string {
 		return nil
 	}
 	seen := map[string]bool{}
+	c.overridesMu.RLock()
 	for name := range c.overrides {
 		seen[name] = true
 	}
+	c.overridesMu.RUnlock()
 	if c.hasRegistry {
 		for _, inst := range c.registry.Instances() {
 			seen[inst.Name] = true
@@ -278,7 +296,10 @@ func (c *Client) dispatchTarget(req Request) (dispatchTarget, error) {
 	if name == "" {
 		return dispatchTarget{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
 	}
-	t := dispatchTarget{name: name, override: c.overrides[name]}
+	c.overridesMu.RLock()
+	override := c.overrides[name]
+	c.overridesMu.RUnlock()
+	t := dispatchTarget{name: name, override: override}
 	res, err := c.Resolve(name + "/" + req.Model)
 	switch {
 	case err == nil:
@@ -394,7 +415,10 @@ type LiveModelLister interface {
 func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
 	instance = normalizeProviderName(instance)
 	r := c.Registry()
-	if override := c.overrides[instance]; override != nil {
+	c.overridesMu.RLock()
+	override := c.overrides[instance]
+	c.overridesMu.RUnlock()
+	if override != nil {
 		// An override owns its instance name: its listing seam is the only
 		// way it can list, so no registry-only fallback stands in for it.
 		// Its rows stay out of the registry — a client without WithRegistry
@@ -626,7 +650,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	var firstErr error
-	for _, a := range c.overrides {
+	for _, a := range c.overridesSnapshot() {
 		if cl, ok := a.(Closer); ok {
 			if err := cl.Close(); err != nil && firstErr == nil {
 				firstErr = err
@@ -641,7 +665,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	for _, a := range c.overrides {
+	for _, a := range c.overridesSnapshot() {
 		if init, ok := a.(Initializer); ok {
 			if err := init.Initialize(ctx); err != nil {
 				return err
@@ -649,6 +673,19 @@ func (c *Client) Initialize(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// overridesSnapshot returns the registered override adapters for one read,
+// safe to range over and call into without overridesMu held — Close and
+// Initialize both call adapter methods that must not run under the lock.
+func (c *Client) overridesSnapshot() []ProviderAdapter {
+	c.overridesMu.RLock()
+	defer c.overridesMu.RUnlock()
+	out := make([]ProviderAdapter, 0, len(c.overrides))
+	for _, a := range c.overrides {
+		out = append(out, a)
+	}
+	return out
 }
 
 // providerStampStream wraps a Stream and rewrites the provider field on all

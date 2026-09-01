@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -601,6 +602,49 @@ func TestClient_HasProvider(t *testing.T) {
 	}
 	if c.HasProvider("anthropic") {
 		t.Error("unregistered provider should not be found")
+	}
+}
+
+// TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace hammers Register
+// and SetDefaultProvider — Client's other post-construction mutators, left
+// unguarded like Use was before middlewareMu (#719) — against concurrent
+// readers of the same state: ProviderNames, DefaultProvider, CanServe, and
+// Complete's dispatch (which reads the overrides map directly). Registration
+// is meant to keep working after a client is shared, the same way Use's
+// middleware registration does. Run with -race: overrides was a plain map,
+// so a concurrent Register/Complete pairing could also fatal the whole test
+// binary with "concurrent map writes" independent of the race detector.
+func TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace(t *testing.T) {
+	c := NewClient()
+
+	const n = 64
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			c.Register(&fakeAdapter{name: fmt.Sprintf("prov%d", i)})
+		})
+	}
+	for i := range n {
+		wg.Go(func() {
+			c.SetDefaultProvider(fmt.Sprintf("prov%d", i))
+		})
+	}
+	for i := range n {
+		wg.Go(func() {
+			_ = c.ProviderNames()
+			_ = c.DefaultProvider()
+			_ = c.CanServe(fmt.Sprintf("prov%d", i), "model")
+			_, _ = c.Complete(context.Background(), Request{
+				Provider: fmt.Sprintf("prov%d", i),
+				Model:    "model",
+				Messages: []Message{User("hi")},
+			})
+		})
+	}
+	wg.Wait()
+
+	if got := len(c.ProviderNames()); got != n {
+		t.Fatalf("ProviderNames() len = %d, want %d (a lost registration under concurrent writes)", got, n)
 	}
 }
 
