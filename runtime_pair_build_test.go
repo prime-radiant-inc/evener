@@ -1090,9 +1090,11 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 		t.Fatal("test-web wait mutation target changed; update the mechanism RED test")
 	}
 	data = bytes.Replace(data, []byte(old), []byte(deferredWaitBlock), 1)
-	if err := os.WriteFile(path, data, 0o755); err != nil {
-		t.Fatalf("write test-web mutation: %v", err)
-	}
+	// writeExecutable (install_test.go) holds syscall.ForkLock across the
+	// write so a sibling parallel test's fork can't inherit this open write
+	// fd and fail its exec with ETXTBSY (golang/go#22315) — this script is
+	// what make test-web execs next. Same hazard class as #270.
+	writeExecutable(t, path, string(data))
 }
 
 func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
