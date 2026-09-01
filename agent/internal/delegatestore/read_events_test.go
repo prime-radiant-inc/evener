@@ -181,6 +181,34 @@ func writeDelegateJournal(t *testing.T, path string, n int) {
 	}
 }
 
+// appendDelegateJournalEvents appends count more batch lines to an existing
+// file written by writeDelegateJournal(t, path, startIndex), indexed
+// startIndex..startIndex+count-1 via the same dlg_%d/Seq convention, so
+// incrementality tests can grow a journal after an earlier scan already ran
+// against it.
+func appendDelegateJournalEvents(t *testing.T, path string, startIndex, count int) {
+	t.Helper()
+	var buf bytes.Buffer
+	for i := startIndex; i < startIndex+count; i++ {
+		event := createdEvent(fmt.Sprintf("dlg_%d", i), "")
+		event.Seq = uint64(i + 1)
+		batch, err := json.Marshal(batchRecord{Events: []Event{event}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(batch)
+		buf.WriteByte('\n')
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScanEvents_WithinLimitsDecodesNormally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 5)
@@ -384,14 +412,17 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing
 // bounded via io.LimitReader so this refusal doesn't require buffering the
 // whole oversized line first (bufio.Reader.ReadBytes has no size cap of its
 // own, unlike Scanner's MaxScanTokenSize).
+// TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
+// unterminated-final-chunk path: a single batch line with no trailing
+// newline at all, longer than MaxLineBytes, must be refused rather than
+// tolerated as an in-flight partial write. This is now MaxLineBytes'
+// responsibility, not MaxBytes' — #448's incremental-fold round removes
+// MaxBytes as a truncating per-file ceiling (a legitimate large journal must
+// fold in full, not get cut off), but a single pathological line is still
+// corruption, not Tuesday, so it keeps its own independent, always-on cap.
 func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 0)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	headerSize := info.Size()
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -404,9 +435,107 @@ func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxBytes: headerSize + 100})
-	if !errors.Is(err, ErrScanLimitExceeded) {
-		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes covers the
+// terminated-line path for the same cap: MaxLineBytes refuses a single
+// pathological batch line even when it IS newline-terminated, independently
+// of any MaxBytes setting.
+func TestScanEvents_RefusesOversizedTerminatedLineViaMaxLineBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 0)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"events":[` + strings.Repeat("x", 5_000_000) + "]}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxLineBytes: 100})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v, want ErrLineTooLong", err)
+	}
+}
+
+// TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffsetSkippingTheHeader is the
+// incrementality contract ScanEventsFrom exists for: a resumed scan starting
+// past the header must decode ONLY the batch lines appended since the
+// earlier call's reported offset -- not re-read the header (which does not
+// recur past byte zero) and not re-decode anything already seen.
+func TestScanEventsFrom_ReadsOnlyTheDeltaSinceOffsetSkippingTheHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 3)
+
+	first, firstOffset, _, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("first ScanEventsFrom: %v", err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("first scan got %d events, want 3", len(first))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstOffset != info.Size() {
+		t.Fatalf("firstOffset = %d, want the file's full size %d", firstOffset, info.Size())
+	}
+
+	appendDelegateJournalEvents(t, path, 3, 2)
+
+	second, secondOffset, _, err := ScanEventsFrom(context.Background(), path, firstOffset, ScanLimits{})
+	if err != nil {
+		t.Fatalf("second ScanEventsFrom: %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("second scan got %d events, want exactly the 2 appended since firstOffset, not all 5", len(second))
+	}
+	if second[0].DelegateID != "dlg_3" || second[1].DelegateID != "dlg_4" {
+		t.Fatalf("second scan events = %+v, want dlg_3 then dlg_4", second)
+	}
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondOffset != info2.Size() {
+		t.Fatalf("secondOffset = %d, want the file's new full size %d", secondOffset, info2.Size())
+	}
+}
+
+// TestScanEvents_IsScanEventsFromAtOffsetZero pins ScanEvents as a thin
+// wrapper: identical behavior to calling ScanEventsFrom with fromOffset 0
+// and discarding the returned offset.
+func TestScanEvents_IsScanEventsFromAtOffsetZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	writeDelegateJournal(t, path, 4)
+
+	viaWrapper, viaWrapperDiag, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEvents: %v", err)
+	}
+	viaFrom, _, viaFromDiag, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom: %v", err)
+	}
+	if len(viaWrapper) != len(viaFrom) {
+		t.Fatalf("ScanEvents returned %d events, ScanEventsFrom(0) returned %d, want equal", len(viaWrapper), len(viaFrom))
+	}
+	for i := range viaWrapper {
+		if viaWrapper[i].DelegateID != viaFrom[i].DelegateID {
+			t.Fatalf("event %d differs: ScanEvents=%+v ScanEventsFrom=%+v", i, viaWrapper[i], viaFrom[i])
+		}
+	}
+	if viaWrapperDiag != viaFromDiag {
+		t.Fatalf("diagnostics differ: ScanEvents=%+v ScanEventsFrom=%+v", viaWrapperDiag, viaFromDiag)
 	}
 }
 
