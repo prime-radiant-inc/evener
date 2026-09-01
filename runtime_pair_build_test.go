@@ -1090,17 +1090,7 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 		t.Fatal("test-web wait mutation target changed; update the mechanism RED test")
 	}
 	data = bytes.Replace(data, []byte(old), []byte(deferredWaitBlock), 1)
-	// writeExecutable (install_test.go) holds syscall.ForkLock across the
-	// write so a concurrent fork can't inherit this open write fd and fail
-	// its exec with ETXTBSY (golang/go#22315) — this script is what make
-	// test-web execs next, same hazard class as #270. None of this
-	// function's callers (runWebWaitHandoff's TestMakeTestWeb* invocations)
-	// call t.Parallel, and Go never runs a non-parallel test's body
-	// concurrently with anything else in the package, so no sibling test
-	// actually races this write today. The guard is defensive consistency
-	// with the canonical helper, not evidence of a live race at this
-	// specific call site.
-	writeExecutable(t, path, string(data))
+	writeTestFile(t, path, data, 0o755)
 }
 
 func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
@@ -1723,18 +1713,15 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	// This is the file's one write chokepoint: copyRepositoryFile and every
-	// other caller route through it, including the scripts/*.sh fixture
-	// copies and the go/npm/node/git toolchain shims that make test-web and
-	// make build genuinely exec by relative path (issue #609). A raw write
-	// leaves an open write fd a concurrent fork could inherit, failing its
-	// exec with ETXTBSY (golang/go#22315). No test in this file currently
-	// calls t.Parallel on anything that reaches this helper, so nothing
-	// races these writes today, but the guard costs nothing and forecloses
-	// the hazard by construction rather than by today's test ordering —
-	// every write here takes it, rather than special-casing by mode.
-	// Mirrors writeExecutable's discipline (install_test.go) for its own
-	// callers.
+	// Every fixture write lands here, including the scripts/*.sh copies and
+	// the go/npm/node/git toolchain shims that make test-web and make build
+	// exec by relative path (issue #609). os.WriteFile leaves an open write
+	// fd that a concurrent fork inherits until it execs, failing that exec
+	// with ETXTBSY (golang/go#22315); holding ForkLock for reading across
+	// the write excludes such a fork, as writeExecutable (install_test.go)
+	// does for its own callers. Nothing reaching this helper runs parallel
+	// today, so taking the lock on every write forecloses the hazard by
+	// construction instead of leaning on test ordering.
 	syscall.ForkLock.RLock()
 	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, data, mode); err != nil {
