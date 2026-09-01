@@ -1506,16 +1506,13 @@ func TestRelaySessionRecoversCanonicalFeedAndEmitsResyncWithoutAnotherRead(t *te
 	}
 	live.Acknowledge()
 	sessionLease := lease.(*relaySessionLease)
+	awaitRecoveryLatchRelease(t, sessionLease.session)
 	sessionLease.session.mu.Lock()
 	listenerCount := len(sessionLease.session.listeners)
 	listenerStarts := sessionLease.session.nextListener
-	recovering := sessionLease.session.recovering
 	sessionLease.session.mu.Unlock()
 	if listenerCount != 1 || listenerStarts != 1 {
 		t.Fatalf("listeners after reconnect: live=%d started=%d, want one resumed listener", listenerCount, listenerStarts)
-	}
-	if recovering {
-		t.Fatal("relay session still marked recovering after replacement feed resumed")
 	}
 	if got := daemon.dials.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want exactly one replacement connection", got)
@@ -1586,6 +1583,30 @@ func TestRelaySessionRecoveryDisconnectBeforeHandoffResolutionStartsSuccessor(t 
 		t.Fatalf("successor live delta = %q", got)
 	}
 	live.Acknowledge()
+}
+
+// awaitRecoveryLatchRelease blocks until recoverCanonicalFeed has left the
+// session, which no frame the replacement connection delivers can prove.
+// Resolving the recovery handoff is what queues that connection's first live
+// frames, and the loop clears the latch on a later, separate acquisition of
+// the session lock -- so a listener holding such a frame is ordered before the
+// clear, not after it.
+func awaitRecoveryLatchRelease(t *testing.T, session *relaySession) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		session.mu.Lock()
+		recovering := session.recovering
+		session.mu.Unlock()
+		if !recovering {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("relay session still marked recovering after replacement feed resumed")
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
