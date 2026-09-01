@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -183,6 +184,15 @@ func TestSiblingDirHandlesEmptyAndMissing(t *testing.T) {
 
 func writeExecutable(t *testing.T, path string) {
 	t.Helper()
+
+	// Hold ForkLock across the write, matching install_test.go's
+	// writeExecutable: os.WriteFile holds path open for writing, and a
+	// sibling parallel test that forks for its own os/exec in that window
+	// leaves the child holding the write fd until it execs, so a later exec
+	// of path fails with ETXTBSY (golang/go#22315). Reading the lock across
+	// the write excludes any concurrent fork.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
