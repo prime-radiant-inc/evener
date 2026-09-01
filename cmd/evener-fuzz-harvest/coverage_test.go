@@ -231,21 +231,15 @@ func scenarioReverseHTTPNoMatchAndBadQuery(t *testing.T) {
 	}
 }
 
-// A hub bearer token riding in the URL path (as /auth/<token> authenticates,
-// cmd/evener-hub/internal/hubedge.HandleAuth) has no entry in
-// fuzzReadOnlyRoutes, so without a guard it falls through reverseMapHTTP's
-// longest-prefix match to the "/" catch-all and its suffix — the token itself
-// — is gated by gateString with entropyCheck hard-disabled, which only the
-// known-secret regexes (harvest.go/sanitize.go) can catch, and none matches a
-// bare high-entropy token. Regression for issue #795: the token must never
-// survive into a committed corpus seed. Uses a synthetic token, never a real
-// one.
-func scenarioReverseHTTPAuthPathTokenNeverHarvested(t *testing.T) {
-	const syntheticToken = "synTHETIC_9mK3vL8pR2nW5tY0cF6hJ4bD1gA7eSqZx" // fake; base64url-shaped, ~43 chars like a real hub token
-
+// assertAuthPathTokenNotHarvested harvests a single recorded GET to authPath
+// (which must embed token) and fails if token appears anywhere in the
+// written corpus tree. Shared by the canonical-case and re-cased-path leak
+// regressions below.
+func assertAuthPathTokenNotHarvested(t *testing.T, authPath, token string) {
+	t.Helper()
 	d := t.TempDir()
 	log := filepath.Join(d, "http")
-	mustHarvestWrite(t, log, marshalLine(t, recordedHTTPRequest{Method: "GET", Path: "/auth/" + syntheticToken})+"\n")
+	mustHarvestWrite(t, log, marshalLine(t, recordedHTTPRequest{Method: "GET", Path: authPath})+"\n")
 
 	out := t.TempDir()
 	r := newRunner(out, NewEmitter(false, defaultMaxSeedBytes), nil)
@@ -259,11 +253,39 @@ func scenarioReverseHTTPAuthPathTokenNeverHarvested(t *testing.T) {
 		if rerr != nil {
 			return nil //nolint:nilerr
 		}
-		if bytes.Contains(raw, []byte(syntheticToken)) {
-			t.Fatalf("synthetic auth token leaked into committed seed %s:\n%s", path, raw)
+		if bytes.Contains(raw, []byte(token)) {
+			t.Fatalf("token leaked into committed seed %s:\n%s", path, raw)
 		}
 		return nil
 	})
+}
+
+// A hub bearer token riding in the URL path (as /auth/<token> authenticates,
+// cmd/evener-hub/internal/hubedge.HandleAuth) has no entry in
+// fuzzReadOnlyRoutes, so without a guard it falls through reverseMapHTTP's
+// longest-prefix match to the "/" catch-all and its suffix — the token itself
+// — is gated by gateString with entropyCheck hard-disabled, which only the
+// known-secret regexes (harvest.go/sanitize.go) can catch, and none matches a
+// bare high-entropy token. Regression for issue #795: the token must never
+// survive into a committed corpus seed. Uses a synthetic token, never a real
+// one.
+func scenarioReverseHTTPAuthPathTokenNeverHarvested(t *testing.T) {
+	const syntheticToken = "synTHETIC_9mK3vL8pR2nW5tY0cF6hJ4bD1gA7eSqZx" // fake; base64url-shaped, ~43 chars like a real hub token
+	assertAuthPathTokenNotHarvested(t, "/auth/"+syntheticToken, syntheticToken)
+}
+
+// isAuthBootstrapPath's match is case-insensitive (strings.ToLower before
+// comparing), so a manually re-cased /Auth/<token> is excluded from harvest
+// exactly like the canonical-case form. Neither hubedge's real mux nor
+// AuthGuard is case-insensitive (a re-cased request 401s and never actually
+// authenticates — net/http.ServeMux pattern matching is byte-exact), so this
+// doesn't widen what a "real" leak looks like; it keeps redaction
+// conservative for a shape that could still carry a genuine, copied token if
+// something upstream (a note app's autocapitalize, a manual edit) re-cased
+// the URL before it was requested. adv-795-completeness.md Finding 2.
+func scenarioReverseHTTPAuthPathTokenCaseInsensitive(t *testing.T) {
+	const syntheticToken = "sYNtheTIC_caseVariant7hJ4bD1gA9eSqZxK3vL8pR" // fake; distinct from the canonical-case test's token
+	assertAuthPathTokenNotHarvested(t, "/Auth/"+syntheticToken, syntheticToken)
 }
 
 // A legitimate high-entropy path component on an ordinary (non-/auth) route —
@@ -285,6 +307,43 @@ func scenarioReverseHTTPLegitimateSessionSuffixNotRedacted(t *testing.T) {
 
 	if st := r.stat("http"); st.seeds != 1 || st.leaks != 0 {
 		t.Fatalf("legitimate session-shaped suffix was over-redacted: seeds=%d leaks=%d skipped=%d", st.seeds, st.leaks, st.skipped)
+	}
+}
+
+// isAuthBootstrapPath hand-duplicates hubedge's /auth recognition with no
+// shared source of truth: cmd/evener-fuzz-harvest cannot import
+// cmd/evener-hub/internal/hubedge to check against the real thing, because
+// Go's internal/ visibility rule restricts that package to importers rooted
+// at cmd/evener-hub/, and this package lives outside that subtree (there is
+// no exported constant elsewhere either side could share — confirmed by
+// adv-795-completeness.md Finding 1). Absent a compiler-enforced link, this
+// table pins isAuthBootstrapPath's exact accept/reject contract instead, so
+// a future edit that narrows or widens what counts as the auth bootstrap
+// path breaks this test rather than silently reopening issue #795's leak.
+func scenarioIsAuthBootstrapPathShapes(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/auth", true},                      // bare, exact (today's main form)
+		{"/auth/tok123", true},               // path-token form (PR #431)
+		{"/auth/tok123/extra", true},         // prefix match; trailing garbage ignored
+		{"/auth/tok123/", true},              // trailing slash
+		{"/Auth/tok123", true},               // re-cased path form
+		{"/AUTH", true},                      // re-cased bare form
+		{"/aUtH/tok123", true},               // mixed case
+		{"", false},                          // empty
+		{"/", false},                         // root
+		{"/authorize", false},                // "auth"-prefixed but a different segment
+		{"/Authorize", false},                // same, re-cased
+		{"/authx", false},                    // same, no separator at all
+		{"/s/034H8eMmMT7fAzLo5EkvY3", false}, // ordinary route
+		{"/api/health", false},               // another exempt-but-unrelated route
+	}
+	for _, c := range cases {
+		if got := isAuthBootstrapPath(c.path); got != c.want {
+			t.Errorf("isAuthBootstrapPath(%q) = %v, want %v", c.path, got, c.want)
+		}
 	}
 }
 
