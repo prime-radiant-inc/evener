@@ -188,8 +188,13 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 // Register adds an override adapter keyed by its Name. The first override
 // becomes the default when nothing was pinned and the registry names no
 // default instance. Adapters implementing Initializer are initialized
-// immediately with a background context.
+// immediately with a background context, before the adapter is published:
+// a concurrent Complete or ProviderNames must never reach a name whose
+// adapter is still initializing.
 func (c *Client) Register(adapter ProviderAdapter) {
+	if init, ok := adapter.(Initializer); ok {
+		_ = init.Initialize(context.Background())
+	}
 	name := normalizeProviderName(adapter.Name())
 	c.overridesMu.Lock()
 	if c.overrides == nil {
@@ -200,9 +205,6 @@ func (c *Client) Register(adapter ProviderAdapter) {
 		c.firstOverride = name
 	}
 	c.overridesMu.Unlock()
-	if init, ok := adapter.(Initializer); ok {
-		_ = init.Initialize(context.Background())
-	}
 }
 
 // SetDefaultProvider pins the default instance name for requests that

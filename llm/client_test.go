@@ -500,6 +500,21 @@ func (a *initializableFakeAdapter) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// blockingInitAdapter's Initialize closes started the instant it begins and
+// then blocks on release, letting a test synchronize on "initialization is
+// in progress" without sleeping.
+type blockingInitAdapter struct {
+	fakeAdapter
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *blockingInitAdapter) Initialize(context.Context) error {
+	close(a.started)
+	<-a.release
+	return nil
+}
+
 func TestClient_Close_CallsClosableAdapters(t *testing.T) {
 	c := NewClient()
 	closable := &closableFakeAdapter{name: "closable"}
@@ -543,6 +558,48 @@ func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
 	// Registering a plain adapter that does not implement Initializer should not panic.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "plain"})
+}
+
+// TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns pins
+// the ordering Complete's dispatch depends on: an adapter is only reachable
+// by name once its Initializer has returned. A blocking Initialize proves
+// this deterministically — while Register is still inside Initialize,
+// neither Complete nor ProviderNames may see the adapter, whatever else is
+// running concurrently; once Initialize returns, both do.
+func TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns(t *testing.T) {
+	adapter := &blockingInitAdapter{
+		name:    "blockinit",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c := NewClient()
+
+	registerDone := make(chan struct{})
+	go func() {
+		c.Register(adapter)
+		close(registerDone)
+	}()
+
+	<-adapter.started // Initialize is running.
+
+	req := Request{Provider: "blockinit", Model: "m", Messages: []Message{User("hi")}}
+	if _, err := c.Complete(context.Background(), req); err == nil {
+		t.Fatal("Complete reached the adapter while its Initialize was still running")
+	}
+	if names := c.ProviderNames(); len(names) != 0 {
+		t.Fatalf("ProviderNames = %v while Initialize was still running, want none", names)
+	}
+
+	close(adapter.release) // let Initialize return
+	<-registerDone
+
+	resp, err := c.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete after Initialize returned: %v", err)
+	}
+	if resp.Provider != "blockinit" {
+		t.Fatalf("Complete resp.Provider = %q, want blockinit", resp.Provider)
+	}
 }
 
 // TestClient_LookupNormalizesProviderCase verifies that provider lookup
@@ -606,14 +663,12 @@ func TestClient_HasProvider(t *testing.T) {
 }
 
 // TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace hammers Register
-// and SetDefaultProvider — Client's other post-construction mutators, left
-// unguarded like Use was before middlewareMu (#719) — against concurrent
-// readers of the same state: ProviderNames, DefaultProvider, CanServe, and
-// Complete's dispatch (which reads the overrides map directly). Registration
-// is meant to keep working after a client is shared, the same way Use's
-// middleware registration does. Run with -race: overrides was a plain map,
-// so a concurrent Register/Complete pairing could also fatal the whole test
-// binary with "concurrent map writes" independent of the race detector.
+// and SetDefaultProvider against concurrent readers of the same state —
+// ProviderNames, DefaultProvider, CanServe, and Complete's dispatch — to
+// pin that a client stays safe to register providers on after it is already
+// shared across goroutines. Run with -race: overrides is a plain map, so an
+// unsynchronized Register racing a reader is a "concurrent map writes"
+// fatal unconditionally, not just a finding the race detector reports.
 func TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace(t *testing.T) {
 	c := NewClient()
 
