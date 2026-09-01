@@ -101,31 +101,60 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	return rec.ownAPIKeyEnv
 }
 
-// baseURLDiverged reports whether rec's actually-resolved base URL differs
-// from what its provider (r.curated[rec.providerID], which is rec itself
-// for a curated record) resolves to using only the curated defaults - no
-// vars, no environment. It is WebSearch's analog of the endpoint stop
-// above (spec §10; gateWebSearch in resolve.go applies it), but broader: an
-// unused api_key_env is merely wasted, so the stop above fires only for a
-// literal base_url override, letting a *_BASE_URL environment override
-// (Bedrock's and Vertex's vars, or a same-shaped proxy) inherit the vendor
-// key normally. A hosted-tool definition the gateway does not implement
-// instead fails the whole request (issue #738), so this check also catches
-// that narrower environment-only case. When the provider's own template
-// cannot fully resolve without vars only a real deployment supplies
-// (Vertex's project, Bedrock's region), there is no baseline to compare
-// against, so nothing is reported as diverged.
-func (r *Registry) baseURLDiverged(rec *record) bool {
+// firstPartyEndpoint reports whether rec reaches its provider
+// (r.curated[rec.providerID], which is rec itself for a curated record) at
+// that vendor's own canonical endpoint. WebSearch's gate uses this (spec
+// §10's endpoint-stop is the analog; gateWebSearch in resolve.go applies
+// it) - Jesse's framing (2026-09-01, issue #738): "web_search should only
+// be available from openai as openai." A vendor's hosted search runs on the
+// vendor's own infrastructure, so any redirection away from it forfeits
+// the capability, however the redirection is expressed - unlike the
+// endpoint stop below, which only fires for a literal base_url override
+// and lets a *_BASE_URL environment override inherit the key normally
+// (an unused credential is merely wasted; a hosted-tool definition the
+// gateway does not implement fails the whole request).
+//
+// Two shapes, both compared against defaults, the provider's own template
+// resolved with only its curated vars - no user vars, no environment (spec
+// §10's "after substituting the curated defaults"):
+//
+//   - rec.ownBaseURL == "" (including every curated record, which never
+//     sets it): rec's own config never replaced the provider's base_url
+//     template, so the template itself proves nothing - first-party turns
+//     on whether the *values* plugged into it (rec's own vars, then
+//     environment, then the curated default, spec §9.1's order) land on
+//     the curated default when the provider defines one (openai's
+//     BASE_URL; a *_BASE_URL environment override is exactly the case this
+//     line exists to catch). A provider whose template takes only
+//     deployment-specific variables with no curated default (Vertex's
+//     project, Bedrock's region - every deployment supplies its own) has
+//     no default to diverge from, so the template alone being intact is
+//     first-party.
+//   - rec.ownBaseURL != "": rec's own config set a literal base_url,
+//     replacing the template outright. First-party only if that literal
+//     reproduces the curated default byte for byte (copying the default
+//     verbatim is not "different", spec §10). A provider with no curated
+//     default has nothing a literal override could legitimately reproduce,
+//     so this is never first-party - the fix for the gap a prior version of
+//     this check left open: a missing curated default used to make every
+//     google-vertex-anthropic/google-vertex-based record "first-party" by
+//     default, literal override or not, because the check never
+//     distinguished "the template has no default" from "rec kept the
+//     template".
+func (r *Registry) firstPartyEndpoint(rec *record) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
-		return false
+		return true
 	}
 	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
-	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
-	if own == "" || len(missing) > 0 {
-		return false
+	if own == "" {
+		return true
 	}
-	return own != defaults
+	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
+	if len(missing) > 0 {
+		return rec.curated || rec.ownBaseURL == ""
+	}
+	return own == defaults
 }
 
 // envCandidates lists, in the order credential resolution tries them, every
