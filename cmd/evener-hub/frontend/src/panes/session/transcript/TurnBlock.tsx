@@ -146,11 +146,7 @@ export function ProjectedIntentGroup({
         </summary>
         <div className={transcriptStyles.intentGroupItems}>
           {entries.map((entry) => (
-            <div
-              key={entry.id}
-              className={transcriptStyles.intentGroupBody}
-              {...projectedEntryAnchor(entry, viewAnchorIndex)}
-            >
+            <div key={entry.id} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
               <ToolCallItem
                 item={entry.item}
                 turn={{ id: entry.turnId, status: "completed", items: [entry.item] }}
