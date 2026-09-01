@@ -41,8 +41,8 @@ const DISCARD_NOTE = " · discarded uncommitted changes";
 // than the full args object worktreeSummary below needs (it also reads
 // name/path/base_ref for display text) - it's exactly the "read-vs-mutate"
 // shape a caller that only cares about consequence, not display, needs.
-// Exported so consequenceRank.ts (kata bc16) reuses this instead of
-// re-deriving the same two fields from item.argumentsJSON itself.
+// Exported so callers that need the "read-vs-mutate" shape can reuse this
+// instead of re-deriving the same two fields from item.argumentsJSON itself.
 export interface WorktreeCallArgs {
   operation: string;
   forceDirty: boolean;

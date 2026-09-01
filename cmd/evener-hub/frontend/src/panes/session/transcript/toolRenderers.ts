@@ -132,10 +132,9 @@ export interface ToolRendererDescriptor {
   // see that field's own kata for why). A parallel field rather than
   // widening summary()'s own return type to ReactNode: summary is ALSO
   // consumed as a plain string by summarySuffix's own concatenation above
-  // and by ToolCallCluster's "N steps · ..." template, and ToolRow's
-  // collapsed-state truncation (middleSplit) operates on summary as raw
-  // characters, not markup - widening the whole contract would touch every
-  // one of those for a link only one descriptor has today. Undefined (every
+  // and ToolRow's collapsed-state truncation (middleSplit) operates on summary
+  // as raw characters, not markup - widening the whole contract would touch
+  // every one of those for a link only one descriptor has today. Undefined (every
   // descriptor but web_fetch) renders the row exactly as before. When the
   // returned URL is not literally found inside summary(item)'s own text,
   // ToolRow renders the plain text unchanged - never a link pointing

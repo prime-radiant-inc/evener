@@ -27,13 +27,10 @@ import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
-import { ToolCallCluster } from "./ToolCallCluster";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRow } from "./ToolRow";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
-import { shouldGroup, toolRunFor } from "./toolGrouping";
 import { toolRendererFor } from "./toolRenderers";
-import { itemScopeKey } from "./tools/subagentModuleStore";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -299,28 +296,6 @@ export function TurnBlock({
       continue;
     }
     const item = entry.item;
-    const run =
-      entry.kind === "item" && item.type === "commandExecution" ? toolRunFor([...visibleItems], item.id) : undefined;
-    if (run && shouldGroup(run)) {
-      if (!run.isFirst) continue;
-      renderedEntries.push(
-        <div
-          key={itemScopeKey(sessionRef, item.id)}
-          className={CLASS.runContent}
-          data-testid="run-content"
-          {...viewAnchorFor(entry)}
-        >
-          <ToolCallCluster
-            items={run.items}
-            turn={shownTurn}
-            sessionRef={sessionRef}
-            renderContext={itemRenderContext}
-            thread={thread}
-          />
-        </div>,
-      );
-      continue;
-    }
     const ItemRenderer = itemRendererFor(item.type);
     const renderedItem = (
       <ItemRenderer
