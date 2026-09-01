@@ -177,8 +177,17 @@ func auxCommunicateExact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: fixture\ndescription: fixture\n---\nbody\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := h(context.Background(), nil, map[string]any{"skill_name": "fixture"}); err != nil || !strings.Contains(got.(string), "body") {
+	if got, err := h(context.Background(), nil, map[string]any{"skill_name": "fixture"}); err != nil {
 		t.Fatalf("skill load = %#v, %v", got, err)
+	} else {
+		s := got.(string)
+		if !strings.Contains(s, "body") {
+			t.Fatalf("skill load missing body: %q", s)
+		}
+		wantNotif := systemNotificationf("Paths referenced in this skill are relative to the skill directory: %q", root)
+		if !strings.HasPrefix(s, wantNotif) {
+			t.Fatalf("skill load prefix = %q, want %q", s, wantNotif)
+		}
 	}
 }
 

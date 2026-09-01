@@ -20,10 +20,9 @@ const (
 // canUseTaskList is the caller's answer to "does this session serve task_list";
 // false swaps the closing call instruction for wording the session can obey.
 func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
-	var b strings.Builder
-	b.WriteString("<SYSTEM-REMINDER>\n")
-	fmt.Fprintf(&b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
-	fmt.Fprintf(&b, "<TITLE>%s</TITLE>\n", task.Description)
+	b := systemReminderBlockBuilder()
+	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
+	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", task.Description)
 	if task.Prompt != "" {
 		b.WriteString("<INSTRUCTIONS>\n")
 		b.WriteString(strings.TrimSpace(task.Prompt))
@@ -31,12 +30,11 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	}
 	b.WriteString("</CURRENT-TASK>\n")
 	if canUseTaskList {
-		fmt.Fprintf(&b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
+		fmt.Fprintf(b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
 	} else {
-		fmt.Fprintf(&b, "Work task %d now, and say so when this step is complete.\n", task.ID)
+		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
 	}
-	b.WriteString("</SYSTEM-REMINDER>")
-	return b.String()
+	return finishSystemReminderBlock(b)
 }
 
 // taskReminderFull generates the full task list for post-compaction injection,
@@ -48,24 +46,22 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 		return ""
 	}
 
-	var b strings.Builder
-	b.WriteString("<SYSTEM-REMINDER>\n")
+	b := systemReminderBlockBuilder()
 	b.WriteString("Task list:\n")
 	for _, t := range tasks {
-		fmt.Fprintf(&b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
+		fmt.Fprintf(b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
 		if t.ReasoningEffort != "" {
-			fmt.Fprintf(&b, " [%s]", t.ReasoningEffort)
+			fmt.Fprintf(b, " [%s]", t.ReasoningEffort)
 		}
 		if len(t.DependsOn) > 0 {
-			fmt.Fprintf(&b, " (depends_on: %v)", t.DependsOn)
+			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
 		for _, n := range t.Notes {
-			fmt.Fprintf(&b, "    note: %s\n", n)
+			fmt.Fprintf(b, "    note: %s\n", n)
 		}
 	}
-	b.WriteString("</SYSTEM-REMINDER>")
-	return b.String()
+	return finishSystemReminderBlock(b)
 }
 
 // taskReminderForInactivity re-emits the current task's steering message when
