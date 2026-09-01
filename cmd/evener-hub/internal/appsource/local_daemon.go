@@ -147,6 +147,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 					return nil, nil, localDaemonDialError(dialErr)
 				}
 				client := appwire.NewClient(transport)
+				client.SetLogf(appsourceConnectionLogf)
 				client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
 					observe(epoch, message, err)
 				})
@@ -621,6 +622,7 @@ func (s *LocalDaemonSource) withClientCallMapper(
 	}
 	defer transport.Close() //nolint:errcheck // transport cleanup; error is not actionable
 	client := appwire.NewClient(transport)
+	client.SetLogf(appsourceConnectionLogf)
 	client.Start(ctx)
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
