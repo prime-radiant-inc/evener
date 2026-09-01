@@ -298,7 +298,13 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	// the JobShell case in projectActivitySessionAt) — so aggregate work
 	// across every session this traversal visits is bounded, not just this
 	// one file's own scan.
-	activityConsumeWorkUnit(cache.budget, activityOwnedShellCount(sessionID, jobs))
+	if count := activityOwnedShellCount(sessionID, jobs); !activityConsumeWorkUnit(cache.budget, count) && cache.budget != nil && cache.budget.bounded {
+		// The session's own records exceed what's left: refuse-without-consuming
+		// (the contract projection relies on) would leave the budget unspent and
+		// every later sibling's journal would still be opened. Saturate instead,
+		// so activityBudgetRemaining reports 0 for the rest of the traversal.
+		cache.budget.usedWork = cache.budget.maxWorkUnits
+	}
 	stable, diagnostics, delegatesTruncated, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
