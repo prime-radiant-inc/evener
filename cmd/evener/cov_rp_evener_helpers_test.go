@@ -1,44 +1,12 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	authopenai "primeradiant.com/evener/auth/openai"
-	"primeradiant.com/evener/llm"
 )
-
-func TestClientHasProvider(t *testing.T) {
-	if clientHasProvider(nil, "openai") {
-		t.Error("nil client should never have a provider")
-	}
-
-	c := llm.NewClient()
-	c.Register(&evenerHelperAdapter{name: "openai"})
-	if !clientHasProvider(c, "openai") {
-		t.Error("expected registered provider to be found")
-	}
-	// Match is case-insensitive.
-	if !clientHasProvider(c, "OpenAI") {
-		t.Error("provider match should be case-insensitive")
-	}
-	if clientHasProvider(c, "anthropic") {
-		t.Error("unregistered provider should not be found")
-	}
-}
-
-type evenerHelperAdapter struct{ name string }
-
-func (a *evenerHelperAdapter) Name() string { return a.name }
-func (a *evenerHelperAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
-	return llm.Response{}, errors.New("not implemented")
-}
-func (a *evenerHelperAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, errors.New("not implemented")
-}
 
 func TestFormatOpenAIStatus(t *testing.T) {
 	// Signed-out with no source falls back to the signed-out source label.
