@@ -1045,45 +1045,6 @@ func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
 	return true
 }
 
-// activityBudgetRemaining is how many more work units budget has left before
-// activityConsumeWorkUnit starts refusing. Used by the LOAD phase (#448
-// finding 1) as a pure skip/no-skip gate on a session's own journal scan
-// (roborev finding on #807's saturation commit: this once fed a raw
-// MaxEvents ceiling, "sizing" the scan — it no longer does; the scan itself
-// always uses the fixed historicalJobScanLimits, and this only decides
-// whether to run it at all once the tree-wide budget is already exhausted)
-// — the same budget projection already enforces, just consulted one phase
-// earlier. An unbounded budget (nil, or bounded==false) has no ceiling to
-// report; callers treat that as "don't skip this scan," so this only needs
-// to return a sentinel they won't mistake for zero remaining.
-func activityBudgetRemaining(budget *activityBudget) int {
-	if budget == nil || !budget.bounded {
-		return -1
-	}
-	remaining := budget.maxWorkUnits - budget.usedWork
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-// activityOwnedShellCount is the number of work units loading sessionID's
-// jobs would consume in projection: one per owned, shell-typed record —
-// exactly what projectActivitySessionAt's own loop counts
-// (activityOwnedRecords + the JobShell case). The load phase (#448 finding 1)
-// consumes this same count from the shared traversal budget so aggregate
-// work across an entire tree is bounded during loading, not only afterward
-// during projection.
-func activityOwnedShellCount(sessionID string, jobs []*jobstore.JobRecord) int {
-	count := 0
-	for _, rec := range activityOwnedRecords(sessionID, jobs) {
-		if rec != nil && rec.Type == jobstore.JobShell {
-			count++
-		}
-	}
-	return count
-}
-
 // markActivitySessionTruncated marks a mid-list cutoff within sessionID's
 // own entries (jobs then delegates, projectActivitySessionAt's iteration
 // order) and mints a REAL, advancing continuation: resumeIndex is how many
