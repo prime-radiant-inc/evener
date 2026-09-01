@@ -557,7 +557,7 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	in := InstanceEditParams{
 		Name:     "work",
-		BaseURL:  "https://gw.example.test/v2",
+		BaseURL:  new("https://gw.example.test/v2"),
 		Protocol: "openai-responses",
 		Surface:  "openai",
 		Vars:     map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
@@ -591,6 +591,43 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestInstanceEditParamsBaseURLDistinguishesAbsentFromCleared is #711: an
+// omitted baseUrl must leave the authored value alone, while an explicit
+// empty string clears it, so the two have to marshal differently and
+// unmarshal to different pointer states.
+func TestInstanceEditParamsBaseURLDistinguishesAbsentFromCleared(t *testing.T) {
+	absent, err := json.Marshal(InstanceEditParams{Name: "work"})
+	if err != nil {
+		t.Fatalf("marshal(absent): %v", err)
+	}
+	if string(absent) != `{"name":"work"}` {
+		t.Fatalf("an omitted BaseURL marshals to %s, want no baseUrl key at all", absent)
+	}
+
+	cleared, err := json.Marshal(InstanceEditParams{Name: "work", BaseURL: new("")})
+	if err != nil {
+		t.Fatalf("marshal(cleared): %v", err)
+	}
+	if string(cleared) != `{"name":"work","baseUrl":""}` {
+		t.Fatalf("an explicit clear marshals to %s, want a present but empty baseUrl", cleared)
+	}
+
+	var out InstanceEditParams
+	if err := json.Unmarshal(absent, &out); err != nil {
+		t.Fatalf("unmarshal(absent): %v", err)
+	}
+	if out.BaseURL != nil {
+		t.Fatalf("an absent baseUrl unmarshaled to %v, want nil (leave unchanged)", *out.BaseURL)
+	}
+
+	if err := json.Unmarshal(cleared, &out); err != nil {
+		t.Fatalf("unmarshal(cleared): %v", err)
+	}
+	if out.BaseURL == nil || *out.BaseURL != "" {
+		t.Fatalf("a present empty baseUrl unmarshaled to %v, want a non-nil pointer to \"\" (clear)", out.BaseURL)
 	}
 }
 

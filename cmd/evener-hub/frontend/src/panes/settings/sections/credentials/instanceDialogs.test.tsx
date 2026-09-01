@@ -237,10 +237,14 @@ describe("EditInstanceDialog", () => {
     expect(screen.getByLabelText(/base url/i)).toHaveProperty("value", "https://existing");
   });
 
-  test("emptying a set Base URL blocks Save and says how to reach the default", async () => {
-    const user = userEvent.setup();
-    connectFakeClient();
+  test("emptying a set Base URL clears it back to the provider default", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/edit", (params) => {
+      expect(params).toEqual({ name: "work", baseUrl: "" });
+      return { instances: [], availableProviders: [] };
+    });
     const onSuccess = vi.fn();
+    const user = userEvent.setup();
     render(
       <EditInstanceDialog
         instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
@@ -249,13 +253,13 @@ describe("EditInstanceDialog", () => {
       />,
     );
     await user.clear(screen.getByLabelText(/base url/i));
-    // evener/instance/edit reads an empty baseUrl as "unchanged", so a save
-    // here would report success and change nothing (spec §11.3,
-    // InstanceEditParams).
-    expect(screen.getByText(/remove and re-add the instance/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+    // InstanceEditParams.baseUrl is a pointer wire-side (#711): an explicit
+    // empty string clears the authored override back to the provider's
+    // default, distinct from the omitted field an unchanged save sends.
+    expect(screen.getByText(/resets the endpoint to the provider's default/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(onSuccess).not.toHaveBeenCalled();
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });
 
   test("an instance with no Base URL of its own may be saved empty", async () => {
@@ -273,7 +277,7 @@ describe("EditInstanceDialog", () => {
         onSuccess={onSuccess}
       />,
     );
-    expect(screen.queryByText(/remove and re-add the instance/i)).toBeNull();
+    expect(screen.queryByText(/resets the endpoint to the provider's default/i)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
   });

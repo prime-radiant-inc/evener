@@ -666,7 +666,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
-| `baseUrl` | `string` | yes |  |
+| `baseUrl` | `*string` | yes |  |
 | `protocol` | `string` | yes |  |
 | `surface` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |

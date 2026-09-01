@@ -613,11 +613,11 @@ func TestCredentialsPanel_GroupsEachProviderOnce(t *testing.T) {
 	}
 }
 
-// TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL: evener/instance/edit
-// reads an empty baseUrl as "leave unchanged" (spec §11.3,
-// appwire.InstanceEditParams), so submitting a cleared field would report
-// success and change nothing. The form says so instead of sending it.
-func TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL(t *testing.T) {
+// TestCredentialsPanelEditClearsAnAuthoredBaseURL: evener/instance/edit now
+// tells an omitted baseUrl apart from an explicit empty one (#711,
+// appwire.InstanceEditParams.BaseURL is *string), so emptying a previously
+// set field and submitting sends the clear instead of being refused.
+func TestCredentialsPanelEditClearsAnAuthoredBaseURL(t *testing.T) {
 	withTestColorProfile(t)
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
@@ -643,19 +643,24 @@ func TestCredentialsPanelEditRefusesToClearAnAuthoredBaseURL(t *testing.T) {
 		p = panel.(CredentialsPanel)
 	}
 
-	if note := flattenPanelText(p.View()); !strings.Contains(note, "remove and re-add the instance to change its endpoint back to the default") {
-		t.Fatalf("the form does not say how to reach the default endpoint:\n%s", p.View())
+	if note := flattenPanelText(p.View()); !strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("the form does not say emptying resets to the default endpoint:\n%s", p.View())
 	}
 
 	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
-	if cmd != nil {
-		if msg, ok := cmd().(InstanceEditSubmitMsg); ok {
-			t.Fatalf("the cleared field was submitted anyway: %+v", msg.Params)
-		}
+	if cmd == nil {
+		t.Fatal("the cleared field was not submitted")
 	}
-	if !p.formOpen {
-		t.Fatal("the form closed on a submit it refused")
+	msg, ok := cmd().(InstanceEditSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
+	}
+	if msg.Params.Name != "work" || msg.Params.BaseURL == nil || *msg.Params.BaseURL != "" {
+		t.Fatalf("params = %+v, want an explicit empty BaseURL clearing the override", msg.Params)
+	}
+	if p.formOpen {
+		t.Fatal("the form stayed open after a submit it accepted")
 	}
 }
 
@@ -673,8 +678,8 @@ func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	p = panel.(CredentialsPanel)
 
-	if note := flattenPanelText(p.View()); strings.Contains(note, "remove and re-add the instance") {
-		t.Fatalf("nothing was cleared, so the form must not warn:\n%s", p.View())
+	if note := flattenPanelText(p.View()); strings.Contains(note, "resets the endpoint to the provider's default") {
+		t.Fatalf("nothing was cleared, so the form must not note a reset:\n%s", p.View())
 	}
 	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -684,7 +689,7 @@ func TestCredentialsPanelEditAllowsAnEmptyBaseURLWhenNoneWasSet(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd produced %T, want InstanceEditSubmitMsg", cmd())
 	}
-	if msg.Params.Name != "work" || msg.Params.BaseURL != "" {
+	if msg.Params.Name != "work" || msg.Params.BaseURL == nil || *msg.Params.BaseURL != "" {
 		t.Fatalf("params = %+v", msg.Params)
 	}
 }

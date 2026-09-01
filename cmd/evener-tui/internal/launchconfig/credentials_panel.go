@@ -301,17 +301,17 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		// Submit.
-		if p.clearedBaseURL() {
-			// evener/instance/edit reads an empty baseUrl as "unchanged", so
-			// sending this would report a success that changed nothing.
-			return p, nil
-		}
 		p.formOpen = false
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
 				Name:     p.formName,
 				Protocol: p.formProtocol,
-				BaseURL:  p.formBaseURL,
+				// The form always shows the instance's current base URL and
+				// edits it in place, so whatever ends up in the field is the
+				// intended final value — including empty, which now clears
+				// an authored override back to the registry default (#711)
+				// instead of the wire's usual "omitted means unchanged".
+				BaseURL: new(p.formBaseURL),
 			}
 			return p, func() tea.Msg { return InstanceEditSubmitMsg{Params: params} }
 		}
@@ -557,10 +557,11 @@ func (p CredentialsPanel) formView() string {
 	return strings.Join(lines, "\n")
 }
 
-// clearedBaseURLNote is what the form says instead of submitting an emptied
-// base URL. The wire has no way to express a clear (appwire.InstanceEditParams),
-// so re-creating the instance is the only route back to the default endpoint.
-const clearedBaseURLNote = "Emptying this leaves the endpoint unchanged — remove and re-add the instance to change its endpoint back to the default."
+// clearedBaseURLNote tells the user what submitting an emptied base URL will
+// do: appwire.InstanceEditParams.BaseURL clears the authored override on an
+// explicit empty value (#711), so the instance falls back to its provider's
+// default endpoint.
+const clearedBaseURLNote = "Emptying this resets the endpoint to the provider's default."
 
 // clearedBaseURL reports whether the edit form would submit an emptied base
 // URL for an instance that had one.

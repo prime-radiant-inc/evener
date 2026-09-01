@@ -351,6 +351,66 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 	}
 }
 
+// TestInstances_EditOmittedBaseURLLeavesAnAuthoredOneAlone: a nil BaseURL
+// (the field omitted from the RPC) must not disturb an already-authored
+// override — only an explicit value, set or cleared, touches it (#711).
+func TestInstances_EditOmittedBaseURLLeavesAnAuthoredOneAlone(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: new("http://127.0.0.1:9/v1")}); err != nil {
+		t.Fatalf("Edit(set): %v", err)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
+		t.Fatalf("Edit(protocol only): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "groq")
+	if p.Transport.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("authored base_url = %q, want the earlier override left alone", p.Transport.BaseURL)
+	}
+	if p.Protocol != "openai-responses" {
+		t.Fatalf("authored protocol = %q", p.Protocol)
+	}
+}
+
+// TestInstances_EditClearsAuthoredBaseURLBackToDefault is #711: an authored
+// base_url stops spec §10's credential inheritance from the base provider,
+// so an instance that could never clear it back to the registry default was
+// also stuck without the base's api_key_env. An explicit empty BaseURL
+// clears the override and restores both the default endpoint and the
+// inherited credential.
+func TestInstances_EditClearsAuthoredBaseURLBackToDefault(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+	before := entry(t, f.ctl.List(), "groq")
+	if before.ActiveSource != "env:GROQ_API_KEY" {
+		t.Fatalf("groq should inherit its credential before any override: activeSource = %q", before.ActiveSource)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: new("http://127.0.0.1:9/v1")}); err != nil {
+		t.Fatalf("Edit(set): %v", err)
+	}
+	stopped := entry(t, f.ctl.List(), "groq")
+	if stopped.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("authored base URL = %q", stopped.BaseURL)
+	}
+	if stopped.ActiveSource == "env:GROQ_API_KEY" {
+		t.Fatalf("a literal base_url should stop credential inheritance (spec §10), but activeSource is still %q", stopped.ActiveSource)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: new("")}); err != nil {
+		t.Fatalf("Edit(clear): %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "groq")
+	if p.Transport.BaseURL != "" {
+		t.Fatalf("authored base_url = %q after clearing, want empty", p.Transport.BaseURL)
+	}
+	after := entry(t, f.ctl.List(), "groq")
+	if after.BaseURL != before.BaseURL {
+		t.Fatalf("after clearing, base URL = %q, want the registry default %q", after.BaseURL, before.BaseURL)
+	}
+	if after.ActiveSource != "env:GROQ_API_KEY" {
+		t.Fatalf("clearing the base_url override should resume credential inheritance (spec §10); activeSource = %q", after.ActiveSource)
+	}
+}
+
 func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"})
 	if err := f.ctl.Create(appwire.InstanceCreateParams{
