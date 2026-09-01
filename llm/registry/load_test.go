@@ -238,6 +238,7 @@ func TestLoad_EmbeddedOverridesBypassParsedDefaults(t *testing.T) {
 }
 
 func TestLoad_EmbeddedSourcesSupportConcurrentLoads(t *testing.T) {
+	before := embeddedParsedSources(t)
 	const workers = 8
 	stateRoot := t.TempDir()
 	errs := make(chan error, workers)
@@ -279,6 +280,35 @@ func TestLoad_EmbeddedSourcesSupportConcurrentLoads(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
+	if after := embeddedParsedSources(t); !bytes.Equal(after, before) {
+		t.Fatal("loading and resolving mutated the cached embedded sources")
+	}
+}
+
+func embeddedParsedSources(t *testing.T) []byte {
+	t.Helper()
+	catalog, err := loadEmbeddedCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := loadEmbeddedOverlay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := make([][]string, len(catalog.providers))
+	for i, provider := range catalog.providers {
+		notes[i] = slices.Clone(provider.notes)
+	}
+	data, err := json.Marshal(struct {
+		Providers []Provider `json:"providers"`
+		Notes     [][]string `json:"provider_notes"`
+		Meta      Meta       `json:"meta"`
+		Overlay   *Layer     `json:"overlay"`
+	}{catalog.providers, notes, catalog.meta, overlay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func BenchmarkLoadEmbeddedDefaults(b *testing.B) {
