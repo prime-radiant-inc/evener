@@ -2602,28 +2602,37 @@ type InstanceCreateParams struct {
 
 // InstanceEditParams is the params for evener/instance/edit. Editing an
 // implicit instance writes a shadowing entry carrying only these fields
-// (spec §11.3).
+// (spec §11.3). The wire shape is additive over v3 (ProtocolVersion stays
+// evener-appwire-v3): every field it already had keeps its exact old
+// meaning, so an old and a new peer can never silently disagree about a
+// request either one sends.
 //
-// BaseURL is a pointer so an omitted field (nil) can be told apart from an
-// explicit clear: nil leaves the stored base_url alone; a non-nil value sets
-// it, including a non-nil empty string, which drops the authored override
-// and goes back to the registry default. That also lifts spec §10's
-// credential-inheritance stop, which keys on a literal base_url (#711).
+// EMPTY MEANS UNCHANGED, not "clear", for BaseURL, Protocol and Surface: an
+// empty value leaves the stored one alone. That is unchanged from before
+// (#711) — BaseURL cannot be emptied to mean "clear" without changing what a
+// v3 `baseUrl: ""` has always meant to a peer on either side of an upgrade.
 //
-// Protocol and Surface are still plain strings, so EMPTY MEANS UNCHANGED for
-// them, not "clear": an empty value leaves the stored one alone, and there
-// is no way to reset either back to the registry default over this wire.
-// Name identifies the instance and an empty Vars map is a no-op edit either
-// way, so those two are the only fields where the distinction still cannot
-// be reached. That is a deliberate limit rather than an oversight: giving
-// them the same *string treatment as BaseURL is ledgered for whenever a form
-// needs to clear one.
+// ClearBaseURL is the new, additive way to reach a clear: when true, it
+// drops the authored base_url override and goes back to the registry
+// default, lifting spec §10's credential-inheritance stop, which keys on a
+// literal base_url. It is additive rather than a wire-incompatible change
+// because an old hub simply ignores the unknown field — the request reduces
+// to an ordinary no-op edit on BaseURL, not a silent wrong clear — and a new
+// hub talking to an old client that never sends it behaves exactly as
+// before. BaseURL and ClearBaseURL are never both meaningful in the same
+// request: send one or the other.
+//
+// Protocol and Surface have no clear operation yet — Name identifies the
+// instance and an empty Vars map is a no-op edit either way, so those two
+// are the only fields still unreachable. Giving them the same ClearXxx
+// treatment as BaseURL is ledgered for whenever a form needs to clear one.
 type InstanceEditParams struct {
-	Name     string            `json:"name"`
-	BaseURL  *string           `json:"baseUrl,omitempty"`
-	Protocol string            `json:"protocol,omitempty"`
-	Surface  string            `json:"surface,omitempty"`
-	Vars     map[string]string `json:"vars,omitempty"`
+	Name         string            `json:"name"`
+	BaseURL      string            `json:"baseUrl,omitempty"`
+	ClearBaseURL bool              `json:"clearBaseUrl,omitempty"`
+	Protocol     string            `json:"protocol,omitempty"`
+	Surface      string            `json:"surface,omitempty"`
+	Vars         map[string]string `json:"vars,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.

@@ -394,7 +394,7 @@ func TestCovCredentialsFormSubmitEdit(t *testing.T) {
 		t.Fatal("Enter on last edit field should submit")
 	}
 	msg := cmd().(InstanceEditSubmitMsg)
-	want := appwire.InstanceEditParams{Name: "x", Protocol: "openai-responses", BaseURL: new("http://x")}
+	want := appwire.InstanceEditParams{Name: "x", Protocol: "openai-responses", BaseURL: "http://x"}
 	if !reflect.DeepEqual(msg.Params, want) {
 		t.Fatalf("params = %+v, want %+v", msg.Params, want)
 	}

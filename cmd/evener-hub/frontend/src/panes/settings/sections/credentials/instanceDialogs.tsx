@@ -202,21 +202,24 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
 
-  // InstanceEditParams.baseUrl is a pointer wire-side (#711): an omitted
-  // field leaves the authored value alone, but an explicit empty string
-  // clears it back to the provider's default. Emptying a field that had a
-  // value takes that second path below, so note what saving will do.
-  const clearingBaseUrl = Boolean(instance.baseUrl) && baseUrl.trim() === "";
+  // InstanceEditParams keeps baseUrl's old "empty means unchanged" meaning
+  // (v3, unchanged by #711) and adds clearBaseUrl as an additive clear
+  // signal: an old hub ignores the unknown field and treats the request as
+  // an ordinary no-op, never a silent wrong clear. Emptying a field that
+  // had a value takes that clear path below, so note what saving will do.
+  const trimmedBaseUrl = baseUrl.trim();
+  const displayedBaseUrl = instance.baseUrl || "";
+  const clearingBaseUrl = Boolean(instance.baseUrl) && trimmedBaseUrl === "";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setError(null);
     setBusy(true);
     try {
-      const trimmedBaseUrl = baseUrl.trim();
       await credentialsStore.getState().edit({
         name: instance.name,
-        baseUrl: trimmedBaseUrl !== (instance.baseUrl || "") ? trimmedBaseUrl : undefined,
+        baseUrl: trimmedBaseUrl !== displayedBaseUrl && trimmedBaseUrl !== "" ? trimmedBaseUrl : undefined,
+        clearBaseUrl: clearingBaseUrl ? true : undefined,
       });
       toast.push("success", `Saved ${instance.name}`);
       onSuccess();

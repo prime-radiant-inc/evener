@@ -557,7 +557,7 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	in := InstanceEditParams{
 		Name:     "work",
-		BaseURL:  new("https://gw.example.test/v2"),
+		BaseURL:  "https://gw.example.test/v2",
 		Protocol: "openai-responses",
 		Surface:  "openai",
 		Vars:     map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
@@ -578,6 +578,9 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
+	if strings.Contains(got, "clearBaseUrl") {
+		t.Fatalf("marshal=%s carries clearBaseUrl, want it omitted when false", got)
+	}
 	bare, err := json.Marshal(InstanceEditParams{Name: "work"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -594,40 +597,54 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInstanceEditParamsBaseURLDistinguishesAbsentFromCleared is #711: an
-// omitted baseUrl must leave the authored value alone, while an explicit
-// empty string clears it, so the two have to marshal differently and
-// unmarshal to different pointer states.
-func TestInstanceEditParamsBaseURLDistinguishesAbsentFromCleared(t *testing.T) {
-	absent, err := json.Marshal(InstanceEditParams{Name: "work"})
-	if err != nil {
-		t.Fatalf("marshal(absent): %v", err)
-	}
-	if string(absent) != `{"name":"work"}` {
-		t.Fatalf("an omitted BaseURL marshals to %s, want no baseUrl key at all", absent)
-	}
-
-	cleared, err := json.Marshal(InstanceEditParams{Name: "work", BaseURL: new("")})
+// TestInstanceEditParamsClearBaseURLIsAdditive is #711: ClearBaseURL clears
+// an authored base_url without changing what an empty BaseURL has always
+// meant on this wire ("leave unchanged", v3, unchanged by this field's
+// addition), so old and new v3 peers can never silently disagree about a
+// clear request either sends.
+func TestInstanceEditParamsClearBaseURLIsAdditive(t *testing.T) {
+	cleared, err := json.Marshal(InstanceEditParams{Name: "work", ClearBaseURL: true})
 	if err != nil {
 		t.Fatalf("marshal(cleared): %v", err)
 	}
-	if string(cleared) != `{"name":"work","baseUrl":""}` {
-		t.Fatalf("an explicit clear marshals to %s, want a present but empty baseUrl", cleared)
+	if string(cleared) != `{"name":"work","clearBaseUrl":true}` {
+		t.Fatalf("a clear marshals to %s, want a bare clearBaseUrl flag and no baseUrl key", cleared)
+	}
+
+	// A pre-#711 decoder has no ClearBaseURL field. Decoding a new client's
+	// clear request into that old shape must still succeed (Go's
+	// encoding/json ignores unknown keys) and see an ordinary
+	// nothing-to-apply edit — an honest no-op, never a silent wrong clear.
+	type oldShape struct {
+		Name     string `json:"name"`
+		BaseURL  string `json:"baseUrl,omitempty"`
+		Protocol string `json:"protocol,omitempty"`
+	}
+	var old oldShape
+	if err := json.Unmarshal(cleared, &old); err != nil {
+		t.Fatalf("an old decoder rejected a new clear request: %v", err)
+	}
+	if old.BaseURL != "" {
+		t.Fatalf("an old decoder read baseUrl = %q from a clear request, want nothing set", old.BaseURL)
 	}
 
 	var out InstanceEditParams
-	if err := json.Unmarshal(absent, &out); err != nil {
-		t.Fatalf("unmarshal(absent): %v", err)
-	}
-	if out.BaseURL != nil {
-		t.Fatalf("an absent baseUrl unmarshaled to %v, want nil (leave unchanged)", *out.BaseURL)
-	}
-
 	if err := json.Unmarshal(cleared, &out); err != nil {
 		t.Fatalf("unmarshal(cleared): %v", err)
 	}
-	if out.BaseURL == nil || *out.BaseURL != "" {
-		t.Fatalf("a present empty baseUrl unmarshaled to %v, want a non-nil pointer to \"\" (clear)", out.BaseURL)
+	if !out.ClearBaseURL || out.BaseURL != "" {
+		t.Fatalf("roundtrip = %+v, want ClearBaseURL true and BaseURL empty", out)
+	}
+
+	// A new decoder reading a pre-#711 client's ordinary "leave unchanged"
+	// request (no clearBaseUrl key at all) must not spuriously clear
+	// anything.
+	var fromOldClient InstanceEditParams
+	if err := json.Unmarshal([]byte(`{"name":"work"}`), &fromOldClient); err != nil {
+		t.Fatalf("unmarshal(old client): %v", err)
+	}
+	if fromOldClient.ClearBaseURL {
+		t.Fatal("a request with no clearBaseUrl key decoded to ClearBaseURL = true")
 	}
 }
 
