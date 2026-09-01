@@ -495,6 +495,13 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nowhere") {
 		t.Fatalf("Edit = %v, want an unknown-instance error", err)
 	}
+	// A name that resolves to nothing is the caller's to fix, the same shape
+	// as Create's unknown-base-provider check (#717/#748) — InvalidParams,
+	// not an internal fault.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
+	}
 }
 
 // TestInstances_RemoveRefusesImplicitInstance: an instance that exists from
@@ -811,6 +818,13 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 			}
 			if !strings.Contains(err.Error(), "invalid variable name") {
 				t.Fatalf("Edit = %v, want the refusal to name the offending key", err)
+			}
+			// validVarNames is the same helper Create uses, and Create's
+			// refusal is InvalidParams (#717/#748); Edit must classify it the
+			// same way so a client can tell its own bad input from a hub fault.
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
 			}
 			if got := readConfigProviders(t, f.tomlPath)["ok"].Transport.Vars; len(got) != 0 {
 				t.Fatalf("the refused edit wrote vars %v", got)
