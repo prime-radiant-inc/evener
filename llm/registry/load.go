@@ -225,12 +225,6 @@ func Load(opts ...Option) (*Registry, error) {
 			return nil, err
 		}
 		upstream, meta = catalog.providers, catalog.meta
-	} else {
-		var err error
-		upstream, err = FromModelsDev(o.snapshot)
-		if err != nil {
-			return nil, err
-		}
 	}
 	r.catalogTag, r.catalogMeta = LayerSnapshot, meta
 	if !o.noCache {
@@ -243,6 +237,13 @@ func Load(opts ...Option) (*Registry, error) {
 				upstream = candidate
 				r.catalogTag, r.catalogMeta = LayerCache, cachedMeta
 			}
+		}
+	}
+	if o.snapshot != nil && r.catalogTag == LayerSnapshot {
+		var err error
+		upstream, err = FromModelsDev(o.snapshot)
+		if err != nil {
+			return nil, err
 		}
 	}
 	upstreamByID := make(map[string]Provider, len(upstream))
