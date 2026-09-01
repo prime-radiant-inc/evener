@@ -11,10 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type sessionAttributionAdapter struct {
@@ -178,6 +182,168 @@ func TestSideCallsAttributeToSessionAPILog(t *testing.T) {
 		data, _ := os.ReadFile(unattributed)
 		t.Fatalf("side call landed in unattributed bucket (stat err=%v):\n%s", err, data)
 	}
+}
+
+// attemptRecordingLiveModels returns a scripted llm.LiveModelLister listing
+// (installable as fakeAdapter.liveModels) that behaves like
+// sessionAttributionAdapter.Complete for the model-listing seam: it opens and
+// completes a real llm.APIAttempt against whatever ctx it is given, so the
+// resulting canonical API-log record's session attribution reflects only what
+// the caller's ctx carried in, never a mocked shortcut.
+func attemptRecordingLiveModels(providerInstance string) func(context.Context) ([]registry.Model, error) {
+	return func(ctx context.Context) ([]registry.Model, error) {
+		startedAt := time.Unix(1_700_000_000, 0).UTC()
+		attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
+			ProviderInstance: providerInstance,
+			Method:           http.MethodGet,
+			Endpoint:         "https://scripted.invalid/v1/models",
+			StartedAt:        startedAt,
+		})
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   http.StatusOK,
+			ResponseBody: []byte(`{"data":[]}`),
+			Outcome:      apilog.AttemptSuccess,
+			FinishedAt:   startedAt.Add(time.Millisecond),
+		})
+		return []registry.Model{{ID: "gpt-5.2"}}, nil
+	}
+}
+
+// assertSessionAPILogAttributed fails t unless stateDir/sessions/<sessionID>.api.jsonl
+// holds at least one record and stateDir/sessions/unattributed.api.jsonl was
+// never created.
+func assertSessionAPILogAttributed(t *testing.T, stateDir, sessionID string) {
+	t.Helper()
+	sessLog := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+	data, err := os.ReadFile(sessLog)
+	if err != nil {
+		t.Fatalf("read session API log: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("session API log is empty")
+	}
+	unattributed := filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")
+	if _, err := os.Stat(unattributed); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(unattributed)
+		t.Fatalf("pre-session live model listing landed in unattributed bucket (stat err=%v):\n%s", err, data)
+	}
+}
+
+// TestPreSessionLiveModelListingAttribution pins issue #745: the live
+// model-listing call NewSession and RestoreSessionFromMetaWithConfig each
+// issue before any per-turn ctx exists (agent/live_model_metadata.go) must
+// attribute to the session's own id whenever one is already available at that
+// call site — restore's meta.ID, or a durable delegate's controller-reserved
+// cfg.spawn.sessionID — and only fall back to the shared unattributed bucket
+// when no id genuinely exists yet, as for a brand-new root session.
+func TestPreSessionLiveModelListingAttribution(t *testing.T) {
+	t.Run("restore attributes to the restored session id", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		meta := schema.SessionMeta{
+			ID:        "restored-attribution-session",
+			ProfileID: "openai",
+			Model:     "gpt-5.2",
+			Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		}
+		restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+		}
+		t.Cleanup(func() { restored.Close() })
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertSessionAPILogAttributed(t, stateDir, meta.ID)
+	})
+
+	t.Run("NewSession attributes to a pre-reserved delegate session id", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		// A durable delegate's child session id is minted and reserved by the
+		// delegate controller before NewSession is ever called
+		// (delegate_tree_start.go's ReserveCreate); NewSession receives it
+		// pre-populated on cfg.spawn.sessionID (delegateRuntime.construct ->
+		// prepareSubagentRunFromSelection). Setting it directly here exercises
+		// that exact contract without standing up the whole delegate stack.
+		childID := identifier.MustNewSessionID()
+		cfg := SessionConfig{
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			StateDir:         stateDir,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}
+		cfg.spawn.sessionID = childID
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { sess.Close() })
+		if got := sess.ID(); got != childID {
+			t.Fatalf("session id = %q, want the pre-reserved %q", got, childID)
+		}
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertSessionAPILogAttributed(t, stateDir, childID)
+	})
+
+	t.Run("a genuinely fresh root session still lands in unattributed", func(t *testing.T) {
+		stateDir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+		logger, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger: %v", err)
+		}
+		client.Use(logger)
+
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			StateDir:         stateDir,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { sess.Close() })
+
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		// No session id exists until after this call (identifier.NewSessionID()
+		// is minted later in NewSession), so this is the one call site the
+		// issue leaves unattributed on purpose: there is structurally nothing
+		// to attribute to yet.
+		unattributed := filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")
+		if _, err := os.Stat(unattributed); err != nil {
+			t.Fatalf("fresh root session's pre-session listing did not land in unattributed: %v", err)
+		}
+		ownLog := filepath.Join(stateDir, "sessions", sess.ID()+".api.jsonl")
+		if _, err := os.Stat(ownLog); !os.IsNotExist(err) {
+			t.Fatalf("fresh root session's pre-session listing unexpectedly reached its own log (stat err=%v)", err)
+		}
+	})
 }
 
 func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {

@@ -18,9 +18,19 @@ type liveModelEnumeration struct {
 	err     error
 }
 
-func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration) {
+// resolveLiveModelProfileWithEnumerationTimeout lists the profile's instance
+// under a fixed timeout. sessionID attributes the canonical API-log attempt
+// this listing produces (llm.WithAPILogContext) when the caller already has
+// one in scope — a restore's meta.ID, or a durable delegate's
+// controller-reserved cfg.spawn.sessionID; pass "" when no session id exists
+// yet (a brand-new root session), which leaves the attempt in the shared
+// unattributed bucket exactly as before.
+func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, liveModelEnumeration) {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
+	if sessionID != "" {
+		ctx = llm.WithAPILogContext(ctx, sessionID)
+	}
 	return fillLiveModelMetadata(ctx, client, profile)
 }
 
@@ -66,9 +76,11 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // apply, so a session can no longer launch with a model the provider's live
 // list definitively doesn't carry. Fails open (nil error, profile unchanged
 // modulo any metadata fill) on any enumeration failure, matching NewSession's
-// prior unvalidated behavior in that case.
-func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration, error) {
-	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
+// prior unvalidated behavior in that case. sessionID is forwarded to
+// resolveLiveModelProfileWithEnumerationTimeout for API-log attribution; see
+// its doc comment.
+func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, liveModelEnumeration, error) {
+	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile, sessionID)
 	if enumeration.err == nil {
 		if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
 			return filled, enumeration, err
