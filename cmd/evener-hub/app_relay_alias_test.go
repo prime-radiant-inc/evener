@@ -335,6 +335,7 @@ func TestHubRelayThreadIDReadUsesAuthoritativeResponseRef(t *testing.T) {
 	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{ThreadID: "lookup-thread", Subscribe: true}); err != nil {
 		t.Fatalf("subscribe by thread id: %v", err)
 	}
+	awaitLiveHubSubscriptions(t, appServer, 1)
 	params, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
 		ThreadID:     "lookup-thread",
 		Ref:          "local:workspace-thread",
@@ -534,6 +535,41 @@ func (p *aliasRelayPool) emit(t *testing.T, notification appwire.Notification) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("relay listener did not acknowledge notification")
 		}
+	}
+}
+
+// awaitLiveHubSubscriptions blocks until the hub holds at least want live
+// thread subscriptions and none is still buffering.
+//
+// A thread/read response enters the connection's send queue before appserver
+// commits the hydration capture that response opened -- enqueueResponse hands
+// the message to the writer goroutine and only then calls the finalizer. So a
+// client's ThreadRead can return while its own subscription is still
+// buffering, and Subscriptions.Route parks a relay broadcast in that buffer
+// instead of delivering it. A BroadcastAll barrier enqueued next goes straight
+// to the connection, ahead of the buffered frame, and a test counting frames
+// up to the barrier sees none.
+func awaitLiveHubSubscriptions(t *testing.T, server *appserver.Server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var live, buffering int
+		for _, row := range server.DebugSubscriptions().Subscriptions {
+			switch {
+			case row.Withdrawn:
+			case row.Buffering:
+				buffering++
+			default:
+				live++
+			}
+		}
+		if buffering == 0 && live >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hub subscriptions never settled: %d live, %d buffering, want %d live", live, buffering, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
