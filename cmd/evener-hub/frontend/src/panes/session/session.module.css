@@ -53,21 +53,7 @@
 .intentGroupItems {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding-bottom: var(--space-2);
-}
-
-/* IntentToolCallRow: a drill-down row inside the intent group. Collapsed it
- * shows ToolRow (intent + icon + chevron); expanded it reveals the real
- * ToolCallItem. The row itself is just a plain wrapper — ToolRow owns its own
- * layout, and the body below indents under the headline. */
-.intentRow {
-  display: flex;
-  flex-direction: column;
-}
-
-.intentRowBody {
-  padding-left: var(--space-3);
+  gap: 0;
 }
 
 .coldStart {

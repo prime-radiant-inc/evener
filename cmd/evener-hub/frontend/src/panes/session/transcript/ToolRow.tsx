@@ -80,6 +80,7 @@ const CLASS = {
   intentTrailing: requireClass(styles.intentTrailing, "toolcallitem.module.css", "intentTrailing"),
   summaryMeta: requireClass(styles.summaryMeta, "toolcallitem.module.css", "summaryMeta"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
+  bodyTrigger: requireClass(styles.bodyTrigger, "toolcallitem.module.css", "bodyTrigger"),
 };
 
 export interface ToolRowProps {
@@ -133,6 +134,20 @@ export interface ToolRowProps {
   title?: string;
   /** Stable ID of the conditionally rendered body controlled by this trigger. */
   bodyId?: string;
+  /** Whether the summary line is open (two-level disclosure: the intent
+   * button controls this, the .bodyTrigger chevron controls `expanded`).
+   * Ignored when `onToggleSummary` is absent (legacy single-level mode). */
+  summaryOpen?: boolean;
+  /** Toggle handler for the summary line. When present on an intent-bearing
+   * row, the intent button switches from controlling `expanded` to
+   * controlling `summaryOpen`, and a separate .bodyTrigger chevron controls
+   * `expanded`. Intent-less rows are unchanged regardless. */
+  onToggleSummary?: () => void;
+  /** When true, the summary line is hidden even if `summaryOpen` is true -
+   * the descriptor's summaryHiddenWhenExpanded, derived by the caller
+   * (ToolCallItem) as `expanded && descriptor.summaryHiddenWhenExpanded`.
+   * The body chevron moves to the intent line (data-intent-trailing). */
+  summaryHidden?: boolean;
 }
 
 /** The one rule for reading a tool call's stated intent (ItemModel.description):
@@ -222,12 +237,21 @@ export function ToolRow({
   title,
   status,
   bodyId,
+  summaryOpen = false,
+  onToggleSummary,
+  summaryHidden = false,
 }: ToolRowProps) {
   const generatedBodyId = useId();
   const disclosureBodyId = bodyId ?? generatedBodyId;
+  const summaryRegionId = useId();
   const statedIntent = statedIntentOf({ description: intent });
   const hasIntent = statedIntent !== undefined;
   const hasSummary = summary.trim() !== "";
+  // Two-level disclosure is opt-in via onToggleSummary, and only applies to
+  // intent-bearing rows. Intent-less rows keep the legacy overlay pattern
+  // (one trigger controls the body) regardless of which props are passed.
+  const twoLevel = hasIntent && onToggleSummary !== undefined;
+  const summaryVisible = summaryOpen && !summaryHidden;
   // `status` is typed ReactNode, so it admits values that render nothing and
   // carry no accessible name - null, undefined, false (the common
   // `condition && <Node/>` idiom) - alongside a real status node. Only a
@@ -262,7 +286,7 @@ export function ToolRow({
     <span
       className={CLASS.chevron}
       aria-hidden="true"
-      data-open={expanded ? "true" : "false"}
+      data-open={(twoLevel ? summaryVisible : expanded) ? "true" : "false"}
       data-testid="tool-row-chevron"
     >
       <Chevron />
@@ -451,22 +475,56 @@ export function ToolRow({
       {!hasIntent && anchorSplit === undefined ? trailing : null}
     </>
   );
-  const triggerLabel = !hasIntent
-    ? [
-        failed ? "Failed" : undefined,
-        hasSummary ? summary : undefined,
-        !hasSummary && !failed ? "Tool call" : undefined,
-      ]
-        .filter((part): part is string => part !== undefined)
-        .join(" ")
-    : undefined;
+  // The accessible name for a body disclosure trigger: the failure prefix
+  // (if failed), the summary text (if any), or a bare "Tool call" fallback.
+  // Used by both the intent-less overlay trigger and the two-level body
+  // chevron (.bodyTrigger).
+  const summaryLabel = [
+    failed ? "Failed" : undefined,
+    hasSummary ? summary : undefined,
+    !hasSummary && !failed ? "Tool call" : undefined,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(" ");
+  // The .bodyTrigger chevron button: a separate disclosure for the body that
+  // coexists with the intent button's summary disclosure in two-level mode.
+  // It carries its own chevron (without the tool-row-chevron testid, so the
+  // intent button's inline chevron stays the unique match for that testid).
+  const bodyTriggerButton = twoLevel ? (
+    <button
+      type="button"
+      className={CLASS.bodyTrigger}
+      data-testid="tool-row-body-trigger"
+      aria-expanded={expanded}
+      aria-controls={disclosureBodyId}
+      aria-label={summaryLabel}
+      onClick={() => onToggle?.()}
+    >
+      <span className={CLASS.chevron} aria-hidden="true" data-open={expanded ? "true" : "false"}>
+        <Chevron />
+      </span>
+    </button>
+  ) : null;
+  // When the summary is not visible but the body is expanded, the body
+  // chevron rides the intent line (data-intent-trailing makes the intent
+  // button shrink to share it). When the summary is visible, the body
+  // chevron rides the end of the summary line instead.
+  const bodyTriggerOnIntentLine = twoLevel && !summaryVisible && expanded;
+  const bodyTriggerOnSummaryLine = twoLevel && summaryVisible;
+
+  // Intent button attributes differ between two-level and legacy modes.
+  // In two-level mode the intent button controls the summary disclosure;
+  // in legacy mode it controls the body disclosure directly.
+  const triggerExpanded = twoLevel ? summaryVisible : expanded;
+  const triggerControls = twoLevel ? (summaryVisible ? summaryRegionId : undefined) : disclosureBodyId;
+  const triggerOnClick = twoLevel ? () => onToggleSummary?.() : () => onToggle?.();
 
   return (
     <div
       className={CLASS.row}
       data-testid="tool-row"
       data-intent={hasIntent ? "true" : undefined}
-      data-intent-trailing={showIntentTrailing ? "true" : undefined}
+      data-intent-trailing={showIntentTrailing || bodyTriggerOnIntentLine ? "true" : undefined}
       title={title}
     >
       {hasIntent ? (
@@ -474,9 +532,9 @@ export function ToolRow({
           type="button"
           className={CLASS.trigger}
           data-testid="tool-row-trigger"
-          aria-expanded={expanded}
-          aria-controls={disclosureBodyId}
-          onClick={() => onToggle?.()}
+          aria-expanded={triggerExpanded}
+          aria-controls={triggerControls}
+          onClick={triggerOnClick}
         >
           {iconNode}
           {failureNode}
@@ -494,6 +552,7 @@ export function ToolRow({
         </>
       )}
       {intentLineTrailing}
+      {bodyTriggerOnIntentLine && bodyTriggerButton}
       {!hasIntent && <div className={CLASS.summaryLine}>{summaryContent}</div>}
       {!hasIntent && (
         <button
@@ -502,13 +561,19 @@ export function ToolRow({
           data-testid="tool-row-trigger"
           aria-expanded={expanded}
           aria-controls={disclosureBodyId}
-          aria-label={triggerLabel}
+          aria-label={summaryLabel}
           onClick={() => onToggle?.()}
         >
           {chevron}
         </button>
       )}
-      {hasIntent && !showIntentTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {hasIntent && twoLevel && bodyTriggerOnSummaryLine && (
+        <div id={summaryRegionId} className={CLASS.summaryLine}>
+          {summaryContent}
+          {bodyTriggerButton}
+        </div>
+      )}
+      {hasIntent && !twoLevel && !showIntentTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
     </div>
   );
 }

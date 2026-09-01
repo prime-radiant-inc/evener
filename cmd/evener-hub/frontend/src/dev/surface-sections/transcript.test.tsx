@@ -15,6 +15,10 @@ function rowFor(toolName: string): HTMLElement {
 }
 
 function isOpen(item: HTMLElement): boolean {
+  // Intent-bearing rows use tool-row-body-trigger for body disclosure;
+  // intent-less rows use tool-row-trigger. Prefer the body trigger when present.
+  const bodyTrigger = item.querySelector('[data-testid="tool-row-body-trigger"]');
+  if (bodyTrigger) return bodyTrigger.getAttribute("aria-expanded") === "true";
   return item.querySelector('[data-testid="tool-row-trigger"]')?.getAttribute("aria-expanded") === "true";
 }
 

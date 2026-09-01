@@ -7,6 +7,7 @@
   display: flex;
   flex-direction: column;
   padding: var(--space-2) 0;
+  overflow: hidden;
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
@@ -135,6 +136,32 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
+}
+
+.bodyTrigger {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
+.bodyTrigger:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.bodyTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* The agent's stated reason for the call - the one part of the row written for
@@ -364,6 +391,13 @@
 
 .chevron[data-open="true"] > svg {
   transform: rotate(90deg);
+}
+
+/* The .bodyTrigger button's chevron has no preceding text, so the default
+ * margin-left (designed for chevrons after inline text) is removed to
+ * prevent the button from adding 8px to the row's width. */
+.bodyTrigger .chevron {
+  margin-left: 0;
 }
 
 /* The expanded body: hairline-framed, --surface-1, no heavy fill. */
