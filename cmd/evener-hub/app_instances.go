@@ -267,12 +267,11 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // merely displayed, which would stop the instance inheriting its provider's
 // key (spec §10, §11.3).
 //
-// Every refusal that blames the fields the caller sent — an unknown name, an
-// invalid vars key, an edit that would leave the instance unable to load —
-// comes back as appwire.InvalidParams, the same convention Create uses
-// (#717/#748). A refusal about the hub's own state (the registry not loaded,
-// a read, write, or restore failure) stays a plain error: that is not the
-// caller's to fix.
+// Refusals follow Create's convention (#717/#748): the ones that blame the
+// fields the caller sent — an unknown name, an invalid vars key, an edit
+// that would leave the instance unable to load — come back as
+// appwire.InvalidParams; the hub's own faults (the registry not loaded, a
+// read, write, or restore failure) stay plain errors.
 func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
