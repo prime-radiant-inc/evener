@@ -1,5 +1,6 @@
 // Edge cases for CredentialsSection.tsx uncovered lines:
 // - handleConfirmedAction clear failure error toast
+// - handleConfirmedAction clear stored key failure error toast
 // - handleConfirmedAction remove failure error toast
 // - findInstance returns undefined for apiKey dialog when instance is gone
 // - findInstance returns undefined for edit dialog when instance is gone
@@ -92,6 +93,37 @@ describe("CredentialsSection edge cases", () => {
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
     await screen.findByText("Clear failed: Something went wrong.");
     expect(screen.getByRole("dialog", { name: "Clear credentials" })).toBeTruthy();
+  });
+
+  test("clear stored key failure shows error toast", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", () => {
+      throw new Error("clear denied");
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Clear stored key failed: Something went wrong.");
+    expect(screen.getByRole("dialog", { name: "Clear stored key" })).toBeTruthy();
   });
 
   test("remove failure shows error toast", async () => {

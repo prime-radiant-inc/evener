@@ -579,7 +579,7 @@ describe("set default", () => {
   });
 });
 
-describe("Clear / Remove confirm dialogs", () => {
+describe("Clear / Clear stored key / Remove confirm dialogs", () => {
   test("Clear opens a ConfirmDialog naming the instance; confirming calls authLogout then refreshes", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
@@ -608,6 +608,45 @@ describe("Clear / Remove confirm dialogs", () => {
     // scope this second click to the dialog's own Clear/confirm button.
     await user.click(within(dialog).getByRole("button", { name: "Clear" }));
     await screen.findByText("Credentials cleared for work");
+  });
+
+  // #713: a stray stored key shadowed behind an active OAuth login needs an
+  // affordance that clears the key without dropping the login - distinct
+  // from Clear (authLogout), which for a signed-in Codex row would remove
+  // the OAuth record instead.
+  test("Clear stored key opens a ConfirmDialog naming the instance; confirming calls clearStoredKey then refreshes", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "shadowed" });
+      return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    // This row is signed in via OAuth (showClear also true), so both Clear
+    // and Clear stored key render - assert the narrower action reaches the
+    // narrower RPC, leaving the login alone.
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    expect(dialog).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Stored key cleared for shadowed");
   });
 
   test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {

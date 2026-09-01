@@ -27,6 +27,7 @@ function noopHandlers() {
     onOAuthStart: vi.fn(),
     onEdit: vi.fn(),
     onClear: vi.fn(),
+    onClearStoredKey: vi.fn(),
     onRemove: vi.fn(),
     onSetDefault: vi.fn(),
   };
@@ -187,6 +188,32 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
   });
 
+  // #713: a stray stored key can sit shadowed behind an active oauth/adc
+  // login - Clear stored key is the sheet's narrow affordance for exactly
+  // that state, distinct from Clear (which for a signed-in Codex row would
+  // drop the login instead of the stray key).
+  test("Clear stored key when a stored key is shadowed behind an active OAuth login", () => {
+    renderSheet(
+      instance({ name: "a", providerId: "openai-codex", activeSource: "oauth", hasStoredFile: true, hasStoredOAuth: true }),
+    );
+    expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
+  });
+
+  test("Clear stored key when a stored key is shadowed behind ADC", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "adc", hasStoredFile: true }));
+    expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
+  });
+
+  test("no Clear stored key when the stored key IS the active source", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "store", hasStoredFile: true }));
+    expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
+  });
+
+  test("no Clear stored key when nothing is stored", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "oauth", hasStoredFile: false }));
+    expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
+  });
+
   test("Edit and Remove are both offered for a non-implicit instance", () => {
     renderSheet(instance({ name: "a", providerId: "x" }));
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
@@ -215,6 +242,15 @@ describe("actions are conditionally rendered", () => {
       instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
     );
     expect(document.querySelectorAll("hr").length).toBe(1);
+  });
+
+  test("the danger-zone divider stays when Clear stored key alone is offered", () => {
+    renderSheet(
+      instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "adc", hasStoredFile: true }),
+    );
+    expect(document.querySelectorAll("hr").length).toBe(1);
+    expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
   });
 
   test("make default only when not already default", () => {
@@ -319,6 +355,15 @@ describe("action callbacks fire", () => {
     expect(handlers.onSetDefault).toHaveBeenCalled();
   });
 
+  test("clicking Clear stored key calls its handler", async () => {
+    const user = userEvent.setup();
+    const { handlers } = renderSheet(
+      instance({ name: "a", providerId: "openai-codex", activeSource: "oauth", hasStoredFile: true, hasStoredOAuth: true }),
+    );
+    await user.click(screen.getByRole("button", { name: "Clear stored key" }));
+    expect(handlers.onClearStoredKey).toHaveBeenCalled();
+  });
+
   test("clicking Sign in calls its handler", async () => {
     const user = userEvent.setup();
     const { handlers } = renderSheet(
@@ -361,8 +406,9 @@ describe("action callbacks fire", () => {
 
 // writesRefused is the wire's "providers.toml cannot be written" flag
 // (InstanceListResponse, spec §11.3): it gates the evener/instance/* writes
-// only. Set key/Sign in/Clear/Test credentials write the credentials store
-// or an OAuth record, never providers.toml, so they stay live.
+// only. Set key/Sign in/Clear/Clear stored key/Test credentials write the
+// credentials store or an OAuth record, never providers.toml, so they stay
+// live.
 describe("writesRefused disables instance-CRUD actions only", () => {
   test("disables Edit, Remove, and make default", () => {
     renderSheet(instance({ name: "a", providerId: "x", isDefault: false }), { writesRefused: true });
@@ -385,6 +431,13 @@ describe("writesRefused disables instance-CRUD actions only", () => {
     expect((screen.getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Replace key" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("leaves Clear stored key enabled", () => {
+    renderSheet(instance({ name: "a", providerId: "x", activeSource: "adc", hasStoredFile: true }), {
+      writesRefused: true,
+    });
+    expect((screen.getByRole("button", { name: "Clear stored key" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("an implicit instance under writesRefused still has no Remove button at all", () => {

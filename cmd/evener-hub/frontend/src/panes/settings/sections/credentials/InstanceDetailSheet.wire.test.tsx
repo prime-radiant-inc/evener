@@ -23,6 +23,7 @@ function renderHubInstance(name: string) {
       onOAuthStart={vi.fn()}
       onEdit={vi.fn()}
       onClear={vi.fn()}
+      onClearStoredKey={vi.fn()}
       onRemove={vi.fn()}
       onSetDefault={vi.fn()}
     />,

@@ -413,6 +413,27 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
+// ApiKeyClear removes a stored file-layer key without touching any other
+// credential layer - the counterpart to ApiKeySet, and the instance sheet's
+// affordance for a stray stored key sitting shadowed behind an active
+// oauth/adc source (issue #713). Unlike Logout, it never refuses or
+// branches on the Codex transport: Logout's Codex path removes whichever
+// layer is currently active, which for a signed-in row means the OAuth
+// record, not the stray key, so it cannot express "clear the stray key but
+// keep the login." ApiKeyClear always targets the store entry alone,
+// leaving any OAuth record, ADC resolution, or environment credential
+// exactly as it was.
+func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
+	name := normalizeAuthProvider(params.Provider)
+	if err := c.clearCredential(name); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
+	return c.Status(appwire.AuthStatusParams{Provider: name})
+}
+
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
 	out := envToMap(os.Environ())
 	maps.Copy(out, launchEnv)

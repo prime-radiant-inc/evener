@@ -1,20 +1,20 @@
 // CredentialsSection (#7 - the dominant piece of the Agents & models
 // cluster), detail-sheet redesign: instance rows are single tappable
 // targets that open an InstanceDetailSheet inspector; every per-instance
-// action (test, set key, sign in, edit, make default, clear, remove)
-// lives in that sheet - the same row→detail-sheet collection-page idiom
-// the marketplacesPlugins redesign introduced (a sibling workstream; the
-// idiom's design-system writeup lands with it) - instead of a per-row
-// button cluster. The editors (add/apiKey/edit/OAuth flows) stay dialogs:
-// opening one from the sheet replaces it (single-mutable-editor invariant
-// below).
+// action (test, set key, sign in, edit, make default, clear, clear stored
+// key, remove) lives in that sheet - the same row→detail-sheet
+// collection-page idiom the marketplacesPlugins redesign introduced (a
+// sibling workstream; the idiom's design-system writeup lands with it) -
+// instead of a per-row button cluster. The editors (add/apiKey/edit/OAuth
+// flows) stay dialogs: opening one from the sheet replaces it
+// (single-mutable-editor invariant below).
 //
 // Updated for the provider registry's instance wire shape (spec §11.3):
 // instances group by providerId, the add form is fed availableProviders, and
 // a providers.toml load error surfaces as a diagnostics banner that disables
 // every instance-CRUD action until it clears (writesRefused) - Set key/Sign
-// in/Clear/Test credentials are unaffected, since none of them write
-// providers.toml.
+// in/Clear/Clear stored key/Test credentials are unaffected, since none of
+// them write providers.toml.
 //
 // Single-mutable-editor invariant: `openEditor` is ONE section-level state
 // value (a discriminated union), so opening a second editor always replaces
@@ -55,7 +55,7 @@ type OpenEditor =
   | { kind: "device"; name: string; flowId: string; userCode: string; verificationUrl: string; intervalSeconds: number }
   | null;
 
-type PendingConfirm = { kind: "clear" | "remove"; name: string } | null;
+type PendingConfirm = { kind: "clear" | "clearStoredKey" | "remove"; name: string } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
@@ -177,13 +177,17 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         await credentialsStore.getState().logout(name);
         await credentialsStore.getState().fetch();
         toast.push("success", `Credentials cleared for ${name}`);
+      } else if (kind === "clearStoredKey") {
+        await credentialsStore.getState().clearStoredKey(name);
+        await credentialsStore.getState().fetch();
+        toast.push("success", `Stored key cleared for ${name}`);
       } else {
         await credentialsStore.getState().remove(name);
         toast.push("success", `Removed instance ${name}`);
       }
       setPendingConfirm(null);
     } catch (err) {
-      const verb = kind === "clear" ? "Clear" : "Remove";
+      const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
       toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);
     } finally {
       setConfirmBusy(false);
@@ -261,6 +265,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         onClear={() => {
           if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
         }}
+        onClearStoredKey={() => {
+          if (selectedInstance !== null) setPendingConfirm({ kind: "clearStoredKey", name: selectedInstance });
+        }}
         onRemove={() => {
           if (selectedInstance !== null) setPendingConfirm({ kind: "remove", name: selectedInstance });
         }}
@@ -322,15 +329,23 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
 
       <ConfirmDialog
         open={pendingConfirm !== null}
-        title={pendingConfirm?.kind === "clear" ? "Clear credentials" : "Remove instance"}
-        confirmLabel={pendingConfirm?.kind === "clear" ? "Clear" : "Remove"}
+        title={
+          pendingConfirm?.kind === "clear"
+            ? "Clear credentials"
+            : pendingConfirm?.kind === "clearStoredKey"
+              ? "Clear stored key"
+              : "Remove instance"
+        }
+        confirmLabel={pendingConfirm?.kind === "remove" ? "Remove" : "Clear"}
         busy={confirmBusy}
         onConfirm={() => void handleConfirmedAction()}
         onCancel={() => setPendingConfirm(null)}
       >
         {pendingConfirm?.kind === "clear"
           ? `Clear stored credentials for "${pendingConfirm.name}"?`
-          : `Remove instance "${pendingConfirm?.name}"? This will also clear its stored credentials.`}
+          : pendingConfirm?.kind === "clearStoredKey"
+            ? `Clear the stored API key for "${pendingConfirm.name}"? Its active sign-in is not affected.`
+            : `Remove instance "${pendingConfirm?.name}"? This will also clear its stored credentials.`}
       </ConfirmDialog>
     </div>
   );

@@ -644,6 +644,13 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 		}
 		return resp, err
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
+		resp, err := authController.ApiKeyClear(params)
+		if err == nil {
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+		}
+		return resp, err
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
