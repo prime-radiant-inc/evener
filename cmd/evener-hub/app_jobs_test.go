@@ -445,30 +445,41 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestHubJobsListContinuationFallsBackToPastUnchanged(t *testing.T) {
+// TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation pins #448's
+// resolved choice for load-phase truncation (a session's own journal scan
+// hitting the work-unit-derived event ceiling, as opposed to projection's
+// pre-existing mid-list truncation): report Truncated=true but mint NO
+// continuation token, rather than one that silently never advances.
+//
+// A resumable byte/event cursor was rejected as disproportionate for this
+// round: the continuation format was never designed to carry cross-page scan
+// state, and — verified empirically while fixing this — even projection's
+// OWN pre-existing mid-list continuation doesn't actually skip already-shown
+// records on resume; it re-projects the same ordered list from the start
+// with a fresh, filtered budget. That was rarely visible under the old
+// fully-unbounded load (a large budget trimmed only the last few records),
+// but #448's load-time ceiling cuts much more aggressively per page, making
+// the non-advancing continuation a real, reviewer-visible defect rather than
+// a latent one. A continuation that never delivers new data is worse than
+// none: it invites a client to poll forever for jobs it will never receive.
+func TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation(t *testing.T) {
 	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2002)
 	sources := newExitedLocalRegistry()
 
 	first, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID})
 	if err != nil {
-		t.Fatalf("hubJobsList first page: %v", err)
+		t.Fatalf("hubJobsList: %v", err)
 	}
 	firstTree := mustActivityTree(t, first.Data)
 	delegate := findActivityDelegate(t, firstTree.Root, childID)
-	if delegate.Child == nil || !delegate.Child.Branch.Truncated || delegate.Child.Branch.Continuation == "" {
-		t.Fatalf("first child branch = %+v child = %+v", delegate.Branch, delegate.Child)
+	if delegate.Child == nil || !delegate.Child.Branch.Truncated {
+		t.Fatalf("child branch = %+v child = %+v, want Truncated=true", delegate.Branch, delegate.Child)
 	}
-	continued, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "local:" + sessionID, Continuation: delegate.Child.Branch.Continuation})
-	if err != nil {
-		t.Fatalf("hubJobsList continuation: %v", err)
+	if delegate.Child.Branch.Continuation != "" {
+		t.Fatalf("child branch.Continuation = %q, want empty — a load-truncated session must not mint a continuation that never advances", delegate.Child.Branch.Continuation)
 	}
-	continuedTree := mustActivityTree(t, continued.Data)
-	continuedDelegate := findActivityDelegate(t, continuedTree.Root, childID)
-	if continuedDelegate.Child == nil || continuedDelegate.Child.SessionID != childID {
-		t.Fatalf("continued delegate child = %+v", continuedDelegate.Child)
-	}
-	if len(continuedDelegate.Child.Entries) == 0 {
-		t.Fatalf("continued child entries = %+v", continuedDelegate.Child.Entries)
+	if len(delegate.Child.Entries) == 0 {
+		t.Fatalf("child entries = %+v, want the partial prefix that WAS decoded to still render", delegate.Child.Entries)
 	}
 }
 
