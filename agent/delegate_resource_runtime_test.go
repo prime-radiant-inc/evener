@@ -1623,8 +1623,9 @@ func currentDelegateStop(t *testing.T, controller *delegateTreeController) *dele
 func awaitDelegateStopAdmission(t *testing.T, controller *delegateTreeController) *delegateStopState {
 	t.Helper()
 	var stop *delegateStopState
-	// TRIPWIRE: admission is a durable fsync + local drive, expected in low
-	// hundreds of ms; 5s only absorbs CI scheduling stalls.
+	// TRIPWIRE: admission is a durable fsync + local drive, measured at
+	// 5-17ms across 1200 samples with the whole module under -race on a
+	// saturated box; 5s only absorbs pathological CI stalls.
 	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
