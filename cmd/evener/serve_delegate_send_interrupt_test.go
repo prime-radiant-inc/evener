@@ -527,8 +527,16 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	// The interrupt response is not enough by itself: read the durable mutation
 	// snapshot that future client mutations are serialized against. The runner
 	// must have terminalized the fence before the RPC returned.
-	if !stopped.QueueHeld || !stopped.SteeringHeld {
-		t.Fatalf("Stop did not park both input rails before re-engagement: queue=%t steering=%t", stopped.QueueHeld, stopped.SteeringHeld)
+	//
+	// The queue is what witnesses that here. A Stop parks it unconditionally,
+	// but parks the steering rail only over steering there is to park, and
+	// this session has none: a hold armed over an empty rail names nothing
+	// this Stop cancelled and swallows whatever the user steers next (#710).
+	if !stopped.QueueHeld {
+		t.Fatal("Stop did not park the input queue before re-engagement")
+	}
+	if stopped.SteeringHeld {
+		t.Fatal("Stop parked the steering rail with no user steering pending: the hold names nothing and every steer accepted from here is parked behind it and never delivered")
 	}
 
 	// Queueing is a user re-engagement and clears both durable held gates in the
