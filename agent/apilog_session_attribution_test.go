@@ -195,9 +195,14 @@ func attemptRecordingLiveModels(providerInstance string) func(context.Context) (
 		startedAt := time.Unix(1_700_000_000, 0).UTC()
 		attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
 			ProviderInstance: providerInstance,
-			Method:           http.MethodGet,
-			Endpoint:         "https://scripted.invalid/v1/models",
-			StartedAt:        startedAt,
+			// "*" matches llm/providers/chatcompletions/models.go's own
+			// ListModels: a listing isn't about any one model, but
+			// RequestModel is unconditionally required
+			// (llm/apilog/record.go) for the attempt to marshal at all.
+			RequestModel: "*",
+			Method:       http.MethodGet,
+			Endpoint:     "https://scripted.invalid/v1/models",
+			StartedAt:    startedAt,
 		})
 		attempt.Complete(llm.APIAttemptResult{
 			StatusCode:   http.StatusOK,
@@ -344,6 +349,129 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 			t.Fatalf("fresh root session's pre-session listing unexpectedly reached its own log (stat err=%v)", err)
 		}
 	})
+}
+
+// sessionAPILogProviderInstances decodes every APIAttemptRecord in
+// stateDir/sessions/<sessionID>.api.jsonl and returns the set of
+// provider_instance values recorded there.
+func sessionAPILogProviderInstances(t *testing.T, stateDir, sessionID string) map[string]bool {
+	t.Helper()
+	f, err := os.Open(filepath.Join(stateDir, "sessions", sessionID+".api.jsonl"))
+	if err != nil {
+		t.Fatalf("open session API log: %v", err)
+	}
+	defer f.Close()
+	decoder := apilog.NewDecoder(f, 1<<20)
+	instances := map[string]bool{}
+	for {
+		record, err := decoder.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode session API log: %v", err)
+		}
+		if attempt, ok := record.(apilog.APIAttemptRecord); ok {
+			instances[attempt.ProviderInstance] = true
+		}
+	}
+	return instances
+}
+
+// TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure pins a
+// roborev finding on PR #752: attributing NewSession's pre-session listing to
+// a pre-reserved delegate session id (TestPreSessionLiveModelListingAttribution
+// above) opens and locks sessions/<id>.api.jsonl before NewSession ever
+// acquires ownership of that id or registers its ordinary construction
+// failure cleanup. A membership-validation failure right after a successful,
+// attributed listing — the earliest possible NewSession failure once that
+// route is open — must still release it; otherwise every later use of the
+// same *APILogger (a live daemon serving repeated failed delegate starts, or
+// a later restore of the same id) hits ErrAPILogTargetLocked/"unavailable"
+// for that id for the rest of the process's life.
+func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	// attemptRecordingLiveModels always lists "gpt-5.2"; requesting a
+	// different model below makes resolveLiveModelProfileValidated's
+	// membership check reject it right after the (successful, attributed)
+	// listing completes.
+	client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+	client.Use(logger)
+
+	childID := identifier.MustNewSessionID()
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         stateDir,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}
+	cfg.spawn.sessionID = childID
+	_, err = NewSession(client, NewOpenAIProfile("gpt-5.9-does-not-exist"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err == nil {
+		t.Fatal("NewSession with a model absent from the live list = nil error, want non-nil")
+	}
+
+	// A second, independent *APILogger against the same stateDir stands in
+	// for a competing process or a later restore of the same id (the shape
+	// cmd/evener/fresh_session_ownership_test.go's foreignLogger uses). The
+	// FIRST logger (still open above, wired to client, not yet closed) is
+	// what a live daemon process would still be holding: if NewSession
+	// leaked the fd/lock it opened while attributing the failed listing to
+	// childID, this reservation fails with ErrAPILogTargetLocked.
+	contender, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger (contender): %v", err)
+	}
+	defer contender.Close() //nolint:errcheck
+	if err := contender.ReserveSession(childID); err != nil {
+		t.Fatalf("contender ReserveSession(%q) failed -- pre-session API-log route leaked: %v", childID, err)
+	}
+}
+
+// TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog pins a
+// roborev LOW finding on PR #752: captureModelAvailability's startup listing
+// for every OTHER delegate-eligible provider (not the session's own, whose
+// result is reused from the pre-session listing) uses s.sessionCtx, which
+// carries no API-log attribution at all — s.id is fully valid by this point
+// (called after session construction and ownership acquisition), so this is
+// a pure oversight, not a structural gap like NewSession's own pre-session
+// listing.
+func TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog(t *testing.T) {
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai")})
+	client.Register(&fakeAdapter{name: "anthropic", liveModels: attemptRecordingLiveModels("anthropic")})
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	client.Use(logger)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         stateDir,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	instances := sessionAPILogProviderInstances(t, stateDir, sess.ID())
+	if !instances["anthropic"] {
+		t.Fatalf("other-provider startup listing (anthropic) was not attributed to the session API log; recorded provider_instance values: %v", instances)
+	}
 }
 
 func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {

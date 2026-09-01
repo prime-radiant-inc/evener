@@ -176,6 +176,24 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// exists — the same identifier the rest of this function later mints or
 	// validates into s.id.
 	sessionID := strings.TrimSpace(cfg.spawn.sessionID)
+	// The listing below may attribute a canonical API-log attempt to
+	// sessionID (when non-empty), which opens and locks
+	// sessions/<sessionID>.api.jsonl in the shared *APILogger. That happens
+	// before this function acquires ownership of sessionID (below) or
+	// registers its ordinary construction-failure cleanup (also below), so
+	// guard the route's release from here: initComplete only flips true at
+	// the very end of a successful NewSession, and sessionID is read live at
+	// defer time, so this covers every failure path between here and then —
+	// membership validation (immediately below), a later pre-ownership step,
+	// or ownership acquisition itself — not just the ones after ownership is
+	// acquired. ReleaseSessionAPILog no-ops for "" and for a route nothing
+	// ever opened, so this is always safe to run.
+	initComplete := false
+	defer func() {
+		if !initComplete && sessionID != "" {
+			_ = client.ReleaseSessionAPILog(sessionID)
+		}
+	}()
 	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID)
 	if err != nil {
 		return nil, err
@@ -201,14 +219,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		owner = context.Background()
 	}
 	sessCtx, sessCancel := context.WithCancel(owner)
-	initComplete := false
-	ownedSessionID := ""
 	defer func() {
 		if !initComplete {
 			sessCancel()
-			if ownedSessionID != "" {
-				_ = client.ReleaseSessionAPILog(ownedSessionID)
-			}
 			if ownsArtifactStore {
 				_ = store.Close()
 			}
@@ -254,7 +267,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if err := cfg.AcquireSessionOwnership(sessionID); err != nil {
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
 		}
-		ownedSessionID = sessionID
 	}
 	s := &Session{
 		id:                            sessionID,
@@ -490,7 +502,11 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	if len(names) == 0 {
 		return
 	}
-	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]string, error) {
+	// s.id is always valid here (called after session construction and, for a
+	// fresh/delegate session, after ownership acquisition): attribute every
+	// other-provider listing this triggers to it, same as any other
+	// session-attributed call, instead of leaving it unattributed.
+	snapshot := modelavailability.Capture(s.apiLogContext(s.sessionCtx), names, s.profile.ID(), func(ctx context.Context, name string) ([]string, error) {
 		// The session's own instance was listed during startup; reuse that
 		// result rather than asking the provider a second time.
 		listing, err := selectedModels.listing, selectedModels.err
