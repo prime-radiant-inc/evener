@@ -1837,18 +1837,34 @@ func sessionRunningWorkIDs(s *Session) []string {
 }
 
 // runningStableDelegateIDs returns the running stable delegates this session
-// owns, named "delegate <id>" to match delegateActor.describe's convention for
-// naming a delegate in user-facing text. This is an owner-authoritative read
-// straight off the delegate controller's snapshot (the same source status.go
-// and jobs_activity.go use to list a session's own delegates), not the job
-// manager: delegates never mint job store rows.
+// directly spawned, named "delegate <id>" to match delegateActor.describe's
+// convention for naming a delegate in user-facing text. This is an
+// owner-authoritative read straight off the delegate controller's snapshot,
+// not the job manager: delegates never mint job store rows.
+//
+// Descriptor.OwnerSessionID is the TREE'S ROOT session id on every row in the
+// tree, not the immediate parent (delegate_tree_start.go's ReserveCreate sets
+// it once to c.rootSessionID regardless of which session or delegate created
+// the row) — so it only scopes "same tree", not "my child". The direct-parent
+// link is Descriptor.ParentDelegateID, which blockingDelegateIDs already uses
+// the same way to find "this session's direct child delegates"; s.owningDelegateID
+// is empty for the root session (root's own rows have ParentDelegateID ""), so
+// this one filter naturally covers both the root and every descendant with no
+// special-casing. Each session is scoped to its own DIRECT children only, not
+// the whole subtree: end_turn is about what this session itself is holding
+// open, not what any of its descendants are separately responsible for
+// reporting on when they end their own turns — the same direct-only scope
+// sessionRunningJobIDs already gives shell jobs (each session's own job
+// manager only ever lists jobs it launched itself).
 func (s *Session) runningStableDelegateIDs() []string {
 	if s == nil || s.delegateController == nil {
 		return nil
 	}
 	var ids []string
 	for _, row := range s.delegateController.Snapshot().rows {
-		if row.descriptor.OwnerSessionID == s.ID() && row.lifecycle == delegateLifecycleRunning {
+		if row.descriptor.OwnerSessionID == s.delegateRootSessionID &&
+			row.descriptor.ParentDelegateID == s.owningDelegateID &&
+			row.lifecycle == delegateLifecycleRunning {
 			ids = append(ids, "delegate "+row.id)
 		}
 	}

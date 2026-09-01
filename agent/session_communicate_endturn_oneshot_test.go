@@ -317,3 +317,154 @@ func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 		t.Fatalf("communicate response = %v, want no warning for an exited detached process", response)
 	}
 }
+
+// TestCommunicate_EndTurnWarnsForLiveGrandchildDelegate drives a real depth-2
+// delegate tree: root creates A with a delegation_allowance, then A itself
+// (not root) creates B and ends ITS OWN turn while B is still live. Adversarial
+// review of #585 found the shipped fix used
+// row.descriptor.OwnerSessionID == s.ID(), but OwnerSessionID is the TREE'S
+// ROOT session id on every row (delegate_tree_start.go), never the immediate
+// parent — so that filter only ever matches when s IS the root, and every
+// non-root delegate (the default at MaxSubagentDepth 2: "a delegate itself
+// delegate one level") silently got nil for its own live children. This drives
+// A's REAL communicate handler (via A.reg.ExecuteCall, not a hand-built
+// message) to prove A's own end_turn warning names A's own child, not just
+// root's.
+//
+// It also pins the direct-vs-transitive design choice the review flagged as
+// needing a decision: while B is live, ROOT's own end_turn warning (checked
+// first, before A ends its turn and goes idle) must name A — root's own
+// direct child — but must NOT name B, A's child and root's grandchild. Each
+// session warns about what it itself is holding open, matching the scope
+// sessionRunningJobIDs already gives shell jobs (a session's own job manager
+// only ever lists jobs it launched itself, never a child's).
+func TestCommunicate_EndTurnWarnsForLiveGrandchildDelegate(t *testing.T) {
+	gate := make(chan struct{})
+	childAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				<-gate
+				return toolCallResponse(communicateCall("grandchild-done", "grandchild done"))
+			},
+		},
+	}
+	childClient := llm.NewClient()
+	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
+
+	root := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			childClientFactory:  func() *llm.Client { return childClient },
+		},
+	}))
+	// Registered after newSession (whose t.Cleanup(sess.Close) ran first): LIFO
+	// releases the grandchild's blocked turn before Close waits on it.
+	t.Cleanup(func() { close(gate) })
+
+	parentRes := root.reg.ExecuteCall(context.Background(), root.env, llm.ToolCallData{
+		ID:        "delegate-parent",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"supervise a child delegate","delegation_allowance":1}`),
+	})
+	if parentRes.IsError {
+		t.Fatalf("root delegate returned error: %s", parentRes.Output)
+	}
+	var parentOut struct {
+		DelegateID     string `json:"delegate_id"`
+		ChildSessionID string `json:"child_session_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(parentRes), &parentOut); err != nil {
+		t.Fatalf("unmarshal root delegate output: %v (output: %s)", err, parentRes.Output)
+	}
+	a := root.subagents.get(parentOut.ChildSessionID)
+	if a == nil || a.sess == nil {
+		t.Fatalf("A's child session %q is not tracked", parentOut.ChildSessionID)
+	}
+
+	// A's own tool calls need A's current lease in context, exactly as its real
+	// run loop would supply it (delegate_runtime.go sets this on runCtx before
+	// sub.run): driving A.reg.ExecuteCall directly (as this file's other tests
+	// already do for root) skips that plumbing, so it is reconstructed here the
+	// same way TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease
+	// (delegate_resource_create_test.go) does for the identical situation.
+	root.delegateController.mu.Lock()
+	aLive := root.delegateController.live[parentOut.DelegateID]
+	if aLive == nil || aLive.binding == nil {
+		root.delegateController.mu.Unlock()
+		t.Fatalf("A (%q) has no live generation binding", parentOut.DelegateID)
+	}
+	aLease := aLive.binding.lease
+	root.delegateController.mu.Unlock()
+	aCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, aLease)
+
+	grandchildRes := a.sess.reg.ExecuteCall(aCtx, a.sess.env, llm.ToolCallData{
+		ID:        "delegate-grandchild",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"do something slowly"}`),
+	})
+	if grandchildRes.IsError {
+		t.Fatalf("A's own delegate call returned error: %s", grandchildRes.Output)
+	}
+	var grandchildOut struct {
+		DelegateID string `json:"delegate_id"`
+		Status     string `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(grandchildRes), &grandchildOut); err != nil {
+		t.Fatalf("unmarshal A's delegate output: %v (output: %s)", err, grandchildRes.Output)
+	}
+	if grandchildOut.DelegateID == "" || grandchildOut.Status != "running" {
+		t.Fatalf("A's delegate output = %+v, want a running delegate", grandchildOut)
+	}
+
+	// Root's own end_turn, checked first (A is still running, hasn't gone idle
+	// yet): root's warning must name its own direct child A, but not reach past
+	// A into A's own child B.
+	rootRes := root.reg.ExecuteCall(context.Background(), root.env, communicateCallArgs("root-end-turn", map[string]any{
+		"message":  "pausing, my own child is still working",
+		"end_turn": true,
+	}))
+	if rootRes.IsError {
+		t.Fatalf("root's communicate error: %s", rootRes.Output)
+	}
+	var rootResp map[string]any
+	if err := json.Unmarshal(toolResultJSON(rootRes), &rootResp); err != nil {
+		t.Fatalf("unmarshal root's communicate output: %v", err)
+	}
+	rootWarning, ok := rootResp["warning"].(string)
+	if !ok || rootWarning == "" {
+		t.Fatalf("expected root's end_turn to warn about root's own live child delegate, got: %v", rootResp)
+	}
+	if !strings.Contains(rootWarning, parentOut.DelegateID) {
+		t.Fatalf("root warning = %q, want it to name root's own live delegate id %q", rootWarning, parentOut.DelegateID)
+	}
+	if strings.Contains(rootWarning, grandchildOut.DelegateID) {
+		t.Fatalf("root warning = %q, want it to NOT name grandchild delegate id %q (not root's direct child)", rootWarning, grandchildOut.DelegateID)
+	}
+
+	res := a.sess.reg.ExecuteCall(aCtx, a.sess.env, communicateCallArgs("a-end-turn", map[string]any{
+		"message":  "pausing, my child is still working",
+		"end_turn": true,
+	}))
+	if res.IsError {
+		t.Fatalf("A's communicate error: %s", res.Output)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		t.Fatalf("unmarshal A's communicate output: %v", err)
+	}
+	warning, ok := resp["warning"].(string)
+	if !ok || warning == "" {
+		t.Fatalf("expected A's end_turn to warn about A's own live child delegate, got: %v", resp)
+	}
+	if !strings.Contains(warning, grandchildOut.DelegateID) {
+		t.Fatalf("warning = %q, want it to name A's own live delegate id %q", warning, grandchildOut.DelegateID)
+	}
+}
