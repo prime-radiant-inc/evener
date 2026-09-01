@@ -56,6 +56,18 @@
   gap: 0;
 }
 
+/* Above the breakpoint, the intent group items need the same
+ * --speaker-gutter padding that .runContent provides for regular
+ * tool-call rows. Without it, the .rowIcon's negative margin
+ * (margin-left: calc(-1 * var(--speaker-gutter))) pulls the icon
+ * out of the container — making icons invisible and rows appear
+ * outdented. This matches the .runContent indent at turnblock.module.css:42-46. */
+@media (min-width: 700px) {
+  .intentGroupItems {
+    padding-left: var(--speaker-gutter);
+  }
+}
+
 .coldStart {
   width: 100%;
   max-width: 76rem;
