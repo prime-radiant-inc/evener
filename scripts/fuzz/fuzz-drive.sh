@@ -43,9 +43,10 @@
 #   EVENER_FUZZ_GH           gh binary         (default: gh)
 #   EVENER_FUZZ_DRIVE_TIMEOUT timeout wrapper   (default: timeout)
 #
-# No selftest: the old one drove this script with a stubbed toolchain, and
-# fake-toolchain selftests are banned (docs/developing-evener/testing.md). This header is the
-# living contract until the tool's port-on-touch moment.
+# No automated test: an old attempt drove this script with a stubbed
+# toolchain, which docs/developing-evener/testing.md's ban on faking the
+# toolchain in a test rules out. This header is the living contract until
+# the tool's port-on-touch moment.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"

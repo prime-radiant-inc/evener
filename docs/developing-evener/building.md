@@ -68,7 +68,7 @@ the same way the ordinary runtime build does.
 | `make build-linux` | Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by running `go clean -cache`, which wipes the whole Go build cache. |
 | `make build-hub` | Alias for build-runtime. |
 | `make build-llmcall` | Build the llmcall standalone CLI binary. |
-| `make build-dev` | Build the evener-dev dev/test infrastructure binary (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck, test-dev-tooling, tomlcheck, transcript-v2-upgrade). Not installed for end users; used by make targets and go run ./cmd/evener-dev/bin. |
+| `make build-dev` | Build the evener-dev dev/test infrastructure binary (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck, tomlcheck, transcript-v2-upgrade). Not installed for end users; used by make targets and go run ./cmd/evener-dev/bin. |
 | `make build-all` | Build every binary: the evener runtime binary and the evener-dev dev/test infrastructure binary. |
 | `make install` | Install the evener and evener-dev binaries into PREFIX (default ~/.local), building a fresh SPA first so the installed evener never embeds the tracked placeholder. |
 | `make install-home` | Install into the user prefix (~/.local). |

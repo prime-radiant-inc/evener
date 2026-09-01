@@ -27,12 +27,13 @@ scratch_lib_dirs=()
 #
 # Call it as a statement, never inside a command substitution:
 #
-#	scratch_dir work my-selftest        # right
+#	scratch_dir work my-prefix          # right
 #	work="$(scratch_dir work my-...)"   # WRONG: swallows the exit
 #
 # The wrong spelling runs the guard in a subshell, where `exit 1` ends only
-# that subshell and hands the caller an empty path. TestScratchDirCannotResolveToCWD
-# fails on it so the mistake cannot reach a run.
+# that subshell and hands the caller an empty path.
+# TestScratchDirSubstitutionDoesNotSwallowFailure fails on it so the mistake
+# cannot reach a run.
 #
 # The guard exists because the idiom it replaces aimed a recursive delete at
 # the repo (kata 5hs2). `mktemp -d` unchecked, then `work="$(cd "$work" && pwd -P)"`,

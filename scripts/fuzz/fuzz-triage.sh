@@ -19,11 +19,12 @@
 #     target ...     restrict to one or more "module:FuzzName" entries from
 #                    run-fuzz.sh's TARGETS; default is every target.
 #
-# No selftest: the old one drove this script with a stubbed go/gh toolchain,
-# and fake-toolchain selftests are banned (docs/developing-evener/testing.md). This header and
-# the ledger/bucket formats are the living contract until the tool's
-# port-on-touch moment. The following env vars exist for advanced use;
-# defaults are the production values:
+# No automated test: an old attempt drove this script with a stubbed go/gh
+# toolchain, which docs/developing-evener/testing.md's ban on faking the
+# toolchain in a test rules out. This header and the ledger/bucket formats
+# are the living contract until the tool's port-on-touch moment. The
+# following env vars exist for advanced use; defaults are the production
+# values:
 #   EVENER_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
 #   EVENER_FUZZ_RUNNER     the search engine    (default: scripts/fuzz/run-fuzz.sh)
 #   EVENER_FUZZ_GH         the gh binary        (default: gh)

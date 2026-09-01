@@ -19,7 +19,7 @@ All standalone `evener-<x>` binaries are consolidated into two binaries:
 | Binary | Subcommands |
 |--------|-------------|
 | `evener` | `serve`, `hub`, `tui`, `doctor`, `migrate`, `openai`, `upgrade`, `plugin`, `launch-check` |
-| `evener-dev` | `dev`, `fuzz-harvest`, `fuzzcov`, `fuzzregistry`, `internalcheck`, `test-dev-tooling`, `tomlcheck`, `transcript-v2-upgrade` |
+| `evener-dev` | `dev`, `fuzz-harvest`, `fuzzcov`, `fuzzregistry`, `internalcheck`, `tomlcheck`, `transcript-v2-upgrade` |
 
 The five old binaries (`evener-hub`, `evener-tui`, `evener-doctor`, `evener-migrate`,
 and the dev/test tooling CLIs) are gone. Their functionality lives on as

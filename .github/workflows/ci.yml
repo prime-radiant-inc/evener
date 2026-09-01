@@ -139,25 +139,6 @@ jobs:
       - name: Deterministic tests (full root suite; frontend covered by web job)
         run: ROOT_FULL=1 WEB=0 make test
 
-  dev-tooling:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Read golangci-lint version
-        id: golangci-version
-        run: |
-          echo "version=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Install golangci-lint for dev-tooling self-tests
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
-
-      - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
-        run: make test-dev-tooling
-
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -177,7 +158,7 @@ jobs:
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
-    needs: [static, race-root, race-modules, tests, dev-tooling, fuzz, web]
+    needs: [static, race-root, race-modules, tests, fuzz, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
