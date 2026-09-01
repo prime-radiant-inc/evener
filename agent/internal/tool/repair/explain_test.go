@@ -310,6 +310,26 @@ func TestExplainSchemaError_ConstraintClasses(t *testing.T) {
 			keyword:          "enum",
 			want:             `task_list: argument "updates[0].status" is not one of the allowed values: open, in_progress, done, cancelled. Value is "bogus".`,
 		},
+		{
+			// Issue #625: asStringSlice dropped non-string enum values, so an
+			// integer enum's allowed list came out empty and constraintMessage
+			// fell back to the generic "wrong type or value" message. Enum
+			// values arrive as float64 here (as they do when a tool schema is
+			// JSON-decoded into map[string]any).
+			name:     "integer enum",
+			toolName: "my_tool",
+			params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"n": map[string]any{"type": "integer", "enum": []any{float64(1), float64(2), float64(3)}},
+				},
+				"required": []string{"n"},
+			},
+			args:             map[string]any{"n": float64(5)},
+			instanceLocation: "n",
+			keyword:          "enum",
+			want:             `my_tool: argument "n" is not one of the allowed values: 1, 2, 3. Value is "5".`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

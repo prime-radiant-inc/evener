@@ -61,3 +61,47 @@ func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testi
 		t.Fatalf("message must name the constrained field sandbox_net: %q", msg)
 	}
 }
+
+// delegateOneOfIntEnumParams mirrors delegateOneOfParams but the second
+// branch requires an integer-enum property ("n") instead of a string-enum
+// one. Enum values are float64, as they are when a tool schema is
+// JSON-decoded into map[string]any.
+func delegateOneOfIntEnumParams() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task": map[string]any{"type": "string"},
+			"n":    map[string]any{"type": "integer", "enum": []any{float64(1), float64(2), float64(3)}},
+		},
+		"required": []any{"task"},
+		"oneOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{"n"}}},
+			map[string]any{
+				"required": []string{"n"},
+				"properties": map[string]any{
+					"n": map[string]any{"enum": []any{float64(1), float64(2), float64(3)}},
+				},
+			},
+		},
+	}
+}
+
+func delegateOneOfIntEnumArgs() map[string]any {
+	return map[string]any{
+		"task": "ping",
+		"n":    float64(5),
+	}
+}
+
+// Issue #625 case 2: branchRequirement used asStringSlice to render a
+// branch's enum-constrained properties, which silently dropped non-string
+// enum values. An integer-enum branch requirement rendered as `send all of
+// "n"` with no allowed-values clause at all. The branch requirement must
+// name the allowed values regardless of their JSON type.
+func TestExplainSchemaError_OneOfBranchNamesIntegerEnumValues(t *testing.T) {
+	msg := ExplainSchemaError("delegate", delegateOneOfIntEnumParams(), delegateOneOfIntEnumArgs(), "", "not")
+	if !strings.Contains(msg, `"n" must be one of "1", "2", "3"`) {
+		t.Fatalf("message must render branch 1's integer enum allowed values: %q", msg)
+	}
+}
