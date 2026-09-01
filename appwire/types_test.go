@@ -494,7 +494,7 @@ func TestInstanceEntryOmitsUnsetRegistryFields(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(raw)
-	for _, absent := range []string{`"base"`, `"surface"`, `"baseUrl"`, `"vars"`, `"hidden"`, `"authModes"`, `"hasStoredFile"`, `"envVar"`, `"storedEmail"`, `"warnings"`} {
+	for _, absent := range []string{`"base"`, `"surface"`, `"baseUrl"`, `"vars"`, `"hidden"`, `"authModes"`, `"hasStoredFile"`, `"envVar"`, `"shadowedEnvVar"`, `"storedEmail"`, `"warnings"`} {
 		if strings.Contains(got, absent) {
 			t.Fatalf("marshal=%s should omit %s", got, absent)
 		}

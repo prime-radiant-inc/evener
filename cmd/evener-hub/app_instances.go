@@ -98,6 +98,7 @@ func (c *hubInstancesController) entryFor(inst registry.Instance) appwire.Instan
 		HasStoredFile:      status.HasStoredFile,
 		HasStoredOAuth:     status.HasStoredOAuth,
 		EnvVar:             status.EnvVar,
+		ShadowedEnvVar:     status.ShadowedEnvVar,
 		StoredEmail:        status.StoredEmail,
 		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:           inst.Warnings,

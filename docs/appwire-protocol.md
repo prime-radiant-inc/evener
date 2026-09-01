@@ -393,6 +393,7 @@ An embedded type contributes its own fields inline.
 | `hasStoredOAuth` | `bool` |  |  |
 | `hasStoredFile` | `bool` | yes |  |
 | `envVar` | `string` | yes |  |
+| `shadowedEnvVar` | `string` | yes |  |
 | `email` | `string` | yes |  |
 | `storedEmail` | `string` | yes |  |
 | `accountId` | `string` | yes |  |

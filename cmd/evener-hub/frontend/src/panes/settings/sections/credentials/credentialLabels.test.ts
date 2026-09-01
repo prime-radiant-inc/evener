@@ -166,6 +166,47 @@ describe("credentialLayers", () => {
     ]);
   });
 
+  // The other shadow relation spec §10 admits: an environment variable left
+  // set behind a source that outranks it. shadowedEnvVar is the hub's own
+  // answer to this for the environment layer, since activeSource only ever
+  // names the winner (issue #712).
+  test("an environment variable left set behind a higher-ranked source shows as shadowed", () => {
+    const inst = instance({
+      name: "a",
+      providerId: "anthropic",
+      activeSource: "store",
+      hasStoredFile: true,
+      shadowedEnvVar: "ANTHROPIC_API_KEY",
+    });
+    expect(credentialLayers(inst)).toEqual([
+      { source: "store", label: "Configured via stored API key", effective: true },
+      {
+        source: "env:ANTHROPIC_API_KEY",
+        label: "Configured via environment variable (ANTHROPIC_API_KEY)",
+        effective: false,
+      },
+    ]);
+  });
+
+  test("a stored key and a shadowed env var both render when providers.toml beats both", () => {
+    const inst = instance({
+      name: "a",
+      providerId: "anthropic",
+      activeSource: "api_key",
+      hasStoredFile: true,
+      shadowedEnvVar: "ANTHROPIC_API_KEY",
+    });
+    expect(credentialLayers(inst)).toEqual([
+      { source: "api_key", label: "Configured via providers.toml", effective: true },
+      { source: "store", label: "Configured via stored API key", effective: false },
+      {
+        source: "env:ANTHROPIC_API_KEY",
+        label: "Configured via environment variable (ANTHROPIC_API_KEY)",
+        effective: false,
+      },
+    ]);
+  });
+
   test("an oauth-effective instance shows only the oauth layer - oauth-openai-codex never shares an instance with store/env", () => {
     const inst = instance({
       name: "a",

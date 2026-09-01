@@ -248,6 +248,58 @@ func TestAuth_InstanceStatus_ReflectsRegistryCredentialSource(t *testing.T) {
 	}
 }
 
+// TestAuth_InstanceStatus_ReportsShadowedEnvVar covers the shadow relation
+// that ActiveSource cannot express on its own: WORK_ANT_KEY set in the
+// environment while a stored key outranks it (spec §10). Before the hub
+// reported this separately, the credentials pane had no way to tell the
+// user their exported variable was doing nothing (issue #712).
+func TestAuth_InstanceStatus_ReportsShadowedEnvVar(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, bearerInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath, map[string]string{"WORK_ANT_KEY": "env-key"})
+	instances := &hubInstancesController{reg: ctrl.reg, providersConfigPath: tomlPath, auth: ctrl}
+
+	// With only the environment variable set, it is what resolves - nothing
+	// shadows it.
+	inst, ok := ctrl.reg.Get().Instance("work-ant")
+	if !ok {
+		t.Fatal("an authored entry is always an instance")
+	}
+	if inst.CredentialSource != "env:WORK_ANT_KEY" || inst.ShadowedEnvVar != "" {
+		t.Fatalf("credential source = %q shadowed = %q, want env:WORK_ANT_KEY and no shadow", inst.CredentialSource, inst.ShadowedEnvVar)
+	}
+	if got := ctrl.instanceStatus(inst); got.EnvVar != "WORK_ANT_KEY" || got.ShadowedEnvVar != "" {
+		t.Fatalf("status = %+v, want EnvVar WORK_ANT_KEY and no shadow", got)
+	}
+	if row := instanceListRow(t, instances, "work-ant"); row.EnvVar != "WORK_ANT_KEY" || row.ShadowedEnvVar != "" {
+		t.Fatalf("evener/instance/list row = %+v, want EnvVar WORK_ANT_KEY and no shadow", row)
+	}
+
+	// A stored key outranks it: the store wins, and the still-set
+	// environment variable is now a real shadow every surface should carry.
+	if err := ctrl.creds.Set("work-ant", "sk-w"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := ctrl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	inst, ok = ctrl.reg.Get().Instance("work-ant")
+	if !ok {
+		t.Fatal("a stored key makes the instance resolvable")
+	}
+	if inst.CredentialSource != "store" || inst.ShadowedEnvVar != "WORK_ANT_KEY" {
+		t.Fatalf("credential source = %q shadowed = %q, want store/WORK_ANT_KEY", inst.CredentialSource, inst.ShadowedEnvVar)
+	}
+	if got := ctrl.instanceStatus(inst); got.ActiveSource != "store" || got.ShadowedEnvVar != "WORK_ANT_KEY" {
+		t.Fatalf("status = %+v, want ActiveSource store and ShadowedEnvVar WORK_ANT_KEY", got)
+	}
+	if row := instanceListRow(t, instances, "work-ant"); row.ActiveSource != "store" || row.ShadowedEnvVar != "WORK_ANT_KEY" {
+		t.Fatalf("evener/instance/list row = %+v, want ActiveSource store and ShadowedEnvVar WORK_ANT_KEY", row)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. An instance whose name is the registry id resolves the same way
 // ─────────────────────────────────────────────────────────────────────────────

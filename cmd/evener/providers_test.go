@@ -138,6 +138,32 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 	}
 }
 
+// TestProvidersListReportsShadowedEnvVar covers the shadow relation
+// CredentialSource cannot express on its own: WORK_API_KEY set in the
+// environment while a stored key outranks it (spec §10). Before this note,
+// `evener providers list` gave no sign the exported variable was doing
+// nothing (issue #712).
+func TestProvidersListReportsShadowedEnvVar(t *testing.T) {
+	root := providersTestEnv(t, map[string]string{"WORK_API_KEY": "env-secret-val"})
+	writeProvidersToml(t, root, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.com/v1\"\n")
+	creds := "schema = 1\n[providers.work]\napi_key = \"store-secret-val\"\n"
+	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runProviders([]string{"list"}, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("list: %v\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "WORK_API_KEY set but shadowed by store") {
+		t.Fatalf("missing shadowed env var note in\n%s", out)
+	}
+	if strings.Contains(out, "env-secret-val") || strings.Contains(out, "store-secret-val") {
+		t.Fatalf("list prints credential sources, never values (spec §11.2):\n%s", out)
+	}
+}
+
 // The tri-state's third state is visible, not silent (spec §14.1).
 func TestProvidersListReportsAnEmptyProvidersConfigAsNoUserLayer(t *testing.T) {
 	providersTestEnv(t, map[string]string{"EVENER_PROVIDERS_CONFIG": ""})
