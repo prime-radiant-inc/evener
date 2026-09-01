@@ -866,9 +866,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	previewCalls := map[string]struct{}{}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			for callID := range previewCalls {
-				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
-			}
+			s.resetCommunicatePreviews(previewCalls)
 			panic(recovered)
 		}
 	}()
@@ -913,6 +911,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		if _, from := recorder.BestSalvage(); from != nil {
 			s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
 		}
+		s.resetCommunicatePreviews(previewCalls)
 		var recoveryRecord groupRecord
 		modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
 		rememberPreviews(modelResp)
@@ -978,6 +977,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			if _, from := recorder.BestSalvage(); from != nil {
 				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
 			}
+			s.resetCommunicatePreviews(previewCalls)
 			var fallbackRecord groupRecord
 			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
 			rememberPreviews(modelResp)
