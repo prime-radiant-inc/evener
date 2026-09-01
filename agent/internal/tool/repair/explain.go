@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -1008,25 +1009,22 @@ func asStringSlice(v any) []string {
 // (1, true, null, [1,2]). Quoting a non-string would visually assert the
 // wrong JSON type and coach a retry that fails validation the same way, so
 // both enum call sites (constraintMessage and branchRequirement) render
-// through here rather than quoting on their own. Handles both the []string
-// a hand-built schema may carry and the []any a JSON-decoded one
-// unmarshals to.
+// through here rather than quoting on their own. v can carry the list as
+// any slice or array type — []any (a JSON-decoded schema), []string (many
+// hand-built ones), or a genuinely typed slice like []int or []bool, which
+// schema compilation accepts and preserves through cloning just the same —
+// so this walks by reflection rather than naming each shape. A non-slice,
+// non-array v, including nil, returns nil.
 func formatEnumValues(v any) []string {
-	switch s := v.(type) {
-	case []string:
-		out := make([]string, len(s))
-		for i, e := range s {
-			out[i] = formatEnumValue(e)
-		}
-		return out
-	case []any:
-		out := make([]string, len(s))
-		for i, e := range s {
-			out[i] = formatEnumValue(e)
-		}
-		return out
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil
 	}
-	return nil
+	out := make([]string, rv.Len())
+	for i := range out {
+		out[i] = formatEnumValue(rv.Index(i).Interface())
+	}
+	return out
 }
 
 // formatEnumValue renders one enum value as its own JSON literal, making

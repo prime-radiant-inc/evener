@@ -64,10 +64,12 @@ func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testi
 
 // delegateOneOfEnumParams mirrors delegateOneOfParams with a single
 // non-string-enum property in place of the string-enum "sandbox": the
-// second oneOf branch requires prop and constrains it to enum. Integer enum
-// values are float64, as they are when a tool schema is JSON-decoded into
-// map[string]any.
-func delegateOneOfEnumParams(prop, typ string, enum []any) map[string]any {
+// second oneOf branch requires prop and constrains it to enum. enum takes
+// any slice or array type: []any (integer enum values are float64, as they
+// are when a tool schema is JSON-decoded into map[string]any) or a
+// genuinely typed slice like []int or []bool, which schema compilation
+// accepts and preserves through cloning just the same.
+func delegateOneOfEnumParams(prop, typ string, enum any) map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -113,5 +115,27 @@ func TestExplainSchemaError_OneOfBranchNamesBooleanEnumValues(t *testing.T) {
 	}
 	if strings.Contains(msg, `"true", "false"`) {
 		t.Fatalf("message quoted the boolean enum values, visually asserting the wrong JSON type: %q", msg)
+	}
+}
+
+// A genuinely typed Go slice (not []any) must name its branch's allowed
+// values the same as its []any equivalent above: schema compilation accepts
+// this shape and preserves it through cloning, so it reaches branchRequirement
+// still typed.
+func TestExplainSchemaError_OneOfBranchNamesTypedIntSliceEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("n", "integer", []int{1, 2, 3})
+	args := map[string]any{"task": "ping", "n": 5}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"n" must be one of 1, 2, 3`) {
+		t.Fatalf("message must render branch 1's typed []int enum allowed values bare: %q", msg)
+	}
+}
+
+func TestExplainSchemaError_OneOfBranchNamesTypedBoolSliceEnumValues(t *testing.T) {
+	params := delegateOneOfEnumParams("flag", "boolean", []bool{true, false})
+	args := map[string]any{"task": "ping", "flag": "true"}
+	msg := ExplainSchemaError("delegate", params, args, "", "not")
+	if !strings.Contains(msg, `"flag" must be one of true, false`) {
+		t.Fatalf("message must render branch 1's typed []bool enum allowed values bare: %q", msg)
 	}
 }
