@@ -202,22 +202,24 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
 
-  // evener/instance/edit reads an empty baseUrl as "leave unchanged", not
-  // "clear" (appwire.InstanceEditParams), so emptying a field that had a value
-  // would report success and change nothing. Say so and refuse the save rather
-  // than pretend.
-  const clearedBaseUrl = Boolean(instance.baseUrl) && baseUrl.trim() === "";
+  // InstanceEditParams keeps baseUrl's old "empty means unchanged" meaning
+  // (v3, unchanged by #711) and adds clearBaseUrl as an additive clear
+  // signal: an old hub ignores the unknown field and treats the request as
+  // an ordinary no-op, never a silent wrong clear. Emptying a field that
+  // had a value takes that clear path below, so note what saving will do.
+  const trimmedBaseUrl = baseUrl.trim();
+  const displayedBaseUrl = instance.baseUrl || "";
+  const clearingBaseUrl = Boolean(instance.baseUrl) && trimmedBaseUrl === "";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (clearedBaseUrl) return;
     setError(null);
     setBusy(true);
     try {
-      const trimmedBaseUrl = baseUrl.trim();
       await credentialsStore.getState().edit({
         name: instance.name,
-        baseUrl: trimmedBaseUrl !== (instance.baseUrl || "") ? trimmedBaseUrl : undefined,
+        baseUrl: trimmedBaseUrl !== displayedBaseUrl && trimmedBaseUrl !== "" ? trimmedBaseUrl : undefined,
+        clearBaseUrl: clearingBaseUrl ? true : undefined,
       });
       toast.push("success", `Saved ${instance.name}`);
       onSuccess();
@@ -242,10 +244,9 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
             disabled={busy}
           />
         </FormRow>
-        {clearedBaseUrl && (
-          <p className={CLASS.error} role="alert">
-            Emptying this leaves the endpoint unchanged — remove and re-add the instance to change its endpoint back to
-            the default.
+        {clearingBaseUrl && (
+          <p className={CLASS.error} role="status">
+            Resets the endpoint to the provider's default.
           </p>
         )}
         {error && (
@@ -254,7 +255,7 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
           </p>
         )}
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy || clearedBaseUrl}>
+          <Button type="submit" disabled={busy}>
             Save
           </Button>
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>

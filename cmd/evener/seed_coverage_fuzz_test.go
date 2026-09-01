@@ -14,7 +14,6 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			name string
 			fn   func(*testing.T)
 		}{
-			{"client provider", TestClientHasProvider},
 			{"openai status formatting", TestFormatOpenAIStatus},
 			{"run args", TestRunWithArgs},
 			{"run tool events", TestRunEmitsToolEvents},

@@ -90,6 +90,11 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		{"a literal that is not a scheme word", "key=$K", "$VARIABLE", "key="},
 		{"an unterminated reference", "Bearer ${TOKEN", "unterminated", ""},
 		{"an invalid variable name", "Bearer ${1BAD}", "invalid environment variable name", ""},
+		// A user who means to type "Bearer $API_KEY" but pastes the key
+		// itself inside the braces (issue #718) still gets a malformed
+		// name, but the content inside ${...} may be the very secret
+		// being protected -- it must never reach the refusal text.
+		{"an invalid name that is itself a secret", "Bearer ${sk-test-PLANTEDSECRET1234}", "invalid environment variable name", "sk-test-PLANTEDSECRET1234"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckCredentialHeaderValue(tt.value)
@@ -116,5 +121,19 @@ func TestCheckEnvRefs(t *testing.T) {
 	}
 	if err := checkEnvRefs("${9BAD}", "api_key"); err == nil {
 		t.Fatal("invalid name must error")
+	}
+	// checkEnvRefs is what config load time uses to tell the user which
+	// field is broken (issue #718). The braces may hold a pasted secret
+	// instead of a variable name: the refusal must still name the field
+	// so the user can find it, but never echo what they pasted.
+	err := checkEnvRefs("${sk-test-PLANTEDSECRET1234}", "providers.foo.api_key")
+	if err == nil {
+		t.Fatal("invalid name must error")
+	}
+	if !strings.Contains(err.Error(), "providers.foo.api_key") {
+		t.Fatalf("checkEnvRefs error must name the field: %v", err)
+	}
+	if strings.Contains(err.Error(), "sk-test-PLANTEDSECRET1234") {
+		t.Fatalf("checkEnvRefs error echoed the value: %v", err)
 	}
 }

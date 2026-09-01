@@ -1324,7 +1324,7 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 	}
 	raw = strings.TrimSpace(raw)
 	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
-		if !clientHasProvider(client, cheapProvider) {
+		if !client.HasProvider(cheapProvider) {
 			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
@@ -1350,24 +1350,12 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 		if prov == "" || model == "" {
 			return "", fmt.Errorf("--vision-model %q is malformed: want \"model\" or \"provider/model\"", raw)
 		}
-		if prov != profile.ID() && !clientHasProvider(client, prov) {
+		if prov != profile.ID() && !client.HasProvider(prov) {
 			return "", fmt.Errorf("--vision-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
 				prov, profile.ID(), strings.Join(client.ProviderNames(), ", "))
 		}
 	}
 	return raw, nil
-}
-
-func clientHasProvider(client *llm.Client, name string) bool {
-	if client == nil {
-		return false
-	}
-	for _, p := range client.ProviderNames() {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
