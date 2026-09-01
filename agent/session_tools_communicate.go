@@ -137,8 +137,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
-// session's still-running managed jobs or detached processes. Warn-first (2026-08-06 ruling): the
-// communicate call still succeeds, there is no refusal path.
+// session's still-running managed jobs, detached processes, or live stable
+// delegates. Warn-first (2026-08-06 ruling): the communicate call still
+// succeeds, there is no refusal path.
 //
 // The promise the warning can make depends on whether the session outlives the
 // turn. Where it does, the warning complements docs/job-control.md's
@@ -152,16 +153,23 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 // reprieve — so this warning must not imply the job is safe.
 func runningJobsEndTurnWarning(jobIDs []string, turnEndsProcess bool) string {
 	detached := false
+	delegate := false
 	for _, id := range jobIDs {
 		if strings.HasPrefix(id, "detached process ") {
 			detached = true
-			break
+		}
+		if strings.HasPrefix(id, "delegate ") {
+			delegate = true
 		}
 	}
-	noun := "job(s)"
+	nouns := []string{"job(s)"}
 	if detached {
-		noun = "job(s) or detached process(es)"
+		nouns = append(nouns, "detached process(es)")
 	}
+	if delegate {
+		nouns = append(nouns, "delegate(s)")
+	}
+	noun := strings.Join(nouns, " or ")
 	outcome := "each job remains notification-armed and will report separately on completion."
 	if turnEndsProcess {
 		outcome = "a job that finishes is reported in a further turn, but this run's process exits once that work is drained, so a job that keeps running is killed at exit rather than reported on later."

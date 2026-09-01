@@ -172,6 +172,108 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	}
 }
 
+// TestCommunicate_EndTurnWarnsForLiveDelegate drives a real stable delegate
+// through the delegate tool, holds its single child turn open on a gate, and
+// ends the turn through the real communicate handler while a background shell
+// job is ALSO still running. runningJobIDs only ever named shell jobs (issue
+// #585): a live delegate is session-owned work exactly like a background job,
+// so the warning must name both by id, not just the shell job.
+func TestCommunicate_EndTurnWarnsForLiveDelegate(t *testing.T) {
+	gate := make(chan struct{})
+	childAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				<-gate
+				return toolCallResponse(communicateCall("child-done", "child done"))
+			},
+		},
+	}
+	childClient := llm.NewClient()
+	childClient.Register(childAdapter)
+	registerTestSessionNamer(childClient)
+
+	s := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			childClientFactory:  func() *llm.Client { return childClient },
+		},
+	}))
+	// Registered after newSession (whose t.Cleanup(sess.Close) ran first): LIFO
+	// releases the child's blocked turn before Close waits on it.
+	t.Cleanup(func() { close(gate) })
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" || shellOut.Status != "running" {
+		t.Fatalf("shell output = %+v, want a running job", shellOut)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	delegateRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "delegate",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"do something slowly"}`),
+	})
+	if delegateRes.IsError {
+		t.Fatalf("delegate returned error: %s", delegateRes.Output)
+	}
+	var delegateOut struct {
+		DelegateID string `json:"delegate_id"`
+		Status     string `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(delegateRes), &delegateOut); err != nil {
+		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, delegateRes.Output)
+	}
+	if delegateOut.DelegateID == "" || delegateOut.Status != "running" {
+		t.Fatalf("delegate output = %+v, want a running delegate", delegateOut)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("end-turn-warning", map[string]any{
+		"message":  "done for now",
+		"end_turn": true,
+	}))
+	if res.IsError {
+		t.Fatalf("communicate error: %s", res.Output)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(toolResultJSON(res), &resp); err != nil {
+		t.Fatalf("unmarshal communicate output: %v", err)
+	}
+	warning, ok := resp["warning"].(string)
+	if !ok || warning == "" {
+		t.Fatalf("expected a non-empty warning naming the running shell job and delegate, got: %v", resp)
+	}
+	if !strings.Contains(warning, shellOut.JobID) {
+		t.Fatalf("warning = %q, want it to name shell job id %q", warning, shellOut.JobID)
+	}
+	if !strings.Contains(warning, delegateOut.DelegateID) {
+		t.Fatalf("warning = %q, want it to name live delegate id %q", warning, delegateOut.DelegateID)
+	}
+}
+
 func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,

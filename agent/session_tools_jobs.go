@@ -1826,13 +1826,33 @@ func sessionRunningJobIDs(s *Session) []string {
 	return ids
 }
 
-// sessionRunningWorkIDs combines managed jobs with detached processes owned by
-// this session. Detached processes deliberately stay out of the job manager and
-// drain accounting, but an end_turn warning must still name one while its own
-// completion receipt is open.
+// sessionRunningWorkIDs combines managed jobs with detached processes and live
+// stable delegates owned by this session. Detached processes and delegates
+// deliberately stay out of the job manager and drain accounting, but an
+// end_turn warning must still name one while it is still live.
 func sessionRunningWorkIDs(s *Session) []string {
 	ids := sessionRunningJobIDs(s)
-	return append(ids, s.runningDetachedProcessIDs()...)
+	ids = append(ids, s.runningDetachedProcessIDs()...)
+	return append(ids, s.runningStableDelegateIDs()...)
+}
+
+// runningStableDelegateIDs returns the running stable delegates this session
+// owns, named "delegate <id>" to match delegateActor.describe's convention for
+// naming a delegate in user-facing text. This is an owner-authoritative read
+// straight off the delegate controller's snapshot (the same source status.go
+// and jobs_activity.go use to list a session's own delegates), not the job
+// manager: delegates never mint job store rows.
+func (s *Session) runningStableDelegateIDs() []string {
+	if s == nil || s.delegateController == nil {
+		return nil
+	}
+	var ids []string
+	for _, row := range s.delegateController.Snapshot().rows {
+		if row.descriptor.OwnerSessionID == s.ID() && row.lifecycle == delegateLifecycleRunning {
+			ids = append(ids, "delegate "+row.id)
+		}
+	}
+	return ids
 }
 
 func (s *Session) recordDetachedProcess(process execenv.DetachedProcess) {
