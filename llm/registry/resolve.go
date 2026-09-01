@@ -237,7 +237,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	if w := r.gateWebSearch(&caps, prov, rec, transport.BaseURL, rec.ownBaseURL != ""); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, rec.ownBaseURL != ""); w != "" {
 		warnings = append(warnings, w)
 	}
 	cred, cw := r.credential(rec)
@@ -307,8 +307,8 @@ func webSearchExplicit(prov map[string]string) bool {
 // why web_search went quiet instead of finding out only when the model
 // tries to use it and cannot; empty when nothing fired, including when the
 // value was already false.
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, resolvedBaseURL string, ownOverride bool) string {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, resolvedBaseURL, ownOverride) {
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto string, ownOverride bool) string {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, ownOverride) {
 		return ""
 	}
 	if !*caps.WebSearch {
@@ -405,7 +405,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	rowOwnBaseURL := row.Transport != nil && row.Transport.BaseURL != ""
-	if w := r.gateWebSearch(&caps, prov, rec, transport.BaseURL, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
