@@ -154,9 +154,14 @@ func EchoesAssistantText(shown, message string) bool {
 // ToolIntentFromArguments extracts a compact tool-call description from the
 // "intent" field, falling back to "purpose" — the field's name before the
 // 2026-08-29 rename (7512a736e) — so transcripts recorded before that
-// rename still surface the tool-intent line on reload (issue #709). This
-// fallback belongs only here, in the reader: the model-facing tool schema
-// and every write path emit "intent" exclusively.
+// rename still surface the tool-intent line on reload (issue #709). This is
+// a reader-side rule: the model-facing tool schema and every write path
+// still emit "intent" exclusively. Every other transcript/projector reader
+// that extracts this field applies the same rule independently rather than
+// sharing this function — agent/transcript_render.go's toolIntent,
+// agent/doctor's toolIntentFromArguments, and the TUI's toolsummary and
+// msgrender packages — since each lives in a different Go module or is a
+// standalone binary that cannot import this one.
 func ToolIntentFromArguments(raw json.RawMessage) string {
 	var args map[string]any
 	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
