@@ -497,3 +497,206 @@ func TestCache_MissingFileReadsAsZeroValueWithoutError(t *testing.T) {
 		t.Fatalf("result.Value = %+v, want the zero value", result.Value)
 	}
 }
+
+// TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch covers the
+// adversarial coherence review's CRITICAL finding: eviction used to reset a
+// path's epoch counter to 0 (indistinguishable from "never seen"), so a
+// continuation minted while a path's epoch was 0 -- the common case, since
+// genuine rewrites are rare -- would pass its staleness check after ANY
+// eviction, even one that raced a genuine rewrite. Epoch bookkeeping must
+// survive eviction of the (potentially large) cached value.
+func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.txt")
+	pathB := filepath.Join(dir, "b.txt")
+	writeLines(t, pathA, []int{1, 2, 3})
+	writeLines(t, pathB, []int{9})
+	var calls []int64
+	c := New[intsFold](1) // bound of 1: touching B evicts A
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	first, err := c.Get(ctx, pathA, extend)
+	if err != nil {
+		t.Fatalf("first Get(A): %v", err)
+	}
+
+	if _, err := c.Get(ctx, pathB, extend); err != nil {
+		t.Fatalf("Get(B): %v", err)
+	}
+	if stats := c.Stats(); stats.Evictions == 0 {
+		t.Fatalf("Stats().Evictions = 0, want pathA evicted by touching pathB under a 1-entry bound")
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	writeLines(t, pathA, []int{9}) // shrink + wholly different content, WHILE evicted
+
+	second, err := c.Get(ctx, pathA, extend)
+	if err != nil {
+		t.Fatalf("second Get(A): %v", err)
+	}
+	if second.Value.sum != 9 || second.Value.lines != 1 {
+		t.Fatalf("second value = %+v, want sum=9 lines=1 (the rewrite, not stale merged content)", second.Value)
+	}
+	if second.Epoch == first.Epoch {
+		t.Fatalf("epoch unchanged (%d) across an eviction that raced a genuine rewrite -- a continuation minted at the first Get's epoch would silently pass its staleness check against completely different content", first.Epoch)
+	}
+}
+
+// TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter covers the adversarial
+// coherence review's MAJOR finding: Get's singleflight coalescing used to
+// deliver the flight OWNER's context-cancellation error to every coalesced
+// WAITER, even a waiter whose own context was live and healthy. The owner's
+// own cancellation must still surface to the owner; a coalesced waiter with
+// its own healthy context must get the real result.
+func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2, 3})
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	extend := func(ctx context.Context, path string, fromOffset int64, prior intsFold) (intsFold, int64, error) {
+		close(entered)
+		<-release
+		if err := ctx.Err(); err != nil {
+			return intsFold{}, 0, err
+		}
+		return intsFold{sum: 6, lines: 3}, 4, nil
+	}
+	c := New[intsFold](8)
+
+	var ownerErr error
+	ownerDone := make(chan struct{})
+	go func() {
+		defer close(ownerDone)
+		_, ownerErr = c.Get(ownerCtx, path, extend)
+	}()
+	<-entered // owner has registered and is blocked inside extend
+
+	waiterCtx := context.Background() // healthy: never touched
+	var waiterResult Result[intsFold]
+	var waiterErr error
+	waiterDone := make(chan struct{})
+	go func() {
+		defer close(waiterDone)
+		waiterResult, waiterErr = c.Get(waiterCtx, path, extend)
+	}()
+	// Wait for the waiter to actually coalesce onto the owner's flight
+	// before canceling anything, so this test proves the coalesced case,
+	// not a race where the waiter happened to start its own separate
+	// flight.
+	deadline := time.Now().Add(10 * time.Second)
+	for c.Stats().Coalesced < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the waiter to coalesce onto the owner's flight")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cancelOwner()
+	close(release)
+	<-ownerDone
+	<-waiterDone
+
+	if !errors.Is(ownerErr, context.Canceled) {
+		t.Fatalf("owner err = %v, want context.Canceled (sanity check: the owner's OWN cancellation must still surface to the owner)", ownerErr)
+	}
+	if waiterErr != nil {
+		t.Fatalf("waiter err = %v, want nil -- the waiter's own context was never canceled, so the owner's cancellation must not poison it", waiterErr)
+	}
+	if waiterResult.Value.sum != 6 {
+		t.Fatalf("waiter result = %+v, want the real sum=6 the (detached) extend call actually produced", waiterResult.Value)
+	}
+}
+
+// TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe covers the
+// adversarial coherence review's MAJOR finding: a same-size, same-mtime
+// rewrite used to be an undetectable silent stale hit -- Get's own
+// early-return "true hit" path never even reached refresh's staleness
+// switch. A cheap tail probe closes this: the bytes at the cached offset
+// must still match what was last observed before a hit is trusted.
+func TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozenMTime := info.ModTime()
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	writeLines(t, path, []int{3, 4}) // same 4 bytes, different content
+	if err := os.Chtimes(path, frozenMTime, frozenMTime); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if second.Value.sum != 7 {
+		t.Fatalf("second sum = %d, want 7 (3+4) -- a same-size, same-mtime rewrite must not be served as a stale hit", second.Value.sum)
+	}
+	if calls[len(calls)-1] != 0 {
+		t.Fatalf("last call fromOffset = %d, want 0 (a same-size same-mtime rewrite must force a full rescan)", calls[len(calls)-1])
+	}
+	if second.Epoch == first.Epoch {
+		t.Fatalf("epoch unchanged (%d) across a same-size same-mtime rewrite the tail probe should have caught", first.Epoch)
+	}
+}
+
+// TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch covers the
+// adversarial coherence review's MAJOR finding: growth with an
+// unresolvable (unchanged) mtime was unconditionally treated as a safe
+// append and never bumped epoch, even when the growth is actually a
+// truncate-and-rewrite-larger that happens to coincide with the old mtime
+// bucket. Unlike TestCache_GrowthWithUnchangedMTimeReadsFromZeroWithoutBumpingEpoch
+// (a genuine append, where epoch correctly stays put), this constructs the
+// untested sibling: a rewrite whose old prefix does NOT survive.
+func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozenMTime := info.ModTime()
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	// Truncate and replace with different, LARGER content -- not an
+	// append: the old prefix does not survive.
+	writeLines(t, path, []int{30, 40, 50})
+	if err := os.Chtimes(path, frozenMTime, frozenMTime); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if second.Value.sum != 120 || second.Value.lines != 3 {
+		t.Fatalf("second value = %+v, want sum=120 lines=3 (30+40+50) -- the full reread itself must still recover the new content", second.Value)
+	}
+	if second.Epoch == first.Epoch {
+		t.Fatalf("epoch unchanged (%d) across a growing rewrite whose old prefix did NOT survive -- a continuation minted against the old 4-byte content would wrongly pass its staleness check against this entirely different content", first.Epoch)
+	}
+}
