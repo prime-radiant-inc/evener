@@ -138,6 +138,37 @@ test("the secondary line surfaces the demoted metadata", () => {
   expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
 });
 
+test("confirmed cancellation recedes while expanded diagnostics retain physical exit", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        title: "Job cancelled",
+        tone: "neutral",
+        secondary: "Run repository lint, vet, and test gates",
+        status: "cancelled",
+        reason: "stopped_by_parent",
+        exitCode: -1,
+        rawText: '<job-notification status="cancelled" reason="stopped_by_parent" exit_code="-1">cancelled</job-notification>',
+      })}
+    />,
+  );
+
+  const row = screen.getByTestId("notification-card");
+  expect(row.getAttribute("data-tone")).toBe("neutral");
+  expect(row.textContent).toContain("Job cancelled");
+  expect(row.textContent).toContain("Run repository lint, vet, and test gates");
+  expect(row.textContent).not.toContain("exit -1");
+  expect(row.textContent).not.toContain("stopped_by_parent");
+  expect(screen.queryByText("error")).toBeNull();
+  expect(screen.queryByText("warning")).toBeNull();
+
+  fireEvent.click(row);
+  expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
+  expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
+  expect(screen.getByTestId("notification-field-exit").textContent).toContain("-1");
+  expect(screen.getByTestId("notification-raw").textContent).toContain('exit_code="-1"');
+});
+
 test("the collapsed row prefers a job description to its generic job type", () => {
   render(<NotificationCard notification={notif({ secondary: "Inspect the workspace" })} />);
   expect(screen.getByTestId("notification-card").textContent).toContain("Inspect the workspace");

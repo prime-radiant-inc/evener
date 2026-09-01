@@ -151,6 +151,63 @@ Job j completed.
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
+test("confirmed parent cancellation is neutral and keeps signed diagnostics", () => {
+  const block = `<job-notification job_id="job_1" job_type="shell" status="cancelled" reason="stopped_by_parent" exit_code="-1" description="Run repository lint, vet, and test gates">
+Job job_1 cancelled.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job cancelled",
+    tone: "neutral",
+    secondary: "Run repository lint, vet, and test gates",
+    status: "cancelled",
+    reason: "stopped_by_parent",
+    exitCode: -1,
+  });
+});
+
+test.each([
+  ["stopped", "stopped_by_parent", "-1", "warning", "shell · stopped_by_parent"],
+  ["stopped", "cancelled", "-1", "warning", "shell · cancelled"],
+  ["stopped", "run_timeout", "-1", "warning", "shell · run_timeout"],
+  ["failed", "killed_by_signal: terminated", "-1", "error", "shell · exit -1 · killed_by_signal: terminated"],
+  ["completed", "exit_zero", "7", "error", "shell · exit 7 · exit_zero"],
+  ["mystery", "", "7", "error", "shell · exit 7"],
+] as const)("maps %s/%s/exit %s to %s", (status, reason, exit, tone, secondary) => {
+  const block = `<job-notification job_id="job_matrix" job_type="shell" status="${status}" reason="${reason}" exit_code="${exit}">
+Job job_matrix ${status}.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({ tone, secondary });
+});
+
+test("explicit failure keeps a neutral secondary without compacting malformed exit text", () => {
+  const block = `<job-notification job_id="job_bad_exit" job_type="shell" status="failed" reason="wait_failed" exit_code="7x">
+Job job_bad_exit failed.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    tone: "error",
+    secondary: "shell · wait_failed",
+    exitCode: undefined,
+  });
+});
+
+test("unknown malformed exit stays neutral", () => {
+  const block = `<job-notification job_id="job_unknown_exit" job_type="shell" status="mystery" exit_code="7x">
+Job job_unknown_exit mystery.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    tone: "neutral",
+    secondary: "shell",
+    exitCode: undefined,
+  });
+});
+
+test("blank status does not mask a failed event", () => {
+  const block = `<job-notification job_id="job_blank_status" job_type="shell" status="   " event="failed" exit_code="0">
+Job job_blank_status failed.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
+});
+
 test("a job-less watch event classifies as a watch notification", () => {
   const block = `<job-notification job_id="" event="watch" job_type="" status="watch" reason="file changed" output_bytes="0">
 Watch event triggered: file changed.
@@ -162,9 +219,49 @@ Watch event triggered: file changed.
 
 test("an Observer callback parses as a notification", () => {
   const notifications = notificationsOf(
-    parseSteeringNotifications("Observer callback:\nmessage: something happened\noutput: details here"),
+    parseSteeringNotifications(
+      "Observer callback:\nmessage: something happened\noutput: {\"message\":\"done\",\"data\":{\"status\":\"done\"}}",
+    ),
   );
-  expect(notif(notifications, 0).title).toBe("Observer callback");
+  const n = notif(notifications, 0);
+  expect(n.title).toBe("Observer callback");
+  expect(n.tone).toBe("warning");
+});
+
+test("absent outer status/event with communicate cancelled and exit -1 stays neutral without compacting exit", () => {
+  const block = `<job-notification job_id="job_delegate_cancelled" job_type="delegate" exit_code="-1">
+Job job_delegate_cancelled reported.
+excerpt:
+{"message":"done","data":{"status":"cancelled"}}
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    tone: "neutral",
+    secondary: "delegate",
+  });
+});
+
+test("absent outer status/event with communicate stopped and exit -1 warns without compacting exit", () => {
+  const block = `<job-notification job_id="job_delegate_stopped" job_type="delegate" exit_code="-1">
+Job job_delegate_stopped reported.
+excerpt:
+{"message":"done","data":{"status":"stopped"}}
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    tone: "warning",
+    secondary: "delegate",
+  });
+});
+
+test("explicit outer cancelled plus communicate done stays neutral", () => {
+  const block = `<job-notification job_id="job_delegate_outer_cancelled" job_type="delegate" status="cancelled">
+Job job_delegate_outer_cancelled reported.
+excerpt:
+{"message":"done","data":{"status":"done"}}
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    tone: "neutral",
+    secondary: "delegate",
+  });
 });
 
 test("an Observer callback with no output surfaces its message prose (not just the raw disclosure)", () => {
