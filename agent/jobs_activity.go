@@ -50,17 +50,14 @@ type activitySessionSnapshot struct {
 	// complete list (#448 finding 1's degrade-to-partial contract — see
 	// jobstore.ScanEvents/loadHistoricalActivityBase). projectActivitySessionAt
 	// surfaces it as Branch.Truncated the same way projection's own
-	// work-unit exhaustion does.
+	// work-unit exhaustion does. Deliberately no continuation for this case
+	// (see the doc comment on the Branch.Truncated assignment below): a
+	// resumed load rescans this session's own journal from byte zero with a
+	// fresh budget, so a minted token would never actually advance past what
+	// this page already showed.
 	LoadTruncated bool
-	// LoadTruncatedContinuation is the continuation token buildActivityFullSnapshot
-	// computes when LoadTruncated is set — built from the SAME path/rootID
-	// shape projection's own markActivitySessionTruncated uses, so a client
-	// resuming from it re-enters this exact session (with a fresh
-	// historicalActivityCache/budget) via the ordinary continuation path,
-	// regardless of which phase decided the response needed to be partial.
-	LoadTruncatedContinuation string
-	Children                  map[string]*activitySessionSnapshot // child session ID
-	Errors                    map[string]error                    // child session ID
+	Children      map[string]*activitySessionSnapshot // child session ID
+	Errors        map[string]error                    // child session ID
 }
 
 type activitySessionLocator struct {
@@ -166,12 +163,24 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	root := activitySessionLocator{live: s, stateDir: s.stateDir, sessionID: s.ID()}
 	now := s.sclock().Now().UTC()
 	if s.jobActivityClock == nil {
-		// The live single-session path has no request context to thread in
-		// (its caller, cmd/evener/serve.go's SetJobsFunc hook, takes none);
-		// context.Background() still gets it the scan byte/event ceilings
-		// below, just not real cancellation. The hub's persisted fallback
-		// (LoadSessionJobActivityTree) is the path #448 measured and passes
-		// its actual request context.
+		// context.Background() here is a real, known gap, not a soft one:
+		// this root's OWN job list loads via loadLiveActivityBase ->
+		// jm.store.LoadOrdered(), a completely separate, unbounded,
+		// non-cancelable read on jobstore.Store's stateful, cursor-caching,
+		// mutex-protected internal path (readAllLocked) — NOT the bounded
+		// jobstore.ScanEvents this ctx would otherwise reach. Store.LoadOrdered
+		// has one caller; retrofitting it with the same ScanLimits+ctx
+		// ScanEvents uses would mean redesigning how its cursor-trust
+		// invariants interact with a resumable, ceiling-respecting read,
+		// inside code shared with the live append path — real, but out of
+		// scope for this pass (#448 roborev finding 3; flagged for a
+		// follow-up). What context.Background() DOES still reach: any
+		// already-exited descendant of this live root, loaded through
+		// loadHistoricalActivityBase's bounded scanners exactly like the
+		// hub's persisted fallback. Separately, this path's own caller
+		// (cmd/evener/serve.go's SetJobsFunc hook) takes no context to
+		// thread through in the first place, so even a bounded LoadOrdered
+		// would only gain the byte/event ceilings here, not cancellation.
 		snapshot, startDepth, err := loadActivitySnapshotForParams(context.Background(), root, params)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
@@ -225,7 +234,7 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
-		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, nil)
+		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache)
 		return snapshot, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
@@ -246,7 +255,7 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 // (LoadTruncated below) can mint a continuation token identical in shape to
 // projection's markActivitySessionTruncated, regardless of which phase
 // decided the response had to be partial.
-func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool, cache *historicalActivityCache, path []string) (*activitySessionSnapshot, error) {
+func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool, cache *historicalActivityCache) (*activitySessionSnapshot, error) {
 	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
 		return nil, err
@@ -257,19 +266,6 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 	// is called with for the same node.
 	depth := len(visited) - 1
 	snapshot := loaded.snapshot
-	if snapshot.LoadTruncated {
-		// cache.budget.rootID, NOT snapshot.RootID: the former is this whole
-		// traversal's actual query root (what a later request re-submitting
-		// this token will validate against); the latter is re-derived per
-		// session from each one's own (possibly empty, self-defaulting)
-		// meta field and can legitimately differ.
-		snapshot.LoadTruncatedContinuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    cache.budget.rootID,
-			SessionID: snapshot.SessionID,
-			Path:      append([]string(nil), path...),
-		})
-	}
 	snapshot.Children = make(map[string]*activitySessionSnapshot)
 	snapshot.Errors = make(map[string]error)
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
@@ -290,20 +286,39 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 			snapshot.Errors[childID] = errors.New("cycle detected")
 			continue
 		}
-		// #448 finding 1: bound the LOAD-phase traversal itself, not only
-		// projection — mirror activityMaxNewDepth/activityMaxWorkUnits here
-		// so a wide or deep tree can't force unbounded loading (file opens,
-		// recursion, decoding) before projection's own budget ever gets a
-		// chance to apply. Skipping silently (no branch error) is
-		// deliberate: projection's OWN, already-correct budget accounting —
-		// activityConsumeWorkUnit in projectActivitySessionAt's delegate
-		// loop, checked BEFORE it ever looks at snapshot.Children — reaches
-		// the identical exhaustion point walking this same, now-smaller
-		// tree in the same order, and marks the existing, honest
-		// Truncated+continuation response on its own. This budget only has
-		// to stop the wasted work; the wire-visible marker still comes from
-		// projection, exactly as it always has.
-		if depth >= cache.budget.maxDepth || !activityConsumeWorkUnit(cache.budget, 1) {
+		// #448 finding 1 (load-time traversal bound): mirror
+		// activityMaxNewDepth/activityMaxWorkUnits here so a wide or deep
+		// tree can't force unbounded loading (file opens, recursion,
+		// decoding) before projection's own budget ever gets a chance to
+		// apply. The two limits need different treatment on the wire,
+		// though (roborev finding: depth was silently dropping the child
+		// with no marker at all):
+		//
+		//   - Depth: projectStableActivityDelegate dereferences
+		//     snapshot.Children[childID] BEFORE its own depth check runs, so
+		//     leaving the entry unset here surfaces as a generic "child
+		//     session unavailable" branch error instead of the honest,
+		//     continuation-bearing Truncated projection's depth-truncation
+		//     already knows how to produce (markActivityDelegateTruncated).
+		//     A placeholder child — present, but with nothing loaded under
+		//     it — lets projection's own check run and do that correctly.
+		//   - Work-unit exhaustion: projectActivitySessionAt's delegate loop
+		//     consumes a unit and checks it BEFORE ever dereferencing
+		//     snapshot.Children, so leaving the entry unset there already
+		//     reaches projection's identical exhaustion point on this same,
+		//     now-smaller tree — no placeholder needed.
+		if depth >= cache.budget.maxDepth {
+			snapshot.Children[childID] = &activitySessionSnapshot{
+				SessionID:       childID,
+				Ref:             encodeRef("", childID),
+				LiveJobs:        map[string]*jobstore.JobRecord{},
+				StableDelegates: map[string]delegateSnapshot{},
+				Children:        map[string]*activitySessionSnapshot{},
+				Errors:          map[string]error{},
+			}
+			continue
+		}
+		if !activityConsumeWorkUnit(cache.budget, 1) {
 			continue
 		}
 		childLoc, err := resolveActivityChildByID(loc, loaded, childID)
@@ -313,7 +328,7 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 		}
 		nextVisited := cloneActivityVisited(visited)
 		nextVisited[childID] = true
-		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true, cache, appendActivityPath(path, delegateID))
+		child, err := buildActivityFullSnapshot(childLoc, nextVisited, true, cache)
 		if err != nil {
 			// A canceled request must surface as a real error all the way to
 			// the caller, not be laundered into a per-child branch error
@@ -339,7 +354,7 @@ func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activity
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required, cache, nil)
+		return buildActivityFullSnapshot(loc, visited, required, cache)
 	}
 	return buildActivityContinuationAt(loc, cont, 0, visited, required, cache)
 }
@@ -349,11 +364,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
-		// A load-phase truncation from here on mints its continuation from
-		// cont.Path itself — the full hop chain that got us here — matching
-		// what projection's own mid-list truncation would encode at this
-		// same node.
-		return buildActivityFullSnapshot(loc, visited, required, cache, cont.Path)
+		return buildActivityFullSnapshot(loc, visited, required, cache)
 	}
 	loaded, err := loadActivityBase(loc, required, cache)
 	if err != nil {
@@ -706,12 +717,13 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		// raw byte/event ceiling (#448 finding 1) — that has to reach the
 		// wire even when, as here, projection's OWN work-unit accounting has
 		// nothing left to trim (the loaded prefix fits the budget exactly).
-		// buildActivityFullSnapshot already minted the matching continuation
-		// token (LoadTruncatedContinuation), built from the identical
-		// path/rootID shape markActivitySessionTruncated below uses, so a
-		// client resuming from it re-enters this exact session normally.
+		// Deliberately no continuation: a resumed load rescans this same
+		// session's own journal from byte zero with a fresh budget (roborev
+		// finding — verified empirically that this doesn't advance past what
+		// this page already showed), so minting one would invite a client to
+		// poll forever for data it will never receive. Honest
+		// Truncated-with-no-continuation beats a token that goes nowhere.
 		projected.Branch.Truncated = true
-		projected.Branch.Continuation = snapshot.LoadTruncatedContinuation
 	}
 
 	cycleKey := snapshot.SessionID + "\x00" + snapshot.Ref
