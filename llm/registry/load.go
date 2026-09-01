@@ -97,6 +97,8 @@ func WithOffline(offline bool) Option { return func(o *options) { o.offline = &o
 
 // WithInstances injects named instances before layering (spec §5.2); they
 // behave like [providers.X] entries and shadow file entries of the same name.
+// Load reads but does not recursively snapshot the supplied reference-valued
+// fields, so callers must not mutate them while the loaded Registry is in use.
 func WithInstances(instances map[string]Provider) Option {
 	return func(o *options) { o.instances = instances }
 }
