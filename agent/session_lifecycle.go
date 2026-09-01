@@ -756,7 +756,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// the model includes the interrupt notice in history.
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
-					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
+					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
 					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
 				if emitEnd {
