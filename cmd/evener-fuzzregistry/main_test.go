@@ -157,12 +157,17 @@ func scenarioCheckTargetsReportsStalePackageRow(t *testing.T) {
 	assertErrorContains(t, err, "stale registration: native:agent:./stale:FuzzTurn")
 }
 
-// scenarioCheckSupportTargetsValidatesPackages pins the gap that let two rows
-// for deleted provider packages outlive their packages: discovery cannot
-// enumerate a support-only row (it names an ordinary Test, indistinguishable
-// from every other test in the tree), so the package each row names is
-// checked instead. Coverage rows stay CheckTargets' business.
-func scenarioCheckSupportTargetsValidatesPackages(t *testing.T) {
+// scenarioCheckSupportTargetsValidatesPackagesAndFunctionNames pins the gap
+// that let two rows for deleted provider packages outlive their packages,
+// and the narrower gap left after fixing that: a row's package can survive
+// while its function is renamed, and package-only validation says nothing.
+// Discovery cannot enumerate a support-only row (it names an ordinary Test,
+// indistinguishable from every other test in the tree without already
+// knowing its name), so each row is checked directly instead: its package
+// must exist, and one of that package's _test.go files must still declare a
+// top-level Test function with the row's name. Coverage rows stay
+// CheckTargets' business.
+func scenarioCheckSupportTargetsValidatesPackagesAndFunctionNames(t *testing.T) {
 	root := newWorkspace(t, map[string]string{
 		"go.work":      "go 1.25.0\n\nuse (\n\t.\n\t./agent\n)\n",
 		"go.mod":       "module example.test/root\n\ngo 1.25.0\n",
@@ -183,6 +188,12 @@ func TestReachesDeeper(t *testing.T) {}
 	gone := Target{Kind: "test", Module: "agent", Package: "./deleted", Name: "TestReachesDeeper"}
 	assertErrorContains(t, CheckSupportTargets(root, []Target{live, gone}),
 		"stale registration: test:agent:./deleted:TestReachesDeeper")
+
+	// The package survives; only the function name is stale — the renamed-
+	// function case package-only validation could not see.
+	renamed := Target{Kind: "test", Module: "agent", Package: "./core", Name: "TestReachesDeeperOld"}
+	assertErrorContains(t, CheckSupportTargets(root, []Target{live, renamed}),
+		"stale registration: test:agent:./core:TestReachesDeeperOld")
 
 	unknown := Target{Kind: "test", Module: "nope", Package: ".", Name: "TestReachesDeeper"}
 	assertErrorContains(t, CheckSupportTargets(root, []Target{unknown}),
