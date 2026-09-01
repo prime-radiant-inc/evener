@@ -279,8 +279,13 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 		p = registry.Provider{ID: name}
 	}
-	if v := strings.TrimSpace(params.BaseURL); v != "" {
-		p.Transport.BaseURL = v
+	if params.BaseURL != nil {
+		// Unlike Protocol and Surface below, nil (not sent) and a non-nil
+		// empty string (sent, cleared) are distinguishable here, so an
+		// explicit clear reaches "" and drops the authored override —
+		// restoring the registry default and, per spec §10, the base's
+		// inherited api_key_env (#711).
+		p.Transport.BaseURL = strings.TrimSpace(*params.BaseURL)
 	}
 	if v := strings.TrimSpace(params.Protocol); v != "" {
 		p.Protocol = v

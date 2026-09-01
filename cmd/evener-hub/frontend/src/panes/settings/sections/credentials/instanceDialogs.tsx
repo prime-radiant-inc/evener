@@ -202,15 +202,14 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
 
-  // evener/instance/edit reads an empty baseUrl as "leave unchanged", not
-  // "clear" (appwire.InstanceEditParams), so emptying a field that had a value
-  // would report success and change nothing. Say so and refuse the save rather
-  // than pretend.
-  const clearedBaseUrl = Boolean(instance.baseUrl) && baseUrl.trim() === "";
+  // InstanceEditParams.baseUrl is a pointer wire-side (#711): an omitted
+  // field leaves the authored value alone, but an explicit empty string
+  // clears it back to the provider's default. Emptying a field that had a
+  // value takes that second path below, so note what saving will do.
+  const clearingBaseUrl = Boolean(instance.baseUrl) && baseUrl.trim() === "";
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (clearedBaseUrl) return;
     setError(null);
     setBusy(true);
     try {
@@ -242,10 +241,9 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
             disabled={busy}
           />
         </FormRow>
-        {clearedBaseUrl && (
-          <p className={CLASS.error} role="alert">
-            Emptying this leaves the endpoint unchanged — remove and re-add the instance to change its endpoint back to
-            the default.
+        {clearingBaseUrl && (
+          <p className={CLASS.error} role="status">
+            Resets the endpoint to the provider's default.
           </p>
         )}
         {error && (
@@ -254,7 +252,7 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
           </p>
         )}
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy || clearedBaseUrl}>
+          <Button type="submit" disabled={busy}>
             Save
           </Button>
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>

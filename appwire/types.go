@@ -2604,19 +2604,23 @@ type InstanceCreateParams struct {
 // implicit instance writes a shadowing entry carrying only these fields
 // (spec §11.3).
 //
-// EMPTY MEANS UNCHANGED, not "clear". An empty BaseURL, Protocol or Surface
-// leaves the stored value alone, so this shape cannot express "drop the
-// authored base_url and go back to the registry default" — those three are
-// the only fields where the distinction is reachable, since Name identifies
-// the instance and an empty Vars map is a no-op edit either way. That is a
-// deliberate limit rather than an oversight: expressing a clear needs a wire
-// change (pointer scalars, or a Clear []string), and it is ledgered for a
-// later plan. Both authoring forms — the React edit dialog and the TUI
-// credentials panel — refuse to submit an emptied base URL rather than
-// reporting a success that changes nothing.
+// BaseURL is a pointer so an omitted field (nil) can be told apart from an
+// explicit clear: nil leaves the stored base_url alone; a non-nil value sets
+// it, including a non-nil empty string, which drops the authored override
+// and goes back to the registry default. That also lifts spec §10's
+// credential-inheritance stop, which keys on a literal base_url (#711).
+//
+// Protocol and Surface are still plain strings, so EMPTY MEANS UNCHANGED for
+// them, not "clear": an empty value leaves the stored one alone, and there
+// is no way to reset either back to the registry default over this wire.
+// Name identifies the instance and an empty Vars map is a no-op edit either
+// way, so those two are the only fields where the distinction still cannot
+// be reached. That is a deliberate limit rather than an oversight: giving
+// them the same *string treatment as BaseURL is ledgered for whenever a form
+// needs to clear one.
 type InstanceEditParams struct {
 	Name     string            `json:"name"`
-	BaseURL  string            `json:"baseUrl,omitempty"`
+	BaseURL  *string           `json:"baseUrl,omitempty"`
 	Protocol string            `json:"protocol,omitempty"`
 	Surface  string            `json:"surface,omitempty"`
 	Vars     map[string]string `json:"vars,omitempty"`
