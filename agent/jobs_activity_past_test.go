@@ -385,21 +385,41 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	}
 	depth := 0
 	session := got.Root
+	var stoppedAt *appwire.JobActivityDelegate
 	for {
-		var next *appwire.JobActivitySession
-		for _, entry := range session.Entries {
-			if entry.Delegate != nil && entry.Delegate.Child != nil {
-				next = entry.Delegate.Child
+		var delegate *appwire.JobActivityDelegate
+		for i := range session.Entries {
+			if session.Entries[i].Delegate != nil {
+				delegate = session.Entries[i].Delegate
 			}
 		}
-		if next == nil {
+		if delegate == nil || delegate.Child == nil {
+			stoppedAt = delegate
 			break
 		}
-		session = *next
+		session = *delegate.Child
 		depth++
 	}
 	if depth > activityMaxNewDepth {
 		t.Fatalf("loaded chain %d levels deep, want at most activityMaxNewDepth=%d", depth, activityMaxNewDepth)
+	}
+	// #448 (roborev): the delegate at the depth boundary must report an
+	// honest Truncated+Continuation branch — the same shape projection's
+	// pre-existing work-unit exhaustion already produces — not a generic
+	// "child session unavailable" branch error, which is what a load phase
+	// that leaves snapshot.Children unpopulated for a depth-skipped child
+	// causes projection to fall back to.
+	if stoppedAt == nil {
+		t.Fatal("chain never reached a depth-truncated delegate")
+	}
+	if stoppedAt.Branch.Error != "" {
+		t.Fatalf("depth-boundary delegate branch.Error = %q, want empty (a placeholder child, not a load error)", stoppedAt.Branch.Error)
+	}
+	if !stoppedAt.Branch.Truncated {
+		t.Fatalf("depth-boundary delegate branch.Truncated = false, want true")
+	}
+	if stoppedAt.Branch.Continuation == "" {
+		t.Fatal("depth-boundary delegate branch.Continuation is empty, want the token markActivityDelegateTruncated mints (whether a resubmitted depth continuation makes further progress is a separate question this test does not cover)")
 	}
 }
 

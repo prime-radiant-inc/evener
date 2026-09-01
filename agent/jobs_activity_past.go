@@ -95,14 +95,11 @@ type historicalActivityCache struct {
 }
 
 // newHistoricalActivityCache builds a fresh, traversal-scoped cache for one
-// loadActivitySnapshotForParams call. rootID is the traversal's actual query
-// root (the session the client asked for) — NOT re-derived per visited
-// session from each one's own, possibly-empty JobTreeRootSessionID meta
-// field — because it has to match what LoadSessionJobActivityTree passes
-// projectBoundedActivityTree as decodeActivityContinuation's expected root:
-// a continuation minted here (activityBudget.rootID, reused for
-// LoadTruncatedContinuation) must validate against the exact same root a
-// later request re-submitting it will check against.
+// loadActivitySnapshotForParams call. rootID only flows into
+// newBoundedActivityBudget for parity with that constructor's other
+// (projection-side) caller — the load-phase budget itself never reads
+// activityBudget.rootID, since #448's load-phase truncation mints no
+// continuation (see the LoadTruncated doc comment in jobs_activity.go).
 func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalActivityCache {
 	return &historicalActivityCache{
 		ctx:           ctx,
@@ -214,7 +211,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx, sessionID), nil)
+		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx, sessionID))
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
