@@ -214,7 +214,10 @@ else
 				:
 			fi
 			if [ -f "$report" ]; then
-				vitest_json_to_tsv "$report" >>"$measured"
+				if ! vitest_json_to_tsv "$report" >>"$measured"; then
+					echo "test-timing-budget: failed to parse vitest report at $report" >&2
+					go_measure_failed=1
+				fi
 			else
 				echo "test-timing-budget: no vitest report at $report (see $work/vitest.log)" >&2
 				go_measure_failed=1
