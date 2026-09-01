@@ -418,6 +418,22 @@ base = "google-vertex-anthropic"
 [providers.bedrockgw]
 base = "amazon-bedrock"
 base_url = "https://bedrock-gateway.example/v1"
+
+[providers.endpointgw]
+base = "openai"
+endpoint = "/custom-endpoint"
+
+[providers.streamendpointgw]
+base = "openai"
+stream_endpoint = "/custom-stream-endpoint"
+
+[providers.counttokensendpointgw]
+base = "openai"
+count_tokens_endpoint = "/custom-count-endpoint"
+
+[providers.endpointsame]
+base = "openai"
+endpoint = "/responses"
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -438,6 +454,10 @@ base_url = "https://bedrock-gateway.example/v1"
 		{"vertexrow/claude-opus-5", "false", true, "a model row's own divergent base_url strips web_search on the vars-only-carve-out family too"},
 		{"vertexhostgw/claude-opus-5", "false", true, "overriding GOOGLE_VERTEX_HOST directly bypasses the location-derived host and must not be first-party"},
 		{"vertexhostsame/claude-opus-5", "true", false, "a GOOGLE_VERTEX_HOST override that reproduces the location-derived host verbatim is not different"},
+		{"endpointgw/gpt-5.5", "false", true, "a canonical base_url with a custom endpoint must strip web_search - the endpoint decides where the request lands too"},
+		{"streamendpointgw/gpt-5.5", "false", true, "a canonical base_url with a custom stream_endpoint must strip web_search - streaming carries the same web_search tool"},
+		{"counttokensendpointgw/gpt-5.5", "false", true, "a canonical base_url with a custom count_tokens_endpoint must strip web_search - count-tokens requests carry the same tools, unpruned"},
+		{"endpointsame/gpt-5.5", "true", false, "an endpoint override that reproduces the protocol default verbatim is not different"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)
@@ -475,6 +495,21 @@ base_url = "https://bedrock-gateway.example/v1"
 	}
 	if !hasWarning(res, "web_search disabled") {
 		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL: expected a web_search-disabled warning, got %v", res.Warnings)
+	}
+
+	// A trailing slash on OPENAI_BASE_URL must not read as divergence: the
+	// HTTP builder (protocolhttp.URL) does strings.TrimRight(BaseURL, "/")
+	// before joining the endpoint path, so
+	// "https://api.openai.com/v1/" and "https://api.openai.com/v1" hit the
+	// identical physical endpoint. The genuinely-different case (proxy,
+	// above) still strips.
+	trailingSlash := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://api.openai.com/v1/"}, "")
+	ts := mustResolve(t, trailingSlash, "openai/gpt-5.5")
+	if bp(ts.Caps.WebSearch) != "true" {
+		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL with a trailing slash: web_search = %s, want true (same endpoint once the builder trims the slash)", bp(ts.Caps.WebSearch))
+	}
+	if hasWarning(ts, "web_search disabled") {
+		t.Errorf("openai/gpt-5.5 via OPENAI_BASE_URL with a trailing slash: unexpected web_search-disabled warning: %v", ts.Warnings)
 	}
 }
 
