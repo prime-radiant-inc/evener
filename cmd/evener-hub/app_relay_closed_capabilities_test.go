@@ -221,6 +221,7 @@ func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
 			t.Fatalf("subscribe client to %s: %v", ref, err)
 		}
 	}
+	awaitLiveHubSubscriptions(t, appServer, 3)
 
 	tests := []struct {
 		name       string
