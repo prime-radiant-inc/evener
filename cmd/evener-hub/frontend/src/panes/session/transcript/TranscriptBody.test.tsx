@@ -1,11 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
+import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
-import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import {
@@ -13,7 +12,6 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
-import { ToolCallCluster } from "./ToolCallCluster";
 import { TranscriptBody } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
 
@@ -87,43 +85,6 @@ const ordinaryToolFixture = {
           status: "completed",
         },
         { id: "ordinary_agent_2", turnId: "ordinary_turn", type: "agentMessage", text: "read", status: "completed" },
-      ],
-    },
-  ],
-} as unknown as ThreadModel;
-
-const previewClusterFixture = {
-  ...fixture,
-  turns: [
-    {
-      ...fixture.turns[0],
-      items: [
-        fixture.turns[0]?.items[0],
-        {
-          id: "cluster_1",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"pwd"}',
-          status: "completed",
-        },
-        {
-          id: "cluster_2",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"ls"}',
-          status: "completed",
-        },
-        {
-          id: "cluster_3",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          argumentsJSON: '{"command":"git status"}',
-          status: "completed",
-        },
-        fixture.turns[0]?.items.at(-1),
       ],
     },
   ],
@@ -324,7 +285,10 @@ describe("TranscriptBody", () => {
 
     expect(screen.getByText("Inspect the tree")).toBeTruthy();
     expect(screen.getByText("The tree is ready")).toBeTruthy();
-    expect(screen.queryByTestId("tool-call-item")).toBeNull();
+    // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+    // <details> children). The body (raw tool output) is still collapsed.
+    expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+    expect(screen.queryByText("tree output")).toBeNull();
   });
 
   test.each(["live", "readOnly"] as const)("uses the projected VirtualList for %s", (surface) => {
@@ -612,7 +576,7 @@ describe("TranscriptBody", () => {
     const firstToolExpanded = () =>
       screen
         .getAllByTestId("tool-call-item")[0]
-        ?.querySelector('[data-testid="tool-row-trigger"]')
+        ?.querySelector('[data-testid="tool-row-body-trigger"]')
         ?.getAttribute("aria-expanded");
     rerender(
       <TranscriptBody
@@ -634,57 +598,19 @@ describe("TranscriptBody", () => {
     expect(firstToolExpanded()).toBe("false");
   });
 
-  test("Tools/Full previews mount item and cluster renderers without threadsStore or RPC access", () => {
+  test("Tools/Full previews mount item renderers without threadsStore or RPC access", () => {
     const getState = vi.spyOn(threadsStore, "getState");
     const subscribe = vi.spyOn(threadsStore, "subscribe");
     const getInitialState = vi.spyOn(threadsStore, "getInitialState");
     const fake = new FakeClient("ready");
     const request = vi.spyOn(fake, "request");
-    const previewTurn = previewClusterFixture.turns[0];
-    if (previewTurn === undefined) throw new Error("preview cluster turn did not render");
-    const clusterItems = previewTurn.items.slice(1, 4) as ItemModel[];
     render(
       <>
-        <TranscriptBody
-          model={previewClusterFixture}
-          config={preset("tools")}
-          surface="preview"
-          disclosureScope="preview:one"
-        />
-        <TranscriptBody
-          model={previewClusterFixture}
-          config={preset("full")}
-          surface="preview"
-          disclosureScope="preview:two"
-        />
-        <TranscriptRenderProvider
-          config={preset("tools")}
-          surface="preview"
-          disclosureScope="preview:explicit-cluster"
-          thread={previewClusterFixture}
-        >
-          <ToolCallCluster
-            items={clusterItems}
-            turn={previewTurn}
-            sessionRef="preview:explicit-cluster"
-            renderContext={createTranscriptRenderContext({
-              config: preset("tools"),
-              surface: "preview",
-              disclosureScope: "preview:explicit-cluster",
-              thread: previewClusterFixture,
-            })}
-          />
-        </TranscriptRenderProvider>
+        <TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview:one" />
+        <TranscriptBody model={fixture} config={preset("full")} surface="preview" disclosureScope="preview:two" />
       </>,
     );
-    expect(screen.getAllByTestId("tool-call-item").length).toBeGreaterThan(0);
-    expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
-    const cluster = screen.getByTestId("tool-call-cluster");
-    const clusterTrigger = cluster.querySelector('[data-testid="tool-row-trigger"]');
-    if (!(clusterTrigger instanceof HTMLElement)) throw new Error("preview cluster trigger did not render");
-    fireEvent.click(clusterTrigger);
-    expect(clusterTrigger.getAttribute("aria-expanded")).toBe("true");
-    expect(cluster.querySelector('[data-testid="tool-call-cluster-body"]')).toBeTruthy();
+    expect(screen.getAllByTestId("tool-call-item").length).toBeGreaterThanOrEqual(2);
     expect(getState).not.toHaveBeenCalled();
     expect(subscribe).not.toHaveBeenCalled();
     expect(getInitialState).not.toHaveBeenCalled();
@@ -763,7 +689,9 @@ describe("TranscriptBody", () => {
     expect(group[0]?.textContent).toContain("One");
     expect(group[0]?.textContent).toContain("Two");
     expect(group[0]?.textContent).toContain("Three");
-    expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+    // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
+    // <details> children), so 3 tool-call-items are present for 3 coalesced actions.
+    expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
     expect(screen.getAllByTestId("transcript-row")).toHaveLength(2);
     expect(screen.getAllByTestId("transcript-row")[0]?.getAttribute("data-row-id")).toBe("intent-group:intent:tool_a");
     expect(
