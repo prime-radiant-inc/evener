@@ -111,6 +111,47 @@ func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalA
 	}
 }
 
+// scanRootDelegateState reads and folds rootSessionID's shared
+// delegates.jsonl under the bounded scanner, returning the folded state and
+// the diagnostics the scan itself produced. Both readers of that journal —
+// the memoized traversal index (rootDelegates) and the single-shot status
+// read (loadHistoricalStableActivityWithAttention) — go through here so the
+// scan ceiling, the degrade-to-partial rule, and the diagnostic wording stay
+// defined once instead of drifting between two copies.
+//
+// When the ceiling fires the scan degrades to partial rather than
+// hard-failing the whole read: a delegate_created event embeds the full
+// frozen role prompt and skill bodies
+// (agent/internal/delegatestore/record.go), so a long-lived,
+// heavily-delegating root can plausibly approach the ceiling through
+// entirely legitimate use, not just adversarial input (#448 ceilings
+// review). ScanEvents already returns whatever it decoded before the ceiling
+// fired, so that prefix is folded and reported with a scan_truncated
+// diagnostic.
+func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, []string, error) {
+	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
+	events, readDiagnostics, err := scanDelegateJournal(ctx, path, historicalDelegateScanLimits)
+	scanTruncated := false
+	if err != nil {
+		if !errors.Is(err, delegatestore.ErrScanLimitExceeded) {
+			return nil, nil, err
+		}
+		scanTruncated = true
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		return nil, nil, err
+	}
+	var diagnostics []string
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
+	}
+	if scanTruncated {
+		diagnostics = append(diagnostics, "delegate_journal_scan_truncated: exceeds the scan limit, some delegates may be missing")
+	}
+	return state, diagnostics, nil
+}
+
 // rootDelegates returns rootSessionID's delegate index, scanning and folding
 // delegates.jsonl on the first request for that root and reusing the result
 // for every later visited session sharing the same root (#448: this file was
@@ -120,23 +161,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	if idx, ok := c.delegateIndex[rootSessionID]; ok {
 		return idx, nil
 	}
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
-	events, readDiagnostics, err := scanDelegateJournal(c.ctx, path, historicalDelegateScanLimits)
-	scanTruncated := false
-	if err != nil {
-		if !errors.Is(err, delegatestore.ErrScanLimitExceeded) {
-			return nil, err
-		}
-		// Degrade to partial rather than hard-failing the WHOLE tree for
-		// this root: a delegate_created event embeds the full frozen role
-		// prompt and skill bodies (agent/internal/delegatestore/record.go),
-		// so a long-lived, heavily-delegating root can plausibly approach
-		// the ceiling through entirely legitimate use, not just adversarial
-		// input (#448 ceilings review). events already holds whatever
-		// ScanEvents decoded before the ceiling fired.
-		scanTruncated = true
-	}
-	state, err := delegatestore.Fold(events)
+	state, diagnostics, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +175,6 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	}
 	for owner := range byOwner {
 		sort.Strings(byOwner[owner])
-	}
-	var diagnostics []string
-	if readDiagnostics.TornTail {
-		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
-	}
-	if scanTruncated {
-		diagnostics = append(diagnostics, "delegate_journal_scan_truncated: exceeds the scan limit, some delegates may be missing")
 	}
 	idx := &rootDelegateIndex{byOwner: byOwner, state: state, diagnostics: diagnostics}
 	c.delegateIndex[rootSessionID] = idx
@@ -320,16 +338,7 @@ func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, root
 // review finding 2), even though it doesn't share that cache (this is one
 // read, not a multi-session traversal that benefits from memoizing it).
 func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, []string, error) {
-	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
-	events, readDiagnostics, err := scanDelegateJournal(ctx, path, historicalDelegateScanLimits)
-	scanTruncated := false
-	if err != nil {
-		if !errors.Is(err, delegatestore.ErrScanLimitExceeded) {
-			return nil, nil, err
-		}
-		scanTruncated = true
-	}
-	state, err := delegatestore.Fold(events)
+	state, diagnostics, err := scanRootDelegateState(ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -358,13 +367,6 @@ func loadHistoricalStableActivityWithAttention(ctx context.Context, stateDir, ro
 			row.needsAttention = len(fold.pendingIDs()) != 0
 		}
 		rows[id] = row
-	}
-	var diagnostics []string
-	if readDiagnostics.TornTail {
-		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
-	}
-	if scanTruncated {
-		diagnostics = append(diagnostics, "delegate_journal_scan_truncated: exceeds the scan limit, some delegates may be missing")
 	}
 	return rows, diagnostics, nil
 }
