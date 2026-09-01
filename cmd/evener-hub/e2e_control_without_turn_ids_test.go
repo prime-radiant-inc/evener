@@ -359,6 +359,92 @@ func TestE2E_SteerLandsInTheNextTurnWhenItsTurnEnded(t *testing.T) {
 	next.RespondToolCall("communicate", communicateArgs("late steer done"))
 }
 
+// TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript is the same rule when
+// the turn ended because the user pressed Stop rather than because the model
+// finished, which is the shape the live turn-control e2e exercises and the one
+// issue #710 was reported from: the steer was Applied and then vanished --
+// never delivered, never a steering item in the transcript a user reads back.
+//
+// A Stop parks pending user steering (#174) so the steer it cancelled is not
+// delivered anyway. A steer typed AFTER the Stop is not that steer; it is the
+// user asking for something new, and it has to run.
+//
+// The stack is fakellm, so this gates the rule the live test only corroborates.
+func TestE2E_SteerAfterAStopReachesTheModelAndTheTranscript(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	stack := startHubStack(t, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	client := stack.dialRPC(ctx, t)
+	ref := startLiveThread(ctx, t, client, stack, "EVENER-E2E-STEER-AFTER-STOP-OPENING")
+
+	const steerText = "EVENER-E2E-STEER-AFTER-STOP-TEXT"
+
+	// Hold round 1 open so the turn can end only by cancellation.
+	if _, err := provider.Next(ctx.Done()); err != nil {
+		t.Fatalf("waiting for the session's first model request: %v", err)
+	}
+	stopped := awaitActiveTurn(ctx, t, client, ref, "")
+
+	if _, err := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+	}); err != nil {
+		t.Fatalf("turn/interrupt against running turn %q: %v", stopped, err)
+	}
+	awaitThread(ctx, t, client, ref, "the interrupted session to settle", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+	})
+	awaitTurnStatus(ctx, t, client, ref, stopped, "interrupted")
+
+	receipt, err := clientRequest[appwire.TurnSteerResponse](ctx, client, appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:                ref,
+		ClientMutationID:   newMutationID(t),
+		ExpectedInstanceID: localInstanceIDForTestRef(ref),
+		Input:              []appwire.InputItem{{Type: "text", Text: steerText}},
+	})
+	if err != nil {
+		t.Fatalf("turn/steer after turn %q was stopped: %v", stopped, err)
+	}
+	if receipt.Receipt.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("turn/steer disposition = %q, want %q", receipt.Receipt.Disposition, appwire.MutationDispositionApplied)
+	}
+
+	// Bounded well inside the test's own deadline: a steer nothing wakes for is
+	// never going to arrive, and that must read as this assertion failing
+	// rather than as the package timing out.
+	deliveryCtx, cancelDelivery := context.WithTimeout(ctx, 45*time.Second)
+	defer cancelDelivery()
+	next, err := provider.Next(deliveryCtx.Done())
+	if err != nil {
+		t.Fatalf("THE STEER WAS ACCEPTED AND NEVER RAN: no turn ever woke to deliver it after the Stop: %v", err)
+	}
+	if !next.Contains(steerText) {
+		t.Fatalf("the turn the steer woke does not carry %q; messages:\n%s", steerText, strings.Join(next.Texts(), "\n"))
+	}
+
+	landedIn := awaitSteeringItem(ctx, t, client, ref, steerText)
+	if landedIn == stopped {
+		t.Fatalf("the steer was folded into the stopped turn %q instead of a later one", stopped)
+	}
+
+	next.RespondToolCall("communicate", communicateArgs("steer after stop done"))
+}
+
 // TestE2E_QueuePreconditionsStillRefuseAStaleClient is the other side of
 // deleting a precondition: the two that name a real object have to keep biting.
 // expectedQueueRevision on drainAsSteer and expectedEntryId on

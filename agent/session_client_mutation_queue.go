@@ -1011,6 +1011,22 @@ func (s *Session) reflectDurableClientSteering() {
 	s.mu.Unlock()
 }
 
+// snapshotHasPendingUserSteering reports whether the durable store holds user
+// steering still waiting to be delivered -- the steering a Stop has something
+// to park. It answers over the same records clientSteeringFromSnapshot
+// materializes into the in-memory queue, so the two never disagree about what
+// is pending, and it reads the durable store rather than s.steeringQueue
+// because a steer is recorded there first (clientMutationSteer commits, then
+// reflects) and stays there across a restart.
+func snapshotHasPendingUserSteering(snapshot *clientMutationSnapshot) bool {
+	for _, id := range snapshot.SteeringOrder {
+		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.ExecutionState == "accepted" {
+			return true
+		}
+	}
+	return false
+}
+
 func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessage {
 	client := make([]steeringMessage, 0, len(snapshot.SteeringOrder))
 	for _, id := range snapshot.SteeringOrder {

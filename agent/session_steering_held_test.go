@@ -565,3 +565,56 @@ func TestDrainJobTreeDoesNotHangWithAHeldSteer(t *testing.T) {
 		t.Fatal("DrainJobTree hung with SteeringHeld set and a pending user steer -- exit would SIGKILL the child instead of returning")
 	}
 }
+
+// TestStopWithNothingToParkLeavesTheSteeringRailOpen is issue #710: the Stop
+// in the live turn-control e2e had no pending user steering to park, armed
+// SteeringHeld anyway, and the armed gate then swallowed the steer the user
+// sent AFTERWARDS -- accepted with an Applied receipt, never delivered to the
+// model, never written to the transcript a user reads the session back from.
+//
+// The hold exists to stop a Stop's own steer being delivered anyway (#174).
+// With nothing pending there is no such steer, so arming the gate can only
+// catch one the Stop never saw.
+func TestStopWithNothingToParkLeavesTheSteeringRailOpen(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	serveSession(t, sess)
+
+	runningStartTurn(t, sess, "running-turn", "do the thing")
+	if sess.hasPendingUserSteering() {
+		t.Fatal("this test is not in the state it means to be: user steering is already pending before the Stop")
+	}
+
+	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "stop-with-nothing-to-park",
+	}, func() {}); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if sess.clientMutations.steeringHeld() {
+		t.Fatal("a Stop with no pending user steering armed SteeringHeld: the gate now parks whatever the user steers next, which is not what the Stop cancelled")
+	}
+
+	// The pending-user-input wake is the only thing that runs a steer with no
+	// turn to land in. Install it after the Stop so the count reflects only
+	// the steer sent afterwards.
+	var mu sync.Mutex
+	wakes := 0
+	sess.SetPendingUserInputWakeFunc(func() {
+		mu.Lock()
+		wakes++
+		mu.Unlock()
+	})
+
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-after-the-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "now do it this way instead"}},
+	}); err != nil {
+		t.Fatalf("steer after the Stop: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if wakes == 0 {
+		t.Fatal("nothing woke for a steer sent after the Stop: the daemon accepted it and it will never reach the model or the transcript")
+	}
+}
