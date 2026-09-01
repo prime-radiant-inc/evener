@@ -33,9 +33,7 @@ type Client struct {
 	pendingCoord  PendingCoordinator
 	featuresMu    sync.RWMutex
 	features      FeatureSet
-	// logf receives connection-lifecycle events a peer cannot observe from
-	// its own side of the socket (today: keepalive teardown, see
-	// runClientKeepalive). Nil until SetLogf installs one.
+	// logf sinks connection-lifecycle events; nil discards them. See SetLogf.
 	logf func(format string, args ...any)
 	// closed latches the read loop's exit. failPending only fails the entries
 	// registered at that instant; a request that registers afterwards would
@@ -143,14 +141,14 @@ func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
 
 // SetLogf installs a sink for connection-lifecycle events a peer cannot
 // observe from its own side of the socket (today: keepalive teardown, see
-// runClientKeepalive). Nil — the state before SetLogf is called — discards
-// them: this client runs inside interactive TUI sessions where the standard
-// log package's default stderr destination would scroll into bubbletea's
-// live grid in -debug mode (no alternate screen) and corrupt the render
-// permanently (issue #783), so silence is the only default safe everywhere.
-// Callers that want these events (hub, TUI) provide their own sink. Set it
-// before Start: startWithKeepalive reads it once, to hand to the keepalive
-// goroutine.
+// runClientKeepalive). Until it is called the sink is nil and those events
+// are discarded: this client runs inside interactive TUI sessions where the
+// standard log package's default stderr destination would scroll into
+// bubbletea's live grid in -debug mode (no alternate screen) and corrupt the
+// render permanently (issue #783), so silence is the only default safe
+// everywhere. Callers that want these events (hub, TUI) provide their own
+// sink. Set it before Start, which reads the sink once to hand to the
+// keepalive goroutine.
 func (c *Client) SetLogf(logf func(format string, args ...any)) {
 	c.logf = logf
 }
