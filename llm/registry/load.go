@@ -821,6 +821,28 @@ func (rec *record) aliasFromConfig(id string) bool {
 	return false
 }
 
+// rowOwnBaseURL reports whether the user's own config layer - not an
+// inherited curated layer - set a literal base_url for row id, the same
+// origin/provenance discipline ownBaseURL applies at the record level,
+// applied here row by row (mirroring aliasFromConfig's exact-row check for
+// AliasOf). A curated row can carry its own Transport.BaseURL too (Google
+// Vertex MaaS rows, whose API endpoint models.dev's own upstream data
+// supplies per model, modelsdev.go's convertModelOverride), and that is
+// vendor data, not a user redirect - firstPartyEndpoint's canonical-row
+// transport comparison already judges those correctly on their own, so
+// only a user-authored override needs to gate here.
+func (rec *record) rowOwnBaseURL(id string) bool {
+	for _, l := range rec.layers {
+		if l.tag != LayerConfig {
+			continue
+		}
+		if m, ok := l.rows[id]; ok {
+			return m.Transport != nil && m.Transport.BaseURL != ""
+		}
+	}
+	return false
+}
+
 // aliasTarget resolves an alias_of reference: an exact row of the same
 // record first, else "provider-id/id" against the curated registry. A glob
 // pattern never names a target, on either side of the slash.
