@@ -320,43 +320,17 @@ surface = "anthropic"
 	}
 }
 
-// TestResolve_WebSearchEndpointGate covers issue #738: WebSearch is a
-// platform-side capability, not a wire-protocol fact (spec §4.2 says
-// explicitly it is not one of the facts an alias imports), so it survives
-// only on a record reaching its provider's first-party endpoint (Jesse's
-// framing, 2026-09-01: "web_search should only be available from openai as
-// openai"). This is the same family as spec §10's credential endpoint stop,
-// but not limited to a literal base_url override: sending an unused
-// credential to the wrong endpoint is merely wasted, while sending a
-// hosted-tool definition the gateway does not implement fails the whole
-// request, so a *_BASE_URL environment override that keeps the template is
-// just as untrustworthy here even though credentials keep flowing through
-// it. vertexgw guards the vars-only carve-out: a provider with no curated
-// default for its base_url vars (GOOGLE_VERTEX_PROJECT/LOCATION) must stay
-// gated when its own base_url replaced the template - the exact #738
-// failure shape, one vendor over.
-//
-// The case list also pins three properties the gate must hold beyond that:
-//   - the strip lands as an explicit false, never nil: every protocol
-//     adapter's own gate (caps.WebSearch == nil || *caps.WebSearch) treats
-//     nil as permissive, so nil'ing the cap only denies a caller that also
-//     rederives WebSearch from Caps (profile.SupportsWebSearch does; a
-//     caller that sets Request.WebSearch directly - cmd/llmcall's
-//     --web-search flag, for one - does not, and would still get the
-//     tool). Every "stripped" case below asserts "false", not "nil" (bp on
-//     a *bool distinguishes all three states).
-//   - a model row's own divergent base_url (rowdiverge, vertexrow) gates
-//     the same as an instance-level one: buildTransport merges a row's own
-//     base_url into the same endpoint the request actually reaches, so the
-//     gate has to judge that fully resolved endpoint, not just the
-//     instance's.
-//   - overriding a host-rule-computed variable directly (vertexhostgw)
-//     bypasses vertex-location's derivation (vertexHost(LOCATION)) the same
-//     way a literal base_url does, while leaving ownBaseURL empty - the
-//     vars-only carve-out trusts vars, but not the one var whose whole job
-//     is picking the host. vertexhostsame is the verbatim-match carve-out's
-//     Vertex analog: supplying the host rule's own answer by hand is not
-//     "different".
+// TestResolve_WebSearchEndpointGate pins WebSearch's first-party-endpoint
+// gate: a platform-side capability, not a wire-protocol fact (spec §4.2
+// says explicitly it is not one of the facts an alias imports), so it
+// survives only on a record reaching its provider's own endpoint. This is
+// the same family as spec §10's credential endpoint stop, but broader: an
+// unused credential is merely wasted, while a hosted-tool definition the
+// gateway does not implement fails the whole request, so this gate also
+// catches a *_BASE_URL environment override that keeps the template
+// (which credentials tolerate) and judges the resolved endpoint path
+// (Endpoint/StreamEndpoint/CountTokensEndpoint), not just base_url. Each
+// case's desc states the specific rule it pins.
 func TestResolve_WebSearchEndpointGate(t *testing.T) {
 	cfg := `
 [providers.bedrock]
@@ -434,6 +408,24 @@ count_tokens_endpoint = "/custom-count-endpoint"
 [providers.endpointsame]
 base = "openai"
 endpoint = "/responses"
+
+[providers.vertexclaude]
+base = "google-vertex"
+[providers.vertexclaude.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+
+[providers.globgw]
+base = "openai"
+base_url = "https://glob-gateway.example/v1"
+[providers.globgw.models."gpt-5*"]
+web_search = true
+
+[providers.rowoptedin]
+base = "openai"
+base_url = "https://gw.example/v1"
+[providers.rowoptedin.models."gpt-5.5"]
+web_search = true
 `
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
 	cases := []struct {
@@ -458,6 +450,9 @@ endpoint = "/responses"
 		{"streamendpointgw/gpt-5.5", "false", true, "a canonical base_url with a custom stream_endpoint must strip web_search - streaming carries the same web_search tool"},
 		{"counttokensendpointgw/gpt-5.5", "false", true, "a canonical base_url with a custom count_tokens_endpoint must strip web_search - count-tokens requests carry the same tools, unpruned"},
 		{"endpointsame/gpt-5.5", "true", false, "an endpoint override that reproduces the protocol default verbatim is not different"},
+		{"vertexclaude/claude-opus-5", "true", false, "a custom instance inheriting google-vertex resolves Claude through the curated vertex-anthropic row transport, which is first-party even though a row-less comparison would disagree"},
+		{"globgw/gpt-5.5", "false", true, "a provider-scoped glob's web_search = true is not a deliberate per-instance/per-model opt-in and must not bypass the gate on a diverged instance"},
+		{"rowoptedin/gpt-5.5", "true", false, "an exact-model web_search = true is a deliberate opt-in and must still win, even at a diverged base_url"},
 	}
 	for _, c := range cases {
 		res := mustResolve(t, r, c.ref)

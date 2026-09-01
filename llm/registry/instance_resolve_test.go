@@ -198,7 +198,7 @@ func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
 }
 
 // TestResolveInstanceCarriesWebSearchDisabledWarning pins parity with
-// resolveOn (issue #738): a record that is not reaching its provider's
+// resolveOn: a record that is not reaching its provider's
 // first-party endpoint must explain a stripped web_search through
 // ResolveInstance the same way a model-based Resolve already does
 // (gateWebSearch, resolve.go, is the one function both call), and an

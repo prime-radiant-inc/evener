@@ -237,7 +237,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, rec.ownBaseURL != ""); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", rec.ownBaseURL != ""); w != "" {
 		warnings = append(warnings, w)
 	}
 	cred, cw := r.credential(rec)
@@ -266,49 +266,45 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 }
 
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a
-// layer the record's own providers.toml entry contributed (tag "config"),
-// as opposed to a base-chain layer, a row glob, or nothing at all.
+// deliberate, individually considered choice in the record's own
+// providers.toml entry: an instance-wide setting (tag "config/provider")
+// or an exact single-model override (`[providers.X.models."id"]`, tag
+// "config/row"). A glob-matched value (tag "config/glob:<pattern>",
+// whether from a top-level `[models."<glob>"]` or a provider-scoped
+// `[providers.X.models."<glob>"]` - the tag does not distinguish them) does
+// not count, even though it also originates in the user's own config: a
+// pattern match was never considered against this specific instance or
+// model, so trusting it would let a broad rule silently re-enable a
+// stripped capability on an endpoint its author never looked at.
 func webSearchExplicit(prov map[string]string) bool {
-	return strings.HasPrefix(prov["WebSearch"], LayerConfig+"/")
+	tag := prov["WebSearch"]
+	return tag == LayerConfig+"/provider" || tag == LayerConfig+"/row"
 }
 
-// gateWebSearch applies issue #738's first-party gate: WebSearch is a
-// platform-side capability, not a wire-protocol fact (spec §4.2 says
-// explicitly it is not one of the facts an alias imports), so it does not
-// survive on a record that is not reaching its provider's first-party
-// endpoint (firstPartyEndpoint, instances.go, judged against
-// resolvedBaseURL - the fully resolved transport, row-level overrides
-// included, not just the instance's own - and ownOverride, true when
-// anything rec's own config controls replaced the base_url template
-// outright) - unless the record's own providers.toml entry set WebSearch
-// itself, in which case an explicit true or false always wins.
+// gateWebSearch enforces that WebSearch - a platform-side capability, not a
+// wire-protocol fact (spec §4.2) - survives only on a record reaching its
+// provider's first-party endpoint (firstPartyEndpoint), unless the
+// record's own config set it explicitly (webSearchExplicit), in which case
+// that value always wins.
 //
 // A rejected WebSearch becomes an explicit false, never nil: every protocol
 // adapter's own gate treats caps.WebSearch == nil as permissive ("no
 // catalog opinion either way, trust the caller's own request flag"), so
 // nil'ing a capability this gate means to deny is fail-open for any caller
-// that does not separately re-derive it through BoolValue - a bare
-// Request.WebSearch = true, set without consulting the registry at all,
-// would still reach the wire. false is unambiguous at every layer that
-// reads it.
+// that does not separately re-derive it through BoolValue.
 //
 // The rewrite - prov's entry repointed at the gate, a warning returned -
 // happens only when the gate is the reason the value is false: caps.WebSearch
-// was true before it ran. When some earlier, non-config layer already set
+// was true before it ran. When an earlier, non-config layer already set
 // false for its own reason (amazon-bedrock's *anthropic.* row glob: the
-// Messages endpoint simply lacks the capability, nothing to do with
-// whether this endpoint is first-party), the gate agrees with the outcome
-// but is not why it holds, so it leaves Provenance naming the real reason
-// and returns no warning - nothing changed here for an operator to be told
-// about.
+// Messages endpoint simply lacks the capability), the gate agrees with the
+// outcome but is not why it holds, so it leaves Provenance naming the real
+// reason and returns no warning.
 //
-// Returns the warning naming why WebSearch was stripped, so an operator
-// fronting a real first-party vendor with a mirror or audit gateway sees
-// why web_search went quiet instead of finding out only when the model
-// tries to use it and cannot; empty when nothing fired, including when the
-// value was already false.
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto string, ownOverride bool) string {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, ownOverride) {
+// Returns the warning naming why WebSearch was stripped; empty when
+// nothing fired, including when the value was already false.
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID string, ownOverride bool) string {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ownOverride) {
 		return ""
 	}
 	if !*caps.WebSearch {
@@ -405,7 +401,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	rowOwnBaseURL := row.Transport != nil && row.Transport.BaseURL != ""
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, hit.rowID, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
