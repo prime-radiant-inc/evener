@@ -1164,20 +1164,24 @@ function renderWithConfig(config: ReturnType<typeof makeTranscriptDisplayConfig>
   );
 }
 
-test("at the tools level an intent-bearing row defaults summaryOpen=true (summary visible)", () => {
+test("at the tools level an intent-bearing row shows summary and the intent trigger controls the body", () => {
   registerToolRenderer({ match: "tci_summary_tools", summary: () => "Ran tests", body: () => <div>body</div> });
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
     item({ id: "summary_tools", toolName: "tci_summary_tools", description: "Running the test suite" }),
   );
-  // summaryOpen=true → the summary line is visible alongside the intent.
+  // At tools level, summaryOpen defaults true but twoLevel is false (the
+  // summary has no separate toggle — the intent button controls the body
+  // directly, same as the legacy behavior).
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running the test suite");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
-  // The intent trigger controls summaryOpen (not the body), so its aria-expanded
-  // reflects the summary disclosure state.
+  // The intent trigger controls the body (expanded), so aria-expanded=false
+  // while the body is collapsed.
   const trigger = screen.getByTestId("tool-row-trigger");
-  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  // No separate body trigger at tools level — the intent button IS the toggle.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
 });
 
 test("at the chat level an intent-bearing row defaults summaryOpen=false (only intent visible)", () => {
@@ -1204,7 +1208,7 @@ test("an intent-less row at the chat level forces summaryOpen=true (summary visi
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran tests");
 });
 
-test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens even if summaryOpen=true", () => {
+test("a shell row with summaryHiddenWhenExpanded hides the summary when the body opens (tools level, legacy toggle)", () => {
   const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   renderWithConfig(
     toolsConfig,
@@ -1216,15 +1220,14 @@ test("a shell row with summaryHiddenWhenExpanded hides the summary when the body
       output: "hi\n[exit 0]",
     }),
   );
-  // summaryOpen defaults to true at tools level; the summary is visible while
-  // the body is collapsed.
+  // At tools level, the intent trigger controls the body (legacy behavior).
+  // The summary is visible while the body is collapsed.
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
 
-  // Expand the body via the body chevron (the .bodyTrigger button). With
-  // summaryHiddenWhenExpanded, the summary disappears even though summaryOpen
-  // is still true.
-  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
-  fireEvent.click(bodyTrigger);
+  // Expand the body via the intent trigger (the row's click target).
+  // With summaryHiddenWhenExpanded, the summary disappears.
+  const trigger = screen.getByTestId("tool-row-trigger");
+  fireEvent.click(trigger);
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");

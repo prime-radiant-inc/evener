@@ -175,16 +175,17 @@ test("isolates preview disclosures and never consults the live threads store", a
 
   const desktopPreview = screen.getByTestId("transcript-display-preview-desktop");
   const mobilePreview = screen.getByTestId("transcript-display-preview-mobile");
-  // At tools level, tool-row-trigger controls summaryOpen (open by default).
-  // Use tool-row-body-trigger for body disclosure assertions.
-  const desktopTrigger = [
-    ...desktopPreview.querySelectorAll<HTMLElement>('[data-testid="tool-row-body-trigger"]'),
-  ].find((trigger) => trigger.closest('[data-tool-name="read_file"]') !== null);
-  const mobileTrigger = [...mobilePreview.querySelectorAll<HTMLElement>('[data-testid="tool-row-body-trigger"]')].find(
+  // At tools level, the intent trigger (tool-row-trigger) controls the body
+  // directly (legacy behavior — summaryOpen defaults true, no separate
+  // body trigger). Use tool-row-trigger for body disclosure assertions.
+  const desktopTrigger = [...desktopPreview.querySelectorAll<HTMLElement>('[data-testid="tool-row-trigger"]')].find(
+    (trigger) => trigger.closest('[data-tool-name="read_file"]') !== null,
+  );
+  const mobileTrigger = [...mobilePreview.querySelectorAll<HTMLElement>('[data-testid="tool-row-trigger"]')].find(
     (trigger) => trigger.closest('[data-tool-name="read_file"]') !== null,
   );
   if (!(desktopTrigger instanceof HTMLElement) || !(mobileTrigger instanceof HTMLElement)) {
-    throw new Error("preview read_file body trigger was not rendered");
+    throw new Error("preview read_file trigger was not rendered");
   }
   expect(desktopTrigger.getAttribute("aria-expanded")).toBe("false");
   expect(mobileTrigger.getAttribute("aria-expanded")).toBe("false");

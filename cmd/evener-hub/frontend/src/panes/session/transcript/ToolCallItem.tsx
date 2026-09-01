@@ -373,7 +373,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         // autoDefault (the fallback) from here on and survives a remount.
         onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         summaryOpen={summaryOpen}
-        onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)}
+        onToggleSummary={
+          summaryConfigDefault ? undefined : () => toggleDisclosure(summaryDisclosureKey, summaryConfigDefault)
+        }
         summaryHidden={summaryHidden}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
