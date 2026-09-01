@@ -15,6 +15,7 @@ package linecap
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 )
@@ -40,15 +41,30 @@ var ErrTooLong = errors.New("linecap: line exceeds max bytes")
 // terminator when present, so a caller can track a precise byte offset
 // regardless of whether the cap fired.
 //
-// err is io.EOF when reader had nothing left at all (a clean end between
+// err is ctx.Err() the moment ctx is observed canceled or expired (checked
+// once per internal read, including while draining an over-limit line — see
+// below); io.EOF when reader had nothing left at all (a clean end between
 // lines, not mid-line); ErrTooLong when the accumulated line exceeded
-// maxLineBytes. On ErrTooLong, the offending line's bytes are still fully
-// drained from reader before returning (so the caller's next ReadLine call
-// starts cleanly at the following line) -- they are simply never retained in
-// line, which is nil in that case.
-func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, terminated bool, consumed int64, err error) {
+// maxLineBytes, OR when a line already known to be over the limit still has
+// not found its terminator after draining maxLineBytes more bytes looking
+// for one (roborev's #448 round-2 regression finding: without this second
+// cap, a corrupt tail that never yields a newline — a completely realistic
+// shape for a truncated or crash-interrupted append, the original #448
+// failure mode — drained an unbounded amount of the rest of the stream one
+// buffer refill at a time before ever giving up; that case is now treated
+// exactly like hitting EOF while over limit, since neither leaves anything
+// safe to salvage). On ErrTooLong, the offending line's bytes actually read
+// are still fully drained from reader before returning (so the caller's
+// next ReadLine call starts cleanly at the following line, PROVIDED the
+// drain cap did not itself cut the search short — see maxLineBytes above)
+// -- they are simply never retained in line, which is nil in that case.
+func ReadLine(ctx context.Context, reader *bufio.Reader, maxLineBytes int) (line []byte, terminated bool, consumed int64, err error) {
 	overLimit := false
+	var drained int64 // bytes read AFTER overLimit became true; capped at maxLineBytes
 	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, false, consumed, ctxErr
+		}
 		fragment, readErr := reader.ReadSlice('\n')
 		consumed += int64(len(fragment))
 		payload := fragment
@@ -61,6 +77,11 @@ func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, terminated b
 				overLimit = true
 			} else {
 				line = append(line, payload...)
+			}
+		} else {
+			drained += int64(len(fragment))
+			if drained > int64(maxLineBytes) {
+				return nil, false, consumed, ErrTooLong
 			}
 		}
 		switch {

@@ -163,7 +163,7 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		if err := ctx.Err(); err != nil {
 			return nil, 0, ReadDiagnostics{}, err
 		}
-		headerLine, headerTerminated, headerConsumed, headerErr := linecap.ReadLine(reader, maxLineBytes)
+		headerLine, headerTerminated, headerConsumed, headerErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if headerErr != nil && !errors.Is(headerErr, io.EOF) {
 			if errors.Is(headerErr, linecap.ErrTooLong) {
 				return nil, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s version header", ErrLineTooLong, path)
@@ -207,7 +207,7 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		if err := ctx.Err(); err != nil {
 			return nil, 0, ReadDiagnostics{}, err
 		}
-		line, terminated, consumed, readErr := linecap.ReadLine(reader, maxLineBytes)
+		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
 				return nil, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s batch line %d", ErrLineTooLong, path, lineNum+1)
