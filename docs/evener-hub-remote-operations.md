@@ -11,7 +11,8 @@ token. On startup, Hub loads or creates `auth-token` under `hub_state_root`
 token file is created with mode `0600`; Hub does not repair the mode of an
 existing file. Visiting that URL sets an HTTP-only, SameSite=Lax cookie;
 scripted clients may instead send the token as `Authorization: Bearer <token>`.
-Only `/auth`, `/api/health`, and the PWA icons are available without the token.
+Only the `/auth/<token>` bootstrap, `/api/health`, and the PWA icons are
+available without the token.
 
 The capability token is the Hub's user-authentication boundary. Hub-spawned
 daemons separately use the current Hub process's bearer token for Hub-to-daemon
@@ -33,7 +34,7 @@ To accept both loopback and private-network connections, bind Hub to
 `0.0.0.0:9180` (or `[::]:9180`). The startup log replaces a wildcard address in
 the printed authorization URL with the machine hostname. If that hostname is
 not resolvable from the client, replace only the hostname in the URL with the
-machine's LAN or VPN address; preserve the token query parameter exactly.
+machine's LAN or VPN address; preserve the token path segment exactly.
 
 When TLS terminates at a reverse proxy, construct the external authorization
 URL with the proxy's `https://` origin instead of the `http://` URL Hub prints.
@@ -63,7 +64,7 @@ For loopback plus LAN/VPN access:
 evener hub --addr 0.0.0.0:9180 --evener /usr/local/bin/evener
 ```
 
-Authorize each browser once with the startup log's `/auth?token=...` URL. For a
+Authorize each browser once with the startup log's `/auth/<token>` URL. For a
 remote TUI, pass the same capability out of band:
 
 ```bash

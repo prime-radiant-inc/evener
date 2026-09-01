@@ -50,7 +50,7 @@ with the vanilla frontend (`660376f78`).
    `Authorization: Bearer $TOKEN`.
 
 5. **Browser (qualitative).** Navigate
-   `$HUB/auth?token=$TOKEN&next=/s/local:$SID`, find the shell row
+   `$HUB/auth/$TOKEN?next=/s/local:$SID`, find the shell row
    (`[data-testid="tool-call-item"][data-tool-name="exec_command"]` — use the
    `toolName` step 3 actually reported), **expand it** (see Sharp edges), and
    read:

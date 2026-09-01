@@ -64,7 +64,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
    (or `false`) and that you have its `key` and its server-canonical
    `working_dir` — read both back from the response, never from your shell
    variable (see Sharp edges).
-2. Navigate to `/auth?token=$TOKEN&next=/`. Confirm `$A`'s project row is
+2. Navigate to `/auth/$TOKEN?next=/`. Confirm `$A`'s project row is
    present and **collapsed**: its `role="treeitem"` carries
    `aria-expanded="false"` and its session's `[data-session-ref]` row is absent
    from the DOM.
@@ -93,7 +93,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
    `aria-expanded` probe from step 3, and whether `$A`'s session row is still
    in the DOM with the same title.
 7. **Reload check** (the capability the old sidebar didn't have): hard-navigate
-   to `/auth?token=$TOKEN&next=/` again and re-run step 3's probe without
+   to `/auth/$TOKEN?next=/` again and re-run step 3's probe without
    touching anything.
 
 ## Expected

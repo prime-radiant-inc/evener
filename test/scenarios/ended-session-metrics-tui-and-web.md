@@ -52,7 +52,7 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
    server-formatted `cost` string. The web displays that cost verbatim (no
    client-side formatter; the pricing table is Go-side).
 
-4. **[browser] Web.** Navigate to `/auth?token=$TOKEN&next=/s/local:$SID`,
+4. **[browser] Web.** Navigate to `/auth/$TOKEN?next=/s/local:$SID`,
    open **Session details**, and read the three rows:
    ```javascript
    ({

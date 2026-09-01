@@ -74,7 +74,7 @@ placeholder is not a stable hook at all — see step 6.
 
 6. **[browser, optional]** Repeat steps 2-3 to kill the respawned daemon,
    then drive the *other* entry point from a browser: navigate to
-   `/auth?token=$TOKEN&next=/s/local:$SID` and type into the textarea inside
+   `/auth/$TOKEN?next=/s/local:$SID` and type into the textarea inside
    `[data-testid="composer-input-card"]` (`aria-label="Message"`,
    `panes/session/composer/Composer.tsx:760,783`). Address it by that
    testid, never by placeholder text: the placeholder is

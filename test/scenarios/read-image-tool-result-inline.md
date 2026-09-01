@@ -45,7 +45,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
    guard (`cmd/evener-hub/web.go:176,180`).
 
 4. **Browser (qualitative).** Navigate
-   `$HUB/auth?token=$TOKEN&next=/s/local:$SID`. Find the tool row
+   `$HUB/auth/$TOKEN?next=/s/local:$SID`. Find the tool row
    (`[data-testid="tool-call-item"][data-tool-name="read_file"]`), **expand
    it** — see Sharp edges, the gallery is not in the DOM while collapsed —
    then read:

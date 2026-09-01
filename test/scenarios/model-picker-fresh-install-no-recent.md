@@ -51,7 +51,7 @@ there is one markup to assert against, not two.
   the hub's own log — Setup checklist). A frontend built with
   `make build-web` before the hub binary, or the browser steps have no
   app to drive.
-- Browser authenticated via `/auth?token=...`.
+- Browser authenticated via `/auth/...`.
 
 ## Steps
 

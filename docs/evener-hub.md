@@ -15,8 +15,8 @@ operation, and smoke checks. For non-local hosts, see
 
 ## Trust boundary
 
-The hub requires a capability token on every route except `/auth`,
-`/api/health`, and the PWA icons. At startup it loads
+The hub requires a capability token on every route except the `/auth/<token>`
+bootstrap, `/api/health`, and the PWA icons. At startup it loads
 `<hub_state_root>/auth-token`; the default `hub_state_root` is
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
@@ -25,7 +25,7 @@ surrounding whitespace is trimmed, without format or mode enforcement. The hub
 logs an authorization URL:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth?token=...
+[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
 ```
 
 A browser authorizes by visiting that URL once; the hub sets a long-lived
