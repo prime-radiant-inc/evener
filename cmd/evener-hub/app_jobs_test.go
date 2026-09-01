@@ -462,7 +462,16 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 // the non-advancing continuation a real, reviewer-visible defect rather than
 // a latent one. A continuation that never delivers new data is worse than
 // none: it invites a client to poll forever for jobs it will never receive.
-func TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation(t *testing.T) {
+// TestHubJobsListWorkBudgetTruncationMintsAContinuation covers roborev's
+// finding on #807: the raw journal scan's own ceiling (historicalJobScanLimits)
+// is now independent of the projection work budget (activityMaxWorkUnits,
+// 2000 here) — a session with more jobs than that STILL loads its complete
+// history (LoadTruncated=false), and it is projection alone that renders
+// only the first 2000 entries and mints a continuation for the rest. This
+// replaces the pre-#807 expectation (a load-time ceiling tied to the work
+// budget, producing LoadTruncated=true and a deliberately empty
+// continuation): 2002 jobs no longer exhausts the RAW scan at all.
+func TestHubJobsListWorkBudgetTruncationMintsAContinuation(t *testing.T) {
 	cfg, sessionID, childID, _ := seedPastSessionWithActivity(t, 2002)
 	sources := newExitedLocalRegistry()
 
@@ -475,11 +484,16 @@ func TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation(t *testing.
 	if delegate.Child == nil || !delegate.Child.Branch.Truncated {
 		t.Fatalf("child branch = %+v child = %+v, want Truncated=true", delegate.Branch, delegate.Child)
 	}
-	if delegate.Child.Branch.Continuation != "" {
-		t.Fatalf("child branch.Continuation = %q, want empty — a load-truncated session must not mint a continuation that never advances", delegate.Child.Branch.Continuation)
+	if delegate.Child.Branch.Continuation == "" {
+		t.Fatalf("child branch.Continuation is empty, want a real continuation: the full 2002-job history loaded, only projection's own work budget (2000) truncated the response")
 	}
-	if len(delegate.Child.Entries) == 0 {
-		t.Fatalf("child entries = %+v, want the partial prefix that WAS decoded to still render", delegate.Child.Entries)
+	// The root's own 1 job + 1 delegate entry are rendered (and charged
+	// against the SAME shared work budget) before the child's own entries
+	// start, so the child gets slightly under the full 2000-unit budget --
+	// this only checks that SOME of the 2002 jobs were cut, not the exact
+	// count (which depends on the ancestor chain's own entry count).
+	if got := len(delegate.Child.Entries); got == 0 || got >= 2002 {
+		t.Fatalf("child entries = %d, want a nonzero prefix short of the full 2002", got)
 	}
 }
 
