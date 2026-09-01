@@ -203,7 +203,12 @@ func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
 // ResolveInstance the same way a model-based Resolve already does
 // (gateWebSearch, resolve.go, is the one function both call), and an
 // explicit web_search on the instance's own entry must suppress the
-// warning identically on both paths.
+// warning identically on both paths. It also pins that the strip lands as
+// an explicit false at this call site too, not nil: every protocol
+// adapter's own gate treats caps.WebSearch == nil as permissive, so a
+// caller reading Resolved straight from ResolveInstance (not through
+// profile.SupportsWebSearch's BoolValue, which happens to collapse nil and
+// false alike) must still see an unambiguous deny.
 func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
 		"gw":      {Base: "openai", Transport: Transport{BaseURL: "https://gw.example.com/v1"}},
@@ -218,12 +223,18 @@ func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 	if !strings.Contains(strings.Join(instRes.Warnings, "\n"), want) {
 		t.Fatalf("ResolveInstance must explain a stripped web_search: %v", instRes.Warnings)
 	}
+	if instRes.Caps.WebSearch == nil || *instRes.Caps.WebSearch {
+		t.Fatalf("ResolveInstance must strip to an explicit false, not nil (nil is fail-open at the adapter layer): %v", bp(instRes.Caps.WebSearch))
+	}
 	modelRes, err := r.Resolve("gw/gpt-5.5")
 	if err != nil {
 		t.Fatalf("Resolve(gw/gpt-5.5): %v", err)
 	}
 	if !strings.Contains(strings.Join(modelRes.Warnings, "\n"), want) {
 		t.Fatalf("resolveOn must carry the identical warning ResolveInstance does: %v", modelRes.Warnings)
+	}
+	if modelRes.Caps.WebSearch == nil || *modelRes.Caps.WebSearch {
+		t.Fatalf("resolveOn must strip to an explicit false too, identically: %v", bp(modelRes.Caps.WebSearch))
 	}
 
 	instOK, err := r.ResolveInstance("optedin")

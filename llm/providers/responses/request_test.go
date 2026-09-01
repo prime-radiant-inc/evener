@@ -141,6 +141,36 @@ func TestBuildBody_OpenAIRow(t *testing.T) {
 	}
 }
 
+// TestBuildBody_WebSearchNilCapsIsFailOpen pins the mechanism behind issue
+// #738's endpoint gate: this layer's own gate, caps.WebSearch == nil ||
+// *caps.WebSearch, treats an unset capability as permissive. That is the
+// right default for a model this adapter simply has no catalog opinion
+// about - trust the caller's own req.WebSearch - but it means the
+// registry's endpoint gate (llm/registry/resolve.go, gateWebSearch) can
+// never represent "denied because this endpoint is not the vendor's
+// first-party API" as a bare nil: any caller that independently sets
+// req.WebSearch = true without first consulting registry.Caps -
+// cmd/llmcall's --web-search flag builds its request this way, never
+// touching the registry's decision at all - would still get the hosted
+// tool sent to an endpoint that rejects it, reproducing #738's crash. The
+// registry closes this by stripping to an explicit false rather than nil
+// (llm/registry's TestResolve_WebSearchEndpointGate and
+// TestResolveInstanceCarriesWebSearchDisabledWarning pin that half); this
+// test pins the reason that fix is necessary, not optional: nil is let
+// through right here, unconditionally, by design.
+func TestBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	req := userReq("hi")
+	req.WebSearch = true
+	res := resolved(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
+	if res.Caps.WebSearch != nil {
+		t.Fatal("test setup: resolved(nil) must leave WebSearch nil")
+	}
+	tools, _ := build(t, req, res)["tools"].([]map[string]any)
+	if len(tools) != 1 || tools[0]["type"] != "web_search" {
+		t.Fatalf("nil Caps.WebSearch is fail-open at this layer: a caller setting req.WebSearch still gets the tool: %v", tools)
+	}
+}
+
 func TestBuildBody_CodexLite(t *testing.T) {
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}

@@ -922,10 +922,25 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 // instance with its own base_url no longer inherits the vendor's
 // provider-level web_search (llm/registry's endpoint gate), so the request
 // this session builds must not carry the flag - a gateway that does not
-// implement the hosted tool rejects it and, before this fix, ended the
-// session on turn one. "gw" is the fixture's base=openai instance pointed at
-// a different base_url (profile_testhelpers_test.go); it never sets
-// web_search itself.
+// implement the hosted tool rejects it, ending the session on turn one.
+// "gw" is the fixture's base=openai instance pointed at a different
+// base_url (profile_testhelpers_test.go); it never sets web_search itself.
+//
+// This test only proves the session's own derivation (providerWebSearchEnabled
+// -> profile.SupportsWebSearch -> registry.BoolValue) reads a gated profile
+// correctly - BoolValue collapses nil and false alike, so it would pass
+// unchanged whether the registry stripped WebSearch to nil or to false. It
+// cannot, on its own, see a fail-open gap at the wire-building layer, where
+// a caller that sets Request.WebSearch directly (bypassing
+// providerWebSearchEnabled entirely - cmd/llmcall's --web-search flag, for
+// one) would hit a protocol adapter's own gate (caps.WebSearch == nil ||
+// *caps.WebSearch), which treats nil as permissive. The wire-layer leak is
+// pinned separately and directly in llm/providers/responses
+// (TestBuildBody_WebSearchNilCapsIsFailOpen); this test closes the gap at
+// its own layer instead by also asserting the resolved Caps.WebSearch
+// pointer itself is explicit false, not nil, so a registry regression back
+// to nil'ing the cap fails here even though req.WebSearch would still read
+// false.
 func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -950,6 +965,9 @@ func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
 	profile := resolveTestProfile("gw", nil, "gpt-5.2")
 	if profile.SupportsWebSearch() {
 		t.Fatal("pre-condition: gw must not resolve web_search (its base_url diverges from openai's default)")
+	}
+	if ws := profile.Resolved().Caps.WebSearch; ws == nil || *ws {
+		t.Fatalf("pre-condition: gw's resolved Caps.WebSearch must be an explicit false, not nil (nil is fail-open at the adapter layer): %v", ws)
 	}
 
 	sess, err := NewSession(c, withTestSessionNamer(c, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

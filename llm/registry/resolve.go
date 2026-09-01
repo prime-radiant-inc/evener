@@ -235,11 +235,10 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		}
 		mergeCaps(&caps, layer.provider, layer.tag+"/provider", prov)
 	}
-	webSearchWarning := r.gateWebSearch(&caps, prov, rec)
 	seedFields(&caps, rec.head.Protocol)
 	transport, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	if webSearchWarning != "" {
-		warnings = append(warnings, webSearchWarning)
+	if w := r.gateWebSearch(&caps, prov, rec, transport.BaseURL, rec.ownBaseURL != ""); w != "" {
+		warnings = append(warnings, w)
 	}
 	cred, cw := r.credential(rec)
 	warnings = append(warnings, cw...)
@@ -277,18 +276,33 @@ func webSearchExplicit(prov map[string]string) bool {
 // platform-side capability, not a wire-protocol fact (spec §4.2 says
 // explicitly it is not one of the facts an alias imports), so it does not
 // survive on a record that is not reaching its provider's first-party
-// endpoint (firstPartyEndpoint, instances.go) - unless the record's own
-// providers.toml entry set WebSearch itself, in which case an explicit true
-// or false always wins. Returns the warning naming why WebSearch was
-// stripped, so an operator fronting a real first-party vendor with a mirror
-// or audit gateway sees why web_search went quiet instead of finding out
-// only when the model tries to use it and cannot; empty when nothing fired.
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record) string {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec) {
+// endpoint (firstPartyEndpoint, instances.go, judged against
+// resolvedBaseURL - the fully resolved transport, row-level overrides
+// included, not just the instance's own - and ownOverride, true when
+// anything rec's own config controls replaced the base_url template
+// outright) - unless the record's own providers.toml entry set WebSearch
+// itself, in which case an explicit true or false always wins.
+//
+// A rejected WebSearch becomes an explicit false, never nil: every protocol
+// adapter's own gate treats caps.WebSearch == nil as permissive ("no
+// catalog opinion either way, trust the caller's own request flag"), so
+// nil'ing a capability this gate means to deny is fail-open for any caller
+// that does not separately re-derive it through BoolValue - a bare
+// Request.WebSearch = true, set without consulting the registry at all,
+// would still reach the wire. false is unambiguous at every layer that
+// reads it. prov's entry is repointed at the gate rather than deleted, so
+// Provenance still explains the value instead of looking unset.
+//
+// Returns the warning naming why WebSearch was stripped, so an operator
+// fronting a real first-party vendor with a mirror or audit gateway sees
+// why web_search went quiet instead of finding out only when the model
+// tries to use it and cannot; empty when nothing fired.
+func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, resolvedBaseURL string, ownOverride bool) string {
+	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, resolvedBaseURL, ownOverride) {
 		return ""
 	}
-	caps.WebSearch = nil
-	delete(prov, "WebSearch")
+	caps.WebSearch = new(false)
+	prov["WebSearch"] = "gate/first-party"
 	return fmt.Sprintf("web_search disabled: this endpoint is not %s's first-party API (set web_search = true on the instance to opt back in)", rec.providerID)
 }
 
@@ -373,13 +387,14 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
-	if w := r.gateWebSearch(&caps, prov, rec); w != "" {
-		warnings = append(warnings, w)
-	}
 	seedFields(&caps, rowProto)
 
 	transport, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
+	rowOwnBaseURL := row.Transport != nil && row.Transport.BaseURL != ""
+	if w := r.gateWebSearch(&caps, prov, rec, transport.BaseURL, rec.ownBaseURL != "" || rowOwnBaseURL); w != "" {
+		warnings = append(warnings, w)
+	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
 	cred, cw := r.credential(rec)
 	warnings = append(warnings, cw...)

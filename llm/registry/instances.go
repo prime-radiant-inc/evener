@@ -101,58 +101,115 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	return rec.ownAPIKeyEnv
 }
 
-// firstPartyEndpoint reports whether rec reaches its provider
-// (r.curated[rec.providerID], which is rec itself for a curated record) at
-// that vendor's own canonical endpoint. WebSearch's gate uses this (spec
-// §10's endpoint-stop is the analog; gateWebSearch in resolve.go applies
-// it) - Jesse's framing (2026-09-01, issue #738): "web_search should only
-// be available from openai as openai." A vendor's hosted search runs on the
-// vendor's own infrastructure, so any redirection away from it forfeits
-// the capability, however the redirection is expressed - unlike the
-// endpoint stop above, which only fires for a literal base_url override
-// and lets a *_BASE_URL environment override inherit the key normally
-// (an unused credential is merely wasted; a hosted-tool definition the
-// gateway does not implement fails the whole request).
+// firstPartyEndpoint reports whether the endpoint a specific resolution
+// actually reaches - resolvedBaseURL, the fully resolved transport
+// buildTransport produced, row-level overrides and all, not just the
+// instance's own rec.head.Transport - is its provider's
+// (r.curated[rec.providerID], which is rec itself for a curated record) own
+// canonical endpoint. WebSearch's gate uses this (spec §10's endpoint-stop
+// above is the analog; gateWebSearch in resolve.go applies it) - Jesse's
+// framing (2026-09-01, issue #738): "web_search should only be available
+// from openai as openai." A vendor's hosted search runs on the vendor's own
+// infrastructure, so any redirection away from it forfeits the capability,
+// however the redirection is expressed - unlike the endpoint stop above,
+// which only fires for a literal base_url override and lets a *_BASE_URL
+// environment override inherit the key normally (an unused credential is
+// merely wasted; a hosted-tool definition the gateway does not implement
+// fails the whole request).
+//
+// ownOverride is true when anything rec's own config controls replaced the
+// provider's base_url template outright, rather than merely supplying
+// values for it: a literal base_url= on the instance itself
+// (rec.ownBaseURL != ""), or on the specific model row being resolved
+// (row.Transport's own BaseURL, spec §10's `[providers.X.models."id"]`
+// transport keys) - a row-level override must gate the same as an
+// instance-level one, since buildTransport merges it into the same
+// endpoint the request actually reaches.
 //
 // Two shapes, both compared against defaults, the provider's own template
 // resolved with only its curated vars - no user vars, no environment (spec
 // §10's "after substituting the curated defaults"):
 //
-//   - rec.ownBaseURL == "" (including every curated record, which never
-//     sets it): rec's own config never replaced the provider's base_url
-//     template, so the template itself proves nothing - first-party turns
-//     on whether the *values* plugged into it (rec's own vars, then
-//     environment, then the curated default, spec §9.1's order) land on
-//     the curated default when the provider defines one (openai's
-//     BASE_URL; a *_BASE_URL environment override is exactly the case this
-//     line exists to catch). A provider whose template takes only
-//     deployment-specific variables with no curated default (Vertex's
-//     project, Bedrock's region - every deployment supplies its own) has
-//     no default to diverge from, so the template alone being intact is
-//     first-party.
-//   - rec.ownBaseURL != "": rec's own config set a literal base_url,
-//     replacing the template outright. First-party only if that literal
-//     reproduces the curated default byte for byte (copying the default
-//     verbatim is not "different", spec §10). A provider with no curated
-//     default has nothing a literal override could legitimately reproduce,
-//     so this is never first-party: a missing curated default must not be
-//     read as "nothing to compare", or every google-vertex-anthropic and
-//     google-vertex-based record would be first-party by default, literal
-//     override or not.
-func (r *Registry) firstPartyEndpoint(rec *record) bool {
+//   - !ownOverride (including every curated record, which can never set
+//     rec.ownBaseURL and whose curated rows carry no per-row override
+//     today): nothing replaced the provider's base_url template, so the
+//     template itself proves nothing - first-party turns on whether the
+//     *values* plugged into it (rec's own vars, then environment, then the
+//     curated default, spec §9.1's order) land on the curated default when
+//     the provider defines one (openai's BASE_URL; a *_BASE_URL environment
+//     override is exactly the case this line exists to catch). A provider
+//     whose template takes only deployment-specific variables with no
+//     curated default (Vertex's project, Bedrock's region - every
+//     deployment supplies its own) has no default to diverge from, so the
+//     template alone being intact is first-party - unless the record
+//     redirects the one variable that is not deployment-specific: see
+//     vertexHostOverridden.
+//   - ownOverride: something replaced the template outright. First-party
+//     only if the fully resolved URL reproduces the curated default byte
+//     for byte (copying the default verbatim is not "different", spec
+//     §10). A provider with no curated default has nothing a literal
+//     override could legitimately reproduce, so this is never first-party:
+//     a missing curated default must not be read as "nothing to compare",
+//     or every google-vertex-anthropic and google-vertex-based record
+//     would be first-party by default, override or not.
+func (r *Registry) firstPartyEndpoint(rec *record, resolvedBaseURL string, ownOverride bool) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
 		return true
 	}
-	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
-	if own == "" {
+	if resolvedBaseURL == "" {
 		return true
 	}
 	defaults, missing, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
 	if len(missing) > 0 {
-		return rec.curated || rec.ownBaseURL == ""
+		// rec.curated is an explicit belt-and-suspenders guard, not load-
+		// bearing against today's data: a curated record never folds a
+		// LayerConfig layer, so ownOverride and vertexHostOverridden (both
+		// sourced from rec.userVars / a LayerConfig row) are already
+		// structurally false for one. It stays explicit so a future curated
+		// overlay row that sets its own base_url or GOOGLE_VERTEX_HOST -
+		// the vendor's own documented shape, not a user redirect - is
+		// trusted the same way the vendor's provider-level template
+		// already is, rather than accidentally gated by a mechanism built
+		// to catch user-config redirection.
+		return rec.curated || (!ownOverride && !r.vertexHostOverridden(rec))
 	}
-	return own == defaults
+	return resolvedBaseURL == defaults
+}
+
+// vertexHostOverridden reports whether rec's own vars (never the curated
+// default, since google-vertex-anthropic/google-vertex define none) supply
+// a literal GOOGLE_VERTEX_HOST directly, bypassing vertexHost(LOCATION) -
+// the derivation the vertex-location host rule exists to perform
+// (resolveBaseURLWith's HostRuleVertexLocation case, load.go). The
+// vars-only carve-out above trusts a record that keeps the template, but a
+// direct GOOGLE_VERTEX_HOST leaves rec.ownBaseURL empty (the template is
+// technically untouched - it is still
+// "{GOOGLE_VERTEX_HOST}/v1/projects/.../locations/...") while still routing
+// every request to an arbitrary gateway, because GOOGLE_VERTEX_HOST is not
+// deployment-specific the way GOOGLE_VERTEX_PROJECT/LOCATION are: there is
+// exactly one correct value for a given location, computed by the rule,
+// and a record that supplies its own is substituting a choice, not
+// deployment data. A supplied value that happens to equal what the
+// derivation would have produced anyway is not an override (copying the
+// default verbatim is not "different", spec §10).
+//
+// Only vertex-location needs this today: Ollama's host rule
+// (resolveOllamaHost) derives from OLLAMA_HOST/OLLAMA_BASE_URL through a
+// different shape entirely (no single "the" derived value to compare
+// against), and no Ollama-family provider sets web_search, so there is
+// nothing for the same class of bypass to reach yet.
+func (r *Registry) vertexHostOverridden(rec *record) bool {
+	if rec.head.Transport.HostRule != HostRuleVertexLocation {
+		return false
+	}
+	raw := r.varLookupWith(rec, func(string) {})
+	given, ok := raw("GOOGLE_VERTEX_HOST")
+	if !ok {
+		return false
+	}
+	loc, ok := raw("GOOGLE_VERTEX_LOCATION")
+	return !ok || given != vertexHost(loc)
 }
 
 // envCandidates lists, in the order credential resolution tries them, every
