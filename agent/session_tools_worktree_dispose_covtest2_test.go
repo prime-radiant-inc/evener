@@ -215,3 +215,31 @@ func TestSubtreeWatchesTargeting_ReceiverMatchInSubagent(t *testing.T) {
 		t.Fatal("expected true for a receiver-routed watch armed in a subagent's job manager")
 	}
 }
+
+// TestWatchesTargeting_DescendantReceiverClassDoesNotMatch pins a KNOWN,
+// verified-benign gap surfaced by the #695 adversarial review (round 2):
+// configureDescendantReceiverWatch (session_tools_jobs.go) always stamps an
+// empty receiverDelegateID (session.ID() only, never owningDelegateID), so
+// watchConfigMatchesReceiver -- which requires both fields -- can never match
+// this class here, regardless of receiverSessionID. This is intentionally
+// left uncaught: the watch lives in the owner descendant's own job manager,
+// which Session.close's subagent cascade tears down synchronously within the
+// same dispose call (see TestDescendantReceiverWatchSurvivesJobManagerClose
+// for the proof that its delivery closure cannot fire afterward). If this
+// test starts failing because receiverDelegateID stops being empty for this
+// class, the doc comment on watchesTargeting needs re-reviewing, not just
+// this assertion.
+func TestWatchesTargeting_DescendantReceiverClassDoesNotMatch(t *testing.T) {
+	jm := &jobManager{
+		watches: map[watchKey]*watchConfig{
+			{Target: "job_1"}: {
+				receiverSessionID:  "child-session",
+				receiverDelegateID: "", // configureDescendantReceiverWatch's actual shape
+			},
+		},
+		terminalFlush: map[*watchConfig]bool{},
+	}
+	if jm.watchesTargeting("dlg_target", "child-session") {
+		t.Fatal("expected false: the descendant-receiver class always carries an empty receiverDelegateID and cannot match here today")
+	}
+}

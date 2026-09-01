@@ -417,17 +417,32 @@ func (s *Session) subtreeWatchesTargeting(id, receiverSessionID string) bool {
 }
 
 // watchesTargeting reports whether any armed watch config sends to id, any
-// pending/terminal-flush watch-send frame resolves send_to id, or any watch's
-// receiver identity names id, in this job manager. Read under jm.mu.
+// pending/terminal-flush watch-send frame resolves send_to id, or a
+// stable-receiver watch's receiver identity names id, in this job manager.
+// Read under jm.mu.
 //
-// A stable-receiver watch (the observer-sidecar class, #655) synthesizes
-// send.To as the stableWatchReceiverTarget sentinel, never the delegate ID
+// A stable-receiver watch (the observer-sidecar class, #655,
+// configureStableWatchOnSource) synthesizes send.To as the
+// stableWatchReceiverTarget sentinel, never the delegate ID
 // (applyStableReceiverWatchSend), so the plain send.To/ResolvedSendTo checks
 // above never match id for that class of watch. watchConfigMatchesReceiver —
 // the same receiver-keyed matching liveWatchSummariesForReceiver and the
 // #655 job_stop live-watch inventory use — catches it by receiver identity
 // instead: id plus receiverSessionID (id's own child session ID, resolved by
 // the caller).
+//
+// This does NOT catch the structurally distinct descendant-receiver watch
+// class configureDescendantReceiverWatch installs (job_watch source="job_…"
+// against a descendant's concrete job): that class always stamps an empty
+// ReceiverDelegateID (session.ID() only, never owningDelegateID), so
+// watchConfigMatchesReceiver — which requires both fields — can never match
+// it here. That gap is real but verified benign (#695 adversarial review,
+// round 2): the watch lives in the OWNER descendant's own job manager, which
+// Session.close's subagent cascade also tears down (jobManager.
+// closeRuntimeState deletes it from jm.watches, and routeWatchNotifications
+// separately refuses on jm.closing) synchronously, within the same dispose
+// call, before a disposed receiver could ever see a delivery — see
+// TestDescendantReceiverWatchSurvivesJobManagerClose.
 func (jm *jobManager) watchesTargeting(id, receiverSessionID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
