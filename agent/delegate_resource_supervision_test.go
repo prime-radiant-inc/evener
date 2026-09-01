@@ -2315,6 +2315,19 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 	return root
 }
 
+// waitForStableSupervisionRun blocks until the stable child owes no more
+// supervision work: no run, drive turn, or finalization is live, and no
+// delegate attention is still waiting for a run to be dispatched.
+//
+// It cannot simply join the child's completion channel. That channel is
+// REPLACED (resetSubagentForRunLocked) at the start of every run, so the
+// channel current when this helper is entered can still be the PREVIOUS run's:
+// arming attention only notifies, and the drive that notify triggers is
+// refused while the prior run is still running or finalizing, and is deferred
+// to a retry while the controller still holds the prior generation. Joining
+// that stale channel returns while the awaited run is only starting, so a
+// caller that then reads the delegate event log sees the PRIOR generation's
+// run-finished record.
 func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 	t.Helper()
 	sub := root.subagents.get(childID)
@@ -2322,12 +2335,104 @@ func waitForStableSupervisionRun(t *testing.T, root *Session, childID string) {
 		t.Fatalf("stable child %q was not tracked", childID)
 	}
 	sub.mu.Lock()
-	done := sub.done
+	hasChannel := sub.done != nil
 	sub.mu.Unlock()
-	if done == nil {
+	if !hasChannel {
 		t.Fatalf("stable child %q has no completion channel", childID)
 	}
-	<-done
+	desc := fmt.Sprintf("stable child %q supervision to quiesce", childID)
+	// TRIPWIRE: every supervision run in these tests is served by a scripted
+	// in-process adapter, so quiescence is reached in milliseconds; this bound
+	// only fires on a genuine hang.
+	waitForCondition(t, 30*time.Second, desc, func() bool {
+		sub.mu.Lock()
+		sess := sub.sess
+		closed := sub.closed
+		sub.mu.Unlock()
+		// Dispatching an armed attention hands the work along a chain of
+		// states, and no single one of them covers the whole chain: an arm
+		// awaiting retry, attention pending with no reservation yet, a
+		// reservation that has consumed the pending id but not yet committed,
+		// an open generation whose run goroutine has not started, and finally
+		// the child's own run flags. Each stage is entered before its
+		// predecessor is left, so reading them in dispatch order means work
+		// that races past one read is caught by a later one.
+		if sess != nil && !closed {
+			if sess.hasPendingDelegateAttentionArmRetry() {
+				return false
+			}
+			if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+				return false
+			}
+			if controller, delegateID := sess.delegateController, sess.owningDelegateID; controller != nil && delegateID != "" {
+				if controller.reservedAttentionID(sess) != "" {
+					return false
+				}
+				controller.mu.Lock()
+				aggregate := controller.durable[delegateID]
+				runOpen := aggregate != nil && aggregate.CurrentRunOpen
+				controller.mu.Unlock()
+				if runOpen {
+					return false
+				}
+			}
+		}
+		sub.mu.Lock()
+		done := sub.done
+		live := sub.running || sub.driving || sub.finalizing
+		sub.mu.Unlock()
+		if live || done == nil {
+			return false
+		}
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+// TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive pins the
+// contract of waitForStableSupervisionRun: it must not return while an armed
+// delegate attention still owes a run. Arming attention only notifies, and
+// driveStableDelegateAttention refuses the resulting drive whenever the child
+// is not drivable yet (mid-run, mid-finalization, or dispose gated) or the
+// controller is still busy with the previous generation. The dispose gate
+// stands in for those refusals here because it is the one a test can hold open
+// deterministically. Without the wait the helper joins the WARM run's already
+// closed channel and the caller reads that generation's reported delivery
+// instead of the attention generation's private no-action finish.
+func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	if !sub.trySetDisposeGate() {
+		t.Fatal("could not gate the quiescent stable child")
+	}
+	armStableSupervisionAttention(t, sub, "attention:deferred", "inspect before the drive is admitted")
+	// Release the refused drive only after the helper has had time to observe
+	// the idle child, which is the state the stale-channel join returned on.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		sub.clearDisposeGate()
+		sub.sess.notify()
+	}()
+
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
+		t.Fatalf("deferred attention finish = %#v, want the attention generation's private no-action", finished)
+	}
 }
 
 func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
