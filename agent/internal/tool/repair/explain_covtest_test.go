@@ -589,7 +589,12 @@ func TestAsStringSlice(t *testing.T) {
 	}{
 		{"[]string", []string{"a", "b"}, []string{"a", "b"}},
 		{"[]any", []any{"a", "b"}, []string{"a", "b"}},
-		{"[]any with non-strings", []any{"a", 1, "b"}, []string{"a", "b"}},
+		// Issue #625: non-string elements render via fmt.Sprint rather than
+		// being dropped, so a non-string enum's allowed values still show up
+		// in the constraint message instead of silently disappearing.
+		{"[]any with non-strings", []any{"a", 1, "b"}, []string{"a", "1", "b"}},
+		{"[]any integer enum", []any{float64(1), float64(2), float64(3)}, []string{"1", "2", "3"}},
+		{"[]any boolean enum", []any{true, false}, []string{"true", "false"}},
 		{"nil", nil, nil},
 		{"string", "hello", nil},
 		{"int", 42, nil},

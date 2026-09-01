@@ -979,6 +979,15 @@ func examplePlaceholder(typ string) string {
 	}
 }
 
+// asStringSlice renders v — a schema's "required" list or "enum" list, in
+// either the []string a hand-built schema may carry or the []any a
+// JSON-decoded one unmarshals to — as a []string. Non-string elements are
+// formatted with fmt.Sprint (the value-rendering convention constraintMessage
+// already uses for a wrong-type instance value) rather than dropped: a
+// required list's entries are always already strings (JSON-Schema property
+// names), so this only changes output for an enum's non-string values — an
+// integer or boolean enum's allowed values must still render into the
+// constraint message instead of silently disappearing (issue #625).
 func asStringSlice(v any) []string {
 	switch s := v.(type) {
 	case []string:
@@ -986,9 +995,7 @@ func asStringSlice(v any) []string {
 	case []any:
 		out := make([]string, 0, len(s))
 		for _, e := range s {
-			if str, ok := e.(string); ok {
-				out = append(out, str)
-			}
+			out = append(out, fmt.Sprint(e))
 		}
 		return out
 	}
