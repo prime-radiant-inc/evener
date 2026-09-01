@@ -305,7 +305,7 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	}
 	if cfg.DialHub == nil {
 		cfg.DialHub = func(ctx context.Context, addr HubAddress, httpClient *http.Client) (*appwire.Client, error) {
-			return dialHubRPC(ctx, addr, httpClient, cfg.ObserveFrames)
+			return dialHubRPC(ctx, addr, httpClient, cfg.ObserveFrames, connectionLogf(cfg.LogFile))
 		}
 	}
 	if cfg.CheckHubEnvironment == nil {
@@ -400,12 +400,13 @@ func waitForHubHealth(ctx context.Context, addr HubAddress, httpClient *http.Cli
 	}
 }
 
-func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client, observeFrames func(appwire.Message, error)) (*appwire.Client, error) {
+func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client, observeFrames func(appwire.Message, error), logf func(format string, args ...any)) (*appwire.Client, error) {
 	transport, err := appwire.DialWebSocket(ctx, hubRPCURL(addr), httpClient)
 	if err != nil {
 		return nil, err
 	}
 	client := appwire.NewClient(transport)
+	client.SetLogf(logf)
 	if observeFrames != nil {
 		client.SetOrderedFrameHandler(observeFrames)
 	}
@@ -586,8 +587,37 @@ func StartupErrorScreen(err error) string {
 }
 
 func WriteStartupDiagnostic(logFile string, err error) {
+	if err == nil {
+		return
+	}
+	kind := StartupErrorKind("unknown")
+	if startupErr, ok := errors.AsType[StartupError](err); ok {
+		kind = startupErr.Kind
+	}
+	appendDiagnosticLine(logFile, fmt.Sprintf("evener-tui startup failed kind=%s error=%s", kind, err))
+}
+
+// connectionLogf returns an appwire.Client connection-lifecycle sink (see
+// appwire.Client.SetLogf) that appends to the same file WriteStartupDiagnostic
+// uses, instead of the process's own stderr. A -debug TUI session runs
+// without bubbletea's alternate screen, so a line on stderr scrolls the live
+// render and corrupts it permanently (issue #783); an empty logFile (no
+// --log-file/EVENER_TUI_LOG_FILE configured) discards silently, same as
+// WriteStartupDiagnostic.
+func connectionLogf(logFile string) func(format string, args ...any) {
+	return func(format string, args ...any) {
+		appendDiagnosticLine(logFile, fmt.Sprintf(format, args...))
+	}
+}
+
+// appendDiagnosticLine appends one line (a trailing newline is added) to
+// logFile, creating its parent directory and the file itself as needed.
+// Best-effort: an empty logFile or any failure to create the directory or
+// open/write the file is silently swallowed — every caller uses this for
+// optional diagnostics with no actionable response to a write failure.
+func appendDiagnosticLine(logFile, line string) {
 	logFile = strings.TrimSpace(logFile)
-	if logFile == "" || err == nil {
+	if logFile == "" {
 		return
 	}
 	if mkErr := os.MkdirAll(filepath.Dir(logFile), 0o755); mkErr != nil {
@@ -598,10 +628,5 @@ func WriteStartupDiagnostic(logFile string, err error) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	kind := StartupErrorKind("unknown")
-	if startupErr, ok := errors.AsType[StartupError](err); ok {
-		kind = startupErr.Kind
-	}
-	// Best-effort diagnostic; a write failure here is unactionable.
-	_, _ = fmt.Fprintf(f, "evener-tui startup failed kind=%s error=%s\n", kind, err)
+	_, _ = fmt.Fprintln(f, line)
 }
