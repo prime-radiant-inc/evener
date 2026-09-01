@@ -12,7 +12,7 @@
 #     --time DUR     per-target search budget, passed through to run-fuzz.sh
 #                    (default inherits run-fuzz.sh's 60s; e.g. --time 5m).
 #     --dry-run      discover, flake-guard, and dedup, but write nothing and open
-#                    no PR — every decision is printed. Used by the self-test.
+#                    no PR — every decision is printed.
 #     --no-pr        discover and commit artifacts to a local branch, but stop
 #                    before pushing / `gh pr create` (inspect-first).
 #     --no-corpus    skip promotion of the coverage-expanding corpus.

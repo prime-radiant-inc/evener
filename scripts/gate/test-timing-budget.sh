@@ -44,7 +44,7 @@
 #                                                   # and compare FILE's already-
 #                                                   # measured "SUM\t<pkg>\t<secs>" /
 #                                                   # "TEST\t<pkg>\t<name>\t<secs>"
-#                                                   # rows — how the selftest drives
+#                                                   # rows — how a caller drives
 #                                                   # the comparison contract with
 #                                                   # fixture durations, exactly like
 #                                                   # the coverage-floor web row's reuse of the vitest report
@@ -248,9 +248,9 @@ fi
 
 # compare.py is the whole comparison contract: package ratios against the
 # checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
-# and the global no-baseline-yet warn. It is exercised entirely through
-# --budget/--modules/measured.tsv by the selftest, with no go test or vitest
-# run involved — the fixture IS the input this step reads.
+# and the global no-baseline-yet warn. It can be exercised entirely through
+# --budget/--modules/measured.tsv, with no go test or vitest run involved —
+# the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
 python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" <<'PY'
 import json, sys
