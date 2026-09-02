@@ -127,12 +127,12 @@ func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendant
 	}
 }
 
-// TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot covers
-// #448's evidence that loadHistoricalActivityBase re-read and re-folded the
-// shared root delegates.jsonl once per VISITED session, making loading
-// O(sessions x delegate events). root -> child1 -> child2 are three visited
-// sessions sharing one delegates.jsonl at the root; the journal must be
-// scanned exactly once regardless.
+// TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot
+// asserts loadHistoricalActivityBase scans the shared root delegates.jsonl
+// exactly once per root, not once per visited session: root -> child1 ->
+// child2 are three visited sessions sharing one delegates.jsonl at the
+// root, and re-reading/re-folding it per session would make loading
+// O(sessions x delegate events).
 func TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootonce"
@@ -183,9 +183,9 @@ func TestLoadSessionJobActivityTree_ReadsSharedDelegateJournalOncePerRoot(t *tes
 }
 
 // TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation
-// covers #448's acceptance criterion that cancellation is checked between
-// descendant sessions, not only between records within one journal: once the
-// request context is canceled, no later session's jobs.jsonl is opened.
+// asserts cancellation is checked between descendant sessions, not only
+// between records within one journal: once the request context is
+// canceled, no later session's jobs.jsonl is opened.
 func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootcancel"
@@ -228,18 +228,16 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 	}
 }
 
-// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget is
-// #448's incremental-fold round's replacement for the original per-file-
-// ceiling regression test: a session's jobs.jsonl carries more valid
-// job_started records than activityMaxWorkUnits. Jesse's ruling on this
-// round (200k events is a normal Tuesday; truncating legit history is
-// unacceptable) means LOADING no longer stops at the budget at all — the
-// whole session folds via historicalJobFoldCache regardless of size — so
-// what this test now proves is that PROJECTION alone still bounds one
-// response page at activityMaxWorkUnits entries, AND (the #812 fix this
-// round closes) mints a continuation that actually advances: decoding it
-// back out must show ResumeIndex == activityMaxWorkUnits, not an opaque
-// token a client can't reason about.
+// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget
+// asserts PROJECTION bounds one response page at activityMaxWorkUnits
+// entries and mints a continuation that actually advances, even though
+// LOADING itself never stops at the budget: a session's jobs.jsonl
+// carries more valid job_started records than activityMaxWorkUnits, and
+// the whole session folds via historicalJobFoldCache regardless of size
+// (200k events is a normal Tuesday; truncating legitimate history is
+// unacceptable). Decoding the minted continuation back out must show
+// ResumeIndex == activityMaxWorkUnits, not an opaque token a client can't
+// reason about.
 func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootbudget"
@@ -278,18 +276,16 @@ func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *t
 	}
 }
 
-// TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted covers
-// the load-phase traversal-breadth bound: a root with more direct delegate
-// children than activityMaxWorkUnits must stop VISITING them (never open
-// the ones past the budget) rather than only trimming the rendered page
-// afterward — previously only cycle detection bounded the number of
-// sessions visited during load, so an unbounded tree of small sessions
-// still forced O(sessions) file opens before projection's budget ever
-// applied. #448's incremental-fold round changed what this budget counts
-// during load (one unit per session VISITED, not one per job record loaded
-// — see historicalActivityCache's doc comment — since a session's own
-// journal is no longer capped at load time at all), so this now uses many
-// CHILDREN rather than many JOBS to exhaust it, unlike before.
+// TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted
+// covers the load-phase traversal-breadth bound: a root with more direct
+// delegate children than activityMaxWorkUnits must stop VISITING them
+// (never open the ones past the budget) rather than only trimming the
+// rendered page afterward, so an unbounded tree of small sessions cannot
+// force O(sessions) file opens before projection's own budget ever
+// applies. The budget counts one unit per session VISITED during load,
+// not one per job record loaded (see historicalActivityCache's doc
+// comment: a session's own journal is never capped at load time), so
+// this test exhausts it with many CHILDREN rather than many JOBS.
 func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootwidebudget"
@@ -351,16 +347,14 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 }
 
 // TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget
-// covers roborev's finding on #807's r5 review: the continuation path
-// rebuilt an entire second full-tree snapshot solely to compute the
-// response's revision number, using a SEPARATE, independently-fresh
-// historicalActivityCache (and thus a separate, independently-fresh
-// work-unit budget) from the one the continuation's own load already
-// spent budget against. Two independent 2000-unit budgets for what is,
-// from the client's perspective, ONE request meant the revision
-// computation could visit (and charge for) a DIFFERENT session set than
-// the continuation load did, silently doubling the effective per-request
-// traversal-breadth allowance.
+// asserts a continuation's revision computation shares the SAME
+// historicalActivityCache -- and so the same work-unit budget -- as the
+// continuation's own load, rather than rebuilding an entire second
+// full-tree snapshot with an independently-fresh cache: two independent
+// 2000-unit budgets for what is, from the client's perspective, ONE
+// request would let the revision computation visit (and charge for) a
+// DIFFERENT session set than the continuation load did, silently
+// doubling the effective per-request traversal-breadth allowance.
 //
 // Fixture: root has exactly activityMaxWorkUnits (2000) direct stable
 // delegates -- one continuation target ("aaaspecial", named to sort
@@ -370,14 +364,15 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 // (buildActivityContinuationAt's per-hop charge) before the revision
 // computation's own full-tree walk ever begins.
 //
-//   - Two INDEPENDENT budgets: the revision walk starts fresh at 2000,
-//     visits aaaspecial again (1) then all 1999 wide children (1999) --
-//     2000 total, exactly fits, every wide child's journal gets scanned.
-//   - ONE SHARED budget (the fix): the revision walk starts already at 1
-//     (the continuation's own hop charge), visits aaaspecial again (2)
-//     then wide children until the shared 2000-unit ceiling is hit at
-//     1998 of them -- the last (highest-sorting) wide child's journal is
-//     NEVER scanned.
+//   - Two INDEPENDENT budgets: the revision walk would start fresh at
+//     2000, visit aaaspecial again (1) then all 1999 wide children
+//     (1999) -- 2000 total, exactly fits, every wide child's journal
+//     gets scanned.
+//   - ONE SHARED budget (the correct behavior): the revision walk starts
+//     already at 1 (the continuation's own hop charge), visits
+//     aaaspecial again (2) then wide children until the shared
+//     2000-unit ceiling is hit at 1998 of them -- the last
+//     (highest-sorting) wide child's journal is NEVER scanned.
 func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "revisionsharebudgetroot"
@@ -443,17 +438,16 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	}
 }
 
-// TestLoadSessionJobActivityTree_BoundsRecursionDepth covers the depth half
-// of #448's finding 1: a chain of sessions longer than activityMaxNewDepth
-// must not be recursed into (and its jobs.jsonl must never be opened) past
-// that depth during LOAD, not only trimmed afterward in projection.
-// Asserting on the wire-visible depth alone would not catch a load-phase
-// regression here: projection ALREADY correctly trims a too-deep tree to
-// activityMaxNewDepth on its own (pre-existing, unrelated to this fix), so a
-// tree loaded fully unbounded would still render with the same, already-
-// truncated depth. The scan-call count is what actually distinguishes
-// "loaded everything, trimmed at render time" from "never opened the files
-// past the depth bound."
+// TestLoadSessionJobActivityTree_BoundsRecursionDepth asserts a chain of
+// sessions longer than activityMaxNewDepth is not recursed into during
+// LOAD (its jobs.jsonl must never be opened past that depth), not only
+// trimmed afterward in projection. Asserting on the wire-visible depth
+// alone would not catch a load-phase regression here: projection ALREADY
+// trims a too-deep tree to activityMaxNewDepth on its own, independently
+// of load-time behavior, so a tree loaded fully unbounded would still
+// render with the same, already-truncated depth. The scan-call count is
+// what actually distinguishes "loaded everything, trimmed at render
+// time" from "never opened the files past the depth bound."
 func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	stateDir := t.TempDir()
 	started := time.Unix(700, 0).UTC()
@@ -519,11 +513,11 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	if depth > activityMaxNewDepth {
 		t.Fatalf("loaded chain %d levels deep, want at most activityMaxNewDepth=%d", depth, activityMaxNewDepth)
 	}
-	// #448 (roborev): the delegate at the depth boundary must report an
-	// honest Truncated+Continuation branch — the same shape projection's
-	// pre-existing work-unit exhaustion already produces — not a generic
-	// "child session unavailable" branch error, which is what a load phase
-	// that leaves snapshot.Children unpopulated for a depth-skipped child
+	// The delegate at the depth boundary must report an honest
+	// Truncated+Continuation branch — the same shape projection's own
+	// work-unit exhaustion already produces — not a generic "child
+	// session unavailable" branch error, which is what a load phase that
+	// leaves snapshot.Children unpopulated for a depth-skipped child
 	// causes projection to fall back to.
 	if stoppedAt == nil {
 		t.Fatal("chain never reached a depth-truncated delegate")
@@ -540,15 +534,17 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 }
 
 // TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildren
-// covers roborev's finding on #807's saturation commit: buildActivityFullSnapshot
-// computes its load-phase depth from len(visited)-1 -- the ancestor chain
-// from the ORIGINAL root -- while projection resets depth to 0 at the
-// continuation target (startDepth = -len(cont.Path), reaching 0 exactly at
-// the target). A continuation whose path reaches exactly activityMaxNewDepth
-// hops therefore has the LOAD phase treat the target's OWN children as
-// already past the depth bound (depth == activityMaxNewDepth), replacing
-// them with empty placeholders, even though projection -- and any sane
-// reading of "how deep beneath the page I'm resuming into" -- would allow a
+// asserts a continuation whose path reaches exactly activityMaxNewDepth
+// hops still lets the LOAD phase load the target's OWN children, rather
+// than treating them as already past the depth bound.
+// buildActivityFullSnapshot computes its load-phase depth from
+// len(visited)-1 -- the ancestor chain from the ORIGINAL root -- while
+// projection resets depth to 0 at the continuation target (startDepth =
+// -len(cont.Path), reaching 0 exactly at the target); without accounting
+// for that reset, the load phase would treat the target's children as
+// depth == activityMaxNewDepth (already past the bound) and replace them
+// with empty placeholders, even though projection -- and any sane
+// reading of "how deep beneath the page I'm resuming into" -- allows a
 // full activityMaxNewDepth further beneath the target.
 func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildren(t *testing.T) {
 	stateDir := t.TempDir()
@@ -556,8 +552,8 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 
 	// index activityMaxNewDepth is the continuation TARGET (reached via
 	// exactly activityMaxNewDepth hops from the root); index
-	// activityMaxNewDepth+1 is the target's OWN child -- the node the
-	// roborev finding says gets silently placeholder'd instead of loaded.
+	// activityMaxNewDepth+1 is the target's OWN child -- the node that
+	// must be loaded for real, not left as a silent placeholder.
 	const chainLen = activityMaxNewDepth + 2
 	sessionIDs := make([]string, chainLen)
 	for i := range sessionIDs {
@@ -645,15 +641,15 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 }
 
 // TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable
-// covers roborev's finding on #807's r5 review: depth truncation mints a
-// continuation whose Path names the depth-boundary delegate ITSELF (so a
-// resume can treat it as a fresh depth-0 root, the same pattern the
-// incremental-fold round already established for work-budget truncation) --
-// meaning the minted Path is exactly depth+1 hops long when it fires at
-// depth == activityMaxNewDepth, i.e. activityMaxNewDepth+1 hops. But
-// decodeActivityContinuation rejected any path longer than
-// activityMaxNewDepth, so this exact, legitimately-minted boundary
-// continuation could never be submitted back -- an end-to-end dead end.
+// asserts a depth-boundary continuation can actually be resubmitted.
+// Depth truncation mints a continuation whose Path names the
+// depth-boundary delegate ITSELF (so a resume can treat it as a fresh
+// depth-0 root, the same pattern work-budget truncation uses), meaning
+// the minted Path is exactly depth+1 hops long when it fires at depth ==
+// activityMaxNewDepth, i.e. activityMaxNewDepth+1 hops --
+// decodeActivityContinuation must accept a path that long, not reject it
+// as too long and turn a legitimately-minted boundary continuation into
+// an end-to-end dead end.
 func TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable(t *testing.T) {
 	stateDir := t.TempDir()
 	started := time.Unix(700, 0).UTC()
@@ -721,13 +717,14 @@ func TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable(t *te
 	}
 }
 
-// TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant covers
-// #448's regression finding: a canceled request must surface as a real
-// error even when the cancellation lands while loading a DESCENDANT (not the
-// root) — the previous fix's own cancellation test only ever canceled the
-// root's own scan, so it never exercised the buildActivityFullSnapshot loop
-// that was catching a descendant's context.Canceled into snapshot.Errors and
-// returning a silently-partial tree with err == nil.
+// TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant
+// asserts a canceled request surfaces as a real error even when the
+// cancellation lands while loading a DESCENDANT, not the root: a
+// cancellation-during-the-root-scan test alone would never exercise the
+// buildActivityFullSnapshot loop's handling of a descendant's own
+// context.Canceled, which must propagate rather than being caught into
+// snapshot.Errors and returned as a silently-partial tree with err ==
+// nil.
 func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootdesccancel"
@@ -774,22 +771,22 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 	}
 }
 
-// TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth covers
-// roborev's finding on #807: continuation paths are client-controlled, so
-// without this cap a long valid path could force buildActivityContinuationAt
-// to open arbitrarily many historical sessions' files with no bound at all
+// TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth asserts
+// continuation paths are bounded: they are client-controlled, so without
+// this cap a long valid path could force buildActivityContinuationAt to
+// open arbitrarily many historical sessions' files with no bound at all
 // (ordinary, non-continuation traversal's own depth limit is enforced by
 // buildActivityFullSnapshot's recursion, which this path-following code
 // doesn't go through).
 func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
 	// activityMaxContinuationPathLength (activityMaxNewDepth+1), not
-	// activityMaxNewDepth itself, is the real limit (roborev finding on
-	// #807's r5 review): a depth-boundary continuation legitimately mints
-	// a path exactly activityMaxNewDepth+1 hops long (see
+	// activityMaxNewDepth itself, is the real limit: a depth-boundary
+	// continuation legitimately mints a path exactly activityMaxNewDepth+1
+	// hops long (see
 	// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable),
 	// so this test's own path must exceed THAT to prove genuinely-too-long
-	// paths are still rejected, not merely restate the old (too strict)
-	// boundary.
+	// paths are rejected without also rejecting that legitimate boundary
+	// case.
 	path := make([]string, activityMaxContinuationPathLength+1)
 	for i := range path {
 		path[i] = fmt.Sprintf("hop%d", i)
@@ -803,12 +800,12 @@ func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) 
 }
 
 // TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops
-// covers roborev's finding on #807: each continuation hop must be charged
-// against the shared load budget the same way buildActivityFullSnapshot
-// charges each child it visits -- otherwise loadActivityBase (which opens
-// files) runs once per hop with no bound of its own. A budget that is
-// already exhausted before ANY hop is resolved must stop immediately,
-// never reaching loadActivityBase for even the first one.
+// asserts each continuation hop is charged against the shared load
+// budget the same way buildActivityFullSnapshot charges each child it
+// visits -- otherwise loadActivityBase (which opens files) would run
+// once per hop with no bound of its own. A budget that is already
+// exhausted before ANY hop is resolved must stop immediately, never
+// reaching loadActivityBase for even the first one.
 func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "budgetpathroot"
@@ -842,15 +839,11 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 }
 
 // TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiagnostic
-// restores the activity-view side of the adversarial regression review's
-// CRITICAL finding, replacing the deleted
-// TestLoadSessionJobActivityTree_DegradesToPartialWhenDelegateJournalExceedsScanLimit
-// for the new failure shape: #448's incremental-fold round removed the
-// MaxEvents/MaxBytes ceiling that test pinned, but an oversized single LINE
-// (MaxLineBytes, always-on) can still fire, and must not hard-fail the
-// whole activity tree -- the posture ruling is "loud but CONTAINED": the
-// tree still renders, and the diagnostic is surfaced prominently via the
-// same Diagnostics mechanism the torn-tail case already uses.
+// asserts an oversized single line in the shared delegates.jsonl
+// (tripping MaxLineBytes, which is always-on) does not hard-fail the
+// whole activity tree: the posture is "loud but CONTAINED" -- the tree
+// still renders, and the diagnostic is surfaced prominently via the same
+// Diagnostics mechanism the torn-tail case already uses.
 func TestLoadSessionJobActivityTree_OversizedDelegateJournalLineDegradesWithDiagnostic(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "activitypathologicaldelegateroot"
@@ -980,5 +973,72 @@ func writeRawSessionMeta(t *testing.T, path string, meta schema.SessionMeta) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write meta: %v", err)
+	}
+}
+
+// TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOverlap
+// asserts trimActivityTrailingEntry's minted continuation actually resumes
+// after the removed entry: it must set ResumeIndex, or a resumed load
+// re-renders the target session from entry 0, redelivering everything the
+// first page already returned. This drives the actual trim-then-resume
+// round trip through the real entry point (LoadSessionJobActivityTree),
+// following each minted continuation exactly as a client would, rather
+// than asserting on the decoded token's fields directly. One session with
+// jobCount jobs, each carrying a description large enough that the whole
+// set exceeds activityMaxEncodedBytes but no single entry does (so a page
+// never needs to trim its own only entry). The observable assertion:
+// walking every page via its own minted continuation delivers each job
+// exactly once, in order, with zero overlap and zero gap.
+func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOverlap(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "sizetrimroot"
+	const jobCount = 20
+	description := strings.Repeat("d", 250_000)
+	var events []jobstore.Event
+	for i := range jobCount {
+		ts := time.Unix(int64(100+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%02d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts, Description: description,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > jobCount+1 {
+			t.Fatalf("too many pages (%d) without terminating -- resume is looping instead of advancing", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		if tree.Root.Branch.Continuation == "" {
+			break
+		}
+		continuation = tree.Root.Branch.Continuation
+	}
+	if pages < 2 {
+		t.Fatalf("got %d page(s), want at least 2 -- the fixture must be large enough to force a size trim", pages)
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d entries across %d pages, want exactly %d (zero overlap, zero gap): %v", len(delivered), pages, jobCount, delivered)
+	}
+	for i, id := range delivered {
+		want := fmt.Sprintf("job_%02d", i)
+		if id != want {
+			t.Fatalf("delivered[%d] = %q, want %q -- entries must arrive in order across pages with zero overlap and zero gap: %v", i, id, want, delivered)
+		}
 	}
 }
