@@ -1580,29 +1580,61 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 	s.recordTurn(t, persistedTurn)
 }
 
+// appendTurnAfterTranscriptWrite runs one durability-first history-append/
+// transcript-write pair atomically under attentionMu: write commits the
+// turn's transcript entry (attentionMu already held — use the Locked write
+// variants), and appendLocked appends it to s.history, plus any flags that
+// must travel with the append, under s.mu. Holding attentionMu across the
+// pair keeps it whole relative to a fold's publication transaction: the pair
+// lands either entirely before the publish — the turn is in the fold's
+// snapshot or merged tail, and its pre-marker entry
+// gets a post-marker copy — or entirely after it, where its entry follows
+// the markers on its own. A half-done pair could otherwise leave a
+// pre-marker entry for a turn the publish never saw (lost on restart) or a
+// post-marker entry racing the transaction's own tail rewrite (duplicated on
+// restart). On write error nothing is appended; the error returns for the
+// caller to report outside the locks.
+func (s *Session) appendTurnAfterTranscriptWrite(write func() error, appendLocked func()) error {
+	s.attentionMu.Lock()
+	if err := write(); err != nil {
+		s.attentionMu.Unlock()
+		return err
+	}
+	s.mu.Lock()
+	appendLocked()
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	return nil
+}
+
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
-	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // recordTurn adds a turn to the live model history and writes its persisted
-// counterpart to the durable transcript. The two differ only when a tool
-// exposes explicitly private evidence; every other caller passes the same turn
-// twice.
+// counterpart to the durable transcript — one atomic pair under attentionMu
+// (append first, then the entry), for the same publication-transaction
+// wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
+// only when a tool exposes explicitly private evidence; every other caller
+// passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	s.mu.Unlock()
-	if err := s.writeTranscript(persisted); err != nil {
+	err := s.writeTranscriptLocked(persisted)
+	s.attentionMu.Unlock()
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }
@@ -1647,6 +1679,13 @@ func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.writeTranscriptDurableLocked(t)
+}
+
+// writeTranscriptDurableLocked is writeTranscriptDurable for a caller
+// already holding attentionMu — an append/write pair
+// (appendTurnAfterTranscriptWrite) or the fold publication transaction.
+func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}
@@ -1756,14 +1795,14 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 	}
-	if err := s.writeTranscriptDurable(t); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 // maybeAutoSave persists the session metadata if StateDir is configured.

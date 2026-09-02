@@ -963,15 +963,15 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.ClientMutationID = msg.ClientMutationID
 	t.StableTurnID = msg.StableTurnID
 	if msg.ClientMutationID != "" {
-		if err := s.appendClientMutationTranscript(t); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			func() error { return s.appendClientMutationTranscriptLocked(t) },
+			func() { s.history = append(s.history, t) },
+		); err != nil {
 			_ = s.returnClaimedSteering(msg.ClientMutationID)
 			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			return false
 		}
-		s.mu.Lock()
-		s.history = append(s.history, t)
-		s.mu.Unlock()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true
@@ -979,12 +979,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		return true
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	if err := s.writeTranscript(t); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-	}
+	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	return true
 }
@@ -1028,14 +1023,14 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
-	if err := s.writeTranscriptDurable(t); err != nil {
+	err := s.appendTurnAfterTranscriptWrite(
+		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() { s.history = append(s.history, t) },
+	)
+	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Session) hasPendingSteering() bool {

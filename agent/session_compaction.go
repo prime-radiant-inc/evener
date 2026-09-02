@@ -64,12 +64,15 @@ func (s *Session) Compact(ctx context.Context) error {
 //
 // It refuses to publish if a COMPETING fold already published since the
 // snapshot: overwriting that fold's result would silently discard its work
-// (a plain length check cannot see this: a competing fold can leave s.history
-// the same length or even longer while still replacing its content). s.historyRevision — bumped only by a
-// successful publish here, never by an ordinary append elsewhere — is the
-// signal: unchanged means no competing fold published, so the length-based
-// merge is sound; changed means one did, and this reports the conflict
-// instead of publishing.
+// (a plain length check cannot see this: a competing fold can leave
+// s.history the same length or even longer while still replacing its
+// content). s.historyRevision — bumped by every successful publish here AND
+// by every other non-append history mutation
+// (orphaned-tool-result repair, attention-turn replace/remove, via
+// bumpHistoryRevisionLocked), never by an ordinary append — is the signal:
+// unchanged means neither a competing fold nor any such mutation landed, so
+// the length-based merge is sound; changed means one did, and this reports
+// the conflict instead of publishing.
 //
 // snapLen/snapRevision are s.history's length and s.historyRevision, both
 // captured under s.mu at the snapshot the caller's (now-completed, unlocked)
@@ -128,7 +131,10 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     queue behind this transaction, sequencing its entry after the markers
 //     — the order ResumeHistory needs, since it anchors on the LAST
 //     compaction marker and discards every entry before it. A competing fold's own transaction queues the same way, so
-//     compaction markers always land in publish order.
+//     compaction markers always land in publish order. The transcript-commit
+//     phase also re-writes the merged tail's entries after the markers, so
+//     turns recorded DURING the fold (entries already pre-marker) stay
+//     resume-visible too.
 //   - s.mu is nested inside (the codebase-wide attentionMu → s.mu order
 //     writeTranscript itself established; no s.mu-holding caller can reach
 //     attentionMu, since writeTranscript's internal s.mu use would already
@@ -148,12 +154,23 @@ func (s *Session) bumpHistoryRevisionLocked() {
 func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn)) (published []schema.Turn, ok bool) {
 	s.attentionMu.Lock()
 	s.mu.Lock()
+	mergeCount := len(s.history) - snapLen
 	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
 	if !ok {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil, false
 	}
+	// The merge-back tail: turns recorded while the fold ran, carried past
+	// the fold result by publishFoldedHistory. Their transcript entries are
+	// fully committed (append/write pairs are atomic under attentionMu) but
+	// sit BEFORE the compaction markers this transaction is about to write —
+	// where ResumeHistory's last-marker anchor would silently drop them on
+	// restart — so the transcript-commit phase below re-writes them after
+	// the markers. A successful publish guarantees
+	// mergeCount >= 0: shrinking s.history requires a non-append mutation,
+	// which bumps the revision and fails the publish instead.
+	mergedTail := published[len(published)-mergeCount:]
 	if onPublishLocked != nil {
 		onPublishLocked(published)
 	}
@@ -163,7 +180,16 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 		hook()
 	}
 	commit.commitTranscriptsLocked()
+	var mergedTailWriteErrs []error
+	for _, turn := range mergedTail {
+		if err := s.writeTranscriptLocked(turn); err != nil {
+			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+		}
+	}
 	s.attentionMu.Unlock()
+	for _, err := range mergedTailWriteErrs {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
 	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
 		hook()
 	}

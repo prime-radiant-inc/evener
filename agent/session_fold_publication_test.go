@@ -519,3 +519,190 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 		t.Fatal("a turn recorded after the fold published is missing from the resumed history -- its transcript entry was sequenced before the compaction marker")
 	}
 }
+
+// TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart pins merge-back
+// durability: a turn recorded (history append + transcript entry) WHILE the
+// fold runs lands its entry before the later compaction marker, and
+// publishFoldedHistory merges it into live history past the fold result --
+// since ResumeHistory anchors on the LAST marker, the publication transaction
+// must leave merged-back turns durably represented after the fold's marker or
+// they vanish on restart.
+func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "merge-back-restart-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background()) // blocks inside Layer 2, past its unlocked snapshot
+	}()
+	<-entered // the fold is mid-flight; nothing is locked
+
+	const concurrentText = "turn recorded while the fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText))
+	s.recordTurn(turn, turn) // completes fully: history append + transcript entry, both before the fold publishes
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
+		t.Fatal("test setup: the merge-back did not carry the concurrently recorded turn into live history")
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	if indexOfTurnText(resumed, concurrentText) < 0 {
+		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented after the compaction marker")
+	}
+	count := 0
+	for _, rt := range resumed {
+		if rt.Message.Text() == concurrentText {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the merged-back turn appears %d times in the resumed history, want exactly 1", count)
+	}
+}
+
+// assertBaselineTracksMarkedTurn asserts turnHistoryBaseline points at the
+// marked in-flight turn's ACTUAL position in the current history — the
+// ground-truth-by-content convention this branch's baseline tests share.
+func assertBaselineTracksMarkedTurn(t *testing.T, s *Session, markerText string) {
+	t.Helper()
+	want := indexOfTurnText(currentHistory(t, s), markerText)
+	if want < 0 {
+		t.Fatalf("marked in-flight turn %q missing from history — test setup invalid", markerText)
+	}
+	s.mu.Lock()
+	got := s.turnHistoryBaseline
+	s.mu.Unlock()
+	if got != want {
+		t.Fatalf("turnHistoryBaseline = %d, want %d (the marked in-flight turn's actual position) — the mid-history mutation shifted in-flight indexes without moving the N4 boundary", got, want)
+	}
+}
+
+// TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline pins the insertion
+// half of boundary tracking: orphaned-tool-result repair splices a synthetic
+// result turn at the orphaned call's position, and an insertion at or before
+// the N4 boundary shifts every in-flight turn right by one -- the baseline
+// must move with them, atomically with the mutation, in the same locked
+// section (bumping historyRevision alone only protects concurrent folds).
+func TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline(t *testing.T) {
+	t.Parallel()
+	const marker = "in-flight marker turn"
+	orphanTurn := func() schema.Turn {
+		return schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "running a tool"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shell", Arguments: json.RawMessage(`{}`), Type: "function"}},
+		}})
+	}
+
+	t.Run("insertion strictly before the boundary", func(t *testing.T) {
+		t.Parallel()
+		s := newTestSession(t)
+		s.mu.Lock()
+		s.history = []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+			orphanTurn(),
+			schema.NewTurn(schema.TurnUserInput, llm.User(marker)),
+			schema.NewTurn(schema.TurnUserInput, llm.User("in-flight tail")),
+		}
+		s.turnHistoryBaseline = 2 // the marked turn opens the in-flight region
+		s.mu.Unlock()
+
+		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
+			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
+		}
+		assertBaselineTracksMarkedTurn(t, s, marker)
+	})
+
+	t.Run("insertion exactly at the boundary", func(t *testing.T) {
+		t.Parallel()
+		// The orphaned call is the LAST pre-boundary turn, so its synthetic
+		// result lands exactly at the boundary index. It completes
+		// pre-boundary content, so the boundary must still move past it.
+		s := newTestSession(t)
+		s.mu.Lock()
+		s.history = []schema.Turn{
+			orphanTurn(),
+			schema.NewTurn(schema.TurnUserInput, llm.User(marker)),
+		}
+		s.turnHistoryBaseline = 1
+		s.mu.Unlock()
+
+		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
+			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
+		}
+		assertBaselineTracksMarkedTurn(t, s, marker)
+	})
+}
+
+// TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline pins the deletion
+// half of boundary tracking: removing an unverified delegate-attention turn
+// that sits before the N4 boundary shifts every in-flight turn left by
+// one; the revision bump protects concurrent folds, but the baseline stayed
+// put. The decrement must happen atomically with the deletion, in the same
+// locked section — and only for deletions strictly before the boundary
+// (deleting the first in-flight turn leaves the boundary correct).
+func TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline(t *testing.T) {
+	t.Parallel()
+	const marker = "in-flight marker turn"
+	attentionTurn := func() schema.Turn {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User("unverified delegate attention"))
+		turn.AttentionID = "att-r6"
+		return turn
+	}
+
+	t.Run("deletion strictly before the boundary", func(t *testing.T) {
+		t.Parallel()
+		s := newTestSession(t)
+		unverified := attentionTurn()
+		s.mu.Lock()
+		s.history = []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+			unverified,
+			schema.NewTurn(schema.TurnUserInput, llm.User(marker)),
+		}
+		s.turnHistoryBaseline = 2
+		s.mu.Unlock()
+
+		s.removeUnverifiedDelegateAttentionTurn(unverified)
+		assertBaselineTracksMarkedTurn(t, s, marker)
+	})
+
+	t.Run("deletion at the boundary leaves it alone", func(t *testing.T) {
+		t.Parallel()
+		s := newTestSession(t)
+		unverified := attentionTurn()
+		s.mu.Lock()
+		s.history = []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+			schema.NewTurn(schema.TurnUserInput, llm.User("pre-boundary tail")),
+			unverified, // the first in-flight turn
+		}
+		s.turnHistoryBaseline = 2
+		s.mu.Unlock()
+
+		s.removeUnverifiedDelegateAttentionTurn(unverified)
+		s.mu.Lock()
+		got := s.turnHistoryBaseline
+		s.mu.Unlock()
+		if got != 2 {
+			t.Fatalf("turnHistoryBaseline = %d after deleting the first in-flight turn, want 2 (unchanged: the boundary still opens the in-flight region)", got)
+		}
+	})
+}

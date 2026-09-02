@@ -733,10 +733,12 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(claimed.Text, claimed.Images))
 	turn.ClientMutationID = claimed.ClientMutationID
 	turn.StableTurnID = claimed.StableTurnID
-	if err := sess.appendClientMutationTranscript(turn); err != nil {
+	if err := sess.appendTurnAfterTranscriptWrite(
+		func() error { return sess.appendClientMutationTranscriptLocked(turn) },
+		func() { sess.history = append(sess.history, turn) },
+	); err != nil {
 		t.Fatalf("append claimed start: %v", err)
 	}
-	sess.history = append(sess.history, turn)
 	if err := sess.markClaimedUserTranscriptIncorporated(claimed.ClientMutationID); err != nil {
 		t.Fatalf("mark claimed start incorporated: %v", err)
 	}
