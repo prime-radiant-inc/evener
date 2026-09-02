@@ -445,18 +445,13 @@ func TestHubJobsListLiveErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestHubJobsListMidListTruncationMintsAdvancingContinuation replaces
-// #448 round 3's TestHubJobsListLoadTruncationReportsHonestlyWithoutContinuation
-// now that Jesse's ruling on #807 (200k events is a normal Tuesday;
-// truncating legit history is unacceptable) removed the load-phase ceiling
-// that test pinned: a session's own journal always folds in full now (see
-// historicalJobFoldCache), so there is no more load-truncated,
-// no-continuation state to produce. The only truncation left is
-// projection's own mid-list cutoff, and #448's incremental-fold round's
-// other half (closing #812 on this surface) is that its continuation must
-// actually ADVANCE: resuming with it must render DIFFERENT, later jobs, not
-// re-render the same first page a fresh, non-continuation request already
-// showed.
+// TestHubJobsListMidListTruncationMintsAdvancingContinuation covers the
+// project's posture that truncating legitimate job history is unacceptable:
+// a session's own journal always folds in full (see historicalJobFoldCache),
+// so the only truncation possible is projection's own mid-list cutoff when a
+// rendered page grows too large. That cutoff's continuation must actually
+// ADVANCE: resuming with it must render DIFFERENT, later jobs, not re-render
+// the same first page a fresh, non-continuation request already showed.
 func TestHubJobsListMidListTruncationMintsAdvancingContinuation(t *testing.T) {
 	// 2050 exceeds agent.activityMaxWorkUnits (2000, unexported — this
 	// package can't reference it directly) by enough margin that the child
@@ -475,7 +470,7 @@ func TestHubJobsListMidListTruncationMintsAdvancingContinuation(t *testing.T) {
 		t.Fatalf("child branch = %+v child = %+v, want Truncated=true", delegate.Branch, delegate.Child)
 	}
 	if delegate.Child.Branch.Continuation == "" {
-		t.Fatalf("child branch.Continuation is empty, want a real, advancing continuation (#812's fix on this surface)")
+		t.Fatalf("child branch.Continuation is empty, want a real, advancing continuation")
 	}
 	if len(delegate.Child.Entries) == 0 {
 		t.Fatalf("child entries = %+v, want a nonzero rendered prefix", delegate.Child.Entries)

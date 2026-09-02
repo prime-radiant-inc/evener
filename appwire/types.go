@@ -823,12 +823,9 @@ type EvenerDiagnostics struct {
 	// being unreadable (delegatestore.ErrLineTooLong), which yields zero
 	// delegates to attach a per-delegate diagnostic to. Delegates[].Diagnostics
 	// (EvenerDelegateInfo) is per-delegate and can only ever be populated
-	// when at least one delegate exists; this field is the vessel for
-	// everything else, independent of delegate count (roborev's #807
-	// addendum finding, MAJOR: pastEntryThread's containment fix degrades
-	// to zero delegates on a corrupt journal, but its diagnostic never
-	// reached the wire because the only place that attached it — the
-	// per-delegate loop — never ran).
+	// when at least one delegate exists, so a diagnostic about the shared
+	// journal itself needs a vessel that does not depend on any delegate
+	// surviving to carry it.
 	DelegateDiagnostics []string `json:"delegateDiagnostics,omitempty"`
 }
 

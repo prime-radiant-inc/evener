@@ -123,8 +123,7 @@ func managedLaunchSourceIDForRef(cfg hubcore.WebConfig, ref string) (string, boo
 // which currently thread a request context this deep — passing
 // context.Background() here (rather than widening every one of those call
 // chains for one existence check) means the bounded delegate-journal scan
-// (#448) still applies, just without real cancellation on this specific
-// path.
+// still applies, just without real cancellation on this specific path.
 func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 	if _, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return true

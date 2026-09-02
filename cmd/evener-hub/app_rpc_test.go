@@ -1595,17 +1595,15 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}
 }
 
-// TestMergePastMetadataForList_PropagatesContextCancellation covers
-// roborev's finding on #807's r5 review: mergePastMetadataForList
-// swallowed every error pastEntryThread returned, including
-// context.Canceled/context.DeadlineExceeded, silently falling back to the
-// unenriched live thread instead -- so a canceled thread-list request
-// could keep sweeping later threads instead of stopping. The delegate
-// journal fixture (seedPastSessionWithActivity) matters here: without it,
-// pastEntryThread's own ctx-aware step (pastEntryDelegateStatus ->
-// agent.LoadSessionDelegateStatus, gated on delegates.jsonl existing at
-// all) is never reached, so a canceled ctx would go unnoticed for a
-// different, uninteresting reason.
+// TestMergePastMetadataForList_PropagatesContextCancellation covers the
+// contract that mergePastMetadataForList must propagate ctx cancellation
+// and deadline errors from pastEntryThread rather than silently falling
+// back to the unenriched live thread -- a canceled thread-list request must
+// stop, not keep sweeping later threads. The delegate journal fixture
+// (seedPastSessionWithActivity) matters here: without it, pastEntryThread's
+// own ctx-aware step (pastEntryDelegateStatus -> agent.LoadSessionDelegateStatus,
+// gated on delegates.jsonl existing at all) is never reached, so a canceled
+// ctx would go unnoticed for a different, uninteresting reason.
 func TestMergePastMetadataForList_PropagatesContextCancellation(t *testing.T) {
 	cfg, rootID, _, _ := seedPastSessionWithActivity(t, 1)
 	ctx, cancel := context.WithCancel(context.Background())

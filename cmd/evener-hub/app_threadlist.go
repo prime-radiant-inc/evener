@@ -150,11 +150,10 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 }
 
 // mergePastMetadataForList enriches live with its past-persisted metadata.
-// The returned error is non-nil ONLY for ctx cancellation/deadline
-// (roborev finding on #807's r5 review): every OTHER failure reading past
-// data (no matching entry, a corrupt journal, …) still degrades to the
-// unenriched live thread, same as before — only cancellation must stop the
-// caller's sweep instead of being silently treated the same way.
+// The returned error is non-nil ONLY for ctx cancellation/deadline: every
+// OTHER failure reading past data (no matching entry, a corrupt journal, …)
+// still degrades to the unenriched live thread — only cancellation must
+// stop the caller's sweep instead of being treated the same way.
 func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, sourceID string, live appwire.Thread) (appwire.Thread, error) {
 	if cfg.Past == nil {
 		return live, nil
