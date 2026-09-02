@@ -19,7 +19,7 @@ import (
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
 // details captured across one model call (including any fallback retries) for
-// the successful semantic assistant turn.
+// the attempted or successful semantic assistant turn.
 type ModelAttemptMetadata struct {
 	HistoryMode    llm.HistoryMode
 	EndpointFamily string
@@ -277,6 +277,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
+	// Admission rewrites req.MaxTokens to the admitted value. The post-planning
+	// pass therefore cannot repeat this warning unchanged: it warns only if
+	// continuation planning introduces a further reduction.
 	s.warnOutputReduction(profile, budget)
 	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -1058,6 +1061,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			rememberPreviews(modelResp)
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
 			if err != nil && isProviderContextLengthError(err) {
+				req = fbReq
 				group.SettleResult(callCtx, err)
 				return withPreviews(modelResp), req, attempt, err
 			}
@@ -1174,6 +1178,14 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 func isLocalContextBudgetError(err error) bool {
 	var budgetErr *llm.ContextBudgetError
 	return errors.As(err, &budgetErr)
+}
+
+func isLocalContextCompactionError(err error) bool {
+	var budgetErr *llm.ContextBudgetError
+	if !errors.As(err, &budgetErr) {
+		return false
+	}
+	return budgetErr.Limit == "max_input" || budgetErr.Limit == "context_window"
 }
 
 func isProviderContextLengthError(err error) bool {

@@ -139,7 +139,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 			body[k] = v
 		}
 	}
-	reconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
+	requestutil.ReconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
 }
 
@@ -183,10 +183,4 @@ func appendUnique(values []string, value string) []string {
 		return values
 	}
 	return append(values, value)
-}
-
-func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
-	if ceiling := requestutil.MinPositiveInt(requestutil.PositiveInt(body[field]), requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap)); ceiling > 0 {
-		body[field] = ceiling
-	}
 }

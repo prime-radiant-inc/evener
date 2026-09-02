@@ -102,7 +102,7 @@ func reconcileThinkingContract(body map[string]any, req llm.Request, res registr
 			}
 		}
 	}
-	reconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
+	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
 	if thinkingBudget > 0 {
 		mt := intFromAny(body["max_tokens"])
 		if mt <= thinkingBudget {
@@ -164,12 +164,6 @@ func anthropicThinkingBudgetError(req llm.Request, res registry.Resolved, requir
 		InputTokens:  0,
 		OutputTokens: requiredOutput,
 		Maximum:      maximum,
-	}
-}
-
-func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
-	if ceiling := requestutil.MinPositiveInt(requestutil.PositiveInt(body[field]), requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap)); ceiling > 0 {
-		body[field] = ceiling
 	}
 }
 

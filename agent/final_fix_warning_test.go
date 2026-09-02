@@ -102,7 +102,7 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	}})
 	fallbackAdapter := &fakeAdapter{name: "warning-fallback", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
-			if req.MaxTokens == nil || *req.MaxTokens >= 1_000 {
+			if req.MaxTokens == nil || *req.MaxTokens != 976 {
 				return finalResponse("bad allocation")
 			}
 			return finalResponse("fallback")
@@ -123,7 +123,13 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"warning-fallback/fallback-model"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	// Model fallback intentionally clears the primary allocation, making the
+	// fallback's 1,000-token cap the requested output. This history estimates to
+	// 3,000 tokens; with the 1,024-token safety reserve, only 976 fit.
 	history := []llm.Message{llm.User(strings.Repeat("x", 12_000))}
+	if got := llm.EstimateInputTokens(llm.Request{Messages: history}).Tokens; got != 3_000 {
+		t.Fatalf("history token estimate = %d, want fixture-pinned 3000", got)
+	}
 	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(1_000)}
 	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, history, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
@@ -135,7 +141,7 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 		t.Fatalf("warnings = %d, want exactly one: %+v", len(warnings), warnings)
 	}
 	message := warnings[0].Message
-	for _, want := range []string{"Output allocation reduced", "warning-fallback", "fallback-model", "requested=1000", "admitted="} {
+	for _, want := range []string{"Output allocation reduced", "warning-fallback", "fallback-model", "requested=1000", "admitted=976"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("warning message %q missing %q", message, want)
 		}
@@ -210,6 +216,125 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 		}
 	}
 	assertWarningPrecedesCompaction(t, captured)
+}
+
+func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
+	client := llm.NewClient()
+	adapter := &fakeErrAdapter{name: "output-budget", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, &llm.ContextBudgetError{
+				Provider:     "output-budget",
+				Model:        "output-model",
+				Limit:        "max_output_tokens",
+				OutputTokens: 2_000,
+				Maximum:      1_000,
+			}
+		},
+	}}
+	client.Register(adapter)
+	profile := testOpenAICompatProfile("output-budget", "output-model", 0)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded despite output-only budget error")
+	}
+	sess.Close()
+	captured := <-eventsDone
+	for _, event := range captured {
+		if event.Kind == events.EventContextCompaction {
+			t.Fatal("output-only budget error triggered context compaction")
+		}
+	}
+}
+
+func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeErrAdapter{name: "local-primary", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("local-primary", 403, "rejected", nil, nil)
+		},
+	}})
+	primary := testOpenAICompatProfile("local-primary", "primary-model", 0)
+	primaryResolved := primary.Resolved()
+	primaryResolved.Caps.ContextWindow = new(524_288)
+	primaryResolved.Caps.MaxOutputTokens = new(8_192)
+	primary = primary.WithResolved(primaryResolved)
+	fallback := testOpenAICompatProfile("local-fallback", "fallback-model", 0)
+	fallbackResolved := fallback.Resolved()
+	fallbackResolved.Caps.MaxInputTokens = new(1)
+	fallback = fallback.WithResolved(fallbackResolved)
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.cfg.ModelFallbacks = []string{"local-fallback/fallback-model"}
+	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	sess.contextMgr.RecordInputTokens(524_000, 0)
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded despite fallback input budget error")
+	}
+	sess.Close()
+	captured := <-eventsDone
+	warnings := warningEvents(captured)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want exactly one: %+v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0].Message, "Local context admission failed") {
+		t.Fatalf("warning = %q, want local admission recovery warning", warnings[0].Message)
+	}
+	assertWarningPrecedesCompaction(t, captured)
+}
+
+func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeErrAdapter{name: "identity-primary", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
+		},
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
+		},
+	}})
+	fallbackAdapter := &fakeErrAdapter{name: "identity-fallback", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
+		},
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
+		},
+	}}
+	client.Register(fallbackAdapter)
+	primary := testOpenAICompatProfile("identity-primary", "primary-model", 0)
+	fallback := testOpenAICompatProfile("identity-fallback", "fallback-model", 0)
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.cfg.ModelFallbacks = []string{"identity-fallback/fallback-model"}
+	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded after repeated fallback context errors")
+	}
+	sess.Close()
+	warnings := warningEvents(<-eventsDone)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want exactly one: %+v", len(warnings), warnings)
+	}
+	message := warnings[0].Message
+	if !strings.Contains(message, "identity-fallback/fallback-model") || strings.Contains(message, "identity-primary/primary-model") {
+		t.Fatalf("provider context warning uses wrong identity: %q", message)
+	}
+	if got := len(fallbackAdapter.Requests()); got != 2 {
+		t.Fatalf("fallback provider calls = %d, want 2", got)
+	}
 }
 
 func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {

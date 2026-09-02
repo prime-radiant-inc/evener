@@ -62,9 +62,9 @@ func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
 		{"adaptive always-on no effort no display", "adaptive", "", true, "", map[string]any{"type": "adaptive"}, nil},
 		{"adaptive with display and effort", "adaptive", "summarized", true, "high", map[string]any{"type": "adaptive", "display": "summarized"}, "high"},
 		{"adaptive not always-on and no effort", "adaptive", "summarized", false, "", nil, nil},
-		{"budget", "budget", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, nil},
+		{"budget", "budget", "", false, "high", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("high"))}, nil},
 		{"budget without effort", "budget", "", false, "", nil, nil},
-		{"budget+effort", "budget+effort", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, "medium"},
+		{"budget+effort", "budget+effort", "", false, "high", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("high"))}, "high"},
 		// An explicit off means the user turned thinking off, so it must not
 		// fall through to the always-on body: no thinking object at all.
 		{"none clears everything, always-on included", "adaptive", "summarized", true, "none", nil, nil},
@@ -152,6 +152,24 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	unknown := protoRes(func(c *registry.Caps) { c.MaxOutputTokens = nil })
 	if b := protoBuild(t, protoReq(""), unknown); b["max_tokens"] != fallbackMaxTokens {
 		t.Fatalf("max_tokens fallback = %v", b["max_tokens"])
+	}
+}
+
+func TestProtocolBuildBody_HighThinkingRejectsUnknownOutputCap(t *testing.T) {
+	res := protoRes(func(c *registry.Caps) {
+		c.MaxOutputTokens = nil
+		c.ThinkingShape = new("budget")
+	})
+	body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(protoReq("high"), res), res)
+	if body != nil {
+		t.Fatalf("body = %v, want no unsafe request", body)
+	}
+	var budgetErr *llm.ContextBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
+	}
+	if budgetErr.Limit != "max_output_tokens" || budgetErr.Maximum != fallbackMaxTokens || budgetErr.OutputTokens != llm.ReasoningBudget("high")+1 {
+		t.Fatalf("ContextBudgetError = %+v, want fail-closed unknown-cap high effort", budgetErr)
 	}
 }
 

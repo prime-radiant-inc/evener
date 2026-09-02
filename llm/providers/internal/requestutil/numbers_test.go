@@ -65,3 +65,17 @@ func TestMinPositiveInt(t *testing.T) {
 		})
 	}
 }
+
+func TestReconcileOutputField(t *testing.T) {
+	body := map[string]any{"max_tokens": json.Number("500")}
+	ReconcileOutputField(body, "max_tokens", new(400), new(300))
+	if got := body["max_tokens"]; got != 300 {
+		t.Fatalf("max_tokens = %v, want 300", got)
+	}
+
+	body = map[string]any{"max_tokens": "unchanged"}
+	ReconcileOutputField(body, "max_tokens", nil, nil)
+	if got := body["max_tokens"]; got != "unchanged" {
+		t.Fatalf("max_tokens = %v, want unchanged value", got)
+	}
+}

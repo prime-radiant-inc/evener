@@ -27,6 +27,14 @@ func MinPositiveInt(values ...int) int {
 	return best
 }
 
+// ReconcileOutputField limits a numeric request-body field to the smallest
+// positive wire value, admitted allocation, or provider output cap.
+func ReconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
+	if ceiling := MinPositiveInt(PositiveInt(body[field]), PositivePointerInt(admitted), PositivePointerInt(outputCap)); ceiling > 0 {
+		body[field] = ceiling
+	}
+}
+
 // PositiveInt converts the numeric forms produced by request-option decoding
 // to an int when the value is positive.
 func PositiveInt(value any) int {

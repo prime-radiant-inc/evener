@@ -1327,7 +1327,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		profile, sys, _, req, fullHistory, reqEffort, prepareErr := s.prepareModelRequestWithError(ctx, round, &timings)
 		if prepareErr != nil {
-			if isLocalContextBudgetError(prepareErr) && !localAdmissionCompacted {
+			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted {
 				s.emit(events.EventWarning, warningDataFromError(
 					"Local context admission failed; compacting context and retrying: "+prepareErr.Error(), prepareErr))
 				localAdmissionCompacted = true
@@ -1355,16 +1355,26 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			if isLocalContextBudgetError(err) && !localAdmissionCompacted {
+			if isLocalContextCompactionError(err) && !localAdmissionCompacted {
 				s.emit(events.EventWarning, warningDataFromError(
 					"Local context admission failed; compacting context and retrying: "+err.Error(), err))
 				localAdmissionCompacted = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
 			}
+			if isLocalContextBudgetError(err) {
+				return "", progressed, err
+			}
 			if isProviderContextLengthError(err) && !providerContextRecovered {
+				failedProvider, failedModel := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
+				if failedProvider == "" {
+					failedProvider = profile.ID()
+				}
+				if failedModel == "" {
+					failedModel = profile.Model()
+				}
 				s.emit(events.EventWarning, warningDataFromError(
-					"Context length exceeded: Provider context disagreement for "+profile.ID()+"/"+profile.Model()+"; compacting context and retrying: "+err.Error(), err))
+					"Context length exceeded: Provider context disagreement for "+failedProvider+"/"+failedModel+"; compacting context and retrying: "+err.Error(), err))
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
