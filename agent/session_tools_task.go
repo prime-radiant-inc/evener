@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -244,14 +245,25 @@ func validateTaskListItemFields(kind string, index int, item map[string]any) err
 			allowed[field] = true
 		}
 	}
+	if _, hasBrief := item["brief"]; hasBrief {
+		if kind == "add" {
+			return fmt.Errorf("add entry %d has invalid field %q; use the required field named %q instead; valid add shape: {type, description, prompt}", index, "brief", "description")
+		}
+		return fmt.Errorf("update entry %d has invalid field %q; valid update shape: {id, status, notes, depends_on, reasoning_effort}", index, "brief")
+	}
+	unknown := make([]string, 0, len(item))
 	for field := range item {
-		if allowed[field] {
-			continue
+		if !allowed[field] {
+			unknown = append(unknown, field)
 		}
-		if field == "brief" {
-			return fmt.Errorf("%s entry %d has invalid field brief; use the required field named description instead; valid add shape: {type, description, prompt}", kind, index)
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		quoted := make([]string, len(unknown))
+		for i, field := range unknown {
+			quoted[i] = strconv.Quote(field)
 		}
-		return fmt.Errorf("%s entry %d has unknown field %q", kind, index, field)
+		return fmt.Errorf("%s entry %d has unknown fields %s", kind, index, strings.Join(quoted, ", "))
 	}
 	return nil
 }
@@ -516,7 +528,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 // taskStateData is the single conversion from transport-neutral task semantics
 // to event task state, shared by start seeds and mutation carriers.
 func taskStateData(summary taskpkg.ListSummary) events.TaskStateData {
-	data := events.TaskStateData{Total: summary.Total, Done: summary.Done}
+	data := events.TaskStateData{
+		Total:     summary.Total,
+		Done:      summary.Done,
+		Cancelled: summary.Cancelled,
+		Remaining: summary.Remaining,
+	}
 	if summary.Current != nil {
 		data.Current = &events.TaskSummaryData{
 			ID:          summary.Current.ID,
@@ -531,6 +548,8 @@ func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string
 	return events.TaskUpdatedData{
 		Total:                   state.Total,
 		Done:                    state.Done,
+		Cancelled:               state.Cancelled,
+		Remaining:               state.Remaining,
 		Current:                 state.Current,
 		TaskStoreOwnerSessionID: taskStoreOwnerSessionID,
 		TaskPublicationEpoch:    publicationEpoch,

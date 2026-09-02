@@ -936,7 +936,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	if !strings.Contains(appendRes.Output, "Added 2 task(s)") {
 		t.Fatalf("append output missing acknowledgment: %s", appendRes.Output)
 	}
-	if !strings.Contains(appendRes.Output, "Progress: 0/2") {
+	if !strings.Contains(appendRes.Output, "Progress: 0 done, 0 cancelled, 2 remaining (2 total)") {
 		t.Fatalf("append output missing progress: %s", appendRes.Output)
 	}
 
@@ -1332,9 +1332,9 @@ func TestTaskStore_Progress(t *testing.T) {
 	}
 
 	// No tasks done yet.
-	total, done, cancelled, remaining := s.Progress()
-	if total != 3 || done != 0 || cancelled != 0 || remaining != 3 {
-		t.Fatalf("initial: expected total=3 done=0 cancelled=0 remaining=3, got total=%d done=%d cancelled=%d remaining=%d", total, done, cancelled, remaining)
+	total, done := s.Progress()
+	if total != 3 || done != 0 {
+		t.Fatalf("initial: expected total=3 done=0, got total=%d done=%d", total, done)
 	}
 
 	// Mark one done, one cancelled.
@@ -1345,9 +1345,13 @@ func TestTaskStore_Progress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	total, done, cancelled, remaining = s.Progress()
-	if total != 3 || done != 1 || cancelled != 1 || remaining != 1 {
-		t.Fatalf("after updates: expected total=3 done=1 cancelled=1 remaining=1, got total=%d done=%d cancelled=%d remaining=%d", total, done, cancelled, remaining)
+	total, done = s.Progress()
+	if total != 3 || done != 1 {
+		t.Fatalf("after updates: expected total=3 done=1, got total=%d done=%d", total, done)
+	}
+	summary := s.Summary()
+	if summary.Cancelled != 1 || summary.Remaining != 1 {
+		t.Fatalf("after updates: Summary=%+v, want cancelled=1 remaining=1", summary)
 	}
 }
 

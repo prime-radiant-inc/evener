@@ -476,14 +476,21 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	return added, nil
 }
 
-// Progress returns total, done, cancelled, and remaining task counts from one
-// locked snapshot. Done and cancelled remain distinct terminal outcomes.
-func (s *TaskStore) Progress() (total, done, cancelled, remaining int) {
+// Summary returns a rich outcome snapshot from one locked task-store view.
+func (s *TaskStore) Summary() ListSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return Summarize(s.tasks)
+}
 
+// Progress returns (total tasks, completed tasks) for compatibility with its
+// original public contract. Call Summary for distinct cancelled and remaining
+// counts.
+func (s *TaskStore) Progress() (total, done int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	summary := Summarize(s.tasks)
-	return summary.Total, summary.Done, summary.Cancelled, summary.Remaining
+	return summary.Total, summary.Done
 }
 
 // NextEligible returns open tasks whose dependencies are all satisfied

@@ -459,7 +459,14 @@ func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
 				map[string]any{"id": 1, "status": "done"},
 				map[string]any{"id": 1, "brief": "invalid"},
 			}},
-			want: []string{"brief", "description"},
+			want: []string{"brief", "id", "status", "notes"},
+		},
+		{
+			name: "unknown fields report in sorted order",
+			args: map[string]any{"update": []any{
+				map[string]any{"id": 1, "zeta": true, "alpha": true},
+			}},
+			want: []string{`unknown fields "alpha", "zeta"`},
 		},
 	}
 	for _, tc := range tests {
@@ -479,6 +486,22 @@ func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
 				t.Fatalf("invalid batch mutated tasks: %+v", view)
 			}
 		})
+	}
+}
+
+func TestTaskStateDataCarriesDistinctOutcomes(t *testing.T) {
+	summary := taskpkg.Summarize([]taskpkg.Task{
+		{Status: taskpkg.TaskDone},
+		{Status: taskpkg.TaskCancelled},
+		{Status: taskpkg.TaskOpen},
+	})
+	state := taskStateData(summary)
+	if state.Total != 3 || state.Done != 1 || state.Cancelled != 1 || state.Remaining != 1 {
+		t.Fatalf("taskStateData() = %+v, want total=3 done=1 cancelled=1 remaining=1", state)
+	}
+	updated := taskUpdatedData(summary, "owner", 7, 9)
+	if updated.Total != 3 || updated.Done != 1 || updated.Cancelled != 1 || updated.Remaining != 1 {
+		t.Fatalf("taskUpdatedData() = %+v, want total=3 done=1 cancelled=1 remaining=1", updated)
 	}
 }
 

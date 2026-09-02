@@ -448,18 +448,18 @@ func TestSummarizeReturnsOwnedCurrentTask(t *testing.T) {
 	}
 }
 
-func TestTaskStore_ProgressReturnsDistinctOutcomeCounts(t *testing.T) {
+func TestTaskStore_ProgressPreservesLegacyCountsAndSummaryAddsOutcomes(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
 	_ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
 	_ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}})
-	total, done, cancelled, remaining := s.Progress()
-	if total != 3 || done != 1 || cancelled != 1 || remaining != 1 {
-		t.Errorf("Progress = (%d,%d,%d,%d), want (3,1,1,1)", total, done, cancelled, remaining)
+	total, done := s.Progress()
+	if total != 3 || done != 1 {
+		t.Errorf("Progress = (%d,%d), want (3,1)", total, done)
 	}
-	summary := Summarize(s.View())
-	if total != summary.Total || done != summary.Done || cancelled != summary.Cancelled || remaining != summary.Remaining {
-		t.Errorf("Progress = (%d,%d,%d,%d), Summarize = (%d,%d,%d,%d)", total, done, cancelled, remaining, summary.Total, summary.Done, summary.Cancelled, summary.Remaining)
+	summary := s.Summary()
+	if total != summary.Total || done != summary.Done || summary.Cancelled != 1 || summary.Remaining != 1 {
+		t.Errorf("Progress = (%d,%d), Summary = (%d,%d,%d,%d)", total, done, summary.Total, summary.Done, summary.Cancelled, summary.Remaining)
 	}
 }
 

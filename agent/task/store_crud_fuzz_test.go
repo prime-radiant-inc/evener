@@ -244,19 +244,20 @@ func checkTaskInvariants(t *testing.T, s *TaskStore) {
 		t.Fatalf("committed dependency graph contains a cycle")
 	}
 
-	// Progress mirrors the view's distinct outcomes.
-	total, done, cancelled, remaining := s.Progress()
+	// Progress preserves its legacy fields; Summary mirrors all outcomes.
+	total, done := s.Progress()
 	if total != len(view) {
 		t.Fatalf("Progress total=%d, want %d", total, len(view))
 	}
 	if done != doneCount {
 		t.Fatalf("Progress done=%d, want %d", done, doneCount)
 	}
-	if cancelled != cancelledCount {
-		t.Fatalf("Progress cancelled=%d, want %d", cancelled, cancelledCount)
+	summary := s.Summary()
+	if summary.Cancelled != cancelledCount {
+		t.Fatalf("Summary cancelled=%d, want %d", summary.Cancelled, cancelledCount)
 	}
-	if remaining != len(view)-doneCount-cancelledCount {
-		t.Fatalf("Progress remaining=%d, want %d", remaining, len(view)-doneCount-cancelledCount)
+	if summary.Remaining != len(view)-doneCount-cancelledCount {
+		t.Fatalf("Summary remaining=%d, want %d", summary.Remaining, len(view)-doneCount-cancelledCount)
 	}
 
 	// NextEligible: open tasks with satisfied deps, strictly ID-sorted.

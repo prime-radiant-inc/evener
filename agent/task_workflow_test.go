@@ -22,7 +22,7 @@ func TestFormatTaskList(t *testing.T) {
 	if strings.Contains(out, "{") || strings.Contains(out, `"id"`) || strings.Contains(out, `"status"`) {
 		t.Fatalf("task list must be plain text, not JSON:\n%s", out)
 	}
-	for _, want := range []string{"1.", "Set up parser", "done", "in_progress", "Wire the lexer", "depends on: 1", "effort: high", "deferred until parser lands", "1/3"} {
+	for _, want := range []string{"1.", "Set up parser", "done", "in_progress", "Wire the lexer", "depends on: 1", "effort: high", "deferred until parser lands", "1 done, 0 cancelled, 2 remaining (3 total)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("task list missing %q:\n%s", want, out)
 		}
