@@ -161,6 +161,63 @@ func TestReadTranscriptCompositeInvalidJobReportsParseAndModeFields(t *testing.T
 	}
 }
 
+func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
+	t.Run("job", func(t *testing.T) {
+		stateDir := t.TempDir()
+		sess := newSession(t, withConfig(SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		}))
+		jobID := identifier.MustNewJobID(sess.ID())
+		seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+		ref := "job:" + jobID
+		repairedCh := drainRepairedEvents(sess)
+
+		defaults := execReadTranscriptThroughSession(t, sess, "job-string-zeros", map[string]any{"transcript_ref": ref, "expand_turn": "0", "output_match": "", "context_lines": "0"})
+		if defaults.IsError {
+			t.Fatalf("stringified job defaults failed: %s", defaults.Output)
+		}
+		search := execReadTranscriptThroughSession(t, sess, "job-string-search-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": "1"})
+		if search.IsError {
+			t.Fatalf("stringified job search context failed: %s", search.Output)
+		}
+		meaningful := execReadTranscriptThroughSession(t, sess, "job-string-nonzero-expand", map[string]any{"transcript_ref": ref, "expand_turn": "1"})
+		if !meaningful.IsError {
+			t.Fatal("nonzero job expand_turn succeeded")
+		}
+		assertReadRepairChanges(t, closeAndDrainRepairedEvents(sess, repairedCh), "job-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+	})
+
+	t.Run("artifact", func(t *testing.T) {
+		sess := newArtifactTestRoot(t)
+		ref, err := sess.artifactStore.Put([]byte("ready\n"))
+		if err != nil {
+			t.Fatalf("put artifact: %v", err)
+		}
+		repairedCh := drainRepairedEvents(sess)
+
+		defaults := execReadTranscriptThroughSession(t, sess, "artifact-string-zeros", map[string]any{"transcript_ref": ref, "expand_turn": "0", "output_match": "", "context_lines": "0"})
+		if defaults.IsError {
+			t.Fatalf("stringified artifact defaults failed: %s", defaults.Output)
+		}
+		search := execReadTranscriptThroughSession(t, sess, "artifact-string-search-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": "1"})
+		if search.IsError {
+			t.Fatalf("stringified artifact search context failed: %s", search.Output)
+		}
+		meaningful := execReadTranscriptThroughSession(t, sess, "artifact-string-nonzero-expand", map[string]any{"transcript_ref": ref, "expand_turn": "1"})
+		if !meaningful.IsError {
+			t.Fatal("nonzero artifact expand_turn succeeded")
+		}
+		assertReadRepairChanges(t, closeAndDrainRepairedEvents(sess, repairedCh), "artifact-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+	})
+}
+
 func execReadTranscriptThroughSession(t *testing.T, sess *Session, id string, args map[string]any) tool.ExecResult {
 	t.Helper()
 	encoded, err := json.Marshal(args)
@@ -194,6 +251,31 @@ func assertReadRepairTelemetry(t *testing.T, repaired []events.ToolCallRepairedD
 			}
 			if !found {
 				t.Fatalf("repair changes = %v, want normalized %q", event.Changes, field)
+			}
+		}
+		return
+	}
+	t.Fatalf("no read_transcript repair event for %q: %+v", callID, repaired)
+}
+
+func assertReadRepairChanges(t *testing.T, repaired []events.ToolCallRepairedData, callID string, want ...string) {
+	t.Helper()
+	for _, event := range repaired {
+		if event.ToolName != "read_transcript" || event.CallID != callID {
+			continue
+		}
+		if len(event.Changes) != len(want) {
+			t.Fatalf("repair changes = %v, want one change per %v", event.Changes, want)
+		}
+		for _, prefix := range want {
+			count := 0
+			for _, change := range event.Changes {
+				if strings.HasPrefix(change, prefix) {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("repair changes = %v, want exactly one %q", event.Changes, prefix)
 			}
 		}
 		return
