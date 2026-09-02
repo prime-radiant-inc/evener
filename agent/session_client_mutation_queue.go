@@ -1241,13 +1241,15 @@ func (s *Session) recordClientMutationFailure(
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
-		if err := s.writeTranscriptDurable(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() {
+				s.clientMutationAppendedTurn = true
+				s.history = append(s.history, turn)
+			},
+		); err != nil {
 			return fmt.Errorf("append failed client start input: %w", err)
 		}
-		s.mu.Lock()
-		s.clientMutationAppendedTurn = true
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_user"); err != nil {
 			return err
 		}
@@ -1261,13 +1263,15 @@ func (s *Session) recordClientMutationFailure(
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
 		turn.Error = info
-		if err := s.writeTranscriptDurable(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() {
+				s.clientMutationAppendedTurn = true
+				s.history = append(s.history, turn)
+			},
+		); err != nil {
 			return fmt.Errorf("append failed client start diagnostic: %w", err)
 		}
-		s.mu.Lock()
-		s.clientMutationAppendedTurn = true
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.clientMutationFailureFault("after_failure"); err != nil {
 			return err
 		}
@@ -1493,9 +1497,13 @@ func removeClientMutationSteeringOrder(snapshot *clientMutationSnapshot, clientM
 	}
 }
 
-func (s *Session) appendClientMutationTranscript(turn schema.Turn) error {
+// appendClientMutationTranscriptLocked writes a client-mutation turn's
+// transcript entry; callers hold attentionMu (their append/write pair —
+// appendTurnAfterTranscriptWrite). The test seam runs under that hold; seam
+// closures only record turns or inject errors.
+func (s *Session) appendClientMutationTranscriptLocked(turn schema.Turn) error {
 	if s.clientMutationTranscriptAppend != nil {
 		return s.clientMutationTranscriptAppend(turn)
 	}
-	return s.writeTranscriptDurable(turn)
+	return s.writeTranscriptDurableLocked(turn)
 }

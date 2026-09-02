@@ -1693,7 +1693,10 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 				return failure
 			}
 		}
-		if err := s.appendClientMutationTranscript(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			func() error { return s.appendClientMutationTranscriptLocked(turn) },
+			func() { s.history = append(s.history, turn) },
+		); err != nil {
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
@@ -1713,9 +1716,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}

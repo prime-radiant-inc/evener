@@ -1014,6 +1014,14 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			// not be able to publish over it and silently resurrect the
 			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			// Deleting a turn strictly before the N4 boundary shifts every
+			// in-flight turn left by one, so the boundary moves with them —
+			// atomically with the mutation.
+			// Deleting AT the boundary leaves it correct: the next in-flight
+			// turn slides into the boundary index.
+			if index < s.turnHistoryBaseline {
+				s.turnHistoryBaseline--
+			}
 			s.bumpHistoryRevisionLocked()
 			return
 		}
