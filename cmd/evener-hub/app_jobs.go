@@ -43,7 +43,7 @@ func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.
 // for another source's ref. Only then does it read the session's persisted
 // jobs.jsonl. ctx flows through to LoadSessionJobActivityTree so a canceled
 // or timed-out hub request stops the persisted-tree walk instead of reading
-// every visited session's journal regardless (#448).
+// every visited session's journal regardless.
 func pastJobsListResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.JobsListParams) (appwire.JobsListResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{Ref: params.Ref})
 	if !ok {

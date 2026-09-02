@@ -265,22 +265,18 @@ func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testi
 }
 
 // TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates is the
-// wire-level red test for roborev's #807 addendum finding (MAJOR): the
-// independent scoped re-review proved empirically that
-// pastEntryThread's own containment fix -- degrading a corrupt shared
-// delegates.jsonl to zero delegates plus a diagnostic string, rather than
-// hard-failing (see agent's
+// wire-level test proving pastEntryThread's containment behavior actually
+// reaches API consumers: degrading a corrupt shared delegates.jsonl to zero
+// delegates plus a diagnostic string, rather than hard-failing (see agent's
 // TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing,
-// which proves the AGENT-side half of this) -- never actually reached the
-// WIRE: the only place that attached delegateDiagnostics was the
-// len(delegates) != 0 per-delegate loop, which never runs when delegates
-// is empty. This drives that exact containment case (an unterminated
-// trailing batch line, decoding to zero delegates with a
-// delegate_journal_torn_tail diagnostic -- cheaper to construct here than
-// the oversized-line case, but goes through the identical
-// scanRootDelegateState degrade-to-diagnostic path already proven above)
-// all the way through pastThreadForRead, and asserts the diagnostic lands
-// on the actual appwire.Thread payload's new
+// which proves the AGENT-side half of this), must still surface that
+// diagnostic on the WIRE even though there is no delegate left to attach it
+// to. This drives that exact containment case (an unterminated trailing
+// batch line, decoding to zero delegates with a delegate_journal_torn_tail
+// diagnostic -- cheaper to construct here than the oversized-line case, but
+// goes through the identical scanRootDelegateState degrade-to-diagnostic
+// path already proven above) all the way through pastThreadForRead, and
+// asserts the diagnostic lands on the actual appwire.Thread payload's
 // EvenerDiagnostics.DelegateDiagnostics field -- the wire itself, not an
 // internal agent.LoadSessionDelegateStatus return value.
 func TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates(t *testing.T) {

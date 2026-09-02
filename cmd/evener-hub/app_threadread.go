@@ -431,12 +431,11 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 		}
 		// delegateDiagnostics must reach the wire independently of whether
 		// any delegate exists to also carry a copy on its own Diagnostics
-		// above via appwire.EvenerDiagnostics.DelegateDiagnostics: the
-		// len(delegates) != 0 gate used to be the ONLY place
-		// delegateDiagnostics was attached anywhere, silently dropping a
-		// diagnostic about the shared delegates.jsonl itself (e.g.
+		// above: a diagnostic about the shared delegates.jsonl itself (e.g.
 		// delegatestore.ErrLineTooLong, which degrades to zero delegates)
-		// (roborev's #807 addendum finding, MAJOR).
+		// has no delegate to attach to, so
+		// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
+		// that can still carry it to the wire.
 		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
 	if includeTurns {
