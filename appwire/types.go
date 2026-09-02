@@ -524,8 +524,8 @@ type TaskSummary struct {
 type TaskAggregate struct {
 	Total     int          `json:"total"`
 	Done      int          `json:"done"`
-	Cancelled int          `json:"cancelled"`
-	Remaining int          `json:"remaining"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
 	Current   *TaskSummary `json:"current,omitempty"`
 }
 
@@ -703,8 +703,8 @@ type TaskUpdatedParams struct {
 	Ref       string       `json:"ref"`
 	Total     int          `json:"total"`
 	Done      int          `json:"done"`
-	Cancelled int          `json:"cancelled"`
-	Remaining int          `json:"remaining"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
 	Current   *TaskSummary `json:"current,omitempty"`
 }
 

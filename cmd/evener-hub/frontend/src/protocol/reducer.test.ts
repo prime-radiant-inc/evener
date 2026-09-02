@@ -3052,7 +3052,11 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     },
     2000,
   );
-  expect(model.tasks).toEqual({ total: 7, done: 7, current: { id: 7, description: "replacement task" } });
+  expect(model.tasks).toEqual({
+    total: 7,
+    done: 7,
+    current: { id: 7, description: "replacement task" },
+  });
 
   model = applyNotification(
     model,
@@ -3060,6 +3064,23 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     3000,
   );
   expect(model.tasks).toEqual({ total: 7, done: 7 });
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/task/updated",
+      params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 1, cancelled: 5, remaining: 1 },
+    },
+    4000,
+  );
+  expect(model.tasks).toEqual({ total: 7, done: 1, cancelled: 5, remaining: 1 });
+
+  model = applyNotification(
+    model,
+    { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 3, done: 0, cancelled: 3 } },
+    5000,
+  );
+  expect(model.tasks).toEqual({ total: 3, done: 0, cancelled: 3, remaining: 0 });
 
   const rehydrated = testHydrate({
     evener: {

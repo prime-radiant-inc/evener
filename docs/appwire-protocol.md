@@ -1421,8 +1421,8 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `total` | `int` |  |  |
 | `done` | `int` |  |  |
-| `cancelled` | `int` |  |  |
-| `remaining` | `int` |  |  |
+| `cancelled` | `int` | yes |  |
+| `remaining` | `int` | yes |  |
 | `current` | `*appwire.TaskSummary` | yes |  |
 
 
