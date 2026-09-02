@@ -89,12 +89,9 @@ func applyAnthropicTools(body map[string]any, req llm.Request, webSearch bool) e
 	return nil
 }
 
-// reconcileThinkingContract enforces the Anthropic request contracts that
-// depend on the FINAL overlaid body state. Any active thinking shape triggers
-// tool-choice downgrade; only budget-shaped thinking triggers the strict
-// max_tokens > budget_tokens rule.
-func reconcileThinkingContract(body map[string]any, req llm.Request, res registry.Resolved) error {
-	thinkingBudget := finalThinkingBudget(body)
+// normalizeThinkingToolChoice applies the tool-choice restriction shared by
+// completion and token-count requests whenever thinking is active.
+func normalizeThinkingToolChoice(body map[string]any) {
 	if finalThinkingActive(body) {
 		if tc, ok := body["tool_choice"].(map[string]any); ok {
 			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
@@ -102,6 +99,13 @@ func reconcileThinkingContract(body map[string]any, req llm.Request, res registr
 			}
 		}
 	}
+}
+
+// reconcileThinkingContract enforces the completion-only Anthropic request
+// contracts that depend on the FINAL overlaid body state.
+func reconcileThinkingContract(body map[string]any, req llm.Request, res registry.Resolved) error {
+	normalizeThinkingToolChoice(body)
+	thinkingBudget := finalThinkingBudget(body)
 	requestutil.ReconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
 	if thinkingBudget > 0 {
 		mt := intFromAny(body["max_tokens"])

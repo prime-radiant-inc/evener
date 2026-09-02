@@ -2,7 +2,10 @@
 // protocols.
 package requestutil
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 // PositivePointerInt returns the pointed-to value when it is positive.
 func PositivePointerInt(value *int) int {
@@ -44,18 +47,25 @@ func PositiveInt(value any) int {
 			return value
 		}
 	case int64:
-		if value > 0 {
-			return int(value)
-		}
+		return positiveInt64(value)
 	case float64:
-		if value > 0 {
-			return int(value)
+		parsed, err := strconv.Atoi(strconv.FormatFloat(value, 'f', -1, 64))
+		if err == nil && parsed > 0 {
+			return parsed
 		}
 	case json.Number:
 		parsed, err := value.Int64()
-		if err == nil && parsed > 0 {
-			return int(parsed)
+		if err == nil {
+			return positiveInt64(parsed)
 		}
+	}
+	return 0
+}
+
+func positiveInt64(value int64) int {
+	converted := int(value)
+	if value > 0 && int64(converted) == value {
+		return converted
 	}
 	return 0
 }

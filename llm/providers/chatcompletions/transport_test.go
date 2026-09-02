@@ -120,6 +120,59 @@ func TestStreamEmitsTextThenToolCallThenFinish(t *testing.T) {
 	}
 }
 
+func TestCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*Protocol, llm.Request, registry.Resolved) error
+	}{
+		{"complete", chatJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			_, err := p.Complete(context.Background(), req, res)
+			return err
+		}},
+		{"stream", chatSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			stream, err := p.Stream(context.Background(), req, res)
+			if err != nil {
+				return err
+			}
+			for event := range stream.Events() {
+				if event.Type == llm.StreamEventError {
+					return event.Err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := server(t, http.StatusOK, tc.body)
+			res := liveRes(srv, nil)
+			res.Transport.Body = map[string]any{"max_tokens": 1000}
+			req := userReq("hi")
+			req.MaxTokens = new(100)
+			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
+				t.Fatal(err)
+			}
+			if got.body["max_tokens"] != float64(100) {
+				t.Fatalf("wire max_tokens = %v, want admitted 100; body = %v", got.body["max_tokens"], got.body)
+			}
+		})
+	}
+}
+
+func TestCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing.T) {
+	srv, got := server(t, http.StatusOK, chatJSON)
+	res := liveRes(srv, func(caps *registry.Caps) { caps.Fields[registry.FieldMaxTokens] = false })
+	res.Transport.Body = map[string]any{"max_tokens": 1000}
+	req := userReq("hi")
+	req.MaxTokens = new(100)
+	if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got.body["max_tokens"]; exists {
+		t.Fatalf("disabled max_tokens restored after prune: %v", got.body)
+	}
+}
+
 func TestStreamInbandErrorBecomesTypedError(t *testing.T) {
 	srv, _ := server(t, 200, "data: {\"error\":{\"message\":\"Rate limit reached\",\"type\":\"rate_limit_error\",\"code\":429}}\n\n")
 	p := &Protocol{Client: srv.Client()}

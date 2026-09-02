@@ -18,6 +18,7 @@ func TestPositiveInt(t *testing.T) {
 		{name: "zero", value: 0},
 		{name: "negative", value: -1},
 		{name: "fraction below one", value: 0.5},
+		{name: "positive fraction", value: 1.5},
 		{name: "non-integral json number", value: json.Number("1.5")},
 		{name: "unknown", value: "11"},
 	} {

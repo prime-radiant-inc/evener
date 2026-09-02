@@ -13,6 +13,10 @@ import (
 // thinking bodies, ThinkingDisplay and ThinkingAlwaysOn refine it, and no
 // model-id branch remains.
 func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]any, err error) {
+	return buildProtocolBodyForOperation(req, res, true)
+}
+
+func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enforceCompletionContract bool) (out map[string]any, err error) {
 	// Every error this builder returns carries the instance, not the
 	// protocol id or a vendor literal (spec §7.5: provider identity is
 	// res.Instance). RewriteErrorProvider leaves errors with no provider
@@ -77,8 +81,11 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 			body[k] = v
 		}
 	}
-	if err := reconcileThinkingContract(body, req, res); err != nil {
-		return nil, err
+	normalizeThinkingToolChoice(body)
+	if enforceCompletionContract {
+		if err := reconcileThinkingContract(body, req, res); err != nil {
+			return nil, err
+		}
 	}
 	return body, nil
 }

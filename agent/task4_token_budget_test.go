@@ -243,6 +243,56 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 	}
 }
 
+func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeErrAdapter{name: "usage-primary", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("usage-primary", 403, "primary rejected", nil, nil)
+		},
+	}})
+	client.Register(&fakeAdapter{name: "usage-fallback", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			resp := finalResponse("fallback")
+			resp.Usage = llm.Usage{InputTokens: 77, OutputTokens: 3, TotalTokens: 80}
+			return resp
+		},
+	}})
+	primary := testOpenAICompatProfile("usage-primary", "primary", 0)
+	fallback := testOpenAICompatProfile("usage-fallback", "fallback", 0)
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.strategy = nil
+	sess.cfg.ModelFallbacks = []string{"usage-fallback/fallback"}
+	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	sess.contextMgr.RecordInputTokens(42, 0)
+
+	modelResp, usedReq, _, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
+		Provider: primary.ID(),
+		Model:    primary.Model(),
+		Messages: []llm.Message{llm.User("task")},
+	}, nil, "", 0)
+	if err != nil {
+		t.Fatalf("callModelWithFallback: %v", err)
+	}
+	sess.recordResponseUsage(modelResp.Response, usedReq)
+	if got := sess.contextMgr.LastInputTokens(); got != 77 {
+		t.Fatalf("fallback input tokens = %d, want 77", got)
+	}
+
+	// Preparing the next primary attempt retargets the manager. The fallback's
+	// exact measurement must be invalidated rather than reused as primary data.
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("next task"))}
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); err != nil {
+		t.Fatalf("prepare next primary request: %v", err)
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("primary retarget kept fallback input tokens = %d, want 0", got)
+	}
+}
+
 func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T) {
 	client := llm.NewClient()
 	primaryAdapter := &fakeErrAdapter{name: "delta-primary", steps: []func(llm.Request) (llm.Response, error){

@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -87,6 +88,62 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	}
 	message := warnings[0].Message
 	for _, want := range []string{"Output allocation reduced", "budget-warning", "warning-model", "requested=131072", "admitted="} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("warning message %q missing %q", message, want)
+		}
+	}
+}
+
+func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	})
+	profile := NewOpenAIProfile("gpt-5.4")
+	resolved := profile.Resolved()
+	resolved.Caps.ContextWindow = new(524_288)
+	resolved.Caps.MaxOutputTokens = new(131_072)
+	profile = withTestSessionNamer(client, profile.WithResolved(resolved))
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		NoProjectPrompts:            true,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+			responsesContinuationShadowEstimateFunc: func(llm.Request) (int, bool) {
+				return 500_000, true
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("prior user marker")),
+		phase9MatchingAnchor("resp_warning_shadow"),
+		schema.NewTurn(schema.TurnUserInput, llm.User("current user marker")),
+	)
+	sess.contextMgr.RecordInputTokens(400_000, len(sess.history))
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if req.MaxTokens == nil || *req.MaxTokens >= 100_000 {
+		t.Fatalf("continuation MaxTokens = %v, want the shadow to force a second reduction", req.MaxTokens)
+	}
+	sess.Close()
+	warnings := warningEvents(<-eventsDone)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want one final reduction warning: %+v", len(warnings), warnings)
+	}
+	message := warnings[0].Message
+	for _, want := range []string{"requested=131072", "admitted="} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("warning message %q missing %q", message, want)
 		}

@@ -28,6 +28,15 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: endpointFamily, Method: method, URL: url, Body: body, Headers: headers, Req: req, Res: res, Client: p.Client}
 }
 
+func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, method, url, body, req, res)
+	call.FinalizeBody = func(finalBody map[string]any) error {
+		reconcilePreparedOutput(finalBody, req, res.Caps)
+		return nil
+	}
+	return call
+}
+
 // Complete implements llm.Protocol.
 func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Response, error) {
 	if protocolhttp.RequiresStreamingComplete(res) {
@@ -37,7 +46,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	call := p.call("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
 	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
 		return fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
 	})
@@ -49,7 +58,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if err != nil {
 		return nil, err
 	}
-	call := p.call("chat.completions(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("chat.completions(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeStream(sctx, cancel, resp, s, req, res, r, attempt)
 	})

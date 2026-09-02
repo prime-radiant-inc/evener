@@ -130,6 +130,60 @@ func TestProtocolStreamDecodesThroughTheSharedDecoder(t *testing.T) {
 	}
 }
 
+func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*Protocol, llm.Request, registry.Resolved) error
+	}{
+		{"complete", messagesJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			_, err := p.Complete(context.Background(), req, res)
+			return err
+		}},
+		{"stream", messagesSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			stream, err := p.Stream(context.Background(), req, res)
+			if err != nil {
+				return err
+			}
+			for event := range stream.Events() {
+				if event.Type == llm.StreamEventError {
+					return event.Err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, tc.body })
+			res := protoLive(srv)
+			res.Transport.Body = map[string]any{"max_tokens": 1000}
+			req := protoReq("")
+			req.MaxTokens = new(100)
+			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
+				t.Fatal(err)
+			}
+			if got.body["max_tokens"] != float64(100) {
+				t.Fatalf("wire max_tokens = %v, want admitted 100; body = %v", got.body["max_tokens"], got.body)
+			}
+		})
+	}
+}
+
+func TestProtocolCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing.T) {
+	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, messagesJSON })
+	res := protoLive(srv)
+	res.Caps.Fields[registry.FieldMaxTokens] = false
+	res.Transport.Body = map[string]any{"max_tokens": 1000}
+	req := protoReq("")
+	req.MaxTokens = new(100)
+	if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got.body["max_tokens"]; exists {
+		t.Fatalf("disabled max_tokens restored after prune: %v", got.body)
+	}
+}
+
 func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
 	srv, got := protoServer(t, func(r *http.Request) (int, string) {
 		switch {
@@ -168,6 +222,30 @@ func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
 	}
 	if _, err := p.CountTokens(context.Background(), req, res); !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestProtocolCountTokensDoesNotEnforceCompletionThinkingBudget(t *testing.T) {
+	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, `{"input_tokens":21}` })
+	req := protoReq("")
+	req.MaxTokens = new(1000)
+	req.Tools = []llm.ToolDefinition{{Name: "lookup"}}
+	req.ToolChoice = &llm.ToolChoice{Mode: "required"}
+	req.ProviderOptions = map[string]any{
+		registry.ProtocolAnthropic: map[string]any{
+			"thinking": map[string]any{"type": "enabled", "budget_tokens": 1024},
+		},
+	}
+	n, err := (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), req, protoLive(srv))
+	if err != nil || n != 21 {
+		t.Fatalf("CountTokens = %d, %v; want 21, nil", n, err)
+	}
+	if _, exists := got.body["max_tokens"]; exists {
+		t.Fatalf("count body must not include max_tokens: %v", got.body)
+	}
+	toolChoice, _ := got.body["tool_choice"].(map[string]any)
+	if gotType, _ := toolChoice["type"].(string); gotType != "auto" {
+		t.Fatalf("count body tool_choice type = %q, want auto: %v", gotType, got.body)
 	}
 }
 

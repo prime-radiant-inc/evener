@@ -107,18 +107,27 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		}
 		body["generationConfig"] = maps.Clone(overlaid)
 	}
-	reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens)
+	if err := reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens); err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 
-func reconcileOutputField(body map[string]any, admitted, outputCap *int) {
-	genCfg, _ := body["generationConfig"].(map[string]any)
+func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {
+	ceiling := requestutil.MinPositiveInt(requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap))
+	if ceiling == 0 {
+		return nil
+	}
+	genCfg, ok := body["generationConfig"].(map[string]any)
+	if !ok && body["generationConfig"] != nil {
+		return &llm.ConfigurationError{Message: "google generationConfig must be an object"}
+	}
 	if genCfg == nil {
-		return
+		genCfg = map[string]any{}
+		body["generationConfig"] = genCfg
 	}
-	if ceiling := requestutil.MinPositiveInt(requestutil.PositiveInt(genCfg["maxOutputTokens"]), requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap)); ceiling > 0 {
-		genCfg["maxOutputTokens"] = ceiling
-	}
+	genCfg["maxOutputTokens"] = requestutil.MinPositiveInt(requestutil.PositiveInt(genCfg["maxOutputTokens"]), ceiling)
+	return nil
 }
 
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {

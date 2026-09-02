@@ -171,6 +171,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
 	s.mu.Unlock()
+	if s.contextMgr != nil {
+		s.contextMgr.SetProfile(profile)
+	}
 
 	t.SystemPrompt = time.Since(tPhaseStart)
 
@@ -277,13 +280,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
-	// Admission rewrites req.MaxTokens to the admitted value. The post-planning
-	// pass therefore cannot repeat this warning unchanged: it warns only if
-	// continuation planning introduces a further reduction.
-	s.warnOutputReduction(profile, budget)
+	initialBudget := budget
 	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
+	}
+	// Admission runs before and after continuation planning because the latter
+	// can introduce a larger full-history shadow. Report the two-stage result as
+	// one reduction from the caller's original request to the final allocation.
+	if initialBudget.LimitedOutput {
+		budget.RequestedOutput = initialBudget.RequestedOutput
+		budget.LimitedOutput = true
 	}
 	s.warnOutputReduction(profile, budget)
 	// Stage the mid-turn attention this round's request presents. The guard
@@ -1065,6 +1072,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// request used for downstream logging (transcript,
 				// EventAssistantTextStart fallback path, etc).
 				req = fbReq
+				if s.contextMgr != nil {
+					s.contextMgr.SetProfile(fbProfile)
+				}
 				attempt.RequestModel = fbReq.Model
 				attempt.HistoryMode = llm.HistoryModeFullHistory
 				break

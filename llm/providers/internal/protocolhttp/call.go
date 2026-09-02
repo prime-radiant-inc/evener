@@ -50,7 +50,7 @@ type Call struct {
 	Reclassify func(status int, body []byte, err error) error
 	// FinalizeBody, when set, runs after transport constants and the request
 	// preparer, immediately before the final body is marshaled.
-	FinalizeBody func(body map[string]any)
+	FinalizeBody func(body map[string]any) error
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -101,7 +101,9 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 		}
 	}
 	if c.FinalizeBody != nil && c.Body != nil {
-		c.FinalizeBody(c.Body)
+		if err := c.FinalizeBody(c.Body); err != nil {
+			return nil, err
+		}
 	}
 	p := &Prepared{Request: httpReq, PrunedFields: pruned}
 	if c.Body != nil {
