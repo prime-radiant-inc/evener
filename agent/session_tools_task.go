@@ -398,10 +398,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// when the agent actually transitions one to in_progress,
 					// either manually or via auto-advance.
 					tasks := store.View()
-					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "", epoch, revision)
+					summary := taskpkg.Summarize(tasks)
+					taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 					deps.emit(events.EventTaskUpdated, taskUpdate)
 					return tool.StateResult{
-						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), taskpkg.Summarize(tasks).ProgressText()),
+						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), summary.ProgressText()),
 						State:  tasks,
 					}, nil
 				}
