@@ -86,6 +86,35 @@ func TestProtocolBuildBody(t *testing.T) {
 	}
 }
 
+func TestProtocolBuildBody_NullableEnumOmitsNullOnGeminiWire(t *testing.T) {
+	req := protoReq("")
+	req.Tools = []llm.ToolDefinition{{
+		Name: "read_transcript",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"format": map[string]any{
+					"type": []any{"string", "null"},
+					"enum": []any{"outline", "markdown", nil},
+				},
+			},
+		},
+	}}
+
+	tools := protoBuild(t, req, protoRes(nil))["tools"].([]map[string]any)
+	params := tools[0]["functionDeclarations"].([]map[string]any)[0]["parameters"].(map[string]any)
+	format := params["properties"].(map[string]any)["format"].(map[string]any)
+	if got, want := format["type"], "string"; got != want {
+		t.Fatalf("Gemini format type = %#v, want %q", got, want)
+	}
+	if got, want := format["nullable"], true; got != want {
+		t.Fatalf("Gemini format nullable = %#v, want %t", got, want)
+	}
+	if got, want := format["enum"], []any{"outline", "markdown"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Gemini format enum = %#v, want %#v", got, want)
+	}
+}
+
 // TestProtocolBuildBody_WebSearchNilCapsIsFailOpen pins the mechanism
 // behind issue #738's endpoint gate on this protocol too (the Responses
 // and Anthropic twins share the name): the gate here,

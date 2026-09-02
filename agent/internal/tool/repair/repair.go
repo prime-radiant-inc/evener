@@ -107,7 +107,7 @@ func applyCoercions(params, args map[string]any) []Change {
 		if !ok {
 			continue
 		}
-		typ, _ := p["type"].(string)
+		typ := coercibleScalarType(p["type"])
 		switch typ {
 		case "boolean":
 			s, ok := raw.(string)
@@ -142,6 +142,52 @@ func applyCoercions(params, args map[string]any) []Change {
 		}
 	}
 	return changes
+}
+
+func coercibleScalarType(v any) string {
+	if typ, ok := v.(string); ok {
+		return typ
+	}
+	var types []string
+	switch v := v.(type) {
+	case []any:
+		types = make([]string, 0, len(v))
+		for _, item := range v {
+			typ, ok := item.(string)
+			if !ok {
+				return ""
+			}
+			types = append(types, typ)
+		}
+	case []string:
+		types = v
+	default:
+		return ""
+	}
+	if len(types) != 2 {
+		return ""
+	}
+	var scalar string
+	nullable := false
+	for _, typ := range types {
+		if typ == "null" {
+			nullable = true
+			continue
+		}
+		if scalar != "" {
+			return ""
+		}
+		scalar = typ
+	}
+	if !nullable {
+		return ""
+	}
+	switch scalar {
+	case "boolean", "integer", "number":
+		return scalar
+	default:
+		return ""
+	}
 }
 
 // dropUnknown removes keys matching no declared property, but only when the
