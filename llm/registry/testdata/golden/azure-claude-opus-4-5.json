@@ -70,7 +70,8 @@
       "temperature": true,
       "top_p": true
     },
-    "thinking_shape": "budget+effort"
+    "thinking_shape": "budget+effort",
+    "web_search": false
   },
   "provenance": {
     "ContextWindow": "snapshot/row",

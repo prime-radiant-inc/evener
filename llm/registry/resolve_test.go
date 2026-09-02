@@ -636,6 +636,48 @@ base = "google-vertex-anthropic"
 	}
 }
 
+// TestResolve_WebSearchNilCapFailsClosed pins the gate's nil
+// normalization: an instance resolving off its provider's first-party
+// endpoint whose provider never granted web_search anywhere
+// (Caps.WebSearch nil across every layer) must still land as an explicit
+// false - the protocol adapters' own gates treat nil as permissive (trust
+// the caller's req.WebSearch, see each protocol's
+// *_WebSearchNilCapsIsFailOpen test), so a bare nil on a gated endpoint
+// would let a caller's request flag send the hosted tool anyway. The
+// normalization is silent hardening, not a user-visible strip: no warning
+// and no provenance repoint, both of which name the gate only when it
+// overturns a true some layer actually set. On the first-party endpoint
+// nil stays nil - no catalog opinion, none invented.
+func TestResolve_WebSearchNilCapFailsClosed(t *testing.T) {
+	cfg := `
+[providers.groqgw]
+base = "groq"
+base_url = "https://gw.example/v1"
+`
+	r := fixtureLoad(t, map[string]string{"GROQ_API_KEY": "k"}, cfg)
+	res := mustResolve(t, r, "groqgw/llama-3.3-70b-versatile")
+	if bp(res.Caps.WebSearch) != "false" {
+		t.Errorf("diverged nil-capped instance: web_search = %s, want explicit false (nil is fail-open at the adapter layer)", bp(res.Caps.WebSearch))
+	}
+	if hasWarning(res, "web_search disabled") {
+		t.Errorf("the nil normalization must be silent - no layer's true was overturned: %v", res.Warnings)
+	}
+	if tag, ok := res.Provenance["WebSearch"]; ok {
+		t.Errorf("no layer set web_search and the gate changed no true, so no provenance entry belongs: %q", tag)
+	}
+	inst, err := r.ResolveInstance("groqgw")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if bp(inst.Caps.WebSearch) != "false" || hasWarning(inst, "web_search disabled") {
+		t.Errorf("ResolveInstance parity: web_search = %s warnings = %v, want a silent explicit false", bp(inst.Caps.WebSearch), inst.Warnings)
+	}
+	fp := mustResolve(t, r, "groq/llama-3.3-70b-versatile")
+	if fp.Caps.WebSearch != nil {
+		t.Errorf("first-party groq never granted web_search: nil must stay nil, got %s", bp(fp.Caps.WebSearch))
+	}
+}
+
 // TestResolve_WebSearchInheritedCuratedRowBaseURL guards against treating
 // an inherited curated row's own base_url as a user override: Google
 // Vertex MaaS rows carry a row-level base_url straight from models.dev's

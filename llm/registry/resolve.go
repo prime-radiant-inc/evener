@@ -299,6 +299,11 @@ func webSearchExplicit(prov map[string]string) bool {
 // nil'ing a capability this gate means to deny is fail-open for any caller
 // that does not separately re-derive it through BoolValue.
 //
+// The same fail-open reasoning covers a WebSearch no layer ever set: off
+// the first-party endpoint a nil is normalized to an explicit false too,
+// silently - no layer's value was overturned, so the warning and the
+// provenance repoint stay reserved for a stripped true.
+//
 // The rewrite - prov's entry repointed at the gate, a warning returned -
 // happens only when the gate is the reason the value is false: caps.WebSearch
 // was true before it ran. When an earlier, non-config layer already set
@@ -308,9 +313,14 @@ func webSearchExplicit(prov map[string]string) bool {
 // reason and returns no warning.
 //
 // Returns the warning naming why WebSearch was stripped; empty when
-// nothing fired, including when the value was already false.
+// nothing fired, including when the value was already false or only ever
+// nil (the normalization is silent).
 func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID, ref, altID string) string {
-	if caps.WebSearch == nil || webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ref, altID) {
+	if webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ref, altID) {
+		return ""
+	}
+	if caps.WebSearch == nil {
+		caps.WebSearch = new(false)
 		return ""
 	}
 	if !*caps.WebSearch {
