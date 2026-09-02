@@ -678,6 +678,140 @@ base_url = "https://gw.example/v1"
 	}
 }
 
+// TestResolve_WebSearchRawDelimiterReject pins sameEndpointURL's raw-string
+// delimiter reject: the HTTP builder concatenates the endpoint path onto
+// the RAW base string, so a base URL carrying "?" or "#" sends the endpoint
+// into the query or fragment instead of the path - and a bare trailing "#"
+// is invisible to a parsed comparison (url.URL has no ForceFragment;
+// Fragment is "" for "https://h" and "https://h#" alike), so parsing alone
+// would call it first-party while the request goes somewhere else. No
+// curated base resolves to a URL containing either delimiter
+// (TestCuratedBaseURLsCarryNoQueryOrFragment), so any appearance at all is
+// noncanonical and strips.
+func TestResolve_WebSearchRawDelimiterReject(t *testing.T) {
+	cfg := `
+[providers.fragbare]
+base = "openai"
+base_url = "https://api.openai.com/v1#"
+
+[providers.fragtext]
+base = "openai"
+base_url = "https://api.openai.com/v1#x"
+
+[providers.fragmid]
+base = "openai"
+base_url = "https://api.openai.com/#/v1"
+
+[providers.querybare]
+base = "openai"
+base_url = "https://api.openai.com/v1?"
+
+[providers.querytext]
+base = "openai"
+base_url = "https://api.openai.com/v1?tenant=1"
+`
+	r := fixtureLoad(t, nil, cfg)
+	for _, c := range []struct{ ref, desc string }{
+		{"fragbare/gpt-5.5", "a bare trailing # parses identically to no fragment but redirects the concatenated endpoint into the fragment"},
+		{"fragtext/gpt-5.5", "a fragment with content is off the canonical shape"},
+		{"fragmid/gpt-5.5", "a mid-string # truncates the path the endpoint was meant to extend"},
+		{"querybare/gpt-5.5", "a bare trailing ? redirects the concatenated endpoint into the query"},
+		{"querytext/gpt-5.5", "a query string is off the canonical shape"},
+	} {
+		res := mustResolve(t, r, c.ref)
+		if bp(res.Caps.WebSearch) != "false" {
+			t.Errorf("%s: web_search = %s, want false (%s)", c.ref, bp(res.Caps.WebSearch), c.desc)
+		}
+		if !hasWarning(res, "web_search disabled") {
+			t.Errorf("%s: expected the web_search-disabled warning (%s): %v", c.ref, c.desc, res.Warnings)
+		}
+	}
+}
+
+// TestCuratedBaseURLsCarryNoQueryOrFragment pins the precondition the raw
+// delimiter reject stands on: no curated provider template, curated var
+// default, or curated row base_url carries "?" or "#", in the embedded
+// catalog or the test fixture, so rejecting the delimiters outright can
+// never misjudge vendor data. A curated entry that ever needs one must
+// revisit sameEndpointURL first.
+func TestCuratedBaseURLsCarryNoQueryOrFragment(t *testing.T) {
+	for name, r := range map[string]*Registry{"embedded": embeddedLoad(t), "fixture": fixtureLoad(t, nil, "")} {
+		for _, id := range r.ProviderIDs() {
+			p, _ := r.Provider(id)
+			if strings.ContainsAny(p.Transport.BaseURL, "?#") {
+				t.Errorf("%s: %s: provider base_url %q carries a query or fragment delimiter", name, id, p.Transport.BaseURL)
+			}
+			for varName, v := range p.Transport.Vars {
+				if strings.ContainsAny(v, "?#") {
+					t.Errorf("%s: %s: var default %s = %q carries a query or fragment delimiter", name, id, varName, v)
+				}
+			}
+			for rowID, m := range p.Models {
+				if m.Transport != nil && strings.ContainsAny(m.Transport.BaseURL, "?#") {
+					t.Errorf("%s: %s.models.%q: row base_url %q carries a query or fragment delimiter", name, id, rowID, m.Transport.BaseURL)
+				}
+			}
+		}
+	}
+}
+
+// TestResolve_WebSearchFromScratchProviderFailsClosed pins the gate on a
+// provider with no curated identity at all (a from-scratch [providers.X]
+// with its own protocol and base_url): with no vendor record there is no
+// canonical endpoint to prove anything against, so the resolution is gated
+// exactly like a diverged one - a nil WebSearch normalizes to a silent
+// explicit false (the adapters' nil-is-permissive gates would otherwise
+// fail open for a direct req.WebSearch = true), a non-explicit true (a
+// user glob) is stripped with the warning, and the instance's own explicit
+// web_search = true remains the escape hatch.
+func TestResolve_WebSearchFromScratchProviderFailsClosed(t *testing.T) {
+	cfg := `
+[providers.custom]
+protocol = "openai-responses"
+base_url = "https://custom.example/v1"
+
+[providers.customoptin]
+protocol = "openai-responses"
+base_url = "https://custom.example/v1"
+web_search = true
+
+[providers.customglob]
+protocol = "openai-responses"
+base_url = "https://custom.example/v1"
+[providers.customglob.models."m*"]
+web_search = true
+`
+	r := fixtureLoad(t, nil, cfg)
+	res := mustResolve(t, r, "custom/m1")
+	if bp(res.Caps.WebSearch) != "false" || hasWarning(res, "web_search disabled") {
+		t.Errorf("custom/m1: web_search = %s warnings = %v, want a silent explicit false (nil is fail-open at the adapter layer)", bp(res.Caps.WebSearch), res.Warnings)
+	}
+	if tag, ok := res.Provenance["WebSearch"]; ok {
+		t.Errorf("custom/m1: the silent nil normalization must leave no provenance entry: %q", tag)
+	}
+	inst, err := r.ResolveInstance("custom")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if bp(inst.Caps.WebSearch) != "false" || hasWarning(inst, "web_search disabled") {
+		t.Errorf("ResolveInstance(custom): web_search = %s warnings = %v, want a silent explicit false", bp(inst.Caps.WebSearch), inst.Warnings)
+	}
+	optin := mustResolve(t, r, "customoptin/m1")
+	if bp(optin.Caps.WebSearch) != "true" || hasWarning(optin, "web_search disabled") {
+		t.Errorf("customoptin/m1: web_search = %s warnings = %v, want the explicit opt-in honored silently", bp(optin.Caps.WebSearch), optin.Warnings)
+	}
+	glob := mustResolve(t, r, "customglob/m1")
+	if bp(glob.Caps.WebSearch) != "false" || !hasWarning(glob, "web_search disabled") {
+		t.Errorf("customglob/m1: web_search = %s warnings = %v, want the non-explicit glob true stripped with the warning", bp(glob.Caps.WebSearch), glob.Warnings)
+	}
+	if got := glob.Provenance["WebSearch"]; got != "gate/first-party" {
+		t.Errorf("customglob/m1: a stripped true repoints provenance at the gate, got %q", got)
+	}
+	if !hasWarning(glob, "not customglob's first-party API") {
+		t.Errorf("customglob/m1: the warning must name the instance when there is no curated provider id: %v", glob.Warnings)
+	}
+}
+
 // TestResolve_WebSearchInheritedCuratedRowBaseURL guards against treating
 // an inherited curated row's own base_url as a user override: Google
 // Vertex MaaS rows carry a row-level base_url straight from models.dev's
