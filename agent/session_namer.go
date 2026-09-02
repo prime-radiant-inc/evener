@@ -63,24 +63,37 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 		return sessionNameResult{}, errors.New("session namer: model is empty")
 	}
 	maxTokens := 80
-	temp := 0.0
+	// #834: gate temperature on the resolved cheap-model row. A Bedrock-style
+	// wire id with no catalog row resolves synthesized; the protocol baseline
+	// marks temperature send-by-default, so nothing prunes it and the provider
+	// 400s — one dead request per session. Naming is deterministic decoration,
+	// so omitting the parameter on doubt costs nothing.
+	temp := sessionNamerTemperature(client, profile, model)
 	// Naming is best-effort decoration with its own short deadline. It opts out
 	// of the turn retry wall budget so a naming storm does not add load while a
 	// real turn waits on the same provider bucket.
 	namerPolicy := llm.DefaultRetryPolicy()
 	namerPolicy.RateLimitWallBudget = 0
-	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
+	opts := llm.GenerateObjectOptions{
 		Client:      client,
 		Provider:    profile.CheapProvider(),
 		Model:       model,
 		System:      new(sessionNamerSystemPrompt),
 		Prompt:      new(sessionNamerUserPrompt(source, text, currentTitle)),
-		Temperature: &temp,
+		Temperature: temp,
 		MaxTokens:   &maxTokens,
 		Sleep:       sleep,
 		RetryPolicy: &namerPolicy,
 		Schema:      sessionNameSchema(),
-	})
+	}
+	res, err := llm.GenerateObject(callCtx, opts)
+	if err != nil && temp != nil && isTemperatureUnsupported(err) {
+		// Defense in depth: a row that vouches for temperature can still be
+		// wrong (an id the catalog mis-knows). Retry exactly once with the
+		// parameter dropped rather than failing the whole naming attempt.
+		opts.Temperature = nil
+		res, err = llm.GenerateObject(callCtx, opts)
+	}
 	if err != nil {
 		return sessionNameResult{}, fmt.Errorf("session namer: %w", err)
 	}
@@ -126,6 +139,36 @@ func sessionNamerModel(profile *provider.Profile) string {
 		return model
 	}
 	return strings.TrimSpace(profile.Model())
+}
+
+// sessionNamerTemperature returns the naming call's temperature setting: a
+// pointer to 0.0 when the resolved cheap-model row vouches for the parameter,
+// nil when it does not or cannot vouch. The unknown cases — a synthesized row
+// (no catalog row, no live listing) or an instance that fails to resolve —
+// carry no facts, and an unknown capability must read as "do not send" rather
+// than "send": a wrong send is a provider 400 (issue #834), while a wrong omit
+// only loses a determinism hint the naming prompt's low-stakes output barely
+// uses.
+func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
+	if client == nil || profile == nil || model == "" {
+		return nil
+	}
+	res, err := client.Resolve(profile.CheapProvider() + "/" + model)
+	if err != nil || res.Synthesized {
+		return nil
+	}
+	if !res.Caps.Fields["temperature"] {
+		return nil
+	}
+	temp := 0.0
+	return &temp
+}
+
+// isTemperatureUnsupported reports whether err is a rejected-request error
+// whose message names the temperature parameter (e.g. Bedrock's "Unsupported
+// parameter: 'temperature' is not supported with this model").
+func isTemperatureUnsupported(err error) bool {
+	return llm.Kind(err) == llm.KindInvalidRequest && strings.Contains(err.Error(), "temperature")
 }
 
 func configuredSessionNamerModel(profile *provider.Profile) string {
