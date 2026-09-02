@@ -92,6 +92,69 @@ func TestNameSession_OmitsTemperatureForSynthesizedRows(t *testing.T) {
 	}
 }
 
+// TestNameSession_OmitsTemperatureForLiveOnlyRows: a live-listed model with no
+// catalog row resolves non-synthesized, but its temperature flag is the
+// protocol baseline — not a catalog fact. The gate must still omit the
+// parameter (roborev on #835: live-only rows bypassed the synthesized check).
+func TestNameSession_OmitsTemperatureForLiveOnlyRows(t *testing.T) {
+	t.Parallel()
+	reg := bedrockishRegistry(t)
+	// A live listing on the openai instance advertising a model the catalog
+	// does not know: resolves via the "live" step, non-synthesized.
+	reg.ApplyLive("bedrock", []registry.Model{{ID: "us.openai.gpt-live-only-9"}})
+	adapter := &temperatureSpyAdapter{
+		name: "bedrock",
+		respondWith: func(req llm.Request, call int) (llm.Response, error) {
+			if req.Temperature != nil {
+				t.Errorf("call %d: namer sent temperature to a live-only model", call)
+			}
+			return llm.Response{Message: llm.Assistant(`{"name":"Fix Parser Bug"}`)}, nil
+		},
+	}
+	client := llm.NewClient(llm.WithRegistry(reg))
+	client.Register(adapter)
+
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "bedrock/us.openai.gpt-live-only-9")
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the parser", "", noNamerSleep)
+	if err != nil {
+		t.Fatalf("nameSession: %v", err)
+	}
+	if got.Name != "Fix Parser Bug" {
+		t.Fatalf("Name = %q, want Fix Parser Bug", got.Name)
+	}
+	if len(adapter.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(adapter.calls))
+	}
+}
+
+// TestNameSession_SendsTemperatureForGoogleRows: Google rows key their
+// temperature capability on generationConfig.temperature, not temperature;
+// a supported Google model must still receive the parameter (roborev on
+// #835: the fixed key read as missing and dropped it for all Google models).
+func TestNameSession_SendsTemperatureForGoogleRows(t *testing.T) {
+	t.Parallel()
+	adapter := &temperatureSpyAdapter{
+		name: "google",
+		respondWith: func(req llm.Request, call int) (llm.Response, error) {
+			if req.Temperature == nil {
+				t.Errorf("call %d: namer omitted temperature on a supported Google model", call)
+			}
+			return llm.Response{Message: llm.Assistant(`{"name":"Fix Parser Bug"}`)}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "google/gemini-2.5-pro")
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the parser", "", noNamerSleep)
+	if err != nil {
+		t.Fatalf("nameSession: %v", err)
+	}
+	if got.Name != "Fix Parser Bug" {
+		t.Fatalf("Name = %q, want Fix Parser Bug", got.Name)
+	}
+}
+
 // TestNameSession_OmitsTemperatureForFalseCapability: moonshotai's catalog rows
 // carry fields.temperature=false; the namer must omit the parameter.
 func TestNameSession_OmitsTemperatureForFalseCapability(t *testing.T) {
