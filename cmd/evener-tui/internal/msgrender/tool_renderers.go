@@ -450,6 +450,9 @@ func init() {
 		Verb: func(_ ToolArgs) string { return "delegate" },
 		Target: func(args ToolArgs) string {
 			task := args.Str("prompt")
+			if task == "" {
+				task = args.Str("task") // brief key in transcripts recorded before the rename
+			}
 			if len(task) > 80 {
 				task = task[:80] + "…"
 			}
