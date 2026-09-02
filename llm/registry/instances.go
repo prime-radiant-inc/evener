@@ -138,9 +138,12 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // The canonical resolution admits values from the actual resolution's own
 // variable lookup only where they cannot move the request off the vendor's
 // infrastructure (canonicalVarLookup): path-position vars pass through
-// verbatim, authority-position vars resolve only from curated defaults or
-// a host rule's own derivation and otherwise stay unexpanded, failing the
-// comparison against any actually-resolved URL - fail closed.
+// verbatim; authority-affecting vars - template-authority placeholders and
+// the inputs the host rule derives the authority from - resolve only from
+// curated defaults, the rule's own derivation, or a rule input whose
+// validated shape proves it harmless (a label-shaped Vertex location), and
+// otherwise stay unexpanded, failing the comparison against any
+// actually-resolved URL - fail closed.
 //
 // ref and altID feed the canonical glob replay (canonicalRow) so curated
 // glob rows match the same ids they matched in the actual resolution;
@@ -159,7 +162,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		row = r.canonicalRow(base, ref, altID, rowID, proto)
 	}
 	canonical := r.transportShape(base, row, proto)
-	lookup := r.canonicalVarLookup(rec, base, canonical.BaseURL)
+	lookup := r.canonicalVarLookup(rec, base, canonical)
 	noEnv := func(string) (string, bool) { return "", false }
 	baseURL, _, _ := r.resolveBaseURLVia(canonical, lookup, noEnv)
 	canonical.BaseURL = baseURL
@@ -210,27 +213,65 @@ func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) M
 }
 
 // canonicalVarLookup supplies variable values for the canonical resolution
-// of the base_url template tpl. Path-position vars take the actual
-// resolution's own value (rec's full lookup: user vars, environment,
+// of the transport shape's base_url template. Path-position vars take the
+// actual resolution's own value (rec's full lookup: user vars, environment,
 // curated defaults) - both sides then expand identically, and a path value
 // can never rewrite the authority the template terminated before the var
-// began. Authority-position vars (authorityVars) take only the provider's
-// curated default, never a user- or environment-supplied value; a host
-// rule may still derive one (resolveBaseURLVia's vertex-location case
-// derives vertexHost(GOOGLE_VERTEX_LOCATION) - a path-position lookup -
-// when this lookup declines GOOGLE_VERTEX_HOST), and a var with neither
-// default nor derivation stays unexpanded, so the canonical URL cannot
-// equal any actually-resolved one: fail closed.
-func (r *Registry) canonicalVarLookup(rec, base *record, tpl string) func(string) (string, bool) {
-	authority := authorityVars(tpl)
+// began. Authority-affecting vars - a placeholder inside the template's
+// authority region (authorityVars), or any input the shape's host RULE
+// consumes to derive the authority (hostRuleAuthorityVars; template
+// position cannot see those, and a poisoned derivation input rewrites the
+// host on both sides identically, comparing equal) - never take a raw user
+// or environment value. They resolve from the provider's curated default,
+// or from the actual value only when the rule's own input validation
+// proves it cannot move the derivation off the vendor's domain
+// (hostRuleInputAdmissible: a label-shaped Vertex location). Anything else
+// stays unexpanded, so the canonical URL cannot equal any actually-resolved
+// one: fail closed.
+func (r *Registry) canonicalVarLookup(rec, base *record, shape Transport) func(string) (string, bool) {
+	authority := authorityVars(shape.BaseURL)
+	for _, name := range hostRuleAuthorityVars(shape.HostRule) {
+		authority[name] = true
+	}
 	actual := r.varLookup(rec)
 	defaults := r.defaultVarLookup(base)
 	return func(name string) (string, bool) {
 		if authority[name] {
+			if v, ok := actual(name); ok && hostRuleInputAdmissible(shape.HostRule, name, v) {
+				return v, true
+			}
 			return defaults(name)
 		}
 		return actual(name)
 	}
+}
+
+// hostRuleAuthorityVars names the variables a host rule consumes to
+// produce the authority. The rule's derivation runs on these values, so
+// they are authority-affecting wherever they appear: GOOGLE_VERTEX_LOCATION
+// sits in path position in the Vertex template, yet vertexHost builds the
+// host from it. OLLAMA_BASE_URL is deliberately absent - the ollama-host
+// rule reads it from the environment, which the canonical resolution
+// already severs (resolveBaseURLVia's env parameter).
+func hostRuleAuthorityVars(rule string) []string {
+	switch rule {
+	case HostRuleVertexLocation:
+		return []string{"GOOGLE_VERTEX_HOST", "GOOGLE_VERTEX_LOCATION"}
+	case HostRuleOllamaHost:
+		return []string{"OLLAMA_HOST"}
+	}
+	return nil
+}
+
+// hostRuleInputAdmissible reports whether a host rule's derivation input
+// may take the user's own value on the canonical side: only when its
+// shape proves the derivation cannot leave the vendor's domain. A Vertex
+// location that is a single hostname label (validVertexLocation) composes
+// into *.googleapis.com and nothing else. No other rule input qualifies -
+// GOOGLE_VERTEX_HOST and OLLAMA_HOST are the authority itself, and only a
+// curated default or the derivation may supply those.
+func hostRuleInputAdmissible(rule, name, value string) bool {
+	return rule == HostRuleVertexLocation && name == "GOOGLE_VERTEX_LOCATION" && validVertexLocation(value)
 }
 
 // authorityVars names the {VAR} placeholders in tpl's authority region -
