@@ -93,24 +93,23 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
   return [...latestByID.values(), ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }
 
-// A valid mutation is exactly what the legacy validAppend/validUpdate gates
-// accepted (renderer.js:4786-4788): append with a non-empty tasks array, or
-// update with a non-empty updates array. Anything else (view, or a malformed
+// A valid mutation is a current add/update batch or its historical
+// action:append/action:update equivalent. Anything else (view, or a malformed
 // call) is not a card.
 function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
-  if (action === "append") {
-    const tasks = asObjectArray(args.tasks);
+  if (action === "append" || (action === "" && asObjectArray(args.add).length > 0)) {
+    const tasks = action === "append" ? asObjectArray(args.tasks) : asObjectArray(args.add);
     if (tasks.length === 0) return undefined;
     return tasks.map((task, i) => ({
       key: `append_${i}`,
       touch: "added",
-      label: str(task, "description") ?? str(task, "prompt") ?? "(untitled task)",
+      label: str(task, "description") ?? (action === "append" ? str(task, "prompt") : undefined) ?? "(untitled task)",
     }));
   }
-  if (action === "update") {
-    const updates = finalUpdates(asObjectArray(args.updates));
+  if (action === "update" || action === "") {
+    const updates = finalUpdates(action === "update" ? asObjectArray(args.updates) : asObjectArray(args.update));
     if (updates.length === 0) return undefined;
     // Only a real status change earns a row - matching the legacy card, which
     // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and

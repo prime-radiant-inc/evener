@@ -56,6 +56,27 @@ test("appending N tasks renders one row per newly appended task", () => {
   expect(screen.getByText("check the thing")).toBeTruthy();
 });
 
+test("current add and update arguments render task mutation rows", () => {
+  const { unmount } = renderItem(
+    taskItem(
+      { add: [{ type: "implement", description: "build the current thing" }] },
+      "Added 1 task(s). Progress: 0/1 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("task-card-row").textContent).toContain("build the current thing");
+
+  unmount();
+  renderItem(
+    taskItem(
+      { update: [{ id: 3, status: "cancelled", notes: "no longer needed" }] },
+      "Updated 3→cancelled. Progress: 0 done, 1 cancelled, 0 remaining (1 total).",
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  expect(row.getAttribute("data-touch")).toBe("cancelled");
+  expect(row.textContent).toContain("no longer needed");
+});
+
 test("the collapsed append summary includes the added marker and task title as plain text", () => {
   renderItem(
     taskItem(
