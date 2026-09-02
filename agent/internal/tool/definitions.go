@@ -175,7 +175,25 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":                 map[string]any{"type": "string"},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "The brief. It is the only input the delegate receives: none of your conversation, the user's message, or what you have learned reaches it. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). For a unit with more than one step, put the steps in task_list rather than here.",
+				},
+				"task_list": map[string]any{
+					"type":        "array",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must stand alone: the delegate sees no other context.",
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
+							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
+						},
+						"required": []string{"title", "prompt"},
+					},
+				},
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
@@ -197,7 +215,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 					"additionalProperties": true,
 				},
 			},
-			"required": []string{"task"},
+			"required": []string{"prompt"},
 		},
 	}
 	props := def.Parameters["properties"].(map[string]any)

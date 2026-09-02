@@ -593,3 +593,57 @@ func TestTaskUpdate_EmptyStatusStillValidates(t *testing.T) {
 		t.Fatal("bogus status must still be rejected")
 	}
 }
+
+func TestExpandParentTasks_ReplacesPlaceholder(t *testing.T) {
+	got := ExpandParentTasks(
+		[]TaskTemplate{{Title: "lead", Prompt: "p"}, {Insert: "parent_tasks", Title: "placeholder"}, {Title: "tail"}},
+		[]TaskTemplate{{Title: "from-parent-1", Prompt: "a"}, {Title: "from-parent-2", Prompt: "b"}},
+	)
+	want := []string{"lead", "from-parent-1", "from-parent-2", "tail"}
+	if len(got) != len(want) {
+		t.Fatalf("templates = %d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Title != w {
+			t.Errorf("template[%d] = %q, want %q", i, got[i].Title, w)
+		}
+	}
+}
+
+func TestExpandParentTasks_AppendsWithoutPlaceholder(t *testing.T) {
+	got := ExpandParentTasks(
+		[]TaskTemplate{{Title: "role-default", Prompt: "p"}},
+		[]TaskTemplate{{Title: "from-parent", Prompt: "a"}},
+	)
+	if len(got) != 2 || got[0].Title != "role-default" || got[1].Title != "from-parent" {
+		t.Fatalf("templates = %+v, want role default followed by the parent task", got)
+	}
+	if only := ExpandParentTasks(nil, []TaskTemplate{{Title: "from-parent", Prompt: "a"}}); len(only) != 1 || only[0].Title != "from-parent" {
+		t.Fatalf("templates with no role defaults = %+v, want just the parent task", only)
+	}
+}
+
+func TestExpandParentTasks_KeepsPlaceholderTaskWithoutParentTasks(t *testing.T) {
+	got := ExpandParentTasks([]TaskTemplate{{Insert: "parent_tasks", Title: "Scan workspace", Prompt: "p"}}, nil)
+	if len(got) != 1 || got[0].Title != "Scan workspace" {
+		t.Fatalf("templates = %+v, want the placeholder kept as a task", got)
+	}
+}
+
+func TestPopulateFromTemplates_ParentTasksAppendWithoutPlaceholder(t *testing.T) {
+	s := newTestStore(t)
+	err := s.PopulateFromTemplates(
+		[]TaskTemplate{{Title: "role-default", Prompt: "p"}},
+		[]TaskTemplate{{Title: "from-parent", Prompt: "a", Type: "verify"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.View()
+	if len(got) != 2 {
+		t.Fatalf("tasks = %d, want 2 (role default + parent)", len(got))
+	}
+	if got[1].Description != "from-parent" || got[1].Type != TaskTypeVerify {
+		t.Errorf("parent task not appended: %+v", got[1])
+	}
+}

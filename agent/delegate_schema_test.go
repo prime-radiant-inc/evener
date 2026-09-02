@@ -28,8 +28,8 @@ func TestDelegateAllowanceParamElidedWhenNoOp(t *testing.T) {
 			if !ok {
 				continue
 			}
-			// Identify delegate by its signature params, independent of wire rename.
-			if _, hasTask := props["task"]; hasTask {
+			// Identify delegate by its signature params.
+			if _, hasPrompt := props["prompt"]; hasPrompt {
 				if _, hasAgentType := props["agent_type"]; hasAgentType {
 					return props
 				}

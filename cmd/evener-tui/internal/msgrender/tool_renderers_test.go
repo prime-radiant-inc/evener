@@ -268,7 +268,7 @@ func TestWebSearchRenderer(t *testing.T) {
 
 func TestDelegateRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("delegate")
-	args := toolArgsFromJSON(`{"task":"do something useful"}`)
+	args := toolArgsFromJSON(`{"prompt":"do something useful"}`)
 	if r.Verb(args) != "delegate" {
 		t.Errorf("delegate verb = %q", r.Verb(args))
 	}

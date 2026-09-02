@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 const (
@@ -35,6 +36,7 @@ type delegateArgs struct {
 	Sandbox             string
 	SandboxNet          *bool
 	ResultSchema        map[string]any
+	TaskList            []taskpkg.TaskTemplate
 }
 
 type delegateWorktreeReport struct {

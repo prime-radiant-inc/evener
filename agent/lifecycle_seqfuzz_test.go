@@ -215,7 +215,7 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 	case kindShellBackground:
 		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo bg " + strconv.Itoa(callSeq), "mode": "background"})
 	case kindDelegate:
-		return lifecycleToolCall(id, "delegate", map[string]any{"task": "child task " + strconv.Itoa(callSeq), "delegation_allowance": 0})
+		return lifecycleToolCall(id, "delegate", map[string]any{"prompt": "child task " + strconv.Itoa(callSeq), "delegation_allowance": 0})
 	case kindBoom:
 		return lifecycleToolCall(id, lifecycleBoomTool, map[string]any{})
 	default:

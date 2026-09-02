@@ -1286,7 +1286,7 @@ func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModel
 	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1348,8 +1348,8 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	}
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
-		Task:                          task,
-		Description:                   task,
+		Task:                          brief,
+		Description:                   brief,
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),
@@ -1370,9 +1370,11 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		Provenance:                    s.activeCausalProvenance(),
 		Resumable:                     true,
 	}
+	var roleTasks []task.TaskTemplate
 	if selection.agent != nil {
-		descriptor.TaskTemplates = append(descriptor.TaskTemplates, selection.agent.Tasks...)
+		roleTasks = selection.agent.Tasks
 	}
+	descriptor.TaskTemplates = task.ExpandParentTasks(roleTasks, args.TaskList)
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		descriptor.OriginToolCallID = callID
 	}
