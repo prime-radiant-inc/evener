@@ -214,8 +214,9 @@ type historicalActivityCache struct {
 	// time; a wide or deep TREE can still force unbounded traversal work
 	// (file opens, cache lookups) independent of how cheap any one file's
 	// own read is, which is what this budget still exists to bound.
-	// rootID/now are irrelevant here (only read by the projection-side
-	// continuation/status helpers this budget instance never calls).
+	// rootID/now/revision are irrelevant here (only read by the
+	// projection-side continuation/status helpers this budget instance
+	// never calls).
 	budget *activityBudget
 }
 
@@ -226,12 +227,12 @@ type historicalActivityCache struct {
 // activityBudget.rootID, since load-phase truncation mints no continuation
 // (there is no such thing anymore: #448's incremental-fold round moved ALL
 // truncation to projection, which always mints a real, advancing one — see
-// jobs_activity.go's activityContinuation).
+// jobs_activity.go's activityContinuation). revision 0 for the same reason.
 func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalActivityCache {
 	return &historicalActivityCache{
 		ctx:           ctx,
 		delegateIndex: map[string]*rootDelegateIndex{},
-		budget:        newBoundedActivityBudget(rootID, time.Time{}),
+		budget:        newBoundedActivityBudget(rootID, time.Time{}, 0),
 	}
 }
 
@@ -328,7 +329,13 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
+	// loadActivitySnapshotForParamsWithCache, not the cache-discarding
+	// loadActivitySnapshotForParams: the revision computation below
+	// re-walks the whole tree from the root, and must share this SAME
+	// cache (and so the same work-unit budget) rather than starting a
+	// second, independently-fresh one (roborev finding on #807's r5
+	// review — see loadActivitySnapshotForParamsWithCache's doc comment).
+	snapshot, startDepth, resumeIndex, cache, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
@@ -338,7 +345,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, newHistoricalActivityCache(ctx, sessionID), 0)
+		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, cache, 0)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
