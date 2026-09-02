@@ -82,7 +82,7 @@ func (c *hubPluginsController) Preview(ctx context.Context, params appwire.Plugi
 		}
 		resolved = fullResolved
 	}
-	resolution, err := c.mgr.ResolveForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
+	resolution, err := c.mgr.PreviewForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
 	if err != nil {
 		return appwire.PluginPreviewResponse{}, err
 	}

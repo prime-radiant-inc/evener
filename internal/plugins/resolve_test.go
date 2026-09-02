@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -286,8 +287,8 @@ func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 	if res.Candidates[0].AgentCount < 7 {
 		t.Errorf("bundled coordinator-workflow AgentCount = %d, want the workflow roster", res.Candidates[0].AgentCount)
 	}
-	if len(res.SelectedDirs) != 1 || !strings.HasPrefix(res.SelectedDirs[0], m.Root) {
-		t.Fatalf("SelectedDirs = %v, want one materialized dir under %s", res.SelectedDirs, m.Root)
+	if len(res.SelectedDirs) != 1 || filepath.Dir(res.SelectedDirs[0]) != filepath.Join(m.Root, "bundled") {
+		t.Fatalf("SelectedDirs = %v, want one materialized dir in %s", res.SelectedDirs, filepath.Join(m.Root, "bundled"))
 	}
 	if _, err := os.Stat(filepath.Join(res.SelectedDirs[0], ".claude-plugin", "plugin.json")); err != nil {
 		t.Errorf("materialized plugin has no manifest: %v", err)
@@ -299,5 +300,130 @@ func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 	}
 	if len(quiet.Candidates) != 0 {
 		t.Errorf("unrequested launch listed bundled candidates: %+v", quiet.Candidates)
+	}
+}
+
+// Bundled plugins publish into an immutable content-addressed directory, so a
+// launch never rewrites a copy an earlier session may still be reading.
+func TestMaterializeBundledPlugin_PublishesContentAddressedDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(m.Root, "bundled", "coordinator-workflow-"+digest)
+	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != want {
+		t.Fatalf("SelectedDirs = %v, want [%s]", res.SelectedDirs, want)
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].Path != want {
+		t.Fatalf("Candidates = %+v, want Path %s", res.Candidates, want)
+	}
+}
+
+func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
+	m := NewManager(t.TempDir())
+	keep := filepath.Join(m.Root, "bundled", "keep")
+	if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".", "..", "", "a/b", "../coordinator-workflow", "/coordinator-workflow"} {
+		if path, err := m.materializeBundledPlugin(name); err == nil {
+			t.Errorf("materializeBundledPlugin(%q) = %s, want an error", name, path)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("a rejected name touched the bundled store: %v", err)
+	}
+}
+
+func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
+	m := NewManager(t.TempDir())
+	first, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(first, "in-use-marker")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first {
+		t.Fatalf("second materialization = %s, want the published %s", second, first)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("published copy was replaced: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("bundled store has %d entries, want only the published copy: %v", len(entries), entries)
+	}
+}
+
+func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
+	m := NewManager(t.TempDir())
+	const workers = 8
+	paths := make([]string, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Go(func() {
+			paths[i], errs[i] = m.materializeBundledPlugin("coordinator-workflow")
+		})
+	}
+	wg.Wait()
+	for i := range workers {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		if paths[i] != paths[0] {
+			t.Fatalf("worker %d published %s, worker 0 published %s", i, paths[i], paths[0])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(paths[0], ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("published copy incomplete: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("bundled store has %d entries after a race, want one: %v", len(entries), entries)
+	}
+}
+
+// Preview only inspects: a bundled plugin is described with the path a launch
+// would publish it at, and the store is never written.
+func TestPreviewForLaunch_DoesNotWriteToTheStore(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("bundled plugin not previewable: %v", err)
+	}
+	want := filepath.Join(m.Root, "bundled", "coordinator-workflow-"+digest)
+	if len(res.Candidates) != 1 || res.Candidates[0].Path != want || res.Candidates[0].Source != LaunchPluginSourceBundled || res.Candidates[0].AgentCount < 7 {
+		t.Fatalf("Candidates = %+v, want the bundled coordinator-workflow at %s", res.Candidates, want)
+	}
+	if _, err := os.Stat(filepath.Join(m.Root, "bundled")); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote to the plugin store (stat err = %v)", err)
 	}
 }

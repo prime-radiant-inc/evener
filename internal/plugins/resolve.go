@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -65,6 +67,47 @@ type LaunchPluginResolution struct {
 // enabled installed plugins. It loads each candidate with the same loader used
 // by session startup, retaining invalid candidates as structured diagnostics.
 func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
+	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
+		path, err := m.materializeBundledPlugin(name)
+		return path, path, err
+	})
+}
+
+// PreviewForLaunch is ResolveForLaunch for inspection only. A requested bundled
+// plugin is loaded from a private temporary copy that is discarded before
+// returning, and described with the store path a launch would publish it at,
+// so previewing never writes to the plugin store.
+func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
+	scratch := ""
+	defer func() {
+		if scratch != "" {
+			_ = os.RemoveAll(scratch)
+		}
+	}()
+	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
+		digest, err := bundledPluginDigest(name)
+		if err != nil {
+			return "", "", err
+		}
+		if scratch == "" {
+			dir, err := os.MkdirTemp("", "evener-bundled-preview-")
+			if err != nil {
+				return "", "", err
+			}
+			scratch = dir
+		}
+		loadPath := filepath.Join(scratch, name)
+		if err := os.CopyFS(loadPath, mustSubFS(bundled.Plugins(), name)); err != nil {
+			return "", "", fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
+		}
+		return loadPath, m.bundledPluginPath(name, digest), nil
+	})
+}
+
+// resolveForLaunch builds the inventory. bundledPath supplies, for a requested
+// bundled plugin, the directory to load it from and the path to report; it
+// returns fs.ErrNotExist when no bundled plugin has that name.
+func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string, bundledPath func(name string) (loadPath, reportPath string, err error)) (LaunchPluginResolution, error) {
 	resolution := LaunchPluginResolution{
 		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
 		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
@@ -83,8 +126,8 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 		}
 	}
 
-	add := func(path string, source LaunchPluginSource, marketplace, registryVersion, registryName string) {
-		instance, err := enabledLoad(path)
+	add := func(loadPath, path string, source LaunchPluginSource, marketplace, registryVersion, registryName string) {
+		instance, err := enabledLoad(loadPath)
 		if err != nil {
 			name := registryName
 			message := err.Error()
@@ -127,7 +170,7 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 	}
 
 	for _, path := range explicitDirs {
-		add(path, LaunchPluginSourceDirectory, "", "", "")
+		add(path, path, LaunchPluginSourceDirectory, "", "", "")
 	}
 
 	items, err := m.List()
@@ -141,7 +184,7 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 		// Deliberately do not filter item.Broken. List's validation is a useful
 		// snapshot, but loading here gives Preview a structured diagnostic and
 		// avoids turning a broken candidate into a registry-level failure.
-		add(item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin)
+		add(item.InstallPath, item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin)
 	}
 
 	if enabledNames != nil {
@@ -155,8 +198,8 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 			if !seen[name] {
 				// Bundled plugins join the inventory only by request, so an
 				// unremarkable launch never picks them up.
-				if path, err := m.materializeBundledPlugin(name); err == nil {
-					add(path, LaunchPluginSourceBundled, "", "", name)
+				if loadPath, path, err := bundledPath(name); err == nil {
+					add(loadPath, path, LaunchPluginSourceBundled, "", "", name)
 				} else if !errors.Is(err, fs.ErrNotExist) {
 					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
@@ -173,29 +216,79 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 	return resolution, nil
 }
 
-// materializeBundledPlugin copies the bundled plugin named name out of the
-// binary into <root>/bundled/<name>, replacing any earlier copy so the on-disk
-// plugin always matches the running binary. Returns fs.ErrNotExist when no
-// bundled plugin has that name.
+// materializeBundledPlugin publishes the bundled plugin named name under the
+// store root as <Root>/bundled/<name>-<digest>, where digest covers the
+// plugin's embedded contents. A published directory is immutable: it is never
+// rewritten or removed, so sessions already reading it are safe, and a new
+// binary with different contents publishes beside it. Publication is atomic:
+// the copy is staged in a private directory and renamed into place, and a
+// concurrent publisher that loses the rename adopts the winner's copy.
 func (m *Manager) materializeBundledPlugin(name string) (string, error) {
-	if name == "" || name != filepath.Base(name) {
-		return "", fs.ErrNotExist
+	digest, err := bundledPluginDigest(name)
+	if err != nil {
+		return "", err
+	}
+	dest := m.bundledPluginPath(name, digest)
+	if _, err := os.Stat(dest); err == nil {
+		return dest, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", err
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".stage-")
+	if err != nil {
+		return "", fmt.Errorf("stage bundled plugin %s: %w", name, err)
+	}
+	if err := os.CopyFS(staging, mustSubFS(bundled.Plugins(), name)); err != nil {
+		_ = os.RemoveAll(staging)
+		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		_ = os.RemoveAll(staging)
+		if _, statErr := os.Stat(dest); statErr == nil {
+			return dest, nil
+		}
+		return "", fmt.Errorf("publish bundled plugin %s: %w", name, err)
+	}
+	return dest, nil
+}
+
+func (m *Manager) bundledPluginPath(name, digest string) string {
+	return filepath.Join(m.Root, "bundled", name+"-"+digest)
+}
+
+// bundledPluginDigest identifies the embedded contents of the bundled plugin
+// named name. It rejects names that are not a single path component and
+// reports fs.ErrNotExist for names that are not bundled.
+func bundledPluginDigest(name string) (string, error) {
+	if err := validNameComponent("plugin", name); err != nil {
+		return "", err
 	}
 	src := bundled.Plugins()
 	if info, err := fs.Stat(src, name); err != nil || !info.IsDir() {
 		return "", fs.ErrNotExist
 	}
-	dest := filepath.Join(m.Root, "bundled", name)
-	if err := os.RemoveAll(dest); err != nil {
-		return "", fmt.Errorf("replace bundled plugin %s: %w", name, err)
+	sum := sha256.New()
+	err := fs.WalkDir(mustSubFS(src, name), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			_, _ = fmt.Fprintf(sum, "dir %s\x00", path)
+			return nil
+		}
+		content, err := fs.ReadFile(mustSubFS(src, name), path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(sum, "file %s %d\x00", path, len(content))
+		_, _ = sum.Write(content)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("digest bundled plugin %s: %w", name, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.CopyFS(dest, mustSubFS(src, name)); err != nil {
-		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
-	}
-	return dest, nil
+	return hex.EncodeToString(sum.Sum(nil))[:16], nil
 }
 
 func mustSubFS(fsys fs.FS, dir string) fs.FS {
