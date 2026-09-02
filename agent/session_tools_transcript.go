@@ -434,7 +434,7 @@ func retainedReadArgsValidationError(refKind string, args map[string]any, names 
 		appendReceived(name)
 		switch name {
 		case "range", "expand_turn":
-			reasons = append(reasons, fmt.Sprintf("%s applies only to session transcript refs", name))
+			reasons = append(reasons, name+" applies only to session transcript refs")
 		case "format":
 			if refKind == "artifact" {
 				reasons = append(reasons, "format is not supported for artifact: refs")
