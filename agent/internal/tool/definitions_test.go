@@ -624,8 +624,9 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 
 	outputMatch := rp["output_match"].(map[string]any)
-	if outputMatch["type"] != "string" || !strings.Contains(outputMatch["description"].(string), "RE2") {
-		t.Errorf("output_match schema = %#v, want RE2 string", outputMatch)
+	outputMatchTypes, ok := outputMatch["type"].([]any)
+	if !ok || len(outputMatchTypes) != 2 || outputMatchTypes[0] != "string" || outputMatchTypes[1] != "null" || !strings.Contains(outputMatch["description"].(string), "RE2") {
+		t.Errorf("output_match schema = %#v, want nullable RE2 string", outputMatch)
 	}
 	if outputMatch["maxLength"] != 65_536 || !strings.Contains(outputMatch["description"].(string), "65,536") {
 		t.Errorf("output_match schema = %#v, want documented 65,536-character envelope bound", outputMatch)
