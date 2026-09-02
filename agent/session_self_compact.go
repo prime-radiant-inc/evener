@@ -168,17 +168,22 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	if !ok || s.contextMgr == nil {
 		return
 	}
-	s.contextMgr.Meta = s.buildCompactionMeta()
 
 	// compact_context runs mid-turn, at every round tail, so this can race
 	// another ForceCompact/ManageContext publisher (Compact(), the
 	// content-filter retry, or the round loop's own ManageContext).
 	// foldWithForceCompact retries once against the current history on
-	// conflict; on total failure this is a
-	// best-effort self-compaction, so skip silently rather than retrying
-	// indefinitely or failing the round — a competing fold already relieved
-	// whatever pressure prompted this one.
+	// conflict; on total failure this is a best-effort self-compaction, so
+	// the fold's own loss stays silent
+	// rather than retrying indefinitely or failing the round — a competing
+	// fold already relieved whatever pressure prompted this one. The
+	// caller's compaction_instructions are different: they are intent, not
+	// pressure, and the competitor did not honor them, so losing them
+	// without a trace hides real steering loss.
 	if !s.foldWithForceCompact(ctx, instructions) {
+		if strings.TrimSpace(instructions) != "" {
+			s.emit(events.EventWarning, events.WarningData{Message: "compact_context instructions were not applied — a concurrent compaction published first: " + instructions})
+		}
 		return
 	}
 

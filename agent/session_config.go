@@ -376,6 +376,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// afterFoldSupersessionCheck observes a fold flush immediately after it
+	// has evaluated whether a newer publication supersedes it and before it
+	// runs its last-write-wins side effects. Tests use it only to place a
+	// deterministic newer publication in that window. Nil in production.
+	afterFoldSupersessionCheck func()
+
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
 	// Session lifecycle against a scripted Git model without launching a host

@@ -93,7 +93,7 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := estimateTokens(*history)
-		*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
+		*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 		after := estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",

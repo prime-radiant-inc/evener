@@ -197,9 +197,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// Apply context management before each LLM request.
 	if s.strategy != nil {
-		// Populate compaction metadata so checkpoint/summarize have session context.
-		s.contextMgr.Meta = s.buildCompactionMeta()
-
 		// This can race another ForceCompact/ManageContext publisher
 		// (Compact(), applyPendingForceCompact, or the content-filter retry)
 		// the same way those three can race each other -- a competing fold
@@ -1310,7 +1307,6 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	if s.contextMgr == nil {
 		return
 	}
-	s.contextMgr.Meta = s.buildCompactionMeta()
 	// Same revision-checked publication as every other ForceCompact caller:
 	// the fold retries once against the current history if a competing
 	// publisher wins, and applies the baseline shrink atomically with its

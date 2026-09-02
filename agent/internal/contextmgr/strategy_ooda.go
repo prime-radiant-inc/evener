@@ -48,7 +48,7 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 	// In that case, the full detail stays in the transcript, which the agent
 	// reaches with whatever transcript tools it has.
 	const maxLogChars = 80_000
-	recovery := s.transcriptRecoverySentence()
+	recovery := s.transcriptRecoverySentence(s.cm.metaFor(ctx))
 	if len(logText) > maxLogChars {
 		truncation := "\n... [session log truncated; the full detail is in this session's transcript]"
 		if recovery != "" {

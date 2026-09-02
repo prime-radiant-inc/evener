@@ -165,7 +165,7 @@ func fuzzExactNamer(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher.naming.value, launcher.naming.source = "manual", sessionNameSourceUser
-	if err := launcher.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourceCompaction}); err != nil {
+	if err := launcher.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourceCompaction}, ungatedFoldRevision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func fuzzExactNamer(t *testing.T) {
 	s.appendSessionNamerLog(sessionlog.SessionLogEntry{})
 
 	s.closing = true
-	if err := s.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourcePrompt}); !errors.Is(err, context.Canceled) {
+	if err := s.applySessionNameResult(sessionNameResult{Name: "late", Source: sessionNameSourcePrompt}, ungatedFoldRevision); !errors.Is(err, context.Canceled) {
 		t.Fatalf("late name result error = %v", err)
 	}
 }

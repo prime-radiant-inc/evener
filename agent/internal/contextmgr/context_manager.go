@@ -137,6 +137,28 @@ func currentBaseline(ctx context.Context) (int, bool) {
 	return 0, false
 }
 
+type compactionMetaKey struct{}
+
+// WithCompactionMeta returns a context carrying the compaction metadata for
+// ONE fold operation. The session's fold staging installs it per call, so
+// concurrent fold publishers never share — or write — Manager.Meta: the
+// shared field would race across publishers, slice fields included.
+// Manager.Meta remains only as the fallback for direct single-threaded
+// callers (tests driving layers without a fold context).
+func WithCompactionMeta(ctx context.Context, meta CompactionMeta) context.Context {
+	return context.WithValue(ctx, compactionMetaKey{}, meta)
+}
+
+// metaFor resolves the compaction metadata for one operation: the per-call
+// context value when installed (see WithCompactionMeta), else the Manager's
+// fallback field.
+func (cm *Manager) metaFor(ctx context.Context) *CompactionMeta {
+	if meta, ok := ctx.Value(compactionMetaKey{}).(CompactionMeta); ok {
+		return &meta
+	}
+	return &cm.Meta
+}
+
 // replaceSteeringMarkerTurn removes every TurnSteering turn whose text
 // begins with marker — counting how many sat before the N4 boundary, not just
 // recording the last match's index — appends a fresh steering turn carrying
@@ -215,8 +237,11 @@ type Manager struct {
 	// Set by the session before ManageContext to record compaction turns in the transcript.
 	OnCompactionTurn func(schema.Turn)
 
-	// Meta holds session-level metadata for enriching compaction summaries.
-	// Set by the session before each ManageContext call.
+	// Meta holds session-level metadata for enriching compaction summaries —
+	// as the FALLBACK for direct single-threaded callers only (tests driving
+	// layers without a fold context). Fold publishers run concurrently and
+	// must never write this shared field: they install per-call metadata via
+	// WithCompactionMeta instead, resolved by metaFor.
 	Meta CompactionMeta
 }
 
@@ -499,7 +524,7 @@ func (cm *Manager) MaybeCompact(
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := estimateTokens(*history)
-		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
+		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 		after := estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
@@ -570,7 +595,7 @@ func (cm *Manager) ForceCompact(
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
 	before := estimateTokens(*history)
-	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
+	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
 	after := estimateTokens(*history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",

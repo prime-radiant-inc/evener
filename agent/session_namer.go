@@ -300,7 +300,21 @@ func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 	}
 }
 
+// ungatedFoldRevision, as a publishedRevision, marks a naming attempt that
+// carries no fold-publication staleness gate: applySessionNameResult applies
+// it unconditionally. Real publication revisions are historyRevision values,
+// always positive.
+const ungatedFoldRevision = -1
+
 func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
+	s.launchCompactionNamerGated(ctx, turn, ungatedFoldRevision)
+}
+
+// launchCompactionNamerGated is launchCompactionNamer threading the
+// launching fold's publication revision into the async naming goroutine for
+// the completion-side staleness comparison inside applySessionNameResult's
+// locked apply. The ungated wrapper stays for callers outside a fold flush.
+func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Turn, publishedRevision int) {
 	if s.stateDir == "" {
 		return
 	}
@@ -322,11 +336,15 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 	s.mu.Unlock()
 	go func() {
 		defer s.sendersWG.Done()
-		_ = s.nameSessionFromCompactionTurn(ctx, turn)
+		_ = s.nameSessionFromCompactionTurnGated(ctx, turn, publishedRevision)
 	}()
 }
 
 func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
+	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
+}
+
+func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn schema.Turn, publishedRevision int) error {
 	if !isSessionNameCompactionTurn(turn) {
 		return nil
 	}
@@ -337,7 +355,7 @@ func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema
 	if !s.shouldNameFromCompaction() {
 		return nil
 	}
-	return s.nameSessionFromText(ctx, sessionNameSourceCompaction, text)
+	return s.nameSessionFromTextGated(ctx, sessionNameSourceCompaction, text, publishedRevision)
 }
 
 func isSessionNameCompactionTurn(turn schema.Turn) bool {
@@ -345,7 +363,10 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 }
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
-	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false)
+	s.mu.Lock()
+	publishedRevision := s.newestPublishedFoldRevision
+	s.mu.Unlock()
+	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false, publishedRevision)
 }
 
 // handleCompactionTurnEffects runs a compaction turn's post-write side
@@ -358,7 +379,12 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // (compaction naming, the task-list reminder) are skipped so a stale parked
 // flush cannot overwrite the newer fold's; the additive pieces (env-tracker
 // reset, the compaction-turn event) still run.
-func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool) {
+// publishedRevision is the launching fold's publication sequence
+// (historyRevision at its publish; the fallback path passes the newest
+// published fold revision), re-checked at naming COMPLETION against
+// newestPublishedFoldRevision so an async namer launched before a newer
+// fold published cannot finish later and overwrite the newer fold's name.
+func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
 	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
 		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
@@ -375,11 +401,12 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 	if superseded {
 		return
 	}
-	s.launchCompactionNamer(s.sessionCtx, t)
-	// After compaction, inject full task list if tasks exist.
+	s.launchCompactionNamerGated(s.sessionCtx, t, publishedRevision)
+	// After compaction, inject full task list if tasks exist — refused at
+	// enqueue time if a newer fold has published since this flush's check.
 	if s.taskStore != nil {
 		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			s.SteerKind(reminder, events.SteeringKindTaskList)
+			s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision)
 		}
 	}
 }
@@ -411,6 +438,15 @@ func (s *Session) currentSessionName() string {
 }
 
 func (s *Session) nameSessionFromText(ctx context.Context, source, text string) error {
+	return s.nameSessionFromTextGated(ctx, source, text, ungatedFoldRevision)
+}
+
+// nameSessionFromTextGated is nameSessionFromText threading the launching
+// fold's publication revision through to the completion-side staleness
+// comparison in applySessionNameResult. The nameSessionFromTextFunc test
+// seam replaces the naming wholesale and bypasses the gate; gated
+// production callers exercise it on the real path.
+func (s *Session) nameSessionFromTextGated(ctx context.Context, source, text string, publishedRevision int) error {
 	source = normalizeSessionNameSource(source)
 	if !s.shouldApplySessionName(source) {
 		return nil
@@ -443,16 +479,30 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		})
 		return err
 	}
-	return s.applySessionNameResult(result)
+	return s.applySessionNameResult(result, publishedRevision)
 }
 
-func (s *Session) applySessionNameResult(result sessionNameResult) error {
+// applySessionNameResult applies a naming outcome, with a completion-side
+// staleness comparison for fold-derived names: a naming attempt launched for
+// publication revision publishedRevision is dropped when a newer fold has
+// published since, so an asynchronous naming goroutine that finishes late
+// cannot overwrite a name derived from a newer publication.
+// ungatedFoldRevision applies unconditionally. The
+// newestPublishedFoldRevision read happens HERE,
+// lexically inside the same s.mu hold that applies the name — a closure
+// evaluated under this hold could not lock s.mu itself without deadlocking,
+// and a read outside it would race the publish-time write.
+func (s *Session) applySessionNameResult(result sessionNameResult, publishedRevision int) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return context.Canceled
 	}
 	if !s.shouldApplySessionNameLocked(result.Source) {
+		s.mu.Unlock()
+		return nil
+	}
+	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
 		s.mu.Unlock()
 		return nil
 	}
