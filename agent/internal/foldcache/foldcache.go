@@ -93,11 +93,11 @@ type Stats struct {
 
 // tailProbeBytes is how many bytes ending at the cached offset are
 // fingerprinted to detect a rewrite (size, mtime) alone cannot resolve: a
-// same-size + same-mtime rewrite (Get's fast path previously trusted
-// unconditionally — the classic jobstore.Store fileCursor residual) and a
-// larger-but-mtime-unresolvable rewrite (refresh's growth branch previously
-// assumed safe by construction, even though it cannot actually observe
-// that). Raw bytes, not a hash: at this size a hash buys nothing — comparing
+// same-size + same-mtime rewrite (the classic jobstore.Store fileCursor
+// residual, invisible to a (size, mtime) check alone) and a
+// larger-but-mtime-unresolvable rewrite (refresh's growth branch has no way
+// to confirm safety from size and mtime alone in that case either). Raw
+// bytes, not a hash: at this size a hash buys nothing — comparing
 // 64 bytes via bytes.Equal costs about the same as comparing a fixed-size
 // digest, with zero collision risk and no hash function to pick — so storing
 // the bytes themselves is both simpler and strictly more precise. Cost per
@@ -117,9 +117,9 @@ type Stats struct {
 // reproducing 64 bytes of a LATER record exactly while silently rewriting
 // an EARLIER one requires the earlier edit to leave every downstream byte,
 // including record boundaries, bit-for-bit identical, which is not a
-// realistic corruption or rewrite shape for this cache's actual inputs
-// (confirmed by #807's independent scoped re-review). A general-purpose
-// tamper-detection guarantee would need to hash the whole file every Get,
+// realistic corruption or rewrite shape for this cache's actual inputs. A
+// general-purpose tamper-detection guarantee would need to hash the whole
+// file every Get,
 // defeating the incremental-cost point of this cache for a threat this
 // package's real callers do not face.
 const tailProbeBytes = 64
@@ -130,10 +130,9 @@ const tailProbeBytes = 64
 // feed. It is held in its OWN map, separately from entries/order, so it
 // survives LRU eviction of the (potentially large) folded value — eviction
 // only reclaims memory for T's cost, never the O(1) signal a resumable
-// continuation's staleness check depends on staying correct across it
-// (roborev's #448 round-2 coherence finding: eviction used to reset epoch
-// to 0, indistinguishable from "never seen," silently hiding a rewrite that
-// raced an eviction).
+// continuation's staleness check depends on staying correct across it.
+// Resetting epoch to 0 on eviction would be indistinguishable from "never
+// seen," silently hiding a rewrite that raced the eviction.
 //
 // Unbounded in count — one entry per distinct path this process has ever
 // Get'd, never actually pruned (removed from the map): drop on ErrNotExist
@@ -198,8 +197,8 @@ func New[T any](maxEntries int) *Cache[T] {
 // the shared call itself runs on a context detached from every individual
 // caller (context.WithoutCancel): canceling any ONE caller — owner or
 // waiter — must never poison the shared result for every OTHER, still-live
-// caller (roborev's #448 round-2 coherence finding). Each caller still
-// races its own ctx against that shared result independently, so a caller
+// caller. Each caller still races its own ctx against that shared result
+// independently, so a caller
 // whose own context is canceled or expires still returns promptly with its
 // own ctx.Err(), regardless of what the shared call is doing.
 func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Result[T], error) {
@@ -363,13 +362,12 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 				// append, but "mtime moved forward" is exactly what a
 				// truncate-and-rewrite-larger with different content also
 				// produces: nothing about (size, mtime) alone
-				// distinguishes them (roborev's #807 r6 HIGH finding —
-				// this branch used to trust it outright with zero
-				// verification, unlike the same-mtime sibling above,
-				// which already probes). Verify the tail probe against
-				// the cached offset before trusting an incremental
-				// resume from it, mirroring sameSizeAmbiguous's own
-				// probe-then-branch shape below.
+				// distinguishes them, so this cannot be trusted without
+				// verification, the same as the same-mtime sibling
+				// above. Verify the tail probe against the cached
+				// offset before trusting an incremental resume from it,
+				// mirroring sameSizeAmbiguous's own probe-then-branch
+				// shape below.
 				match, tailErr := tailProbeMatches(path, st.offset, st.tail)
 				if tailErr != nil {
 					var zero Result[T]
@@ -576,11 +574,11 @@ func (c *Cache[T]) publishLocked(path string, e entry[T]) {
 // starts completely clean content-wise (nothing resumable, nothing
 // tail-probed against pre-deletion bytes) rather than comparing against
 // bytes that may no longer be the same file at all. The epoch itself
-// survives the tombstone and is bumped, rather than being deleted outright
-// (roborev's #807 r6 finding: deleting epochState entirely let a path that
-// reappeared start back at epoch 0 — indistinguishable from "never seen" —
-// silently accepting a continuation minted before the deletion against the
-// unrelated new content that replaced it). A path with no epochState yet
+// survives the tombstone and is bumped, rather than being deleted outright:
+// deleting epochState entirely would let a path that reappears start back
+// at epoch 0 — indistinguishable from "never seen" — silently accepting a
+// continuation minted before the deletion against the unrelated new
+// content that replaced it. A path with no epochState yet
 // was never cached in the first place, so there is no epoch to preserve —
 // drop leaves epochStates untouched for it rather than fabricating one.
 // Unlike the *Locked methods above, drop manages its own locking: its only

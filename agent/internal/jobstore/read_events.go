@@ -28,12 +28,12 @@ const DefaultMaxLineBytes = 128 << 20
 // memory cost is bounded unconditionally, not opt-in.
 type ScanLimits struct {
 	// MaxBytes and MaxEvents are optional, whole-file safety valves — 0
-	// means unlimited. #448's incremental-fold round stopped setting these
-	// from the job-activity loader: an append-only journal folding to O(new
-	// events) per request has no remaining reason to cut a legitimate
-	// session's history short at a fixed size, so they are not treated as
-	// pathology tripwires here the way MaxLineBytes is. They remain
-	// available for a caller that still wants a hard whole-file ceiling.
+	// means unlimited. The job-activity loader (the incremental-fold path)
+	// does not set them: an append-only journal folding to O(new events)
+	// per request has no reason to cut a legitimate session's history
+	// short at a fixed size, so these are not pathology tripwires the way
+	// MaxLineBytes is. They remain available for a caller that wants a
+	// hard whole-file ceiling regardless.
 	MaxBytes  int64
 	MaxEvents int
 	// MaxLineBytes bounds a single line's memory cost independently of
@@ -139,16 +139,15 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
 		}
-		// Checked BEFORE even attempting to read the next line, not just
-		// before decoding it (roborev finding on #807's r5/r6 reviews): a
-		// MaxEvents-only scan (MaxLineBytes left at its generous default)
-		// could otherwise still pay the cost of buffering an oversized
-		// next line — up to MaxLineBytes — only to discover afterward the
-		// budget was already spent. jobstore is one event per line (unlike
-		// delegatestore's batches), so this single check, run once per
-		// line before it is read, is also sufficient on its own — no line
-		// can ever contribute more than the one event this check already
-		// accounts for.
+		// Checked before reading the next line, not just before decoding
+		// it: a MaxEvents-only scan (MaxLineBytes left at its generous
+		// default) could otherwise still pay the cost of buffering an
+		// oversized next line — up to MaxLineBytes — only to discover
+		// afterward the budget was already spent. jobstore is one event
+		// per line (unlike delegatestore's batches), so this single
+		// check, run once per line before it is read, is also sufficient
+		// on its own — no line can ever contribute more than the one
+		// event this check already accounts for.
 		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
 			if err := ctx.Err(); err != nil {
 				return nil, 0, err
@@ -174,7 +173,7 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			// iteration's top-of-loop ctx check never runs, because this
 			// return happens first. Check here too so cancellation always
 			// wins over a coincident limit, not just when the two are
-			// spaced further apart (roborev finding on #448).
+			// spaced further apart.
 			if err := ctx.Err(); err != nil {
 				return nil, 0, err
 			}
@@ -200,15 +199,13 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		// A successful decode makes this record complete and final
 		// regardless of whether its trailing newline has landed yet (see
 		// ScanEventsFrom's doc comment on toOffset): include it and
-		// advance offset past it exactly like a terminated line. This
-		// must stay unconditional on terminated — advancing offset only
-		// when terminated while always including the event (the previous
-		// shape here) is the inconsistency that let a later incremental
-		// call, resuming from the stale offset once the newline landed,
-		// re-decode and duplicate this same event for a caller that
-		// concatenates its prior fold with the new delta
-		// (extendHistoricalJobFold's exact shape) — roborev finding on
-		// #807's r6 review.
+		// advance offset past it exactly like a terminated line,
+		// unconditionally on terminated. Advancing offset only when
+		// terminated while always including the event would let a later
+		// incremental call, resuming from the stale offset once the
+		// newline landed, re-decode and duplicate this same event for a
+		// caller that concatenates its prior fold with the new delta
+		// (extendHistoricalJobFold's exact shape).
 		events = append(events, e)
 		offset += consumed
 	}

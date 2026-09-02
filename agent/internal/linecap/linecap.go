@@ -1,10 +1,12 @@
 // Package linecap reads one newline-delimited line at a time with its memory
 // cost bounded independently of how much file surrounds it, and independent
-// of any separate ceiling on the file as a whole. It exists so a store's
-// per-file scan ceiling can be removed or raised without reopening the
-// single-pathological-line hole that ceiling used to close as a side effect
-// (agent/internal/jobstore and agent/internal/delegatestore's #448
-// journal scanners both need exactly this).
+// of any separate ceiling on the file as a whole. A file-level scan ceiling
+// alone only incidentally bounds a single line's cost, by bounding the
+// whole file: raising or removing that ceiling reopens a
+// single-pathological-line hole unless something else bounds a line's own
+// memory cost directly, which is what this package provides
+// (agent/internal/jobstore and agent/internal/delegatestore's journal
+// scanners both need exactly this).
 //
 // The same technique already exists as agent/transcript.ReadLine, for
 // transcript files specifically; this package is the one place jobstore and
@@ -47,13 +49,12 @@ var ErrTooLong = errors.New("linecap: line exceeds max bytes")
 // lines, not mid-line); ErrTooLong when the accumulated line exceeded
 // maxLineBytes, OR when a line already known to be over the limit still has
 // not found its terminator after draining maxLineBytes more bytes looking
-// for one (roborev's #448 round-2 regression finding: without this second
-// cap, a corrupt tail that never yields a newline — a completely realistic
-// shape for a truncated or crash-interrupted append, the original #448
-// failure mode — drained an unbounded amount of the rest of the stream one
-// buffer refill at a time before ever giving up; that case is now treated
-// exactly like hitting EOF while over limit, since neither leaves anything
-// safe to salvage). On ErrTooLong, the offending line's bytes actually read
+// for one: a corrupt tail that never yields a newline is a completely
+// realistic shape for a truncated or crash-interrupted append, and without
+// this second cap it would drain an unbounded amount of the rest of the
+// stream one buffer refill at a time before ever giving up. That case is
+// treated exactly like hitting EOF while over limit, since neither leaves
+// anything safe to salvage. On ErrTooLong, the offending line's bytes actually read
 // are still fully drained from reader before returning (so the caller's
 // next ReadLine call starts cleanly at the following line, PROVIDED the
 // drain cap did not itself cut the search short — see maxLineBytes above)
