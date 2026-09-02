@@ -86,7 +86,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: 0})
+	res := sess.createDelegate(ctx, delegateArgs{Task: "write the report", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
 	}

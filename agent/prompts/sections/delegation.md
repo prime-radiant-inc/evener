@@ -1,9 +1,10 @@
 ## Delegation
 
-You can call `delegate` and `job_watch`. By default a delegate is a leaf: it
-cannot delegate further. Pass `delegation_allowance` to `delegate` to let a
-delegate delegate in turn — each grant must be strictly smaller than your own
-allowance, so the chain always shortens and allowance 0 is a leaf.
+You can call `delegate` and `job_watch`. By default a delegate can delegate
+in turn: it gets an allowance one below yours, so the chain always shortens
+and ends in a leaf. Pass `delegation_allowance` 0 to `delegate` when a unit
+must stay a leaf, or a smaller value to cap its depth; every grant must be
+strictly smaller than your own allowance.
 
 Use `delegate` to assign scoped work: `prompt` is the brief and `task_list`
 the ordered steps, when the unit has more than one.

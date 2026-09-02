@@ -1149,7 +1149,10 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	s.mu.Lock()
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()
-	if ok, validRange := validateDelegateGrant(args.DelegationAllowance, ownAllowance); !ok {
+	if args.DelegationAllowance == nil {
+		args.DelegationAllowance = new(defaultDelegateGrant(ownAllowance))
+	}
+	if ok, validRange := validateDelegateGrant(args.grantedAllowance(), ownAllowance); !ok {
 		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validRange))
 	}
 	if err := llm.ValidateReasoningEffort(llm.NormalizeReasoningEffort(args.ReasoningEffort)); err != nil {
@@ -1287,8 +1290,8 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 }
 
 func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), args.WatchParent, isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -1301,7 +1304,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if agentType == "" {
 		agentType = "default"
 	}
-	agentName, rolePrompt := stableDelegateRole(selection, args.DelegationAllowance > 0, s)
+	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
 	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = llm.NormalizeReasoningEffort(childConfig.ReasoningEffort)
@@ -1365,7 +1368,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
 		ResultSchema:                  resultSchema,
-		DelegationAllowance:           args.DelegationAllowance,
+		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
 		Sandbox:                       sandboxSnapshot,

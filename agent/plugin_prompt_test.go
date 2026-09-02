@@ -184,7 +184,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 	res := sess.createDelegate(context.Background(), delegateArgs{
 		Task:                "coordinate follow-up work",
-		DelegationAllowance: 1,
+		DelegationAllowance: new(1),
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v", res.Err)

@@ -175,7 +175,7 @@ func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing
 			result := s.createDelegate(context.Background(), delegateArgs{
 				Task:                "inspect without workspace mutation",
 				AgentType:           "test:filtered-mutator",
-				DelegationAllowance: 0,
+				DelegationAllowance: new(0),
 				Sandbox:             tc.mode,
 			})
 			if !tc.allowed {

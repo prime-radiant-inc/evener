@@ -1191,17 +1191,17 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("positive allowance: %v", err)
 	}
-	if a.DelegationAllowance != 3 {
-		t.Fatalf("allowance = %d, want 3", a.DelegationAllowance)
+	if a.DelegationAllowance == nil || *a.DelegationAllowance != 3 {
+		t.Fatalf("allowance = %v, want 3", a.DelegationAllowance)
 	}
 
-	// delegation_allowance zero — unset (strict-zero).
+	// delegation_allowance zero — an explicit leaf, distinct from absent.
 	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": 0})
 	if err != nil {
 		t.Fatalf("zero allowance: %v", err)
 	}
-	if a.DelegationAllowance != 0 {
-		t.Fatalf("zero allowance should be 0, got %d", a.DelegationAllowance)
+	if a.DelegationAllowance == nil || *a.DelegationAllowance != 0 {
+		t.Fatalf("zero allowance should be an explicit 0, got %v", a.DelegationAllowance)
 	}
 
 	// result_schema present.

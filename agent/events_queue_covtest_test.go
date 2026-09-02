@@ -340,7 +340,7 @@ func TestCovDecodeDelegateArgs(t *testing.T) {
 	if args.Task != "do stuff" || args.AgentType != "coder" || args.Model != "gpt-5" ||
 		args.ReasoningEffort != "high" || !args.WatchParent || args.Isolation != "worktree" ||
 		args.Sandbox != "off" || args.SandboxNet == nil || !*args.SandboxNet ||
-		args.DelegationAllowance != 3 || args.ResultSchema == nil {
+		args.DelegationAllowance == nil || *args.DelegationAllowance != 3 || args.ResultSchema == nil {
 		t.Fatalf("args = %+v", args)
 	}
 
@@ -356,9 +356,9 @@ func TestCovDecodeDelegateArgs(t *testing.T) {
 		t.Fatalf("sandbox_net omitted: args=%+v, err=%v", args, err)
 	}
 
-	// delegation_allowance = 0 → unset.
+	// delegation_allowance = 0 → an explicit leaf, distinct from absent.
 	args, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": 0})
-	if err != nil || args.DelegationAllowance != 0 {
+	if err != nil || args.DelegationAllowance == nil || *args.DelegationAllowance != 0 {
 		t.Fatalf("delegation_allowance=0: args=%+v, err=%v", args, err)
 	}
 }
