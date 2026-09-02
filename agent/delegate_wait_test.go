@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A waiter registered on a delegate's running generation resolves with that
@@ -120,5 +121,22 @@ func TestDelegateWaitTool_RejectsBadArguments(t *testing.T) {
 		if _, err := stableDelegateWaitTool(ctx, root, args, 8192); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 			t.Errorf("args %v: err = %v, want invalid_request", args, err)
 		}
+	}
+}
+
+// delegate_wait budgets are bounded for delegates, which run for minutes, not
+// by the shell-job inline window of one minute.
+func TestDelegateWait_ClampIsDelegateScale(t *testing.T) {
+	if got := clampDelegateWaitTimeout(600000); got != 10*time.Minute {
+		t.Errorf("clamp(600000) = %v, want 10m", got)
+	}
+	if got := clampDelegateWaitTimeout(1); got != time.Second {
+		t.Errorf("clamp(1) = %v, want the 1s floor", got)
+	}
+	if got := clampDelegateWaitTimeout(1<<31 - 1); got != time.Duration(maxDelegateWaitMS)*time.Millisecond {
+		t.Errorf("clamp(huge) = %v, want the delegate ceiling", got)
+	}
+	if maxDelegateWaitMS <= maxJobBlockTimeoutMS {
+		t.Errorf("delegate ceiling %d must exceed the shell-job inline window %d", maxDelegateWaitMS, maxJobBlockTimeoutMS)
 	}
 }

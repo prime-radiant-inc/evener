@@ -172,7 +172,7 @@ func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any
 	if callID == "" {
 		return nil, errors.New("delegate results cannot be committed outside a tool round")
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, clampJobBlockTimeout(waitMS))
+	waitCtx, cancel := context.WithTimeout(ctx, clampDelegateWaitTimeout(waitMS))
 	defer cancel()
 	out := delegateWaitResult{Results: make([]delegateSendResult, 0, len(targets))}
 	waiters := make([]*delegateInlineWaiter, len(targets))

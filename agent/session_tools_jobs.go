@@ -47,6 +47,19 @@ func clampJobBlockTimeout(ms int) time.Duration {
 	return time.Duration(clamped) * time.Millisecond
 }
 
+// maxDelegateWaitMS bounds a delegate_wait budget. Delegates run for minutes,
+// so the shell-job inline window (maxJobBlockTimeoutMS) would time out every
+// real wait; the harness or the caller's own budget is the outer limit.
+const maxDelegateWaitMS = 30 * 60 * 1000
+
+// clampDelegateWaitTimeout clamps a positive delegate_wait budget into
+// [minJobBlockTimeoutMS, maxDelegateWaitMS].
+func clampDelegateWaitTimeout(ms int) time.Duration {
+	clamped := max(ms, minJobBlockTimeoutMS)
+	clamped = min(clamped, maxDelegateWaitMS)
+	return time.Duration(clamped) * time.Millisecond
+}
+
 // rootOnlyJobControlTools gates DELEGATION, not job control: a session that
 // can run jobs can always watch its own jobs, at any depth, so job_watch is
 // deliberately not here. The accesses the old job_watch strip was protecting

@@ -264,7 +264,7 @@ func DefDelegateWait() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"targets":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Delegate ids (`dlg_...`) to wait for. Omit to wait for every running delegate you own."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "Upper bound on the wait in milliseconds; must be positive. Clamped to the session's block limit."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "Upper bound on the wait in milliseconds; must be positive. Delegates take minutes: budget accordingly (up to 30 minutes; larger values are clamped)."},
 			},
 			"required": []string{"max_wait_ms"},
 		},
