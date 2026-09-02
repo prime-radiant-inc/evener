@@ -119,6 +119,14 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
+		// Scalar repair can turn provider-materialized strings such as
+		// expand_turn="0" into their neutral numeric forms. Normalize those
+		// newly typed defaults before the final schema gate and dispatch.
+		if t.Definition.Name == "read_transcript" {
+			var normalizedChanges []repair.Change
+			healed, normalizedChanges = normalizeRetainedReadArgsForRepair(healed)
+			retainedReadChanges = append(retainedReadChanges, normalizedChanges...)
+		}
 		if err2 := t.Schema.Validate(healed); err2 != nil {
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
 			return res
