@@ -380,22 +380,6 @@ func parseRetainedReadArgsWithIssues(args map[string]any) (retainedReadArgs, ret
 	return parsed, retainedReadDefault, issues
 }
 
-func validateArtifactReadArgs(args map[string]any, operation retainedReadOperation) error {
-	incompatible := retainedReadIncompatibleFields("artifact", args)
-	if len(incompatible) > 0 {
-		return retainedReadArgsValidationError("artifact", args, incompatible, nil, operation)
-	}
-	return nil
-}
-
-func validateJobReadArgs(args map[string]any, operation retainedReadOperation) error {
-	incompatible := retainedReadIncompatibleFields("job", args)
-	if len(incompatible) > 0 {
-		return retainedReadArgsValidationError("job", args, incompatible, nil, operation)
-	}
-	return nil
-}
-
 func retainedReadIncompatibleFields(refKind string, args map[string]any) []string {
 	incompatible := make([]string, 0, 3)
 	for _, name := range []string{"range", "expand_turn", "format"} {
