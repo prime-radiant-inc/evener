@@ -53,7 +53,7 @@ func clampJobBlockTimeout(ms int) time.Duration {
 // are each enforced at their own source: `parent` requires
 // delegate(watch_parent=true) (delegate_tree_watch.go), and a concrete job id
 // must be owned by the watching session (job_watch.go's target_not_watchable).
-var rootOnlyJobControlTools = []string{"delegate"}
+var rootOnlyJobControlTools = []string{"delegate", "delegate_wait"}
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if deps != nil && deps.registerTool != nil {
@@ -1546,6 +1546,13 @@ func delegateSandboxToolResultFrom(sb *delegateSandboxReport) *delegateSandboxTo
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
 	_ = maxChars
+	out := delegateSendResultFromMessage(res)
+	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+}
+
+// delegateSendResultFromMessage projects a send/wait outcome onto the wire
+// shape shared by delegate_send and delegate_wait.
+func delegateSendResultFromMessage(res sendMessageResult) delegateSendResult {
 	out := delegateSendResult{
 		DelegateID:          res.DelegateID,
 		Type:                res.Type,
@@ -1584,7 +1591,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		out.StructuredResultValid = &valid
 		out.StructuredResultReason = res.StructuredResultReason
 	}
-	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
+	return out
 }
 
 // formatDelegateSend renders a delegate send/steer/start result: any reply output,
@@ -2277,7 +2284,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_status", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
+	for _, name := range []string{"job_status", "job_list", "job_stop", "delegate", "job_watch", "delegate_send", "delegate_wait"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue

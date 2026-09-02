@@ -20,6 +20,7 @@ var (
 	errDelegateNotControllable = errors.New("not_controllable: delegate")
 	errDelegateStaleLease      = errors.New("stale_delegate_lease")
 	errDelegateTargetBusy      = errors.New("target_busy")
+	errDelegateNotRunning      = errors.New("not_running: delegate")
 )
 
 type delegateLifecycle string

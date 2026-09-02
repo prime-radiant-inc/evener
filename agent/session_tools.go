@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
@@ -114,14 +115,126 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 		return err
 	}
 	reg.Remove("delegate_send")
-	return reg.Register(tool.RegisteredTool{
+	if err := reg.Register(tool.RegisteredTool{
 		Definition: tool.DefDelegateSend(),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return stableDelegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
 		},
+	}); err != nil {
+		return err
+	}
+	reg.Remove("delegate_wait")
+	return reg.Register(tool.RegisteredTool{
+		Definition: tool.DefDelegateWait(),
+		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return stableDelegateWaitTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_wait"))
+		},
 	})
+}
+
+// delegateWaitResult is the delegate_wait tool's payload: one entry per
+// target in request order, and whether the budget ran out before all of them
+// reported.
+type delegateWaitResult struct {
+	Results  []delegateSendResult `json:"results"`
+	TimedOut bool                 `json:"timed_out"`
+}
+
+// stableDelegateWaitTool blocks up to max_wait_ms for the targets' running
+// generations to finish. Each report it returns is delivered through the same
+// commit path as an inline delegate_send wait, so it is never repeated as a
+// notification; targets still running at the deadline stay owed a
+// notification.
+func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
+	if s == nil || s.delegateController == nil {
+		return nil, errors.New("delegate controller is unavailable")
+	}
+	waitMS, ok := shellIntArg(args, "max_wait_ms")
+	if !ok || waitMS <= 0 {
+		return nil, errors.New("invalid_request: max_wait_ms must be a positive integer")
+	}
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	targets, err := delegateWaitTargets(args)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		targets = s.delegateController.RunningDelegateIDs(actor)
+	}
+	callID, _ := ctx.Value(ctxToolCallID).(string)
+	if callID == "" {
+		return nil, errors.New("delegate results cannot be committed outside a tool round")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, clampJobBlockTimeout(waitMS))
+	defer cancel()
+	out := delegateWaitResult{Results: make([]delegateSendResult, 0, len(targets))}
+	waiters := make([]*delegateInlineWaiter, len(targets))
+	for i, id := range targets {
+		waiter, err := s.delegateController.RegisterInlineWaiterForRunning(actor, id)
+		if err != nil {
+			out.Results = append(out.Results, delegateSendResultFromMessage(sendMessageResult{
+				Target: id, DelegateID: id, Type: delegateResourceType, Action: "refused", Reason: err.Error(),
+			}))
+			continue
+		}
+		waiters[i] = waiter
+		out.Results = append(out.Results, delegateSendResult{})
+	}
+	for i, waiter := range waiters {
+		if waiter == nil {
+			continue
+		}
+		res := sendMessageResult{Target: targets[i], DelegateID: targets[i], Type: delegateResourceType, Status: jobstore.StatusRunning, RunningInBackground: true, Action: "waited"}
+		resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+		if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
+			res.TimedOut = true
+			out.TimedOut = true
+		} else {
+			res.RunningInBackground = false
+			res.Action = "completed"
+			populateStableDelegateSendResult(&res, *resolution.packet)
+			s.queueDelegateDeliveryCommit(callID, resolution.commit)
+		}
+		out.Results[i] = delegateSendResultFromMessage(res)
+	}
+	rendered, err := marshalBoundedJSON(out, maxChars)
+	if err != nil {
+		return nil, err
+	}
+	return rendered, nil
+}
+
+func delegateWaitTargets(args map[string]any) ([]string, error) {
+	raw, ok := args["targets"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("invalid_request: targets must be an array of delegate ids")
+	}
+	seen := make(map[string]bool, len(items))
+	out := make([]string, 0, len(items))
+	for i, item := range items {
+		id, ok := item.(string)
+		id = strings.TrimSpace(id)
+		if !ok || !strings.HasPrefix(id, "dlg_") {
+			return nil, fmt.Errorf("invalid_request: targets[%d] must be a delegate id (dlg_...)", i)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {

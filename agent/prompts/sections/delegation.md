@@ -8,7 +8,9 @@ allowance, so the chain always shortens and allowance 0 is a leaf.
 Use `delegate` to assign scoped work. `delegate` returns one durable `delegate_id` (`dlg_...`)
 plus stable conversation metadata; it never returns an
 activation `job_id` and does not accept `max_wait_ms`. Use `delegate_send` with
-the `delegate_id` to continue delegate work. Use
+the `delegate_id` to continue delegate work. After spawning a batch, call
+`delegate_wait` with a time budget to collect their reports in one round
+instead of ending your turn to be notified one at a time. Use
 `job_status(target=<dlg_...>)` for metadata-only orientation,
 `job_stop(target=<dlg_...>)` to stop that delegate and its subtree, and the
 delegate's session `transcript_ref` to read its conversation. `job_list` presents

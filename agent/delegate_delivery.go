@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -130,6 +131,60 @@ func (c *delegateTreeController) RegisterInlineWaiter(reservation *delegateStart
 	record.waiter = waiter
 	c.evidenceVersion++
 	return waiter, nil
+}
+
+// RegisterInlineWaiterForRunning attaches an inline waiter to delegateID's
+// current running generation, so that generation's terminal packet resolves
+// the waiter instead of going out as a notification. One waiter per
+// generation; a delegate that is not running is refused.
+func (c *delegateTreeController) RegisterInlineWaiterForRunning(actor delegateActor, delegateID string) (*delegateInlineWaiter, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return nil, errDelegateTargetBusy
+	}
+	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
+		return nil, err
+	}
+	aggregate := c.durable[delegateID]
+	live := c.live[delegateID]
+	if aggregate == nil || live == nil || aggregate.Phase != delegatestore.PhaseRunning || !aggregate.CurrentRunOpen {
+		return nil, errDelegateNotRunning
+	}
+	if live.waiters == nil {
+		live.waiters = make(map[uint64]*delegateInlineWaiter)
+	}
+	if live.waiters[aggregate.Generation] != nil {
+		return nil, errDelegateTargetBusy
+	}
+	c.nextToken++
+	waiter := &delegateInlineWaiter{
+		token:      delegateWaiterToken{id: c.nextToken},
+		generation: aggregate.Generation,
+		resolution: make(chan delegateInlineResolution, 1),
+	}
+	live.waiters[aggregate.Generation] = waiter
+	c.evidenceVersion++
+	return waiter, nil
+}
+
+// RunningDelegateIDs lists the delegates actor may act on whose current
+// generation is still running, in stable id order.
+func (c *delegateTreeController) RunningDelegateIDs(actor delegateActor) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	for id, aggregate := range c.durable {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseRunning || !aggregate.CurrentRunOpen || c.live[id] == nil {
+			continue
+		}
+		if err := c.authorizeMutationLocked(actor, id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, waiter *delegateInlineWaiter) delegateInlineResolution {

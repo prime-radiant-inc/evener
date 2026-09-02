@@ -76,7 +76,7 @@ func TestCovRemoveStrings2(t *testing.T) {
 // (subagents.go lines 220-223).
 func TestCovRootOnlySubagentTools(t *testing.T) {
 	tools := rootOnlySubagentTools()
-	if want := []string{"delegate", "manage_worktree"}; !slices.Equal(tools, want) {
+	if want := []string{"delegate", "delegate_wait", "manage_worktree"}; !slices.Equal(tools, want) {
 		t.Fatalf("root-only tools = %v, want exact ordered list %v", tools, want)
 	}
 }

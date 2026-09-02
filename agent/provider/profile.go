@@ -187,6 +187,7 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefDelegate(nil))
 		add(tool.DefJobWatch(jobWatchEventKindNames))
 		add(tool.DefDelegateSend())
+		add(tool.DefDelegateWait())
 	}
 	if enabled[capabilityWorkflow] {
 		add(tool.DefTaskList(efforts))

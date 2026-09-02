@@ -887,3 +887,26 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 		t.Fatalf("schema must not force-require add/update at top level: %v", top)
 	}
 }
+
+func TestDefDelegateWaitSchema(t *testing.T) {
+	def := DefDelegateWait()
+	if def.Name != "delegate_wait" {
+		t.Fatalf("name = %q", def.Name)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	targets, ok := props["targets"].(map[string]any)
+	if !ok || targets["type"] != "array" {
+		t.Fatalf("targets = %v, want an array of delegate ids", props["targets"])
+	}
+	wait, ok := props["max_wait_ms"].(map[string]any)
+	if !ok || wait["type"] != "integer" {
+		t.Fatalf("max_wait_ms = %v, want integer", props["max_wait_ms"])
+	}
+	req := def.Parameters["required"].([]string)
+	if len(req) != 1 || req[0] != "max_wait_ms" {
+		t.Errorf("required = %v, want [max_wait_ms]", req)
+	}
+	if desc, _ := def.Description, ""; desc == "" {
+		t.Error("delegate_wait needs a description")
+	}
+}

@@ -454,6 +454,7 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "CompleteModelRequest"}:                                 1,
 	{filename: "session_model_call.go", function: "(*Session).prepareModelRequestWithError", kind: "lifecycle method", symbol: "AbortModelRequest"}:                                    1,
 	{filename: "session_tools.go", function: "stableDelegateSendTool", kind: "delivery commit method", symbol: "Complete"}:                                                             1,
+	{filename: "session_tools.go", function: "stableDelegateWaitTool", kind: "lifecycle method", symbol: "waitForDelegateInline"}:                                                      1,
 	{filename: "session_tools.go", function: "abortDelegateToolCallDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                               1,
 	{filename: "session_tools.go", function: "(*Session).appendToolResultsWithDeliveryCommitsDurably", kind: "delivery commit method", symbol: "Complete"}:                             1,
 	{filename: "session_tools.go", function: "(*Session).abortDelegateDeliveryCommits", kind: "delivery commit method", symbol: "Complete"}:                                            1,
