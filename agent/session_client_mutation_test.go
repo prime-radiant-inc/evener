@@ -734,6 +734,7 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	turn.ClientMutationID = claimed.ClientMutationID
 	turn.StableTurnID = claimed.StableTurnID
 	if err := sess.appendTurnAfterTranscriptWrite(
+		turn,
 		func() error { return sess.appendClientMutationTranscriptLocked(turn) },
 		func() { sess.history = append(sess.history, turn) },
 	); err != nil {

@@ -234,6 +234,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			historyTurns = append([]schema.Turn{}, s.history...)
 			preManageLen := len(historyTurns)
 			snapRevision := s.historyRevision
+			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
 			// Variant B (forced note): if a compaction is imminent, elicit +
@@ -259,7 +260,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {

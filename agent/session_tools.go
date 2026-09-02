@@ -1120,6 +1120,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if err := s.appendTurnAfterTranscriptWrite(
+		persistedTurn,
 		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
 		func() { s.history = append(s.history, liveTurn) },
 	); err != nil {

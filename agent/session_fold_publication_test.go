@@ -8,16 +8,24 @@ package agent
 // own.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -435,7 +443,17 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	}()
 	<-parked // fold A has published
 
-	if err := s.Compact(context.Background()); err != nil { // fold B: folds A's result, publishes second
+	// Seed fresh post-A history past PreserveRecentTurns before fold B runs,
+	// so B's fold is genuinely competing regardless of how much of A's
+	// result the summarizer preserved: B must fold real content and produce
+	// its own summary, not short-circuit over a too-short history.
+	s.mu.Lock()
+	for i := range 8 {
+		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("fresh post-A turn %d", i))))
+	}
+	s.mu.Unlock()
+
+	if err := s.Compact(context.Background()); err != nil { // fold B: folds A's result + the fresh turns, publishes second
 		t.Fatalf("Compact (B): %v", err)
 	}
 
@@ -447,6 +465,24 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	aMarker, bMarker := -1, -1
+	for i, e := range data.Entries {
+		if e.Turn.Kind != schema.TurnSummary {
+			continue
+		}
+		if strings.Contains(e.Turn.Message.Text(), "fold A summary") {
+			aMarker = i
+		}
+		if strings.Contains(e.Turn.Message.Text(), "fold B summary") {
+			bMarker = i
+		}
+	}
+	if aMarker < 0 || bMarker < 0 {
+		t.Fatalf("both folds must produce summary markers (A entry index %d, B entry index %d) -- B's history was seeded past PreserveRecentTurns precisely so its fold is genuine", aMarker, bMarker)
+	}
+	if aMarker > bMarker {
+		t.Fatalf("fold A's summary entry (index %d) landed after fold B's (index %d) despite A publishing first -- compaction markers out of publish order", aMarker, bMarker)
 	}
 	resumed := ResumeHistory(data.Entries)
 	if len(resumed) == 0 {
@@ -705,4 +741,397 @@ func TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline(t *testing.T) {
 			t.Fatalf("turnHistoryBaseline = %d after deleting the first in-flight turn, want 2 (unchanged: the boundary still opens the in-flight region)", got)
 		}
 	})
+}
+
+// toolResultContents collects the string contents of every tool-result part
+// across turns, for content-level assertions on projected transcripts.
+func toolResultContents(turns []schema.Turn) []string {
+	var contents []string
+	for _, t := range turns {
+		for _, part := range t.Message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
+				if str, ok := part.ToolResult.Content.(string); ok {
+					contents = append(contents, str)
+				}
+			}
+		}
+	}
+	return contents
+}
+
+// TestFoldPublication_MergedTailRewriteUsesPersistedForm pins the merged-tail
+// rewrite's projection contract: tool results deliberately diverge —
+// projectToolResultsForTranscript persists a bounded re-read placeholder in
+// place of private API-log evidence, and durable delegate tool results
+// carry DelegateDeliveryCommits only on the persisted form. Rewriting the
+// live form would leak private evidence into the durable transcript and drop
+// the delivery metadata, so the rewrite reuses the exact persisted
+// counterpart the pair originally wrote.
+func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "persisted-form-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background()) // blocks inside Layer 2, past its unlocked snapshot
+	}()
+	<-entered // the fold is mid-flight; nothing is locked
+
+	const secret = "SECRET-API-LOG-EVIDENCE-r7"
+	const placeholder = "PLACEHOLDER-RE-READ-HANDLE-r7"
+	live := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: "c-r7", Name: "read_session_transcript", Content: secret},
+	}}})
+	persisted := live
+	persisted.Message = llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: "c-r7", Name: "read_session_transcript", Content: placeholder},
+	}}}
+	persisted.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "c-r7", DeliveryID: "d-r7"}}
+	s.recordTurn(live, persisted) // the divergent pair, recorded while the fold runs
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	// The model-facing live history keeps the evidence.
+	foundLiveSecret := false
+	for _, c := range toolResultContents(currentHistory(t, s)) {
+		if c == secret {
+			foundLiveSecret = true
+		}
+	}
+	if !foundLiveSecret {
+		t.Fatal("test setup: the live history no longer carries the private evidence")
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	var entryTurns []schema.Turn
+	for _, e := range data.Entries {
+		entryTurns = append(entryTurns, e.Turn)
+	}
+	for _, c := range toolResultContents(entryTurns) {
+		if c == secret {
+			t.Fatal("private API-log evidence leaked into the durable transcript -- the merged-tail rewrite must persist the projected (placeholder) form, never the live form")
+		}
+	}
+
+	resumed := ResumeHistory(data.Entries)
+	var resumedMatches []schema.Turn
+	for _, rt := range resumed {
+		for _, c := range toolResultContents([]schema.Turn{rt}) {
+			if c == placeholder {
+				resumedMatches = append(resumedMatches, rt)
+			}
+		}
+	}
+	if len(resumedMatches) != 1 {
+		t.Fatalf("projected tool result appears %d times in the resumed history, want exactly 1", len(resumedMatches))
+	}
+	if len(resumedMatches[0].DelegateDeliveryCommits) != 1 || resumedMatches[0].DelegateDeliveryCommits[0].DeliveryID != "d-r7" {
+		t.Fatalf("the rewritten copy lost the persisted form's DelegateDeliveryCommits: %#v", resumedMatches[0].DelegateDeliveryCommits)
+	}
+}
+
+// TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected pins
+// the rewrite against attention-turn resurrection:
+// removeUnverifiedDelegateAttentionTurn (which takes only s.mu) can delete a
+// merged-back attention turn between publish and the merged-tail rewrite, and
+// a rewrite that persisted it after the marker would resurrect, on resume, a
+// turn whose durability verification had FAILED. Attention turns
+// enter live history without a session-transcript pair (their durability is
+// owned by the attention transcript machinery and their restart path is the
+// attention re-fold), so the rewrite must never manufacture
+// session-transcript entries for them at all.
+func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "attn-resurrect-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	inCommit := make(chan struct{})
+	proceedCommit := make(chan struct{})
+	var commits atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			if commits.Add(1) == 1 {
+				close(inCommit)
+				<-proceedCommit
+			}
+		}
+	})
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background())
+	}()
+	<-entered // mid-fold, past the snapshot
+
+	const attnText = "unverified delegate attention r7"
+	unverified := schema.NewTurn(schema.TurnSteering, llm.User(attnText))
+	unverified.AttentionID = "att-r7"
+	s.mu.Lock()
+	s.history = append(s.history, unverified) // models retainDelegateAttentionTurn: history only, no session-transcript pair
+	s.mu.Unlock()
+
+	close(proceed)
+	<-inCommit // published; the merged tail has not been written
+
+	s.removeUnverifiedDelegateAttentionTurn(unverified) // durability verification failed: the turn must vanish
+
+	close(proceedCommit)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if indexOfTurnText(currentHistory(t, s), attnText) >= 0 {
+		t.Fatal("test setup: the removed attention turn is still in live history")
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	for _, e := range data.Entries {
+		if e.Turn.Message.Text() == attnText {
+			t.Fatal("the removed (durability-unverified) attention turn was written to the session transcript by the merged-tail rewrite -- it resurrects on resume")
+		}
+	}
+}
+
+// TestFoldPublication_StaleFoldFlushDoesNotOverrideNewerFoldNaming pins
+// deferred-effect ordering: fold A publishes and parks before its deferred
+// flush; fold B publishes AND flushes (launching the compaction namer for B's
+// newer summary); when A's stale flush runs it must not launch the namer for
+// A's older summary -- compaction naming is last-write-wins, so deferred
+// last-write-wins effects are superseded by publication order.
+func TestFoldPublication_StaleFoldFlushDoesNotOverrideNewerFoldNaming(t *testing.T) {
+	t.Parallel()
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "stale-namer-cheap", func(llm.Request) llm.Response {
+		if summarizeCalls.Add(1) == 1 {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
+
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var flushes atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			if flushes.Add(1) == 1 {
+				close(parked)
+				<-release
+			}
+		}
+	})
+
+	errA := make(chan error, 1)
+	go func() {
+		errA <- s.Compact(context.Background()) // fold A: publishes, then parks before its deferred flush
+	}()
+	<-parked // A has published; its flush has not run
+
+	if err := s.Compact(context.Background()); err != nil { // fold B: publishes AND flushes in that window
+		t.Fatalf("Compact (B): %v", err)
+	}
+
+	close(release)
+	if err := <-errA; err != nil {
+		t.Fatalf("Compact (A): %v", err)
+	}
+	s.Close() // joins the namer goroutines
+
+	// Substring matching: the summarizer wraps the scripted response in its
+	// own envelope, so the summary-turn text embeds the marker rather than
+	// equaling it. B's own checkpoint digest does not embed A's summary
+	// text (verified empirically -- it digests user turns), so "fold A
+	// summary" appearing in ANY named text means A's stale launch ran.
+	nameMu.Lock()
+	defer nameMu.Unlock()
+	sawB := false
+	for _, text := range namedTexts {
+		if strings.Contains(text, "fold A summary") {
+			t.Fatalf("fold A's stale flush launched the compaction namer for A's older summary after fold B had already flushed -- last-write-wins naming lets A overwrite B (named texts: %q)", namedTexts)
+		}
+		if strings.Contains(text, "fold B summary") {
+			sawB = true
+		}
+	}
+	if !sawB {
+		t.Fatalf("fold B's summary never reached the namer; named texts: %q", namedTexts)
+	}
+}
+
+// syncSnapshotFS models a crash for the fold publication's durability
+// contract: only bytes an fsync has covered survive. Every successful Sync
+// snapshots the transcript's contents, and the test restores from that
+// snapshot instead of the live file. A write carrying a SUMMARY entry syncs
+// immediately, standing in for the writer's timed sync landing on the
+// compaction marker while the entries written right after it are still
+// unsynced.
+type syncSnapshotFS struct {
+	afero.Fs
+	mu     sync.Mutex
+	synced []byte
+}
+
+func (fs *syncSnapshotFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &syncSnapshotFile{File: file, fs: fs, name: name}, nil
+}
+
+func (fs *syncSnapshotFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &syncSnapshotFile{File: file, fs: fs, name: name}, nil
+}
+
+// snapshot returns the bytes the last fsync covered — what a restart would
+// find on disk.
+func (fs *syncSnapshotFS) snapshot() []byte {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return append([]byte(nil), fs.synced...)
+}
+
+type syncSnapshotFile struct {
+	afero.File
+	fs   *syncSnapshotFS
+	name string
+}
+
+func (file *syncSnapshotFile) Write(p []byte) (int, error) {
+	n, err := file.File.Write(p)
+	if err == nil && bytes.Contains(p, []byte(`"SUMMARY"`)) {
+		err = file.Sync()
+	}
+	return n, err
+}
+
+func (file *syncSnapshotFile) Sync() error {
+	if err := file.File.Sync(); err != nil {
+		return err
+	}
+	data, err := afero.ReadFile(file.fs.Fs, file.name)
+	if err != nil {
+		return err
+	}
+	file.fs.mu.Lock()
+	file.fs.synced = data
+	file.fs.mu.Unlock()
+	return nil
+}
+
+// TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync
+// pins the durability of the merged-tail rewrite: a turn appended DURABLY
+// while a fold runs has its only durable entry before the compaction marker,
+// which ResumeHistory discards, so the post-marker rewrite is the entry a
+// restart depends on — and it must be durable before the publication counts
+// as persisted. A crash after the marker's fsync but before a later sync
+// covers the rewrite must not lose a turn the session already promised was
+// durable.
+func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "durable-rewrite-restart-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	crashFS := &syncSnapshotFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(crashFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	writer.SyncInterval = time.Hour // plain appends never sync on their own here; only durable writes and the marker do
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	compactErr := make(chan error, 1)
+	go func() {
+		compactErr <- s.Compact(context.Background()) // blocks inside Layer 2, past its unlocked snapshot
+	}()
+	<-entered // the fold is mid-flight; nothing is locked
+
+	const durableText = "turn recorded durably while the fold was running"
+	msg := llm.User(durableText)
+	if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+		t.Fatalf("durable append: %v", err)
+	}
+
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if indexOfTurnText(currentHistory(t, s), durableText) < 0 {
+		t.Fatal("test setup: the merge-back did not carry the durably recorded turn into live history")
+	}
+
+	// Crash now: restore from the bytes the last fsync covered.
+	restoredPath := filepath.Join(t.TempDir(), "restored.jsonl")
+	if err := os.WriteFile(restoredPath, crashFS.snapshot(), 0o600); err != nil {
+		t.Fatalf("write restored transcript: %v", err)
+	}
+	data, err := readTranscriptFull(restoredPath)
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	markerDurable := false
+	for _, e := range data.Entries {
+		if e.Turn.Kind == schema.TurnSummary {
+			markerDurable = true
+		}
+	}
+	if !markerDurable {
+		t.Fatal("test setup: the compaction marker did not reach the durable transcript")
+	}
+	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
+		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
+	}
 }

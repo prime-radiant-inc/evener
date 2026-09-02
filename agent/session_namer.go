@@ -345,7 +345,7 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 }
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
-	s.handleCompactionTurnEffects(t, s.writeTranscript(t))
+	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false)
 }
 
 // handleCompactionTurnEffects runs a compaction turn's post-write side
@@ -353,8 +353,12 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // publisher performs that append inside its publication transaction's
 // transcript-commit phase (under attentionMu, where emitting is unsafe) and
 // hands the error here; the OnCompactionTurn fallback path above writes and
-// reports in one step.
-func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error) {
+// reports in one step. superseded reports that a NEWER fold publication has
+// already flushed its deferred effects: the last-write-wins pieces
+// (compaction naming, the task-list reminder) are skipped so a stale parked
+// flush cannot overwrite the newer fold's; the additive pieces (env-tracker
+// reset, the compaction-turn event) still run.
+func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool) {
 	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
 		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
@@ -367,6 +371,9 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error) {
 		// WithCompactionTurnCallback.
 		s.resetEnvContextTrackerAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+	}
+	if superseded {
+		return
 	}
 	s.launchCompactionNamer(s.sessionCtx, t)
 	// After compaction, inject full task list if tasks exist.
