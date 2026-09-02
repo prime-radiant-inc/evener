@@ -818,6 +818,18 @@ type EvenerDiagnostics struct {
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
 	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`
 	Agents     []string                `json:"agents,omitempty"`
+	// DelegateDiagnostics carries delegate-SUBSYSTEM diagnostics that are
+	// not about any one delegate -- e.g. the shared delegates.jsonl itself
+	// being unreadable (delegatestore.ErrLineTooLong), which yields zero
+	// delegates to attach a per-delegate diagnostic to. Delegates[].Diagnostics
+	// (EvenerDelegateInfo) is per-delegate and can only ever be populated
+	// when at least one delegate exists; this field is the vessel for
+	// everything else, independent of delegate count (roborev's #807
+	// addendum finding, MAJOR: pastEntryThread's containment fix degrades
+	// to zero delegates on a corrupt journal, but its diagnostic never
+	// reached the wire because the only place that attached it — the
+	// per-delegate loop — never ran).
+	DelegateDiagnostics []string `json:"delegateDiagnostics,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a

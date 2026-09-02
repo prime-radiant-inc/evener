@@ -38,7 +38,11 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 					liveIDs[key] = struct{}{}
 				}
 			}
-			thread = mergePastMetadataForList(ctx, cfg, source.ID(), thread)
+			var err error
+			thread, err = mergePastMetadataForList(ctx, cfg, source.ID(), thread)
+			if err != nil {
+				return appwire.ThreadListResponse{}, err
+			}
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -145,12 +149,18 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return slices.Contains(params.SourceIDs, sourceID)
 }
 
-func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
+// mergePastMetadataForList enriches live with its past-persisted metadata.
+// The returned error is non-nil ONLY for ctx cancellation/deadline
+// (roborev finding on #807's r5 review): every OTHER failure reading past
+// data (no matching entry, a corrupt journal, …) still degrades to the
+// unenriched live thread, same as before — only cancellation must stop the
+// caller's sweep instead of being silently treated the same way.
+func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, sourceID string, live appwire.Thread) (appwire.Thread, error) {
 	if cfg.Past == nil {
-		return live
+		return live, nil
 	}
 	if threadListSourceID(sourceID, live) != "local" {
-		return live
+		return live, nil
 	}
 	var entry hubcore.PastEntry
 	var ok bool
@@ -164,11 +174,14 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 		}
 	}
 	if !ok {
-		return live
+		return live, nil
 	}
 	past, err := pastEntryThread(ctx, cfg, entry, false)
 	if err != nil {
-		return live
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return appwire.Thread{}, ctxErr
+		}
+		return live, nil
 	}
 	if live.ID == "" {
 		live.ID = past.ID
@@ -206,7 +219,7 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 	if live.Evener.Profile == "" {
 		live.Evener.Profile = past.Evener.Profile
 	}
-	return live
+	return live, nil
 }
 
 func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bool {

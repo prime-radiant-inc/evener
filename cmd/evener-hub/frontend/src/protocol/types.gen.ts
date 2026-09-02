@@ -266,6 +266,7 @@ export interface EvenerDiagnostics {
   delegates?: EvenerDelegateInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
+  delegateDiagnostics?: string[];
 }
 
 export interface EvenerHookEventStatus {
