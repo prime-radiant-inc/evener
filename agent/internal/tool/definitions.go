@@ -197,7 +197,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
+				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"isolation": map[string]any{
 					"type":        "string",

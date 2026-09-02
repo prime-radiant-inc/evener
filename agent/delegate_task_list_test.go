@@ -106,3 +106,51 @@ func TestDecodeDelegateArgs_RejectsEmptyPrompt(t *testing.T) {
 		}
 	}
 }
+
+// The subagent role carries the delegate and job-control tools so that the
+// parent's delegation_allowance decides whether it may delegate: granted, the
+// child registers delegate; not granted, it stays a leaf.
+func TestBuiltinAgents_SubagentCarriesDelegationTools(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	have := map[string]bool{}
+	for _, tool := range agents["subagent"].Tools {
+		have[tool] = true
+	}
+	for _, want := range []string{"delegate", "delegate_send", "job_status", "job_watch", "job_stop", "job_list", "read_transcript"} {
+		if !have[want] {
+			t.Errorf("subagent role missing tool %q", want)
+		}
+	}
+}
+
+func TestCreateDelegate_SubagentDelegatesOnlyWhenGranted(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		allowance int
+		want      bool
+	}{{"granted", 1, true}, {"leaf", 0, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, _ := newDelegateResourceBootstrapSession(t)
+			result := root.createDelegate(context.Background(), delegateArgs{Task: "brief", AgentType: "subagent", DelegationAllowance: tc.allowance})
+			if result.Err != nil {
+				t.Fatalf("createDelegate: %v", result.Err)
+			}
+			root.delegateController.mu.Lock()
+			live := root.delegateController.live[result.DelegateID]
+			root.delegateController.mu.Unlock()
+			if live == nil || live.binding == nil || live.binding.runtime == nil {
+				t.Fatal("no live child session")
+			}
+			names := live.binding.runtime.reg.RegisteredNames()
+			if names["delegate"] != tc.want {
+				t.Errorf("child has delegate tool = %v, want %v (allowance %d)", names["delegate"], tc.want, tc.allowance)
+			}
+			if tc.want && !names["job_watch"] {
+				t.Error("granted subagent should also have job_watch to supervise its own delegates")
+			}
+		})
+	}
+}
