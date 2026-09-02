@@ -143,7 +143,7 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(screen.queryByText("warning")).toBeNull();
 
   await user.click(row);
-  expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
+  expect((await screen.findByTestId("notification-field-status")).textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
   expect(screen.getByTestId("notification-field-exit").textContent).toContain("-1");
   expect(screen.getByTestId("notification-raw").textContent).toContain('exit_code="-1"');
