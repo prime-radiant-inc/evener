@@ -202,8 +202,8 @@ func TestProtocolBuildBody_ProviderOnlyThinkingBudgetFailsWithinAdmittedMax(t *t
 	}}
 	res := protoRes(nil)
 	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
-	var budgetErr *llm.ContextBudgetError
-	if !errors.As(err, &budgetErr) {
+	budgetErr, ok := errors.AsType[*llm.ContextBudgetError](err)
+	if !ok {
 		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
 	}
 	if llm.Kind(err) != llm.KindContextLength {
@@ -211,6 +211,18 @@ func TestProtocolBuildBody_ProviderOnlyThinkingBudgetFailsWithinAdmittedMax(t *t
 	}
 	if budgetErr.Provider != "anthropic-prod" || budgetErr.Model != "claude-x" || budgetErr.Limit != "max_output_tokens" || budgetErr.Maximum != 1000 || budgetErr.OutputTokens != 1025 {
 		t.Fatalf("ContextBudgetError = %+v, want provider=anthropic-prod model=claude-x limit=max_output_tokens maximum=1000 output=1025", budgetErr)
+	}
+}
+
+func TestProtocolBuildBody_MixedCaseProviderThinkingBudgetFailsWithinAdmittedMax(t *testing.T) {
+	req := protoReq("")
+	req.MaxTokens = new(1000)
+	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{
+		"thinking": map[string]any{"type": " ENABLED ", "budget_tokens": 1024},
+	}}
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, protoRes(nil)), protoRes(nil))
+	if _, ok := errors.AsType[*llm.ContextBudgetError](err); !ok {
+		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
 	}
 }
 

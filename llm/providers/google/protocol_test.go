@@ -146,6 +146,22 @@ func TestProtocolBuildBody_GenerationConfigProviderOptionsAreNotMutated(t *testi
 	}
 }
 
+func TestProtocolBuildBody_RejectsMalformedGenerationConfigProviderOption(t *testing.T) {
+	for _, malformed := range []any{nil, "not-an-object"} {
+		req := protoReq("")
+		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
+			"generationConfig": malformed,
+		}}
+		body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, protoRes(nil)), protoRes(nil))
+		if body != nil {
+			t.Fatalf("generationConfig %T produced body %v, want no request", malformed, body)
+		}
+		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
+			t.Fatalf("generationConfig %T error = %v, want *llm.ConfigurationError", malformed, err)
+		}
+	}
+}
+
 // TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
 // rule that every error stamp is res.Instance, not a provider literal.
 func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {

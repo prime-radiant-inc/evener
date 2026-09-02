@@ -184,11 +184,24 @@ func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
 }
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
-// other profile-derived values stay current after a model change.
+// other profile-derived values stay current after a model change. An exact
+// token count belongs only to the instance, model, and protocol that produced
+// it, so changing any part of that target invalidates the measurement.
 func (cm *Manager) SetProfile(profile *provider.Profile) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	if !sameProfileTarget(cm.profile, profile) {
+		cm.lastInputTokens = 0
+		cm.historyLenAtMeasure = 0
+	}
 	cm.profile = profile
+}
+
+func sameProfileTarget(a, b *provider.Profile) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ID() == b.ID() && a.Model() == b.Model() && a.Protocol() == b.Protocol()
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race

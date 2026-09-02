@@ -48,6 +48,9 @@ type Call struct {
 	// response (google's gRPC status remap); it receives the body and the
 	// error ClassifyHTTPError produced.
 	Reclassify func(status int, body []byte, err error) error
+	// FinalizeBody, when set, runs after transport constants and the request
+	// preparer, immediately before the final body is marshaled.
+	FinalizeBody func(body map[string]any)
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -96,6 +99,9 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 		if err := preparer.PrepareRequest(ctx, httpReq, c.Body, c.Req, c.Res); err != nil {
 			return nil, err
 		}
+	}
+	if c.FinalizeBody != nil && c.Body != nil {
+		c.FinalizeBody(c.Body)
 	}
 	p := &Prepared{Request: httpReq, PrunedFields: pruned}
 	if c.Body != nil {

@@ -14,6 +14,14 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: string(llm.ResponsesEndpointFamilyFor(res)), Method: method, URL: url, Body: body, Req: req, Res: res, Client: p.Client}
 }
 
+func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, method, url, body, req, res)
+	call.FinalizeBody = func(finalBody map[string]any) {
+		reconcilePreparedOutput(finalBody, req, res.Caps)
+	}
+	return call
+}
+
 // Complete implements llm.Protocol. Transports that answer only streams
 // (Codex) are driven through Stream and accumulated.
 func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Response, error) {
@@ -24,7 +32,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	call := p.call("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
 	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
 		resp := fromResponses(raw, req.Model)
 		p.stampResponseIDHash(ctx, &resp)
@@ -38,7 +46,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if err != nil {
 		return nil, err
 	}
-	call := p.call("responses.create(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("responses.create(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		p.decodeStream(sctx, cancel, resp, s, req, res, r, attempt)
 	})

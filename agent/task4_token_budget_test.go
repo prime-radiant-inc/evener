@@ -74,6 +74,23 @@ func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 	}
 }
 
+func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
+	profile := testOpenAICompatProfile("budget-window-override", "test", 0)
+	resolved := profile.Resolved()
+	resolved.Caps.ContextWindow = new(10_000)
+	profile = provider.WithContextWindow(profile.WithResolved(resolved), 2_000)
+	req := llm.Request{
+		Provider:            profile.ID(),
+		Model:               profile.Model(),
+		Messages:            []llm.Message{llm.User("task")},
+		InputTokensEstimate: 1_000,
+		MaxTokens:           new(1),
+	}
+	if _, _, err := budgetModelDispatchRequestWithBudget(profile, req); err == nil {
+		t.Fatal("dispatch admission ignored the effective 2000-token context-window override")
+	}
+}
+
 func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 	client := llm.NewClient()
 	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
@@ -315,6 +332,35 @@ func TestSessionContextBudgetCompactRetryTerminalNoProgress(t *testing.T) {
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
 		t.Fatalf("provider requests = %d, want 0 when both preparations fail", len(requests))
+	}
+}
+
+func TestForceCompactForModelRecoveryAdjustsTurnHistoryBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		baseline int
+	}{
+		{name: "subtracts shrink", baseline: 2},
+		{name: "clamps at zero", baseline: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := compactSession(t)
+			defer sess.Close()
+			before := len(sess.history)
+			sess.turnHistoryBaseline = tc.baseline
+
+			sess.forceCompactForModelRecovery(context.Background())
+
+			after := len(sess.history)
+			shrink := before - after
+			if shrink <= 0 {
+				t.Fatalf("recovery compaction did not shrink history: %d -> %d", before, after)
+			}
+			want := max(0, tc.baseline-shrink)
+			if got := sess.turnHistoryBaseline; got != want {
+				t.Fatalf("turnHistoryBaseline = %d after history shrank %d -> %d, want %d", got, before, after, want)
+			}
+		})
 	}
 }
 

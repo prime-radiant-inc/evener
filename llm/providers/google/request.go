@@ -100,7 +100,11 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 	}
 	maps.Copy(body, options)
-	if overlaid, ok := options["generationConfig"].(map[string]any); ok {
+	if raw, exists := options["generationConfig"]; exists {
+		overlaid, ok := raw.(map[string]any)
+		if !ok || overlaid == nil {
+			return nil, &llm.ConfigurationError{Message: "provider_options.google.generationConfig must be an object"}
+		}
 		body["generationConfig"] = maps.Clone(overlaid)
 	}
 	reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens)

@@ -88,7 +88,9 @@ func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
 // CountInputTokens resolves the request's target and uses its exact counter
 // when available. Targets without exact support fall back to the local
 // estimate. The count is taken over the shaped request, so it describes the
-// body Complete would actually send.
+// input body Complete would send. It intentionally does not apply completion
+// admission: callers need the exact count to decide how an oversized request
+// should be reduced before dispatch.
 func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenCount, error) {
 	if err := req.Validate(); err != nil {
 		return InputTokenCount{}, err

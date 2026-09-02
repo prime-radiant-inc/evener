@@ -830,9 +830,9 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	c.Register(f)
 
-	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
-	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// Keep enough room for the full base prompt while constraining the window
+	// enough that this request crosses the warning threshold.
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 25_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

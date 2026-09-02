@@ -143,6 +143,27 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	return body, nil
 }
 
+func reconcilePreparedOutput(body map[string]any, req llm.Request, caps registry.Caps) {
+	if !wireFieldEnabled(caps, "max_output_tokens") {
+		delete(body, "max_output_tokens")
+		return
+	}
+	requestutil.ReconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
+}
+
+func wireFieldEnabled(caps registry.Caps, path string) bool {
+	for field, enabled := range caps.Fields {
+		wirePath := field
+		if field == registry.FieldMaxTokens && caps.MaxTokensField != nil && *caps.MaxTokensField != "" {
+			wirePath = *caps.MaxTokensField
+		}
+		if wirePath == path && !enabled {
+			return false
+		}
+	}
+	return true
+}
+
 // reasoningObject is spec §8.4 for openai-responses: effort when set and
 // the row is effort-capable, summary from ReasoningSummary, and with
 // ThinkingAlwaysOn and no effort the summary alone. nil means no reasoning

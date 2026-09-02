@@ -142,7 +142,7 @@ func finalThinkingBudget(body map[string]any) int {
 	if thinking == nil {
 		return 0
 	}
-	if typ, _ := thinking["type"].(string); typ != "enabled" {
+	if typ, _ := thinking["type"].(string); !strings.EqualFold(strings.TrimSpace(typ), "enabled") {
 		return 0
 	}
 	return intFromAny(thinking["budget_tokens"])

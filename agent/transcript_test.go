@@ -1249,6 +1249,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			// Round 1, input 1: read a big file.
 			func(req llm.Request) llm.Response {
 				return llm.Response{
+					Usage: llm.Usage{InputTokens: 22_000},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -1299,8 +1300,9 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Use a very small context window to force compaction.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 500)
+	// Use a window large enough for the base prompt but small enough for the
+	// accumulated tool results to force compaction.
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
 	profile = withTestSessionNamer(c, profile)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
@@ -1312,6 +1314,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// This lifecycle test scripts exact model steps and crosses the compaction
 	// threshold; mute the default-on note elicitation so it doesn't steal a step.
 	muteNoteElicitation(sess)
+	sess.contextMgr.ObservationMaskThreshold = 1
+	sess.contextMgr.PreserveRecentTurns = 2
 
 	// Drain events in background to prevent blocking.
 	var evs []events.SessionEvent

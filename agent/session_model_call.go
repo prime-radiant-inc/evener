@@ -1160,7 +1160,11 @@ func budgetModelDispatchRequest(profile *provider.Profile, req llm.Request) (llm
 }
 
 func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
-	return llm.ApplyTokenBudget(req, profile.Resolved())
+	resolved := profile.Resolved()
+	if window := profile.ContextWindowSize(); window > 0 {
+		resolved.Caps.ContextWindow = new(window)
+	}
+	return llm.ApplyTokenBudget(req, resolved)
 }
 
 func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.TokenBudget) {
@@ -1201,10 +1205,17 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 	s.mu.Lock()
 	history := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
+	preCompactLen := len(history)
 	compactionCtx, emitFn, flush := s.compactionEmitFunc(ctx, &history)
 	s.contextMgr.ForceCompact(compactionCtx, &history, "", emitFn)
 	flush()
 	s.mu.Lock()
+	if shrink := preCompactLen - len(history); shrink > 0 {
+		s.turnHistoryBaseline -= shrink
+		if s.turnHistoryBaseline < 0 {
+			s.turnHistoryBaseline = 0
+		}
+	}
 	s.history = history
 	s.mu.Unlock()
 	s.maybeAutoSave()
