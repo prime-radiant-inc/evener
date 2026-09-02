@@ -268,3 +268,36 @@ func writeTestPluginFile(t *testing.T, root, rel, body string) {
 		t.Fatal(err)
 	}
 }
+
+// A bundled plugin (shipped inside the binary) is a launch candidate only when
+// a launch names it; it is materialized under the store root and selected.
+func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
+	m := NewManager(t.TempDir())
+	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("bundled plugin not selectable: %v", err)
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].Name != "coordinator-workflow" || res.Candidates[0].Source != LaunchPluginSourceBundled || !res.Candidates[0].Selected {
+		t.Fatalf("candidates = %+v, want the bundled coordinator-workflow selected", res.Candidates)
+	}
+	if res.Candidates[0].AgentCount < 7 {
+		t.Errorf("bundled coordinator-workflow AgentCount = %d, want the workflow roster", res.Candidates[0].AgentCount)
+	}
+	if len(res.SelectedDirs) != 1 || !strings.HasPrefix(res.SelectedDirs[0], m.Root) {
+		t.Fatalf("SelectedDirs = %v, want one materialized dir under %s", res.SelectedDirs, m.Root)
+	}
+	if _, err := os.Stat(filepath.Join(res.SelectedDirs[0], ".claude-plugin", "plugin.json")); err != nil {
+		t.Errorf("materialized plugin has no manifest: %v", err)
+	}
+	// Not requested: bundled plugins stay out of the inventory.
+	quiet, err := m.ResolveForLaunch(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quiet.Candidates) != 0 {
+		t.Errorf("unrequested launch listed bundled candidates: %+v", quiet.Candidates)
+	}
+}

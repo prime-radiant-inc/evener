@@ -2,11 +2,16 @@ package plugins
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 // LaunchPluginSource identifies how a plugin was discovered for launch.
@@ -15,6 +20,9 @@ type LaunchPluginSource string
 const (
 	LaunchPluginSourceDirectory LaunchPluginSource = "directory"
 	LaunchPluginSourceInstalled LaunchPluginSource = "installed"
+	// LaunchPluginSourceBundled is a plugin shipped inside the binary,
+	// materialized under the store root when a launch names it.
+	LaunchPluginSourceBundled LaunchPluginSource = "bundled"
 )
 
 // LaunchPluginCandidate is the safe, display-oriented metadata for one valid
@@ -145,6 +153,17 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 				continue
 			}
 			if !seen[name] {
+				// Bundled plugins join the inventory only by request, so an
+				// unremarkable launch never picks them up.
+				if path, err := m.materializeBundledPlugin(name); err == nil {
+					add(path, LaunchPluginSourceBundled, "", "", name)
+				} else if !errors.Is(err, fs.ErrNotExist) {
+					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
+					})
+				}
+			}
+			if !seen[name] {
 				resolution.SelectionErrors = append(resolution.SelectionErrors, PluginSelectionError{
 					Name: name, Reason: "no valid plugin candidate",
 				})
@@ -152,6 +171,39 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 		}
 	}
 	return resolution, nil
+}
+
+// materializeBundledPlugin copies the bundled plugin named name out of the
+// binary into <root>/bundled/<name>, replacing any earlier copy so the on-disk
+// plugin always matches the running binary. Returns fs.ErrNotExist when no
+// bundled plugin has that name.
+func (m *Manager) materializeBundledPlugin(name string) (string, error) {
+	if name == "" || name != filepath.Base(name) {
+		return "", fs.ErrNotExist
+	}
+	src := bundled.Plugins()
+	if info, err := fs.Stat(src, name); err != nil || !info.IsDir() {
+		return "", fs.ErrNotExist
+	}
+	dest := filepath.Join(m.Root, "bundled", name)
+	if err := os.RemoveAll(dest); err != nil {
+		return "", fmt.Errorf("replace bundled plugin %s: %w", name, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.CopyFS(dest, mustSubFS(src, name)); err != nil {
+		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
+	}
+	return dest, nil
+}
+
+func mustSubFS(fsys fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic(err)
+	}
+	return sub
 }
 
 func countHooks(hooks map[agentplugin.HookEvent][]agentplugin.RegisteredHook) int {
