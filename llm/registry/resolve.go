@@ -328,7 +328,13 @@ func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record
 	}
 	caps.WebSearch = new(false)
 	prov["WebSearch"] = "gate/first-party"
-	return fmt.Sprintf("web_search disabled: this endpoint is not %s's first-party API (set web_search = true on the instance to opt back in)", rec.providerID)
+	// A from-scratch record has no curated provider id; the warning names
+	// the instance itself there.
+	name := rec.providerID
+	if name == "" {
+		name = rec.name
+	}
+	return fmt.Sprintf("web_search disabled: this endpoint is not %s's first-party API (set web_search = true on the instance to opt back in)", name)
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {

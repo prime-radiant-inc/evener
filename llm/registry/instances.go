@@ -129,9 +129,11 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // curated record, whose actual resolution is the canonical one unless the
 // environment redirects it - which must strip, and does, by comparing
 // unequal. A record with no curated provider at all (a from-scratch
-// [providers.X] with its own base_url) has no vendor endpoint to diverge
-// from and is trivially first-party; only its own explicit web_search can
-// grant the capability anyway.
+// [providers.X] with its own base_url) has no vendor data to prove
+// anything against, so it is gated the same way rather than trusted:
+// nothing non-explicit survives - gateWebSearch normalizes its nil to a
+// silent false and strips a glob-granted true - and the instance's own
+// explicit web_search remains the grant.
 //
 // The canonical resolution admits values from the actual resolution's own
 // variable lookup only where they cannot move the request off the vendor's
@@ -150,7 +152,7 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID, ref, altID string) bool {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
-		return true
+		return false
 	}
 	var row Model
 	if rowID != "" || ref != "" {
@@ -262,15 +264,28 @@ func authorityVars(tpl string) map[string]bool {
 // sameEndpointURL reports whether two resolved base URLs name the same
 // endpoint. Trailing slashes are trimmed first, mirroring the HTTP
 // builder's own strings.TrimRight(BaseURL, "/") (protocolhttp.URL) rather
-// than inventing a broader canonicalization. Equal strings are the same
-// endpoint - an unresolved template equals only the identically unresolved
-// template - and anything else must parse on both sides and match on every
-// URL component, where a bare trailing "?" or "#" differs from their
-// absence (ForceQuery, Fragment) even with nothing after them, and the
-// escaped path preserves percent-encoding rather than comparing decoded
-// forms.
+// than inventing a broader canonicalization.
+//
+// Any "?" or "#" anywhere in either RAW string rejects outright, before
+// any equality: the builder concatenates the endpoint path onto the raw
+// base, so either delimiter sends the endpoint into the query or fragment
+// instead of the path - and the parsed forms cannot be trusted to see
+// that (url.URL has no ForceFragment: "https://h" and "https://h#" parse
+// identically while building different requests). No curated base
+// resolves to a URL containing either delimiter
+// (TestCuratedBaseURLsCarryNoQueryOrFragment pins that, embedded catalog
+// and fixture both), so the reject can never misjudge vendor data.
+//
+// Past that, equal strings are the same endpoint - an unresolved template
+// equals only the identically unresolved template - and anything else
+// must parse on both sides and match on scheme, userinfo, host, and the
+// escaped path, which preserves percent-encoding rather than comparing
+// decoded forms.
 func sameEndpointURL(a, b string) bool {
 	a, b = strings.TrimRight(a, "/"), strings.TrimRight(b, "/")
+	if strings.ContainsAny(a, "?#") || strings.ContainsAny(b, "?#") {
+		return false
+	}
 	if a == b {
 		return true
 	}
@@ -281,8 +296,7 @@ func sameEndpointURL(a, b string) bool {
 	}
 	return ua.Scheme == ub.Scheme && ua.Opaque == ub.Opaque &&
 		ua.User.String() == ub.User.String() && ua.Host == ub.Host &&
-		ua.EscapedPath() == ub.EscapedPath() && ua.ForceQuery == ub.ForceQuery &&
-		ua.RawQuery == ub.RawQuery && ua.Fragment == ub.Fragment
+		ua.EscapedPath() == ub.EscapedPath()
 }
 
 // envCandidates lists, in the order credential resolution tries them, every
