@@ -261,6 +261,17 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// automatic compaction to run unsteered. The untyped surface already
 		// keeps it (deny-list path), so listing tools: must not take it away.
 		allowed = appendUniqueStrings(allowed, "compact_context")
+		// Root-only job and delegation tools in a typed role's list are
+		// allowance-gated: granted, the role keeps them and gains job_watch
+		// to supervise its delegates; a leaf loses them, on every spawn
+		// path, exactly as the untyped surface does.
+		if canDelegate {
+			if hasString(allowed, "delegate") {
+				allowed = appendUniqueStrings(allowed, "job_watch")
+			}
+		} else {
+			allowed = removeRootOnlySubagentTools(allowed)
+		}
 		return false, allowed, nil
 	default:
 		if canDelegate {
@@ -657,7 +668,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 ) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
-	allowance := s.delegationAllowance
 	parentCfg := s.cfg
 	subscriberCount := s.subscriberCountFn
 	s.mu.Unlock()
@@ -820,7 +830,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
-		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, allowance > 0)
+		// The policy follows the CHILD's granted allowance, not this session's:
+		// a leaf spawned by a coordinator must not inherit the coordinator's
+		// job-supervision tools.
+		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
 		if subCfg.spawn.parentWatchGranted && !allTools {
 			if len(allowedTools) > 0 {
 				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
