@@ -356,6 +356,26 @@ type testConfig struct {
 	// session transcript writer.
 	appendCompactionTurn func(schema.Turn) error
 
+	// beforeHistoryRepairPublish observes the boundary immediately before an
+	// orphaned-tool-result repair publishes to s.history. Tests use it only to
+	// place deterministic concurrent history mutations in that window. Nil in
+	// production.
+	beforeHistoryRepairPublish func()
+
+	// beforeFoldSideEffectsFlush observes the boundary between a winning
+	// fold's publication (history swap, baseline correction, note claim,
+	// transcript commit) and the deferred flush of its remaining side effects
+	// (events, session naming, hook user messages). Tests use it only to
+	// place deterministic concurrent folds in that window. Nil in production.
+	beforeFoldSideEffectsFlush func()
+
+	// beforeFoldTranscriptCommit observes the boundary inside a winning
+	// fold's publication after the history swap (and its baseline/note
+	// bookkeeping) and immediately before the fold's transcript entries are
+	// committed. Tests use it only to place deterministic concurrent turn
+	// recordings in that window. Nil in production.
+	beforeFoldTranscriptCommit func()
+
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real
 	// Session lifecycle against a scripted Git model without launching a host

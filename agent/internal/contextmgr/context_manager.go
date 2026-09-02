@@ -68,6 +68,114 @@ func WithCompactionTurnCallback(ctx context.Context, callback func(schema.Turn))
 	return context.WithValue(ctx, compactionTurnCallbackKey{}, callback)
 }
 
+type postFoldInjectionCallbackKey struct{}
+
+// WithPostFoldInjectionCallback returns a context whose callback receives the
+// net turn-count delta a Strategy appends to history AFTER its own fold layers
+// run — MemoryCrystalsStrategy's crystal bank, RecursiveDistillStrategy's
+// distilled-memory banner, OODAStrategy's orientation message. Those turns
+// land after whatever the fold preserved, so a caller measuring the overall
+// before/after turn-count delta across the whole ManageContext call needs this
+// reported separately to avoid under-shrinking the N4 in-flight-turn boundary
+// by exactly this amount, the same class of bug compactionEmitFunc's
+// runPreCompactHook-injected count already corrects for (issue #634).
+//
+// A strategy that does not self-inject after its fold has nothing to report
+// and needs not call reportPostFoldInjection at all; a caller that does not
+// install this callback (e.g. a test driving ManageContext directly) is
+// unaffected — reportPostFoldInjection silently no-ops.
+func WithPostFoldInjectionCallback(ctx context.Context, callback func(int)) context.Context {
+	return context.WithValue(ctx, postFoldInjectionCallbackKey{}, callback)
+}
+
+// reportPostFoldInjection is the strategy-side counterpart of
+// WithPostFoldInjectionCallback: report n turns net-appended after this
+// strategy's own fold layers. n may be negative (e.g. a self-injecting
+// strategy that nets out more markers removed than added) or zero (steady
+// state: an old marker was replaced by a new one of the same count) — zero is
+// a no-op, since the caller's own before/after delta already accounts for it
+// correctly.
+func reportPostFoldInjection(ctx context.Context, n int) {
+	if n == 0 {
+		return
+	}
+	if callback, ok := ctx.Value(postFoldInjectionCallbackKey{}).(func(int)); ok {
+		callback(n)
+	}
+}
+
+type baselineQueryKey struct{}
+
+// WithBaselineQuery returns a context whose query function reports the N4
+// in-flight-turn boundary (turnHistoryBaseline), translated into the CURRENT
+// history array's indexing as of the moment it's called: adjusted for every
+// fold layer's shrinkage seen so far via EventContextCompaction, but not yet
+// adjusted for any strategy-level append/removal a Strategy is about to
+// perform on its own.
+//
+// A self-injecting Strategy that replaces an existing marker turn
+// (memory-crystals, recursive-distill, ooda) uses this to tell whether the
+// marker it's about to remove sits before or after the boundary: removing a
+// pre-boundary marker shifts every in-flight turn left by one, and the
+// marker's own re-append (always at the end) does not restore that —
+// WithPostFoldInjectionCallback's plain net-delta count can't see this, since
+// the removal and the append cancel out numerically to zero (issue #634).
+//
+// ok is false when the caller installed no tracking (e.g. a test driving
+// ManageContext directly) — a strategy that gets ok=false should not attempt
+// a positional correction, matching WithPostFoldInjectionCallback's fallback
+// of doing nothing when nothing is installed.
+func WithBaselineQuery(ctx context.Context, query func() (int, bool)) context.Context {
+	return context.WithValue(ctx, baselineQueryKey{}, query)
+}
+
+// currentBaseline is the strategy-side counterpart of WithBaselineQuery.
+func currentBaseline(ctx context.Context) (int, bool) {
+	if query, ok := ctx.Value(baselineQueryKey{}).(func() (int, bool)); ok {
+		return query()
+	}
+	return 0, false
+}
+
+// replaceSteeringMarkerTurn removes every TurnSteering turn whose text
+// begins with marker — counting how many sat before the N4 boundary, not just
+// recording the last match's index — appends a fresh steering turn carrying
+// text at the end (the strongest recency position, inside the preserved
+// window for the next compaction), and reports the baseline-corrected
+// injection delta via reportPostFoldInjection. Shared by the three
+// self-injecting strategies (memory-crystals, recursive-distill, ooda),
+// whose marker banners are replaced, not accumulated, on every ManageContext.
+//
+// Each removal before the boundary shifts every in-flight turn left by one,
+// and the re-append does not undo that — recording only the last match
+// would undercount when an earlier duplicate is before the boundary but the
+// last match isn't, or when several are (each shifts left by one more, not
+// a flat +1). The net turn-count delta alone (e.g. 0 for a one-for-one swap)
+// can't see a pre-boundary removal (issue #634), so one is added back per
+// pre-boundary removal.
+func replaceSteeringMarkerTurn(ctx context.Context, history *[]schema.Turn, marker, text string) {
+	preLen := len(*history)
+	baseline, haveBaseline := currentBaseline(ctx)
+	removedBeforeBaseline := 0
+	filtered := (*history)[:0]
+	for i, t := range *history {
+		// A banner BEGINS with its marker; a steering turn that merely
+		// mentions the marker text is someone else's turn and stays.
+		if t.Kind == schema.TurnSteering && strings.HasPrefix(t.Message.Text(), marker) {
+			if haveBaseline && i < baseline {
+				removedBeforeBaseline++
+			}
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	*history = filtered
+
+	*history = append(*history, schema.NewTurn(schema.TurnSteering, llm.User(text)))
+
+	reportPostFoldInjection(ctx, len(*history)-preLen+removedBeforeBaseline)
+}
+
 // Manager tracks cumulative token usage and applies progressive compaction
 // layers to conversation history as context fills up.
 type Manager struct {

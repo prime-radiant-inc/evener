@@ -200,10 +200,17 @@ func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
-	s.injectDistilledContext(&history)
+	var reported int
+	var reportedCalled bool
+	ctx := WithPostFoldInjectionCallback(context.Background(), func(n int) { reported = n; reportedCalled = true })
+	s.injectDistilledContext(ctx, &history)
 
 	if len(history) != 3 {
 		t.Fatalf("expected 3 turns, got %d", len(history))
+	}
+	// No pre-existing distilled turn to remove: net +1 turn appended.
+	if !reportedCalled || reported != 1 {
+		t.Errorf("expected post-fold injection report of 1, got %d (called=%v)", reported, reportedCalled)
 	}
 
 	last := history[2]
@@ -236,7 +243,14 @@ func TestRecursiveDistillStrategy_InjectDistilledContext_RemovesOld(t *testing.T
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
-	s.injectDistilledContext(&history)
+	var reportedCalled bool
+	ctx := WithPostFoldInjectionCallback(context.Background(), func(int) { reportedCalled = true })
+	s.injectDistilledContext(ctx, &history)
+
+	// Steady state (one marker replaced by another): net delta 0, nothing to report.
+	if reportedCalled {
+		t.Error("net-zero injection (old marker removed, new one added) must not report")
+	}
 
 	distillCount := 0
 	for _, t := range history {

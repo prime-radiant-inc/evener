@@ -3,11 +3,9 @@ package contextmgr
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/llm"
 )
 
 // OODAStrategy extends SessionLogStrategy by injecting the session log as a
@@ -43,7 +41,6 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 	if s.log.Len() == 0 {
 		return nil
 	}
-
 	// Build the orient message.
 	logText := s.log.String()
 
@@ -62,21 +59,11 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 
 	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far.%s\n\n%s\n[END ORIENTATION]", recovery, logText)
 
-	// Remove any previous orient turns so they don't accumulate
-	// across repeated ManageContext calls.
-	filtered := (*history)[:0]
-	for _, t := range *history {
-		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[SESSION ORIENTATION]") {
-			continue
-		}
-		filtered = append(filtered, t)
-	}
-	*history = filtered
-
-	// Append the orient message to the end of history.
-	// The model will see it just before generating its next response.
-	orientTurn := schema.NewTurn(schema.TurnSteering, llm.User(orient))
-	*history = append(*history, orientTurn)
+	// Replace any previous orient turn(s) with the fresh one at the end —
+	// the model sees it just before generating its next response — and
+	// report the baseline-corrected injection delta (see
+	// replaceSteeringMarkerTurn for the shared swap/correction semantics).
+	replaceSteeringMarkerTurn(ctx, history, "[SESSION ORIENTATION]", orient)
 
 	return nil
 }
