@@ -138,21 +138,22 @@ test("the secondary line surfaces the demoted metadata", () => {
   expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
 });
 
-test("confirmed cancellation recedes while expanded diagnostics retain physical exit", async () => {
-  const user = userEvent.setup();
+test("confirmed cancellation recedes while expanded diagnostics retain physical exit", () => {
   render(
-    <NotificationCard
-      notification={notif({
-        title: "Job cancelled",
-        tone: "neutral",
-        secondary: "Run repository lint, vet, and test gates",
-        status: "cancelled",
-        reason: "stopped_by_parent",
-        exitCode: -1,
-        rawText:
-          '<job-notification status="cancelled" reason="stopped_by_parent" exit_code="-1">cancelled</job-notification>',
-      })}
-    />,
+    <TranscriptRenderProvider config={makeTranscriptDisplayConfig({ kind: "preset", level: "full" })}>
+      <NotificationCard
+        notification={notif({
+          title: "Job cancelled",
+          tone: "neutral",
+          secondary: "Run repository lint, vet, and test gates",
+          status: "cancelled",
+          reason: "stopped_by_parent",
+          exitCode: -1,
+          rawText:
+            '<job-notification status="cancelled" reason="stopped_by_parent" exit_code="-1">cancelled</job-notification>',
+        })}
+      />
+    </TranscriptRenderProvider>,
   );
 
   const row = screen.getByTestId("notification-card");
@@ -164,8 +165,7 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(screen.queryByText("error")).toBeNull();
   expect(screen.queryByText("warning")).toBeNull();
 
-  await user.click(row);
-  expect((await screen.findByTestId("notification-field-status")).textContent).toContain("cancelled");
+  expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
   expect(screen.getByTestId("notification-field-exit").textContent).toContain("-1");
   expect(screen.getByTestId("notification-raw").textContent).toContain('exit_code="-1"');
