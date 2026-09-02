@@ -86,6 +86,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = normalized
 	}
+	var retainedReadChanges []repair.Change
+	if t.Definition.Name == "read_transcript" {
+		args, retainedReadChanges = normalizeRetainedReadArgsForRepair(args)
+	}
 
 	// The default communicate envelope documents message/data/artifacts as
 	// always-present with empty defaults (issue #627), but the schema demands
@@ -127,6 +131,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	} else if len(fillChanges) > 0 {
 		res.Changes = append(res.Changes, fillChanges...)
 	}
+	res.Changes = append(res.Changes, retainedReadChanges...)
 
 	if len(res.Changes) > 0 {
 		if b, err := json.Marshal(args); err == nil {
@@ -134,6 +139,87 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 	return res
+}
+
+// normalizeRetainedReadArgsForRepair removes only the semantically empty
+// retained-output options that providers commonly materialize. It runs before
+// the registry schema gate, so a nullable default reaches the handler as an
+// omission and the applied removal is visible in repair telemetry. Artifact
+// format is deliberately never removed: every explicit artifact format must
+// remain available for the handler to reject.
+func normalizeRetainedReadArgsForRepair(args map[string]any) (map[string]any, []repair.Change) {
+	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	jobRef := strings.HasPrefix(ref, "job:")
+	artifactRef := strings.HasPrefix(ref, "artifact:")
+	if !jobRef && !artifactRef {
+		return args, nil
+	}
+	normalized := make(map[string]any, len(args))
+	maps.Copy(normalized, args)
+	changes := make([]repair.Change, 0, 5)
+	remove := func(field string) {
+		delete(normalized, field)
+		changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: field, Detail: "removed neutral default"})
+	}
+	if value, present := normalized["range"]; present && (value == nil || value == "") {
+		remove("range")
+	}
+	if value, present := normalized["expand_turn"]; present && isNeutralRetainedInteger(value) {
+		remove("expand_turn")
+	}
+	if value, present := normalized["output_match"]; present && value == "" {
+		remove("output_match")
+	}
+	if value, present := normalized["context_lines"]; present && isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "" {
+		remove("context_lines")
+	}
+	if jobRef {
+		if value, present := normalized["format"]; present && isNeutralJobFormat(value) {
+			remove("format")
+		}
+	}
+	return normalized, changes
+}
+
+func isNeutralRetainedInteger(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case float64:
+		return value == 0
+	case float32:
+		return value == 0
+	case int:
+		return value == 0
+	case int8:
+		return value == 0
+	case int16:
+		return value == 0
+	case int32:
+		return value == 0
+	case int64:
+		return value == 0
+	case uint:
+		return value == 0
+	case uint8:
+		return value == 0
+	case uint16:
+		return value == 0
+	case uint32:
+		return value == 0
+	case uint64:
+		return value == 0
+	default:
+		return false
+	}
+}
+
+func isNeutralJobFormat(value any) bool {
+	if value == nil {
+		return true
+	}
+	format, ok := value.(string)
+	return ok && (format == "" || strings.TrimSpace(format) == formatMarkdown)
 }
 
 // unsupportedDelegateWaitOption prevents argument repair from turning an

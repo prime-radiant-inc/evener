@@ -571,15 +571,27 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 			t.Errorf("read description still exposes retired surface %q: %s", forbidden, read.Description)
 		}
 	}
-	// format enum is exactly outline|markdown|jsonl.
-	formatEnum := rp["format"].(map[string]any)["enum"].([]string)
+	// format accepts the three public tokens plus null so ref-aware repair can
+	// remove job defaults while artifact refs still reject explicit null.
+	format := rp["format"].(map[string]any)
+	formatEnum := format["enum"].([]any)
 	want := map[string]bool{"outline": true, "markdown": true, "jsonl": true}
-	if len(formatEnum) != 3 {
-		t.Errorf("format enum = %v, want outline|markdown|jsonl", formatEnum)
+	if len(formatEnum) != 4 {
+		t.Errorf("format enum = %v, want outline|markdown|jsonl|null", formatEnum)
 	}
-	for _, f := range formatEnum {
-		if !want[f] {
-			t.Errorf("unexpected format value %q", f)
+	for _, value := range formatEnum {
+		if value == nil {
+			continue
+		}
+		f, ok := value.(string)
+		if !ok || !want[f] {
+			t.Errorf("unexpected format value %#v", value)
+		}
+	}
+	for _, name := range []string{"format", "range", "expand_turn"} {
+		types, ok := rp[name].(map[string]any)["type"].([]any)
+		if !ok || len(types) != 2 || types[1] != "null" {
+			t.Errorf("%s type = %#v, want nullable schema", name, rp[name].(map[string]any)["type"])
 		}
 	}
 

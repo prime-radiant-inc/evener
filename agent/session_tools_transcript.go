@@ -292,15 +292,14 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
 		}
 	}
-	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
-	retainedArgs := normalizeRetainedReadArgs(args, ref)
-	parsed, operation, err := parseRetainedReadArgs(retainedArgs)
-	if err != nil {
-		return nil, err
-	}
+	parsed, operation, parseIssues := parseRetainedReadArgsWithIssues(args)
 	if strings.HasPrefix(parsed.Ref, "artifact:") {
-		if err := validateArtifactReadArgs(args, operation); err != nil {
-			return nil, err
+		incompatible := retainedReadIncompatibleFields("artifact", args)
+		if len(parseIssues) > 0 || len(incompatible) > 0 {
+			if len(incompatible) == 0 {
+				return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
+			}
+			return nil, retainedReadArgsValidationError("artifact", args, incompatible, parseIssues, operation)
 		}
 		if operation == retainedReadSearch {
 			return searchArtifactTranscript(deps, parsed)
@@ -308,8 +307,12 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 		return pageArtifactTranscript(deps, parsed)
 	}
 	if strings.HasPrefix(parsed.Ref, "job:") {
-		if err := validateJobReadArgs(args, operation); err != nil {
-			return nil, err
+		incompatible := retainedReadIncompatibleFields("job", args)
+		if len(parseIssues) > 0 || len(incompatible) > 0 {
+			if len(incompatible) == 0 {
+				return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
+			}
+			return nil, retainedReadArgsValidationError("job", args, incompatible, parseIssues, operation)
 		}
 		if operation == retainedReadPage {
 			return pageJobTranscript(deps, parsed)
@@ -317,7 +320,10 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 		if operation == retainedReadSearch {
 			return searchJobTranscript(deps, parsed)
 		}
-		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(retainedArgs, "range")), strings.TrimSpace(stringArg(retainedArgs, "format")))
+		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(args, "range")), strings.TrimSpace(stringArg(args, "format")))
+	}
+	if len(parseIssues) > 0 {
+		return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
 	}
 	if operation == retainedReadSearch {
 		return nil, errors.New("invalid_request: output_match applies only to job: and artifact: refs")
@@ -325,159 +331,107 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	return execReadSessionTranscript(deps, args)
 }
 
-// normalizeRetainedReadArgs removes neutral provider-materialized values before
-// retained-output mode selection. Session refs intentionally retain their
-// original values: expand_turn=0, for example, identifies the first turn.
-// Artifact formats are also intentionally retained because every explicitly
-// supplied format is invalid for artifact refs.
-func normalizeRetainedReadArgs(args map[string]any, ref string) map[string]any {
-	jobRef := strings.HasPrefix(ref, "job:")
-	artifactRef := strings.HasPrefix(ref, "artifact:")
-	if !jobRef && !artifactRef {
-		return args
-	}
-	normalized := make(map[string]any, len(args))
-	for name, value := range args {
-		normalized[name] = value
-	}
-	if isNeutralStringArg(normalized["range"]) {
-		delete(normalized, "range")
-	}
-	if isNeutralIntegerArg(normalized["expand_turn"]) {
-		delete(normalized, "expand_turn")
-	}
-	if isNeutralStringArg(normalized["output_match"]) {
-		delete(normalized, "output_match")
-	}
-	if isNeutralIntegerArg(normalized["context_lines"]) && stringArg(normalized, "output_match") == "" {
-		delete(normalized, "context_lines")
-	}
-	if jobRef && isNeutralJobFormatArg(normalized["format"]) {
-		delete(normalized, "format")
-	}
-	return normalized
-}
-
-func isNeutralStringArg(value any) bool {
-	return value == nil || value == ""
-}
-
-func isNeutralIntegerArg(value any) bool {
-	switch value := value.(type) {
-	case nil:
-		return true
-	case float64:
-		return value == 0
-	case float32:
-		return value == 0
-	case int:
-		return value == 0
-	case int8:
-		return value == 0
-	case int16:
-		return value == 0
-	case int32:
-		return value == 0
-	case int64:
-		return value == 0
-	case uint:
-		return value == 0
-	case uint8:
-		return value == 0
-	case uint16:
-		return value == 0
-	case uint32:
-		return value == 0
-	case uint64:
-		return value == 0
-	default:
-		return false
-	}
-}
-
-func isNeutralJobFormatArg(value any) bool {
-	if value == nil {
-		return true
-	}
-	format, ok := value.(string)
-	return ok && (format == "" || strings.TrimSpace(format) == formatMarkdown)
-}
-
 func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadOperation, error) {
+	parsed, operation, issues := parseRetainedReadArgsWithIssues(args)
+	if len(issues) > 0 {
+		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: " + issues[0].Reason)
+	}
+	return parsed, operation, nil
+}
+
+type retainedReadParseIssue struct {
+	Field  string
+	Reason string
+}
+
+func parseRetainedReadArgsWithIssues(args map[string]any) (retainedReadArgs, retainedReadOperation, []retainedReadParseIssue) {
 	parsed := retainedReadArgs{
 		Ref:         strings.TrimSpace(stringArg(args, "transcript_ref")),
 		OutputMatch: stringArg(args, "output_match"),
 	}
 	_, outputMatchSet := args["output_match"]
 	_, contextSet := args["context_lines"]
+	issues := make([]retainedReadParseIssue, 0, 3)
 	if contextSet && !outputMatchSet {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines requires output_match")
+		issues = append(issues, retainedReadParseIssue{Field: "context_lines", Reason: "context_lines requires output_match"})
 	}
 	if value := optionalIntArg(args, "context_lines"); value != nil {
 		parsed.ContextLines = *value
 	}
 	if parsed.ContextLines < 0 || parsed.ContextLines > 10 {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines must be between 0 and 10")
+		issues = append(issues, retainedReadParseIssue{Field: "context_lines", Reason: "context_lines must be between 0 and 10"})
 	}
 	if utf8.RuneCountInString(parsed.OutputMatch) > retainedOutputMatchMaxChars {
-		return retainedReadArgs{}, retainedReadDefault, fmt.Errorf("invalid_request: output_match must be at most %d characters", retainedOutputMatchMaxChars)
+		issues = append(issues, retainedReadParseIssue{Field: "output_match", Reason: fmt.Sprintf("output_match must be at most %d characters", retainedOutputMatchMaxChars)})
 	}
 	if value := optionalIntArg(args, "offset_bytes"); value != nil {
 		parsed.OffsetSet = true
 		parsed.OffsetBytes = int64(*value)
 	}
 	if parsed.OffsetSet && parsed.OffsetBytes < 0 {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: offset_bytes must be non-negative")
+		issues = append(issues, retainedReadParseIssue{Field: "offset_bytes", Reason: "offset_bytes must be non-negative"})
 	}
 	if outputMatchSet {
-		return parsed, retainedReadSearch, nil
+		return parsed, retainedReadSearch, issues
 	}
 	if parsed.OffsetSet {
-		return parsed, retainedReadPage, nil
+		return parsed, retainedReadPage, issues
 	}
-	return parsed, retainedReadDefault, nil
+	return parsed, retainedReadDefault, issues
 }
 
 func validateArtifactReadArgs(args map[string]any, operation retainedReadOperation) error {
-	normalized := normalizeRetainedReadArgs(args, "artifact:")
-	incompatible := make([]string, 0, 3)
-	for _, name := range []string{"range", "expand_turn", "format"} {
-		if _, present := normalized[name]; present {
-			incompatible = append(incompatible, name)
-		}
-	}
+	incompatible := retainedReadIncompatibleFields("artifact", args)
 	if len(incompatible) > 0 {
-		return retainedReadIncompatibleArgsError("artifact", args, incompatible, operation)
+		return retainedReadArgsValidationError("artifact", args, incompatible, nil, operation)
 	}
 	return nil
 }
 
 func validateJobReadArgs(args map[string]any, operation retainedReadOperation) error {
-	normalized := normalizeRetainedReadArgs(args, "job:")
-	incompatible := make([]string, 0, 3)
-	for _, name := range []string{"range", "expand_turn", "format"} {
-		if _, present := normalized[name]; present {
-			incompatible = append(incompatible, name)
-		}
-	}
+	incompatible := retainedReadIncompatibleFields("job", args)
 	if len(incompatible) > 0 {
-		return retainedReadIncompatibleArgsError("job", args, incompatible, operation)
+		return retainedReadArgsValidationError("job", args, incompatible, nil, operation)
 	}
 	return nil
 }
 
-// retainedReadIncompatibleArgsError is deliberately diagnostic: tool results
-// are retained as repair telemetry, so include every rejected option exactly as
-// received and a smallest valid call instead of naming only the first key.
-func retainedReadIncompatibleArgsError(refKind string, args map[string]any, names []string, operation retainedReadOperation) error {
-	received := make([]string, 0, len(names))
-	reasons := make([]string, 0, len(names))
-	for _, name := range names {
+func retainedReadIncompatibleFields(refKind string, args map[string]any) []string {
+	incompatible := make([]string, 0, 3)
+	for _, name := range []string{"range", "expand_turn", "format"} {
+		value, present := args[name]
+		if !present || (name == "format" && refKind == "job" && isNeutralJobFormat(value)) {
+			continue
+		}
+		incompatible = append(incompatible, name)
+	}
+	return incompatible
+}
+
+// retainedReadArgsValidationError is deliberately diagnostic: tool results are
+// retained as repair telemetry, so include every parse and mode incompatibility
+// exactly as received and a smallest valid call instead of naming only one key.
+func retainedReadArgsValidationError(refKind string, args map[string]any, names []string, parseIssues []retainedReadParseIssue, operation retainedReadOperation) error {
+	received := make([]string, 0, len(names)+len(parseIssues))
+	reasons := make([]string, 0, len(names)+len(parseIssues))
+	receivedFields := make(map[string]bool, len(names)+len(parseIssues))
+	appendReceived := func(name string) {
+		if receivedFields[name] {
+			return
+		}
+		receivedFields[name] = true
 		encoded, err := json.Marshal(args[name])
 		if err != nil {
 			encoded = []byte(fmt.Sprintf("%#v", args[name]))
 		}
 		received = append(received, fmt.Sprintf("%s=%s", name, encoded))
+	}
+	for _, issue := range parseIssues {
+		reasons = append(reasons, issue.Reason)
+		appendReceived(issue.Field)
+	}
+	for _, name := range names {
+		appendReceived(name)
 		switch name {
 		case "range", "expand_turn":
 			reasons = append(reasons, fmt.Sprintf("%s applies only to session transcript refs", name))
