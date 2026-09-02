@@ -165,17 +165,23 @@ func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, mode
 }
 
 // isTemperatureUnsupported reports whether err is a rejected-request error
-// rejecting the temperature parameter specifically (e.g. Bedrock's "Unsupported
-// parameter: 'temperature' is not supported with this model"). Matching a bare
-// "temperature" substring would over-retry on unrelated invalid-request
-// messages that merely mention the word, so this matches the
-// unsupported-parameter phrasing with the parameter in quotes.
+// rejecting the temperature parameter specifically. Providers word this
+// differently — Bedrock's "Unsupported parameter: 'temperature' is not
+// supported with this model", OpenAI's "Unknown parameter: 'temperature'",
+// "unknown_parameter: temperature" — so this accepts the two rejection
+// phrasings (with or without the underscore) plus the parameter name, quoted
+// or not. Matching the parameter name alone would over-retry on unrelated
+// invalid-request messages that merely mention the word, so the rejection
+// phrase is required too.
 func isTemperatureUnsupported(err error) bool {
 	if llm.Kind(err) != llm.KindInvalidRequest {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unsupported parameter") && strings.Contains(msg, "'temperature'")
+	rejection := strings.Contains(msg, "unsupported parameter") ||
+		strings.Contains(msg, "unknown parameter") ||
+		strings.Contains(msg, "unknown_parameter")
+	return rejection && strings.Contains(msg, "temperature")
 }
 
 func configuredSessionNamerModel(profile *provider.Profile) string {

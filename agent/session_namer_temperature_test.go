@@ -265,3 +265,28 @@ func TestNameSession_NoRetryWithoutTemperatureInMessage(t *testing.T) {
 		t.Fatalf("error = %v, want wrapped namer error", err)
 	}
 }
+
+// TestIsTemperatureUnsupported pins the retry predicate's phrasings: each
+// provider's rejection form triggers it, and a message naming temperature
+// without a rejection phrase (or an unrelated parameter) does not.
+func TestIsTemperatureUnsupported(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"bedrock quoted", `openai error (status=400): responses.create failed: Unsupported parameter: 'temperature' is not supported with this model.`, true},
+		{"openai unknown parameter", `openai error (status=400): Unknown parameter: 'temperature'.`, true},
+		{"underscore form", `openai error (status=400): unknown_parameter: temperature`, true},
+		{"unquoted", `bedrock error (status=400): Unsupported parameter: temperature is not supported with this model.`, true},
+		{"other parameter rejected", `openai error (status=400): Unsupported parameter: 'top_p' is not supported with this model.`, false},
+		{"mentions temperature without rejection", `openai error (status=400): temperature value out of range`, false},
+		{"unrelated", `openai error (status=400): model not found`, false},
+	}
+	for _, tc := range cases {
+		err := llm.ErrorFromHTTPStatus("openai", 400, tc.msg, nil, nil)
+		if got := isTemperatureUnsupported(err); got != tc.want {
+			t.Errorf("%s: isTemperatureUnsupported(%q) = %v, want %v", tc.name, tc.msg, got, tc.want)
+		}
+	}
+}

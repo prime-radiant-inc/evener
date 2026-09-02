@@ -148,3 +148,108 @@ func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
 		t.Fatal("developer_role must not touch the body")
 	}
 }
+
+func TestTemperaturePath(t *testing.T) {
+	cases := []struct {
+		protocol string
+		want     string
+	}{
+		{ProtocolOpenAIChat, "temperature"},
+		{ProtocolOpenAIResponses, "temperature"},
+		{ProtocolAnthropic, "temperature"},
+		{ProtocolGoogle, "generationConfig.temperature"},
+		{"unknown-protocol", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := TemperaturePath(tc.protocol); got != tc.want {
+			t.Errorf("TemperaturePath(%q) = %q, want %q", tc.protocol, got, tc.want)
+		}
+	}
+}
+
+func TestTemperatureSupported(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+	row := func(step, model string) map[string]string {
+		if model == "" {
+			return map[string]string{"model": step}
+		}
+		return map[string]string{"model": step + ":" + model}
+	}
+	cases := []struct {
+		name string
+		res  Resolved
+		want bool
+	}{
+		{
+			name: "catalog row with fields true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "region-prefixed catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("region", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "dated-suffix catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("dated", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "catalog row with fields false",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": false}}},
+		},
+		{
+			name: "live-only row inherits send-by-default baseline",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("live", ""),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "synthesized row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("synthesized", ""),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "absent model provenance",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "sampling false overrides fields true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "o-x"),
+				Caps: Caps{Sampling: boolPtr(false), Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "sampling true keeps fields verdict",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+				Caps: Caps{Sampling: boolPtr(true), Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "google row keys generationConfig.temperature",
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: row("row", "gemini-x"),
+				Caps: Caps{Fields: map[string]bool{"generationConfig.temperature": true}}},
+			want: true,
+		},
+		{
+			name: "google row with plain temperature key only reads as absent",
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: row("row", "gemini-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "unknown protocol",
+			res: Resolved{Protocol: "unknown", Provenance: row("row", "x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+	}
+	for _, tc := range cases {
+		if got := TemperatureSupported(tc.res); got != tc.want {
+			t.Errorf("%s: TemperatureSupported = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
