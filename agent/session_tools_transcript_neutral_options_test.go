@@ -187,11 +187,22 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 		if search.IsError {
 			t.Fatalf("stringified job search context failed: %s", search.Output)
 		}
+		nullContext := execReadTranscriptThroughSession(t, sess, "job-null-search-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": nil})
+		if nullContext.IsError {
+			t.Fatalf("null job search context failed: %s", nullContext.Output)
+		}
+		nullOutputMatch := execReadTranscriptThroughSession(t, sess, "job-null-output-match", map[string]any{"transcript_ref": ref, "output_match": nil})
+		if nullOutputMatch.IsError {
+			t.Fatalf("null job output match failed: %s", nullOutputMatch.Output)
+		}
 		meaningful := execReadTranscriptThroughSession(t, sess, "job-string-nonzero-expand", map[string]any{"transcript_ref": ref, "expand_turn": "1"})
 		if !meaningful.IsError {
 			t.Fatal("nonzero job expand_turn succeeded")
 		}
-		assertReadRepairChanges(t, closeAndDrainRepairedEvents(sess, repairedCh), "job-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
+		assertReadRepairChanges(t, repaired, "job-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "job-null-search-context", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "job-null-output-match", "normalize_default:output_match:")
 	})
 
 	t.Run("artifact", func(t *testing.T) {
@@ -210,11 +221,22 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 		if search.IsError {
 			t.Fatalf("stringified artifact search context failed: %s", search.Output)
 		}
+		nullContext := execReadTranscriptThroughSession(t, sess, "artifact-null-search-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": nil})
+		if nullContext.IsError {
+			t.Fatalf("null artifact search context failed: %s", nullContext.Output)
+		}
+		nullOutputMatch := execReadTranscriptThroughSession(t, sess, "artifact-null-output-match", map[string]any{"transcript_ref": ref, "output_match": nil})
+		if nullOutputMatch.IsError {
+			t.Fatalf("null artifact output match failed: %s", nullOutputMatch.Output)
+		}
 		meaningful := execReadTranscriptThroughSession(t, sess, "artifact-string-nonzero-expand", map[string]any{"transcript_ref": ref, "expand_turn": "1"})
 		if !meaningful.IsError {
 			t.Fatal("nonzero artifact expand_turn succeeded")
 		}
-		assertReadRepairChanges(t, closeAndDrainRepairedEvents(sess, repairedCh), "artifact-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
+		assertReadRepairChanges(t, repaired, "artifact-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "artifact-null-search-context", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "artifact-null-output-match", "normalize_default:output_match:")
 	})
 }
 
@@ -296,11 +318,11 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 		{name: "session empty and defaults", ref: "current", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: fields},
 		{name: "session meaningful", ref: "current", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
-		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"output_match"}},
+		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
 		{name: "job empty and defaults", ref: "job:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}},
 		{name: "job meaningful", ref: "job:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "artifact absent", ref: "artifact:abc", args: map[string]any{}},
-		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format", "output_match"}},
+		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format"}},
 		{name: "artifact empty and defaults", ref: "artifact:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: []string{"format"}},
 		{name: "artifact meaningful", ref: "artifact:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 	}
@@ -364,15 +386,11 @@ func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var err error
-			if tc.kind == "job" {
-				err = validateJobReadArgs(tc.args, retainedReadDefault)
-			} else {
-				err = validateArtifactReadArgs(tc.args, retainedReadDefault)
+			incompatible := retainedReadIncompatibleFields(tc.kind, tc.args)
+			if len(incompatible) == 0 {
+				t.Fatal("incompatible fields = none, want diagnostic error")
 			}
-			if err == nil {
-				t.Fatal("validation succeeded, want diagnostic error")
-			}
+			err := retainedReadArgsValidationError(tc.kind, tc.args, incompatible, nil, retainedReadDefault)
 			for _, want := range tc.want {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("error = %q, want %q", err, want)
@@ -384,7 +402,7 @@ func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
 
 func TestArtifactExplicitFormatsRemainRejected(t *testing.T) {
 	for _, format := range []any{nil, "", "markdown", "outline"} {
-		if err := validateArtifactReadArgs(map[string]any{"format": format}, retainedReadDefault); err == nil {
+		if incompatible := retainedReadIncompatibleFields("artifact", map[string]any{"format": format}); len(incompatible) == 0 {
 			t.Fatalf("format %#v was accepted for artifact ref", format)
 		}
 	}

@@ -175,10 +175,10 @@ func normalizeRetainedReadArgsForRepair(args map[string]any) (map[string]any, []
 	if value, present := normalized["expand_turn"]; present && isNeutralRetainedInteger(value) {
 		remove("expand_turn")
 	}
-	if value, present := normalized["output_match"]; present && value == "" {
+	if value, present := normalized["output_match"]; present && (value == nil || value == "") {
 		remove("output_match")
 	}
-	if value, present := normalized["context_lines"]; present && isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "" {
+	if value, present := normalized["context_lines"]; present && (value == nil || (isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "")) {
 		remove("context_lines")
 	}
 	if jobRef {

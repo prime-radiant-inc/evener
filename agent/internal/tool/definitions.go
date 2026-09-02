@@ -935,7 +935,7 @@ func DefReadTranscript() llm.ToolDefinition {
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
 				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
-				"output_match":   map[string]any{"type": "string", "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
+				"output_match":   map[string]any{"type": "string", "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
 					"type":        "integer",
 					"minimum":     0,
