@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -77,6 +78,7 @@ const (
 var delegationPromptToolNames = []string{
 	"delegate",
 	"delegate_send",
+	"delegate_wait",
 	"job_status",
 	"job_list",
 	"job_stop",
@@ -145,9 +147,10 @@ type delegateWaitResult struct {
 }
 
 // stableDelegateWaitTool blocks up to max_wait_ms for the targets' running
-// generations to finish. Each report it returns is delivered through the same
-// commit path as an inline delegate_send wait, so it is never repeated as a
-// notification; targets still running at the deadline stay owed a
+// generations to finish. Reports are bounded to the tool output limit first
+// and their deliveries committed only once the response is known to fit, so
+// an oversized batch degrades instead of acknowledging reports the model
+// never sees; targets still running at the deadline stay owed a
 // notification.
 func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	if s == nil || s.delegateController == nil {
@@ -155,8 +158,8 @@ func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any
 	}
 	waitMS := defaultDelegateWaitMS
 	if _, present := args["max_wait_ms"]; present {
-		n, ok := shellIntArg(args, "max_wait_ms")
-		if !ok || n <= 0 {
+		n, err := integerArg(args, "max_wait_ms")
+		if err != nil || n <= 0 {
 			return nil, errors.New("invalid_request: max_wait_ms must be a positive integer")
 		}
 		waitMS = n
@@ -178,25 +181,29 @@ func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, clampDelegateWaitTimeout(waitMS))
 	defer cancel()
-	out := delegateWaitResult{Results: make([]delegateSendResult, 0, len(targets))}
-	waiters := make([]*delegateInlineWaiter, len(targets))
-	for i, id := range targets {
-		waiter, err := s.delegateController.RegisterInlineWaiterForRunning(actor, id)
-		if err != nil {
-			out.Results = append(out.Results, delegateSendResultFromMessage(sendMessageResult{
-				Target: id, DelegateID: id, Type: delegateResourceType, Action: "refused", Reason: err.Error(),
-			}))
-			continue
-		}
-		waiters[i] = waiter
-		out.Results = append(out.Results, delegateSendResult{})
+	out := delegateWaitResult{Results: make([]delegateSendResult, len(targets))}
+	type registered struct {
+		waiter        *delegateInlineWaiter
+		transcriptRef string
 	}
-	for i, waiter := range waiters {
-		if waiter == nil {
+	waiters := make([]registered, len(targets))
+	for i, id := range targets {
+		waiter, transcriptRef, err := s.delegateController.RegisterInlineWaiterForRunning(actor, id)
+		if err != nil {
+			out.Results[i] = delegateSendResultFromMessage(sendMessageResult{
+				Target: id, DelegateID: id, Type: delegateResourceType, Action: "refused", Reason: err.Error(),
+			})
 			continue
 		}
-		res := sendMessageResult{Target: targets[i], DelegateID: targets[i], Type: delegateResourceType, Status: jobstore.StatusRunning, RunningInBackground: true, Action: "waited"}
-		resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+		waiters[i] = registered{waiter: waiter, transcriptRef: transcriptRef}
+	}
+	var commits []*delegateToolResultCommit
+	for i, reg := range waiters {
+		if reg.waiter == nil {
+			continue
+		}
+		res := sendMessageResult{Target: targets[i], DelegateID: targets[i], Type: delegateResourceType, Status: jobstore.StatusRunning, RunningInBackground: true, Action: "waited", TranscriptRef: reg.transcriptRef}
+		resolution := s.delegateController.waitForDelegateInline(waitCtx, reg.waiter)
 		if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 			res.TimedOut = true
 			out.TimedOut = true
@@ -204,15 +211,71 @@ func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any
 			res.RunningInBackground = false
 			res.Action = "completed"
 			populateStableDelegateSendResult(&res, *resolution.packet)
-			s.queueDelegateDeliveryCommit(callID, resolution.commit)
+			commits = append(commits, resolution.commit)
 		}
 		out.Results[i] = delegateSendResultFromMessage(res)
 	}
-	rendered, err := marshalBoundedJSON(out, maxChars)
+	rendered, err := marshalDelegateWaitResult(out, maxChars)
 	if err != nil {
+		// Nothing was acknowledged: the reports stay owed as notifications.
+		for _, commit := range commits {
+			_, _ = commit.Complete(false)
+		}
 		return nil, err
 	}
+	for _, commit := range commits {
+		s.queueDelegateDeliveryCommit(callID, commit)
+	}
 	return rendered, nil
+}
+
+// marshalDelegateWaitResult renders a delegate_wait payload within maxChars,
+// degrading progressively: full reports, then outputs truncated to an equal
+// share of the budget, then ids and status only. It errors only when even
+// that core does not fit.
+func marshalDelegateWaitResult(out delegateWaitResult, maxChars int) (string, error) {
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	n := max(1, len(out.Results))
+	share := max(64, maxChars/(2*n))
+	truncated := true
+	for i := range out.Results {
+		if o := out.Results[i].Output; o != nil && len(*o) > share {
+			cut := truncRunes(*o, share)
+			out.Results[i].Output = &cut
+			out.Results[i].Truncated = &truncated
+		}
+	}
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	for i := range out.Results {
+		if out.Results[i].Output != nil {
+			out.Results[i].Output = nil
+			out.Results[i].Truncated = &truncated
+		}
+		out.Results[i].StructuredResult = nil
+		out.Results[i].Warnings = nil
+		out.Results[i].Tools = nil
+	}
+	return marshalBoundedJSON(out, maxChars)
+}
+
+// integerArg reads an integral JSON number. Providers hand numbers over as
+// float64, so 1.5 and non-finite values are rejected instead of truncated.
+func integerArg(args map[string]any, key string) (int, error) {
+	switch v := args[key].(type) {
+	case int:
+		return v, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v > math.MaxInt32 || v < math.MinInt32 {
+			return 0, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("invalid_request: %s must be an integer", key)
+	}
 }
 
 func delegateWaitTargets(args map[string]any) ([]string, error) {

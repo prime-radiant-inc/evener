@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestDelegateWait_RegisterForRunningResolvesOnFinish(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_a", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_a", false)
-	waiter, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a")
+	waiter, _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a")
 	if err != nil {
 		t.Fatalf("RegisterInlineWaiterForRunning: %v", err)
 	}
@@ -41,14 +42,14 @@ func TestDelegateWait_RegisterForRunningResolvesOnFinish(t *testing.T) {
 func TestDelegateWait_RegisterForRunningRejectsIdleAndDoubleRegistration(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_a", "")
-	if _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); err == nil {
+	if _, _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); err == nil {
 		t.Fatal("registered a waiter on an idle delegate")
 	}
 	startDelegateDeliveryGeneration(t, c, "dlg_a", false)
-	if _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); err != nil {
+	if _, _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); err != nil {
 		t.Fatalf("first registration: %v", err)
 	}
-	if _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); !errors.Is(err, errDelegateTargetBusy) {
+	if _, _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a"); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("second registration err = %v, want busy", err)
 	}
 }
@@ -59,7 +60,7 @@ func TestDelegateWait_TimeoutWithdrawsWaiter(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_a", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_a", false)
-	waiter, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a")
+	waiter, _, err := c.RegisterInlineWaiterForRunning(rootDelegateActor("root-session"), "dlg_a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +103,9 @@ func TestDelegateWaitTool_ReturnsCompletedChildReport(t *testing.T) {
 	}
 	if got.Output == nil || *got.Output == "" {
 		t.Errorf("completed entry carries no report output: %+v", got)
+	}
+	if got.TranscriptRef == "" {
+		t.Errorf("completed entry carries no transcript_ref: %+v", got)
 	}
 	if out.Results[1].Action != "refused" || out.Results[1].DelegateID != "dlg_missing" {
 		t.Errorf("unknown target entry = %+v, want refused", out.Results[1])
@@ -160,4 +164,80 @@ func TestDelegateWait_ClampIsDelegateScale(t *testing.T) {
 	if maxDelegateWaitMS <= maxJobBlockTimeoutMS {
 		t.Errorf("delegate ceiling %d must exceed the shell-job inline window %d", maxDelegateWaitMS, maxJobBlockTimeoutMS)
 	}
+}
+
+// Reports are bounded to the tool output limit before any delivery is
+// committed: oversized batches degrade (truncated outputs, then ids and
+// status only) rather than erroring after the deliveries were acknowledged.
+func TestDelegateWaitResult_BoundsProgressively(t *testing.T) {
+	big := strings.Repeat("x", 30000)
+	mk := func() delegateWaitResult {
+		out := delegateWaitResult{}
+		for i := range 3 {
+			o := big
+			out.Results = append(out.Results, delegateSendResult{DelegateID: "dlg_" + strings.Repeat("a", 20) + string(rune('0'+i)), Action: "completed", Status: "completed", Output: &o})
+		}
+		return out
+	}
+	rendered, err := marshalDelegateWaitResult(mk(), 8000)
+	if err != nil {
+		t.Fatalf("bounded marshal: %v", err)
+	}
+	var decoded delegateWaitResult
+	if err := json.Unmarshal([]byte(rendered), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered) > 8000 || len(decoded.Results) != 3 || decoded.Results[0].Output == nil || len(*decoded.Results[0].Output) >= 30000 || decoded.Results[0].Truncated == nil || !*decoded.Results[0].Truncated {
+		t.Fatalf("outputs not truncated to fit: len=%d results=%d", len(rendered), len(decoded.Results))
+	}
+	rendered, err = marshalDelegateWaitResult(mk(), 600)
+	if err != nil {
+		t.Fatalf("core-only marshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(rendered), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered) > 600 || len(decoded.Results) != 3 || decoded.Results[2].DelegateID == "" || decoded.Results[2].Action != "completed" {
+		t.Fatalf("core not preserved under a tight bound: %s", rendered)
+	}
+	if _, err := marshalDelegateWaitResult(mk(), 10); err == nil {
+		t.Fatal("a bound too small for even the core must error")
+	}
+}
+
+// When the response cannot be bounded, no delivery is acknowledged: the reports
+// stay owed as notifications instead of being marked delivered and lost.
+func TestDelegateWaitTool_NoCommitWhenResultCannotBeBounded(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "report READY"})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_wait_4")
+	if _, err := stableDelegateWaitTool(ctx, root, map[string]any{"targets": []any{result.DelegateID}}, 10); err == nil {
+		t.Fatal("expected a bounding error at maxChars=10")
+	}
+	root.delegateDeliveryMu.Lock()
+	commits := len(root.delegateDeliveryCommits["call_wait_4"])
+	root.delegateDeliveryMu.Unlock()
+	if commits != 0 {
+		t.Errorf("delivery commits queued despite the error = %d, want 0", commits)
+	}
+}
+
+func TestDelegateWaitTool_BudgetMustBeAnInteger(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_wait_5")
+	for _, v := range []any{1.5, "1000", 1e300} {
+		if _, err := stableDelegateWaitTool(ctx, root, map[string]any{"max_wait_ms": v}, 8192); err == nil || !strings.Contains(err.Error(), "invalid_request") {
+			t.Errorf("max_wait_ms=%v: err = %v, want invalid_request", v, err)
+		}
+	}
+}
+
+func TestDelegateWait_IsGatedWithTheDelegationPrompt(t *testing.T) {
+	if slices.Contains(delegationPromptToolNames, "delegate_wait") {
+		return
+	}
+	t.Fatal("delegate_wait missing from delegationPromptToolNames: a ceiling that removes it would still get prompt text describing it")
 }

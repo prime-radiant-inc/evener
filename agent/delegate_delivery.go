@@ -137,25 +137,25 @@ func (c *delegateTreeController) RegisterInlineWaiter(reservation *delegateStart
 // current running generation, so that generation's terminal packet resolves
 // the waiter instead of going out as a notification. One waiter per
 // generation; a delegate that is not running is refused.
-func (c *delegateTreeController) RegisterInlineWaiterForRunning(actor delegateActor, delegateID string) (*delegateInlineWaiter, error) {
+func (c *delegateTreeController) RegisterInlineWaiterForRunning(actor delegateActor, delegateID string) (*delegateInlineWaiter, string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
-		return nil, errDelegateTargetBusy
+		return nil, "", errDelegateTargetBusy
 	}
 	if err := c.authorizeMutationLocked(actor, delegateID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	aggregate := c.durable[delegateID]
 	live := c.live[delegateID]
 	if aggregate == nil || live == nil || aggregate.Phase != delegatestore.PhaseRunning || !aggregate.CurrentRunOpen {
-		return nil, errDelegateNotRunning
+		return nil, "", errDelegateNotRunning
 	}
 	if live.waiters == nil {
 		live.waiters = make(map[uint64]*delegateInlineWaiter)
 	}
 	if live.waiters[aggregate.Generation] != nil {
-		return nil, errDelegateTargetBusy
+		return nil, "", errDelegateTargetBusy
 	}
 	c.nextToken++
 	waiter := &delegateInlineWaiter{
@@ -165,7 +165,7 @@ func (c *delegateTreeController) RegisterInlineWaiterForRunning(actor delegateAc
 	}
 	live.waiters[aggregate.Generation] = waiter
 	c.evidenceVersion++
-	return waiter, nil
+	return waiter, aggregate.Descriptor.TranscriptRef, nil
 }
 
 // RunningDelegateIDs lists the delegates actor may act on whose current

@@ -253,8 +253,8 @@ func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff b
 	return values
 }
 
-// DefDelegateSend defines the delegate_send tool, the single follow-up surface
-// for durable delegates.
+// DefDelegateWait defines the delegate_wait tool: block for a batch of
+// running delegates and return their reports in one round.
 func DefDelegateWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "delegate_wait",
@@ -270,6 +270,8 @@ func DefDelegateWait() llm.ToolDefinition {
 	}
 }
 
+// DefDelegateSend defines the delegate_send tool, the single follow-up surface
+// for durable delegates.
 func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
