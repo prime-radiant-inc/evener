@@ -128,7 +128,7 @@ describe("transcript projector", () => {
     ["chat", ["user", "intent:tool", "agent"]],
     ["intent", ["user", "intent:tool", "agent"]],
     ["tools", ["user", "tool", "agent"]],
-    ["activity", ["user", "tool", "think", "agent"]],
+    ["activity", ["user", "tool", "agent"]],
     ["full", ["user", "tool", "think", "agent"]],
   ] as const)("projects the cumulative %s content vector", (level, expectedIds) => {
     const model = threadWith(

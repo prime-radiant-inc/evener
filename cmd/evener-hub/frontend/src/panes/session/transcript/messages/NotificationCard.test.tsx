@@ -3,8 +3,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
@@ -32,6 +35,20 @@ function notif(overrides: Partial<ParsedNotification> = {}): ParsedNotification 
   };
 }
 
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — the card auto-expands. Tests that need a
+// collapsed-by-default card use a tools-level config where expandByDefault
+// is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="nc:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
 test("renders the title and tags the tone", () => {
   render(<NotificationCard notification={notif()} />);
   expect(screen.getByText("Job completed")).toBeTruthy();
@@ -39,7 +56,7 @@ test("renders the title and tags the tone", () => {
 });
 
 test("renders stable delegate identity as Delegate while shell identity remains Job", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   const { rerender } = render(
     <NotificationCard
       notification={notif({
@@ -54,7 +71,8 @@ test("renders stable delegate identity as Delegate while shell identity remains 
     />,
   );
   expect(screen.getByTestId("notification-card").textContent).toContain("Delegate completed");
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true), so the
+  // fields are already visible without clicking.
   expect(screen.getByText(/delegate id/i).parentElement?.textContent).toContain("dlg_42");
   expect(screen.queryByText(/job id/i)).toBeNull();
 
@@ -73,7 +91,9 @@ test("renders stable delegate identity as Delegate while shell identity remains 
 });
 
 test("collapses to a single row by default; card chrome appears on expand", () => {
-  render(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
+  // At activity level the card auto-expands; use tools level to test the
+  // collapsed→expanded→collapsed transition.
+  renderTools(<NotificationCard notification={notif({ tone: "neutral", title: "explorer finished" })} />);
   const row = screen.getByTestId("notification-card");
   expect(row.textContent).toContain("explorer finished");
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
@@ -86,12 +106,14 @@ test("collapses to a single row by default; card chrome appears on expand", () =
 
 test("an expanded notification card stays open across a remount through the scoped store", () => {
   const notification = notif({ title: "remount me" });
-  const { unmount } = render(<NotificationCard notification={notification} sessionRef="session_a" />);
+  // At activity level the card auto-expands; use tools level to test that a
+  // manually expanded card stays open across a remount.
+  const { unmount } = renderTools(<NotificationCard notification={notification} sessionRef="session_a" />);
   fireEvent.click(screen.getByTestId("notification-card"));
   expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
 
   unmount();
-  render(<NotificationCard notification={notification} sessionRef="session_a" />);
+  renderTools(<NotificationCard notification={notification} sessionRef="session_a" />);
   expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
 });
 
@@ -123,7 +145,7 @@ test("the collapsed row prefers a job description to its generic job type", () =
 });
 
 test("renders parsed job fields and excerpt as ordinary readable text", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(
     <NotificationCard
       notification={notif({
@@ -137,7 +159,7 @@ test("renders parsed job fields and excerpt as ordinary readable text", async ()
       })}
     />,
   );
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-field-status").textContent).toContain("completed");
   expect(screen.getByTestId("notification-field-job-type").textContent).toContain("delegate");
   expect(screen.getByTestId("notification-field-output").textContent).toContain("4");
@@ -212,20 +234,20 @@ test("missing and malformed refs have no dead open-subagent action", () => {
 });
 
 test("the raw block is always kept inspectable", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(
     <NotificationCard
       notification={notif({ rawText: '<job-notification job_id="abc">the raw text</job-notification>' })}
     />,
   );
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-raw").textContent).toContain("the raw text");
 });
 
 test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(<NotificationCard notification={notif({ excerpt: "&lt;script&gt;alert(1)&lt;/script&gt;" })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   // Decoded to <script>… but rendered as text, so it appears verbatim and no
   // script element is ever created.
   expect(screen.getByText("<script>alert(1)</script>")).toBeTruthy();
@@ -238,29 +260,29 @@ test("an excerpt is shown, entity-decoded, as escaped text (never live HTML)", a
 // including a literal ampersand and text that already looks like an entity
 // (decoding &amp; last is what keeps "&lt;" text from over-decoding to "<").
 test("kata 77sf: a delimiter-bearing excerpt decodes to the exact original text", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   const original = 'before & after </job-notification> <script>&lt;already-escaped&gt;</script> "quoted"';
   const escapeLikeProducer = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   render(<NotificationCard notification={notif({ excerpt: escapeLikeProducer(original) })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-field-excerpt").textContent).toBe(original);
   expect(document.querySelector("script")).toBe(null);
 });
 
 test("a very long excerpt remains a bounded normal-text preview without adding a nested disclosure", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   const long = "x".repeat(900);
   render(<NotificationCard notification={notif({ excerpt: long })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByText(/x{500}…/)).toBeTruthy();
   expect(screen.getByTestId("notification-card-root").querySelectorAll("details")).toHaveLength(1);
 });
 
 test("keeps raw notification as the one direct full-width disclosure row", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(<NotificationCard notification={notif({ excerpt: "useful output" })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   const root = screen.getByTestId("notification-card-root");
   const raw = screen.getByTestId("notification-raw-disclosure");
   expect(root.querySelectorAll("details")).toHaveLength(1);
@@ -270,9 +292,9 @@ test("keeps raw notification as the one direct full-width disclosure row", async
 });
 
 test("keeps the raw disclosure native and preserves its visible marker row", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(<NotificationCard notification={notif()} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   const raw = screen.getByTestId("notification-raw-disclosure") as HTMLDetailsElement;
   const summary = raw.querySelector("summary");
   expect(summary?.tagName).toBe("SUMMARY");
@@ -288,15 +310,15 @@ test("keeps the raw disclosure native and preserves its visible marker row", asy
 });
 
 test("a communicate message renders through markdown", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(<NotificationCard notification={notif({ message: "**bold** result" })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root").querySelector("strong")?.textContent).toBe("bold");
 });
 
 test("concerns surface as a quiet note", async () => {
-  const user = userEvent.setup();
+  const _user = userEvent.setup();
   render(<NotificationCard notification={notif({ concerns: ["edge case A", "edge case B"] })} />);
-  await user.click(screen.getByTestId("notification-card"));
+  // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root").textContent).toContain("edge case A; edge case B");
 });

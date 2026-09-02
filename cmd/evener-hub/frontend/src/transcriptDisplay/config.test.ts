@@ -55,8 +55,8 @@ describe("transcript display config", () => {
     expect(presetContent("activity")).toEqual({
       toolIntent: true,
       toolCalls: true,
-      reasoning: true,
-      expandByDefault: false,
+      reasoning: false,
+      expandByDefault: true,
     });
     expect(presetContent("full")).toEqual({
       toolIntent: true,

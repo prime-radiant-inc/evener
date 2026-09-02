@@ -2,8 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import rawStreamingStyles from "../streamingtext.module.css";
@@ -28,6 +31,28 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "reasoning", text: "", ...overrides };
+}
+
+// At activity level (the default config when no provider is used),
+// expandByDefault is now true — the settled disclosure auto-expands. Tests
+// that need a collapsed-by-default disclosure use a tools-level config where
+// expandByDefault is false.
+const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function renderTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
+function renderTurnTools(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:turn">
+      {node}
+    </TranscriptRenderProvider>,
+  );
 }
 
 test('self-registers under the wire\'s reasoning item type ("reasoning")', () => {
@@ -223,7 +248,7 @@ test("an inProgress reasoning item that is no longer the turn's tail renders the
     text: "answering",
     status: "inProgress",
   };
-  render(<ThinkBlock item={think} turn={{ ...turn, items: [think, later] }} live={true} />);
+  renderTools(<ThinkBlock item={think} turn={{ ...turn, items: [think, later] }} live={true} />);
   const summary = document.querySelector("summary");
   expect(summary?.textContent).toBe("Thought · final line");
   expect(summary?.textContent).not.toMatch(/\d/);
@@ -239,7 +264,7 @@ test("an inProgress reasoning item that IS the turn's tail stays live", () => {
 
 test("through TurnBlock: a later item landing in the turn collapses the live thought to its disclosure", () => {
   const think = item({ id: "think_flow", status: "inProgress", reasoningSummaries: [["deep thought line"]] });
-  const { rerender } = render(<TurnBlock turn={{ ...turn, items: [think] }} />);
+  const { rerender } = renderTurnTools(<TurnBlock turn={{ ...turn, items: [think] }} />);
   expect(screen.getByText("Thinking…")).toBeTruthy();
 
   const later: ItemModel = {
@@ -249,7 +274,11 @@ test("through TurnBlock: a later item landing in the turn collapses the live tho
     text: "now answering",
     status: "inProgress",
   };
-  rerender(<TurnBlock turn={{ ...turn, items: [think, later] }} />);
+  rerender(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:turn">
+      <TurnBlock turn={{ ...turn, items: [think, later] }} />
+    </TranscriptRenderProvider>,
+  );
   expect(screen.queryByText("Thinking…")).toBeNull();
   expect(document.querySelector('[data-testid="think-block"] summary')?.textContent).toBe(
     "Thought · deep thought line",
@@ -332,7 +361,7 @@ test("no fade and no clip flag over the live draft - nothing is cut off to mark"
 // --- settled: duration + final context --------------------------------------
 
 test("settled collapses to a closed details with duration and the final nonblank context line", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({ reasoningSummaries: [["The answer is 42.\nmore reasoning"]] })}
       turn={turn}
@@ -351,7 +380,7 @@ test("opening the disclosure drops the preview from the summary", () => {
     id: "think_open_preview",
     reasoningSummaries: [["First line of reasoning\n\nsecond paragraph"]],
   });
-  render(<ThinkBlock item={think} turn={turn} live={false} />);
+  renderTools(<ThinkBlock item={think} turn={turn} live={false} />);
   const summary = screen.getByText(/Thought/);
   const preview = summary.textContent?.split("·")[1]?.trim() ?? "";
   expect(preview).toBeTruthy();
@@ -360,7 +389,7 @@ test("opening the disclosure drops the preview from the summary", () => {
 });
 
 test("the open disclosure keeps the dot-joined duration label - never the old 'for' phrasing", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({
         id: "think_open_duration",
@@ -384,7 +413,7 @@ test("the open disclosure keeps the dot-joined duration label - never the old 'f
 // summary and turning 90° when open (ToolRow's data-open idiom).
 
 test("the settled summary trails with a chevron that tracks the open state", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({ id: "think_chevron", reasoningSummaries: [["deep thought"]] })}
       turn={turn}
@@ -418,7 +447,7 @@ test("the summary text ellipsizes in its own span so the trailing chevron is nev
 });
 
 test("the collapsed summary keeps the final context even though the expanded body remains complete", () => {
-  const { container } = render(
+  const { container } = renderTools(
     <ThinkBlock
       item={item({ reasoningSummaries: [["Delegating simple directory inspection task\n\nmore detail"]] })}
       turn={turn}
@@ -431,7 +460,7 @@ test("the collapsed summary keeps the final context even though the expanded bod
 });
 
 test("the plain context removes common Markdown decoration while the expanded body still parses Markdown", () => {
-  const { container } = render(
+  const { container } = renderTools(
     <ThinkBlock
       item={item({ reasoningSummaries: [["**Delegating simple directory inspection task**"]] })}
       turn={turn}
@@ -446,7 +475,7 @@ test("the plain context removes common Markdown decoration while the expanded bo
 
 test("a long final context line is honestly truncated in the collapsed summary", () => {
   const longLine = `final context ${"x".repeat(180)}`;
-  render(<ThinkBlock item={item({ reasoningSummaries: [[longLine]] })} turn={turn} live={false} />);
+  renderTools(<ThinkBlock item={item({ reasoningSummaries: [[longLine]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary")?.textContent ?? "";
   expect(summary.endsWith("…")).toBe(true);
   expect(summary).not.toContain(longLine);
@@ -564,24 +593,28 @@ test("markdown in a thought is parsed identically while live and once settled (s
 // would reset a native uncontrolled <details>.
 test("an expanded settled think block stays open across an unmount+remount with the same item id (store-backed)", () => {
   const think = item({ id: "item_think_remount", reasoningSummaries: [["deep thoughts here"]] });
-  const { unmount } = render(<ThinkBlock item={think} turn={turn} live={false} />);
+  const { unmount } = renderTools(<ThinkBlock item={think} turn={turn} live={false} />);
   const details = screen.getByRole("group") as HTMLDetailsElement;
   expect(details.open).toBe(false);
   fireEvent.click(details.querySelector("summary")!);
   expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
 
   unmount();
-  render(<ThinkBlock item={think} turn={turn} live={false} />);
+  renderTools(<ThinkBlock item={think} turn={turn} live={false} />);
   expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("the same settled think item id has independent disclosure state in different sessions", () => {
   const shared = item({ id: "same_item", reasoningSummaries: [["deep thoughts here"]] });
+  // At activity level the disclosure auto-expands; use tools level to test
+  // independent collapsed state. Do NOT set a custom disclosureScope so
+  // disclosureScopeForSession creates per-session scopes.
+  const toolsConfigScoped = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   render(
-    <>
+    <TranscriptRenderProvider config={toolsConfigScoped} surface="readOnly">
       <ThinkBlock item={shared} turn={turn} live={false} sessionRef="session_a" />
       <ThinkBlock item={shared} turn={turn} live={false} sessionRef="session_b" />
-    </>,
+    </TranscriptRenderProvider>,
   );
 
   const blocks = screen.getAllByRole("group") as HTMLDetailsElement[];
@@ -595,14 +628,14 @@ test("the same settled think item id has independent disclosure state in differe
 });
 
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {
-  render(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
+  renderTools(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary");
   expect(summary?.textContent).toBe("Thought · content");
   expect(summary?.textContent).not.toMatch(/\d/);
 });
 
 test("a replay item's real startedAt/completedAt pair produces a duration label", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({
         reasoningSummaries: [["content"]],
@@ -617,7 +650,7 @@ test("a replay item's real startedAt/completedAt pair produces a duration label"
 });
 
 test("a live-observed timing pair (no wire pair) produces a real duration label once settled", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({
         reasoningSummaries: [["content"]],
@@ -632,7 +665,7 @@ test("a live-observed timing pair (no wire pair) produces a real duration label 
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({
         reasoningSummaries: [["content"]],
@@ -649,7 +682,7 @@ test("the wire pair wins over the observed pair when both are present", () => {
 });
 
 test("a completed sub-second thought reports milliseconds, not a rounded second", () => {
-  render(
+  renderTools(
     <ThinkBlock
       item={item({
         reasoningSummaries: [["content"]],
@@ -707,11 +740,15 @@ test("settled with only whitespace-only summary chunks renders nothing", () => {
 
 test("live streaming settles cleanly into the collapsed disclosure, no leftover live body", () => {
   const liveItem = item({ reasoningSummaries: [["thinking..."]] });
-  const { rerender } = render(<ThinkBlock item={liveItem} turn={turn} live={true} />);
+  const { rerender } = renderTools(<ThinkBlock item={liveItem} turn={turn} live={true} />);
   expect(screen.getByTestId("think-block-live-body").textContent?.trim()).toBe("thinking...");
 
   const settledItem = { ...liveItem, status: "completed" };
-  rerender(<ThinkBlock item={settledItem} turn={{ ...turn, status: "completed" }} live={false} />);
+  rerender(
+    <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="tb:tools">
+      <ThinkBlock item={settledItem} turn={{ ...turn, status: "completed" }} live={false} />
+    </TranscriptRenderProvider>,
+  );
 
   expect(screen.queryByTestId("think-block-live-body")).toBeNull();
   expect(screen.queryByText("Thinking…")).toBeNull();

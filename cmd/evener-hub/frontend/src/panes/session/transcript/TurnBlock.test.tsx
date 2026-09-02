@@ -124,14 +124,9 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   const items = [item({ id: "a", type: "commandExecution", toolName: "tb-tool-x", output: "tool output" })];
   render(<TurnBlock turn={turn(items)} />);
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
-  // A tool row starts collapsed and now mounts its body only while open, so the
-  // output is proof of dispatch only once the row is opened. The dispatch itself
-  // is what this test is about; the row above is already evidence of it, and the
-  // output confirms the descriptor's body ran rather than an empty shell.
-  // At activity level the item has intent (auto-added by the item() helper),
-  // so twoLevel is enabled: the intent button toggles the summary (already open
-  // at activity level) and the .bodyTrigger chevron toggles the body.
-  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  // A tool row mounts its body only while open. At activity level
+  // (expandByDefault=true) the body auto-expands, so the output is already
+  // visible — confirming the descriptor's body ran rather than an empty shell.
   expect(screen.getByText("tool output")).toBeTruthy();
 });
 
@@ -601,11 +596,14 @@ test("steering, systemMessage, and warning are run rows: they render INSIDE a ru
 });
 
 test("agentMessage and reasoning render inside a run-content wrapper", () => {
+  // At activity level reasoning=false hides reasoning items; use full level
+  // (reasoning=true) so the think-block renders.
+  const fullConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
   const items = [
     item({ id: "a", type: "agentMessage", text: "reply" }),
     item({ id: "r", type: "reasoning", reasoningSummaries: [["hmm"]], status: "completed" }),
   ];
-  render(<TurnBlock turn={turn(items)} />);
+  render(<TurnBlock turn={turn(items, {}, fullConfig)} />);
   expectInsideRunContent(screen.getByTestId("agent-message-item"));
   expectInsideRunContent(screen.getByTestId("think-block"));
 });
