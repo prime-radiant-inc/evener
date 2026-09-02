@@ -320,6 +320,49 @@ func TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError(t *testing.T) {
 	}
 }
 
+// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted covers
+// roborev's finding on #807's r5 review: MaxEvents was checked only after
+// linecap.ReadLine had already fully buffered the next line, not before
+// attempting to read it at all -- a MaxEvents-only scan could still pay
+// the cost of buffering an oversized next line just to discover, only
+// afterward, that the event budget was already spent.
+//
+// A line that exceeds MaxLineBytes gives an unambiguous, black-box-
+// observable signal either way: if ScanEvents ever attempts to read it,
+// linecap.ReadLine reports ErrTooLong; if the budget check correctly runs
+// first, that read is never attempted and ScanEvents reports
+// ErrScanLimitExceeded instead.
+func TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	firstEvent := Event{Kind: EventWatchRegistered, Seq: 1, WatchID: "w0"}
+	// maxLineBytes is sized relative to the first event's own encoding
+	// (not a fixed guess): Event's base fields already exceed a small
+	// fixed constant on their own, which would reject the FIRST
+	// (legitimate) line instead of exercising line 2 at all.
+	firstEncoded, err := json.Marshal(firstEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxLineBytes := len(firstEncoded) + 20
+	writeScanEvents(t, path, 2, func(i int) Event {
+		if i == 0 {
+			return firstEvent
+		}
+		// Well-formed JSON but far longer than the MaxLineBytes set below --
+		// must never even be attempted, let alone actually exceed it.
+		return Event{Kind: EventWatchRegistered, Seq: 2, WatchID: "w1", Description: strings.Repeat("x", maxLineBytes*4)}
+	})
+
+	_, err = ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1, MaxLineBytes: int64(maxLineBytes)})
+	if errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v (ErrLineTooLong) -- line 2 was read at all despite the event budget already being spent before it", err)
+	}
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
 // TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError is the byte-
 // ceiling counterpart: events decoded before the byte limit fired are still
 // returned alongside the error.
@@ -552,6 +595,99 @@ func TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets(t *testin
 	}
 	if len(more) != 2 || more[0].WatchID != "w1" || more[1].WatchID != "w2" {
 		t.Fatalf("second scan events = %+v, want w1 (now complete) then w2 -- resuming from offset must not have skipped the completed line", more)
+	}
+}
+
+// TestScanEventsFrom_UnterminatedButCompleteJSONLineIsNotDuplicatedAcrossOffsets
+// covers roborev's finding on #807's r6 review: an unterminated final line
+// whose JSON payload is nonetheless COMPLETE and valid (an in-flight write
+// caught after flushing the payload but before its trailing newline) used
+// to be decoded into events with offset only advancing past it when
+// terminated -- an inconsistent pairing. A later incremental call resuming
+// from that stale offset would then re-read and re-decode the identical
+// bytes once the newline landed, producing the SAME event twice for a
+// caller that concatenates prior.events with the new delta
+// (extendHistoricalJobFold's exact shape). roborev's finding offered two
+// fixes: exclude the line, or make its offset contract compatible with
+// incremental extension. Excluding it was tried first and reverted: it
+// broke FuzzTask8OutputRecovery's mode-0 seed, which pins that ReadEvents
+// recovers a complete-but-unterminated trailing record the same way Store's
+// own reopen recovery does (jobstore/task8_output_recovery_fuzz_test.go).
+// The chosen fix instead advances offset past a successfully decoded
+// record unconditionally, matching its inclusion in events -- so THIS
+// test's oracle is that offset already covers the line the moment it is
+// included, and a later resume from that offset therefore sees only what
+// comes after it, never re-decoding it. This is the sibling of
+// TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets, which
+// only ever exercises a SYNTACTICALLY INCOMPLETE trailing line -- a
+// complete-but-unterminated line takes a different path through
+// ScanEventsFrom (json.Unmarshal succeeds) that test never reaches.
+func TestScanEventsFrom_UnterminatedButCompleteJSONLineIsNotDuplicatedAcrossOffsets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	complete := []byte(`{"kind":"watch_registered","seq":1,"watch_id":"w0"}` + "\n")
+	if err := os.WriteFile(path, complete, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Complete, valid JSON -- unlike the sibling test's deliberately
+	// unclosed object -- just missing the trailing newline.
+	secondNoNewline := `{"kind":"watch_registered","seq":2,"watch_id":"w1"}`
+	if _, err := f.WriteString(secondNoNewline); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, offset, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom: %v", err)
+	}
+	if len(events) != 2 || events[0].WatchID != "w0" || events[1].WatchID != "w1" {
+		t.Fatalf("events = %+v, want w0 then w1 -- a complete decode is included even before its newline lands", events)
+	}
+	wantOffset := int64(len(complete) + len(secondNoNewline))
+	if offset != wantOffset {
+		t.Fatalf("offset = %d, want %d (past the complete-but-unterminated line too, exactly its consumed bytes)", offset, wantOffset)
+	}
+
+	// The newline lands, completing the second line for real, and a third
+	// event follows it.
+	f2, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f2.WriteString("\n" + `{"kind":"watch_registered","seq":3,"watch_id":"w2"}` + "\n"); err != nil {
+		_ = f2.Close()
+		t.Fatal(err)
+	}
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	delta, _, err := ScanEventsFrom(context.Background(), path, offset, ScanLimits{})
+	if err != nil {
+		t.Fatalf("ScanEventsFrom (resumed): %v", err)
+	}
+	if len(delta) != 1 {
+		t.Fatalf("got %d delta events, want exactly 1 (seq 3 only -- seq 2 already returned by the first call, must not repeat): %+v", len(delta), delta)
+	}
+	if delta[0].WatchID != "w2" {
+		t.Fatalf("delta = %+v, want w2", delta)
+	}
+	seen := map[string]int{}
+	for _, e := range append(append([]Event{}, events...), delta...) {
+		seen[e.WatchID]++
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Fatalf("event %q appeared %d times across the two calls combined, want exactly 1", id, count)
+		}
 	}
 }
 
