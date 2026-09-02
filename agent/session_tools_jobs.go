@@ -1977,6 +1977,8 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		return watchArgs{}, err
 	}
 	a.EventFilter = eventFilter
+	normalizeWatchArgsForOperation(&a)
+	missingWatchID := false
 	switch a.Operation {
 	case "create":
 		if a.Source == "" {
@@ -1988,7 +1990,7 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		}
 	case "inspect", "clear":
 		if a.WatchID == "" {
-			return watchArgs{}, errors.New("invalid_request: watch_id is required")
+			missingWatchID = true
 		}
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
@@ -1996,10 +1998,28 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if err := rejectWatchTriggerFieldsOnNonCreate(args, a); err != nil {
 		return watchArgs{}, err
 	}
+	if missingWatchID {
+		return watchArgs{}, fmt.Errorf("invalid_request: watch_id is required for operation=%q; use %s", a.Operation, watchOperationRepairShape(a))
+	}
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
 	}
 	return a, nil
+}
+
+// normalizeWatchArgsForOperation erases only the exact neutral trigger values
+// providers commonly materialize on inspection operations. The raw values stay
+// in the tool call record for diagnostics; meaningful values are rejected below.
+func normalizeWatchArgsForOperation(a *watchArgs) {
+	if a.Operation == "create" {
+		return
+	}
+	if len(a.Events) == 0 {
+		a.Events = nil
+	}
+	if a.Every == 0 || a.Every == 1 {
+		a.Every = 0
+	}
 }
 
 // watchTriggerFieldNames lists the arguments that select what a created watch
@@ -2012,10 +2032,10 @@ var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "e
 // trigger field the call actually supplied alongside a non-create operation.
 // Omitting all of them stays valid: create on a granted cross-session source
 // (parent) watches all bounded public events, and list/inspect/clear need none.
-// Nullable trigger fields (progress_interval_ms, every — schema type
-// ["integer","null"]) with a null value count as omitted, matching how
-// shellIntArg decodes them everywhere else: a client serializing optional
-// fields as null is not arming a trigger.
+// Null, empty, and default values count as omitted. This is deliberately
+// operation-aware: create keeps its full trigger vocabulary, while list,
+// inspect, and clear tolerate provider-materialized optional fields without
+// accepting a real trigger outside create.
 func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error {
 	if a.Operation == "create" {
 		return nil
@@ -2023,23 +2043,83 @@ func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error
 	var supplied []string
 	for _, name := range watchTriggerFieldNames {
 		value, ok := args[name]
-		if !ok || value == nil {
+		if !ok || watchTriggerArgumentIsNeutral(name, value, a) {
 			continue
 		}
-		supplied = append(supplied, name)
+		supplied = append(supplied, formatWatchTriggerArgument(name, value))
 	}
 	if len(supplied) == 0 {
 		return nil
 	}
+	missingWatchID := (a.Operation == "inspect" || a.Operation == "clear") && a.WatchID == ""
+	missing := ""
+	if missingWatchID {
+		missing = fmt.Sprintf("watch_id is required for operation=%q; ", a.Operation)
+	}
 	return fmt.Errorf(
-		"invalid_request: trigger fields apply only to operation=\"create\"; %s supplied with operation=%q — set operation=\"create\" to arm a watch, or drop %s to %s",
-		strings.Join(supplied, ", "), a.Operation, strings.Join(supplied, ", "), a.Operation,
+		"invalid_request: %strigger fields apply only to operation=\"create\"; received %s with operation=%q — set operation=\"create\" to arm a watch, or remove those fields and use %s",
+		missing, strings.Join(supplied, ", "), a.Operation, watchOperationRepairShape(a),
 	)
+}
+
+func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
+	if value == nil {
+		return true
+	}
+	switch name {
+	case "output_match":
+		_, ok := value.(string)
+		return ok && a.OutputMatch == ""
+	case "events":
+		return len(a.Events) == 0
+	case "event_filter":
+		return a.EventFilter == nil
+	case "progress_interval_ms":
+		return a.ProgressIntervalMS == 0 && watchIntegerValue(value) == 0
+	case "every":
+		return (a.Every == 0 || a.Every == 1) && (watchIntegerValue(value) == 0 || watchIntegerValue(value) == 1)
+	default:
+		return false
+	}
+}
+
+func watchIntegerValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	default:
+		return -1
+	}
+}
+
+func formatWatchTriggerArgument(name string, value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%s=%#v", name, value)
+	}
+	return fmt.Sprintf("%s=%s", name, encoded)
+}
+
+func watchOperationRepairShape(a watchArgs) string {
+	switch a.Operation {
+	case "list":
+		return `{"operation":"list"}`
+	case "inspect", "clear":
+		watchID := a.WatchID
+		if watchID == "" {
+			watchID = "watch_..."
+		}
+		return fmt.Sprintf(`{"operation":%q,"watch_id":%q}`, a.Operation, watchID)
+	default:
+		return fmt.Sprintf(`{"operation":%q}`, a.Operation)
+	}
 }
 
 func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
 	raw, ok := args["event_filter"]
-	if !ok {
+	if !ok || raw == nil {
 		return nil, nil
 	}
 	values, ok := raw.(map[string]any)
@@ -2069,7 +2149,7 @@ func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
 
 func stringArrayArg(args map[string]any, key string) ([]string, error) {
 	raw, ok := args[key]
-	if !ok {
+	if !ok || raw == nil {
 		return nil, nil
 	}
 	values, ok := raw.([]any)

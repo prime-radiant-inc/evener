@@ -326,10 +326,10 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
 				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
-				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
+				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
 				"events": map[string]any{
-					"type":        "array",
+					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
 					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Watch communicate for result/status messages.",
 				},
@@ -338,7 +338,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
 				},
 				"event_filter": map[string]any{
-					"type":                 "object",
+					"type":                 []string{"object", "null"},
 					"additionalProperties": false,
 					"description":          "Structured predicate for assistant.tool watches. With events [\"assistant.tool\"], match the emitted tool call by tool_name and/or status. Communicate content is delivered in event.message for the observer task to evaluate.",
 					"properties": map[string]any{
