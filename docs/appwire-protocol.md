@@ -1103,6 +1103,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `representationVersion` | `uint8` | yes |  |
 | `resource` | `string` |  |  |
 | `section` | `string` | yes |  |
 | `sectionId` | `string` | yes |  |
@@ -1113,6 +1114,7 @@ _(no fields)_
 | `offset` | `*uint32` | yes |  |
 | `limit` | `*uint32` | yes |  |
 | `etag` | `string` | yes |  |
+| `base` | `*appwire.NavigationReadBase` | yes |  |
 
 
 ### `NavigationReadResponse`
@@ -1120,9 +1122,11 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `status` | `string` |  |  |
+| `representation` | `appwire.NavigationRepresentation` | yes |  |
 | `generationId` | `string` |  |  |
 | `revision` | `uint64` |  |  |
 | `etag` | `string` |  |  |
+| `base` | `*appwire.NavigationReadBase` | yes |  |
 | `data` | `jsontext.Value` | yes |  |
 
 

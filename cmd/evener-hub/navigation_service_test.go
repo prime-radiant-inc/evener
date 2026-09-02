@@ -1006,7 +1006,7 @@ func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.
 	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
 		t.Fatalf("expired commit changed build/cache stats: before=%+v after=%+v", beforeStats, got)
 	}
-	if got := service.Capability(); got == nil || *got != beforeCapability {
+	if got := service.Capability(); got == nil || !reflect.DeepEqual(*got, beforeCapability) {
 		t.Fatalf("expired commit changed capability: before=%+v after=%+v", beforeCapability, got)
 	}
 	if publications := service.DrainPublications(); len(publications) != 0 {
@@ -1142,7 +1142,7 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
 		t.Fatalf("canceled fingerprint changed build/cache stats: before=%+v after=%+v", beforeStats, got)
 	}
-	if got := service.Capability(); got == nil || *got != beforeCapability {
+	if got := service.Capability(); got == nil || !reflect.DeepEqual(*got, beforeCapability) {
 		t.Fatalf("canceled fingerprint changed capability: before=%+v after=%+v", beforeCapability, got)
 	}
 	if publications := service.DrainPublications(); len(publications) != 0 {

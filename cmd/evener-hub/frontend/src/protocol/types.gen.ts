@@ -936,12 +936,33 @@ export interface NavigationCapability {
   version: number;
   generationId: string;
   sequence: number;
+  readVersions?: number[];
 }
 
 export interface NavigationCatalogs {
   projects: NavigationResourceDescriptor;
   archived_projects: NavigationResourceDescriptor;
   test_runs: NavigationResourceDescriptor;
+}
+
+export interface NavigationContainerOwner {
+  kind: string;
+  slot?: string;
+  entityKey?: string;
+}
+
+export interface NavigationDelta {
+  metadata?: unknown;
+  upsertedEntities: NavigationEntityRecord[];
+  removedEntityKeys: string[];
+  upsertedContainers: NavigationOrderContainer[];
+  removedContainerKeys: string[];
+}
+
+export interface NavigationEntityRecord {
+  key: string;
+  kind: string;
+  value: unknown;
 }
 
 export interface NavigationInvalidatedPayload {
@@ -982,6 +1003,12 @@ export interface NavigationManifest {
 export interface NavigationMutation {
   generation_id: string;
   targets: NavigationInvalidationTarget[];
+}
+
+export interface NavigationOrderContainer {
+  key: string;
+  owner: NavigationContainerOwner;
+  children: string[];
 }
 
 export interface NavigationPinSectionCatalog {
@@ -1042,7 +1069,14 @@ export interface NavigationProjectSummary {
   session_count: number;
 }
 
+export interface NavigationReadBase {
+  generationId: string;
+  revision: number;
+  etag: string;
+}
+
 export interface NavigationReadParams {
+  representationVersion?: number;
   resource: string;
   section?: string;
   sectionId?: string;
@@ -1053,13 +1087,16 @@ export interface NavigationReadParams {
   offset?: number;
   limit?: number;
   etag?: string;
+  base?: NavigationReadBase;
 }
 
 export interface NavigationReadResponse {
   status: string;
+  representation?: string;
   generationId: string;
   revision: number;
   etag: string;
+  base?: NavigationReadBase;
   data?: unknown;
 }
 
@@ -1114,6 +1151,12 @@ export interface NavigationSessionSummary {
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
   children: NavigationSessionSummary[];
+}
+
+export interface NavigationSnapshot {
+  metadata: unknown;
+  entities: NavigationEntityRecord[];
+  containers: NavigationOrderContainer[];
 }
 
 export interface NavigationTier {

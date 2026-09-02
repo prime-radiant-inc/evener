@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -218,34 +219,99 @@ type NavigationCapability struct {
 	Version      int    `json:"version"`
 	GenerationID string `json:"generationId"`
 	Sequence     uint64 `json:"sequence"`
+	ReadVersions []int  `json:"readVersions,omitempty"`
 }
 
 // NavigationReadParams selects one bounded hub navigation resource. Offset
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	Resource   string  `json:"resource"`
-	Section    string  `json:"section,omitempty"`
-	SectionID  string  `json:"sectionId,omitempty"`
-	Catalog    string  `json:"catalog,omitempty"`
-	ProjectKey string  `json:"projectKey,omitempty"`
-	Tier       string  `json:"tier,omitempty"`
-	Ref        string  `json:"ref,omitempty"`
-	Offset     *uint32 `json:"offset,omitempty"`
-	Limit      *uint32 `json:"limit,omitempty"`
-	ETag       string  `json:"etag,omitempty"`
+	RepresentationVersion uint8               `json:"representationVersion,omitempty"`
+	Resource              string              `json:"resource"`
+	Section               string              `json:"section,omitempty"`
+	SectionID             string              `json:"sectionId,omitempty"`
+	Catalog               string              `json:"catalog,omitempty"`
+	ProjectKey            string              `json:"projectKey,omitempty"`
+	Tier                  string              `json:"tier,omitempty"`
+	Ref                   string              `json:"ref,omitempty"`
+	Offset                *uint32             `json:"offset,omitempty"`
+	Limit                 *uint32             `json:"limit,omitempty"`
+	ETag                  string              `json:"etag,omitempty"`
+	Base                  *NavigationReadBase `json:"base,omitempty"`
+}
+
+func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
+	type wire NavigationReadParams
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if version, ok := fields["representationVersion"]; ok {
+		var v uint8
+		if err := json.Unmarshal(version, &v); err != nil {
+			return fmt.Errorf("invalid representationVersion: %w", err)
+		}
+		decoded.RepresentationVersion = v
+	}
+	if base, present := fields["base"]; present {
+		var baseFields map[string]json.RawMessage
+		if err := json.Unmarshal(base, &baseFields); err != nil || baseFields == nil || decoded.Base == nil {
+			return errors.New("base must be an object when present")
+		}
+		if len(baseFields) != 3 {
+			return errors.New("invalid navigation base")
+		}
+		for _, name := range []string{"generationId", "revision", "etag"} {
+			value, ok := baseFields[name]
+			if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return errors.New("invalid navigation base")
+			}
+		}
+		if decoded.Base.GenerationID == "" || decoded.Base.ETag == "" || len(decoded.Base.GenerationID) > 256 || len(decoded.Base.ETag) > 1024 || decoded.Base.Revision > 9007199254740991 {
+			return errors.New("invalid navigation base")
+		}
+	}
+	if decoded.RepresentationVersion <= 1 && decoded.Base != nil {
+		return errors.New("base is valid only for representationVersion 2")
+	}
+	if decoded.RepresentationVersion == 2 && decoded.ETag != "" {
+		return errors.New("etag is valid only for representationVersion 1")
+	}
+	*params = NavigationReadParams(decoded)
+	return nil
+}
+
+type NavigationReadBase struct {
+	GenerationID string `json:"generationId"`
+	Revision     uint64 `json:"revision"`
+	ETag         string `json:"etag"`
 }
 
 // NavigationReadResponse carries one revisioned navigation resource. Data is
 // raw JSON because the resource discriminator selects among several existing
 // projection shapes.
 type NavigationReadResponse struct {
-	Status       string          `json:"status"`
-	GenerationID string          `json:"generationId"`
-	Revision     uint64          `json:"revision"`
-	ETag         string          `json:"etag"`
-	Data         json.RawMessage `json:"data,omitempty"`
+	Status         string                   `json:"status"`
+	Representation NavigationRepresentation `json:"representation,omitempty"`
+	GenerationID   string                   `json:"generationId"`
+	Revision       uint64                   `json:"revision"`
+	ETag           string                   `json:"etag"`
+	Base           *NavigationReadBase      `json:"base,omitempty"`
+	Data           json.RawMessage          `json:"data,omitempty"`
 }
+
+type NavigationRepresentation string
+
+const (
+	NavigationRepresentationSnapshot NavigationRepresentation = "snapshot"
+	NavigationRepresentationDelta    NavigationRepresentation = "delta"
+)
 
 // FavoriteSetParams selects the project favorite decision to persist. Kind is
 // retained so the typed method preserves the explicit rejection for the

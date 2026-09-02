@@ -314,6 +314,110 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	}
 }
 
+func TestNavigationReadParamsRejectsIncompleteBase(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{
+			name: "complete base with explicit zero revision",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}}`,
+		},
+		{
+			name: "generation omitted",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision omitted reviewer body",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag omitted",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0}}`, wantErr: true,
+		},
+		{
+			name: "generation null",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":null,"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision null reviewer body",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag null",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":null}}`, wantErr: true,
+		},
+		{
+			name: "generation wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":1,"revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "revision wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":"0","etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "etag wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":false}}`, wantErr: true,
+		},
+		{
+			name: "nested unknown field",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e","future":true}}`, wantErr: true,
+		},
+		{
+			name: "outer unknown field",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"},"future":true}`, wantErr: true,
+		},
+		{
+			name: "trailing value",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":0,"etag":"e"}} {}`, wantErr: true,
+		},
+		{
+			name: "base null with whitespace",
+			raw:  "{\"resource\":\"manifest\",\"representationVersion\":2,\"base\": \n null }", wantErr: true,
+		},
+		{
+			name: "base wrong type",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":[]}`, wantErr: true,
+		},
+		{
+			name: "revision above safe integer",
+			raw:  `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":9007199254740992,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "representation version too large",
+			raw:  `{"resource":"manifest","representationVersion":256}`, wantErr: true,
+		},
+		{
+			name: "v1 rejects base",
+			raw:  `{"resource":"manifest","representationVersion":1,"base":{"generationId":"g","revision":0,"etag":"e"}}`, wantErr: true,
+		},
+		{
+			name: "v2 rejects legacy etag",
+			raw:  `{"resource":"manifest","representationVersion":2,"etag":"legacy"}`, wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var params NavigationReadParams
+			err := json.Unmarshal([]byte(test.raw), &params)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("invalid params accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("valid params rejected: %v", err)
+			}
+			if params.Base == nil || params.Base.GenerationID != "g" || params.Base.Revision != 0 || params.Base.ETag != "e" {
+				t.Fatalf("decoded base = %+v", params.Base)
+			}
+		})
+	}
+}
+
 func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	valid := true
 	exhaustionResumable := false
