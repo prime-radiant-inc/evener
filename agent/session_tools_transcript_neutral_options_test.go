@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -255,9 +256,7 @@ func TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset(t *testing.T) {
 
 func mapWithTranscriptRef(args map[string]any, ref string) map[string]any {
 	withRef := make(map[string]any, len(args)+1)
-	for key, value := range args {
-		withRef[key] = value
-	}
+	maps.Copy(withRef, args)
 	withRef["transcript_ref"] = ref
 	return withRef
 }
