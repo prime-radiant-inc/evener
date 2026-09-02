@@ -164,6 +164,30 @@ func TestParseConfig_Rejects(t *testing.T) {
 	}
 }
 
+func TestParseConfig_TokenCapsMustBePositiveIntegers(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		field string
+	}{
+		{name: "context_window zero", src: "[providers.x.models.m]\ncontext_window = 0\n", field: "context_window"},
+		{name: "max_input_tokens zero", src: "[providers.x.models.m]\nmax_input_tokens = 0\n", field: "max_input_tokens"},
+		{name: "max_output_tokens zero", src: "[providers.x.models.m]\nmax_output_tokens = 0\n", field: "max_output_tokens"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseConfig([]byte(tc.src))
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.field)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.field) || !strings.Contains(msg, "positive") {
+				t.Fatalf("error = %q, want a field-specific positive-integer error", msg)
+			}
+		})
+	}
+}
+
 func TestParseConfig_UnknownKeyNamesIt(t *testing.T) {
 	_, err := ParseConfig([]byte("[providers.x]\nthinking_levels = { a = \"b\" }\n"))
 	if err == nil || !strings.Contains(err.Error(), "thinking_levels") {

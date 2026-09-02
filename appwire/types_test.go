@@ -783,6 +783,7 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 
 func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 	contextWindow := 200_000
+	maxInputTokens := 180_000
 	maxOutputTokens := 8_192
 	supportsTools := true
 	supportsVision := false
@@ -795,6 +796,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 		Model:                 "claude-sonnet-4-5",
 		DisplayName:           "Claude Sonnet 4.5",
 		ContextWindow:         &contextWindow,
+		MaxInputTokens:        &maxInputTokens,
 		SupportsTools:         &supportsTools,
 		SupportsVision:        &supportsVision,
 		MaxOutputTokens:       &maxOutputTokens,
@@ -811,6 +813,7 @@ func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
 	for _, field := range []string{
 		`"displayName":"Claude Sonnet 4.5"`,
 		`"contextWindow":200000`,
+		`"maxInputTokens":180000`,
 		`"supportsTools":true`,
 		`"supportsVision":false`,
 		`"supportsWebSearch":false`,

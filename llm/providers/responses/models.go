@@ -29,8 +29,11 @@ type openAIModelListEntry struct {
 // entry doesn't report).
 func (m openAIModelListEntry) row() registry.Model {
 	caps := registry.Caps{}
-	if w := firstPositiveInt(m.ContextWindow, m.MaxContext, m.MaxInputTokens, m.InputTokenLimit); w > 0 {
+	if w := firstPositiveInt(m.ContextWindow, m.MaxContext); w > 0 {
 		caps.ContextWindow = new(w)
+	}
+	if i := firstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
+		caps.MaxInputTokens = new(i)
 	}
 	if o := firstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
@@ -76,8 +79,11 @@ func (m codexModelListEntry) id() string {
 // entry doesn't report).
 func (m codexModelListEntry) row() registry.Model {
 	caps := registry.Caps{}
-	if w := firstPositiveInt(m.ContextWindow, m.MaxContextWindow, m.MaxInputTokens, m.InputTokenLimit); w > 0 {
+	if w := firstPositiveInt(m.ContextWindow, m.MaxContextWindow); w > 0 {
 		caps.ContextWindow = new(w)
+	}
+	if i := firstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
+		caps.MaxInputTokens = new(i)
 	}
 	if o := firstPositiveInt(m.MaxOutputTokens, m.OutputTokenLimit); o > 0 {
 		caps.MaxOutputTokens = new(o)

@@ -246,6 +246,30 @@ func TestBuildBody_ImageDetailAndStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wire int
+		want int
+	}{
+		{name: "capped by MaxOutputTokens", wire: 1000, want: 50},
+		{name: "keeps lower positive wire value", wire: 25, want: 25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := userReq("hi")
+			req.MaxTokens = new(100)
+			req.ProviderOptions = map[string]any{registry.ProtocolOpenAIResponses: map[string]any{"max_output_tokens": tc.wire}}
+			body := build(t, req, resolved(func(c *registry.Caps) {
+				openaiCaps(c)
+				c.MaxOutputTokens = new(50)
+			}))
+			if got := body["max_output_tokens"]; got != tc.want {
+				t.Fatalf("max_output_tokens = %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5 rule that
 // every error stamp is res.Instance, not a provider literal.
 func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {

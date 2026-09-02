@@ -9,12 +9,14 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // generateContentBody assembles generationConfig, systemInstruction,
 // tools (google_search only when webSearch is on and there are no
 // function declarations), toolConfig, and the caller's options.
-func generateContentBody(req llm.Request, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
+func generateContentBody(req llm.Request, caps registry.Caps, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
 	genCfg := map[string]any{}
 	if req.Temperature != nil {
 		genCfg["temperature"] = *req.Temperature
@@ -98,7 +100,34 @@ func generateContentBody(req llm.Request, system string, contents []map[string]a
 		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 	}
 	maps.Copy(body, options)
+	if raw, exists := options["generationConfig"]; exists {
+		overlaid, ok := raw.(map[string]any)
+		if !ok || overlaid == nil {
+			return nil, &llm.ConfigurationError{Message: "provider_options.google.generationConfig must be an object"}
+		}
+		body["generationConfig"] = maps.Clone(overlaid)
+	}
+	if err := reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens); err != nil {
+		return nil, err
+	}
 	return body, nil
+}
+
+func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {
+	ceiling := requestutil.MinPositiveInt(requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap))
+	if ceiling == 0 {
+		return nil
+	}
+	genCfg, ok := body["generationConfig"].(map[string]any)
+	if !ok && body["generationConfig"] != nil {
+		return &llm.ConfigurationError{Message: "google generationConfig must be an object"}
+	}
+	if genCfg == nil {
+		genCfg = map[string]any{}
+		body["generationConfig"] = genCfg
+	}
+	genCfg["maxOutputTokens"] = requestutil.MinPositiveInt(requestutil.PositiveInt(genCfg["maxOutputTokens"]), ceiling)
+	return nil
 }
 
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {

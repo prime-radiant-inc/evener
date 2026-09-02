@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/providers/internal/transport"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -22,6 +23,18 @@ func (p *Protocol) call(operation, method, u string, body map[string]any, req ll
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: "anthropic_messages", Method: method, URL: u, Body: body, Headers: headers, Req: req, Res: res, Client: p.Client}
 }
 
+func (p *Protocol) completionCall(operation, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, method, u, body, req, res)
+	call.FinalizeBody = func(finalBody map[string]any) error {
+		if !requestutil.WireFieldEnabled(res.Caps, "max_tokens") {
+			delete(finalBody, "max_tokens")
+			return nil
+		}
+		return reconcileThinkingContract(finalBody, req, res)
+	}
+	return call
+}
+
 // Complete implements llm.Protocol.
 func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Response, error) {
 	if protocolhttp.RequiresStreamingComplete(res) {
@@ -31,7 +44,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	call := p.call("messages.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("messages.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
 	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
 		return fromAnthropicResponse(raw, req.Model), nil
 	})
@@ -44,7 +57,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 		return nil, err
 	}
 	body["stream"] = true
-	call := p.call("messages.create(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("messages.create(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeMessagesStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
 	})
@@ -98,7 +111,7 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	if res.Transport.CountTokensEndpoint == registry.EndpointUnsupported {
 		return 0, llm.ErrInputTokenCountUnsupported
 	}
-	body, err := buildProtocolBody(req, res)
+	body, err := buildProtocolBodyForOperation(req, res, false)
 	if err != nil {
 		return 0, err
 	}

@@ -230,6 +230,39 @@ func TestClientCountInputTokensThroughTheProtocol(t *testing.T) {
 	}
 }
 
+func TestClientCountInputTokensRemainsAvailableWhenCompletionAdmissionRejects(t *testing.T) {
+	srv, seen := responsesServer(t)
+	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
+		"count-capped": {
+			Base:      "openai",
+			APIKey:    "test-key",
+			Transport: registry.Transport{BaseURL: srv.URL},
+			Caps:      registry.Caps{ContextWindow: new(50)},
+		},
+	})
+	c := llm.NewClient(llm.WithRegistry(r))
+	req := userRequest("count-capped", "gpt-5.5")
+	req.InputTokensEstimate = 100
+	req.MaxTokens = new(1)
+
+	if _, err := c.Complete(context.Background(), req); err == nil {
+		t.Fatal("Complete accepted a request over the context-window cap")
+	}
+	if got := len(seen()); got != 0 {
+		t.Fatalf("completion admission dispatched %d requests, want 0", got)
+	}
+	count, err := c.CountInputTokens(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if count.Tokens != 42 || !count.Exact || count.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("CountInputTokens = %+v, want exact provider count 42", count)
+	}
+	if requests := seen(); len(requests) != 1 || requests[0].Path != "/responses/input_tokens" {
+		t.Fatalf("count wire requests = %+v", requests)
+	}
+}
+
 func TestClientUnknownInstanceNamesAvailableOnes(t *testing.T) {
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))

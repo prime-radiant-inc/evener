@@ -283,10 +283,11 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 		m.WireID = m.ID
 	}
 	c := &m.Caps
-	if mm.Limit.Input > 0 {
-		c.ContextWindow = new(mm.Limit.Input)
-	} else if mm.Limit.Context > 0 {
+	if mm.Limit.Context > 0 {
 		c.ContextWindow = new(mm.Limit.Context)
+	}
+	if mm.Limit.Input > 0 {
+		c.MaxInputTokens = new(mm.Limit.Input)
 	}
 	if mm.Limit.Output > 0 {
 		c.MaxOutputTokens = new(mm.Limit.Output)

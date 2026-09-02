@@ -125,6 +125,46 @@ func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
 	}
 }
 
+func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*Protocol, llm.Request, registry.Resolved) error
+	}{
+		{"complete", generateJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			_, err := p.Complete(context.Background(), req, res)
+			return err
+		}},
+		{"stream", generateSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			stream, err := p.Stream(context.Background(), req, res)
+			if err != nil {
+				return err
+			}
+			for event := range stream.Events() {
+				if event.Type == llm.StreamEventError {
+					return event.Err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := protoServer(t, http.StatusOK, tc.body)
+			res := protoLive(srv)
+			res.Transport.Body = map[string]any{"generationConfig.maxOutputTokens": 1000}
+			req := protoReq("")
+			req.MaxTokens = new(100)
+			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
+				t.Fatal(err)
+			}
+			generationConfig, _ := got.body["generationConfig"].(map[string]any)
+			if generationConfig["maxOutputTokens"] != float64(100) {
+				t.Fatalf("wire maxOutputTokens = %v, want admitted 100; body = %v", generationConfig["maxOutputTokens"], got.body)
+			}
+		})
+	}
+}
+
 func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 	srv, _ := protoServer(t, 400, `{"error":{"code":400,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`)
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
@@ -135,10 +175,10 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 }
 
 func TestProtocolListModelsAndCountTokens(t *testing.T) {
-	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":1048576,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
+	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
 	res := protoLive(srv)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
-	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || *rows[0].Caps.ContextWindow != 1048576 || *rows[0].Caps.MaxOutputTokens != 65536 {
+	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || rows[0].Caps.ContextWindow != nil || *rows[0].Caps.MaxInputTokens != 922000 || *rows[0].Caps.MaxOutputTokens != 128000 {
 		t.Fatalf("rows = %+v err = %v", rows, err)
 	}
 	if got.path != "/v1beta/models?pageSize=1000" || got.header.Get("x-goog-api-key") != "k-1" {

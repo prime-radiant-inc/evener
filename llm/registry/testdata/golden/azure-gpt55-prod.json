@@ -29,7 +29,8 @@
     "caps": {}
   },
   "caps": {
-    "context_window": 922000,
+    "context_window": 1050000,
+    "max_input_tokens": 922000,
     "max_output_tokens": 128000,
     "tools": true,
     "structured_output": true,
@@ -97,6 +98,7 @@
     "Fields.store": "overlay/provider",
     "InputModalities": "alias",
     "KnowledgeCutoff": "alias",
+    "MaxInputTokens": "alias",
     "MaxOutputTokens": "alias",
     "Reasoning": "alias",
     "ReasoningControls": "alias",

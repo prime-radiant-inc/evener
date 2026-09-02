@@ -6,6 +6,7 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -123,6 +124,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	if registry.StringValue(caps.CacheControl) == "anthropic" {
 		anthropicCacheControl(body, registry.StringValue(caps.CacheTTL))
 	}
+	reconcileOutputField(body, maxTokensField(caps), req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
 }
 
@@ -148,4 +150,29 @@ func promptCacheKey(req llm.Request, caps registry.Caps) string {
 		}
 	}
 	return ""
+}
+
+func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
+	values := []int{requestutil.PositiveInt(body[field]), requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap)}
+	if field == "max_tokens" || field == "max_completion_tokens" {
+		alternate := "max_tokens"
+		if field == alternate {
+			alternate = "max_completion_tokens"
+		}
+		values = append(values, requestutil.PositiveInt(body[alternate]))
+		delete(body, alternate)
+	}
+	if ceiling := requestutil.MinPositiveInt(values...); ceiling > 0 {
+		body[field] = ceiling
+	}
+}
+
+func reconcilePreparedOutput(body map[string]any, req llm.Request, caps registry.Caps) {
+	field := maxTokensField(caps)
+	if !requestutil.WireFieldEnabled(caps, field) {
+		delete(body, "max_tokens")
+		delete(body, "max_completion_tokens")
+		return
+	}
+	reconcileOutputField(body, field, req.MaxTokens, caps.MaxOutputTokens)
 }

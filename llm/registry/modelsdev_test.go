@@ -101,8 +101,11 @@ func TestFromModelsDev_ModelLevel(t *testing.T) {
 	p := loadFixture(t)
 
 	gpt5 := p["openai"].Models["gpt-5"]
-	if gpt5.Caps.ContextWindow == nil || *gpt5.Caps.ContextWindow != 272000 {
-		t.Fatalf("gpt-5 ContextWindow must be limit.input (272000), got %v", gpt5.Caps.ContextWindow)
+	if gpt5.Caps.ContextWindow == nil || *gpt5.Caps.ContextWindow != 400000 {
+		t.Fatalf("gpt-5 ContextWindow must be limit.context (400000), got %v", gpt5.Caps.ContextWindow)
+	}
+	if gpt5.Caps.MaxInputTokens == nil || *gpt5.Caps.MaxInputTokens != 272000 {
+		t.Fatalf("gpt-5 MaxInputTokens must be limit.input (272000), got %v", gpt5.Caps.MaxInputTokens)
 	}
 	if gpt5.Family != "gpt" || gpt5.Surface != SurfaceOpenAI {
 		t.Fatalf("gpt-5 family/surface: %q/%q", gpt5.Family, gpt5.Surface)
@@ -208,6 +211,43 @@ func TestFromModelsDev_ModelLevel(t *testing.T) {
 	}
 	if p["groq"].Models["llama-3.3-70b-versatile"].Caps.Reasoning == nil {
 		t.Fatalf("reasoning fact must be set from the row")
+	}
+}
+
+func TestFromModelsDev_PreservesDistinctTokenCaps(t *testing.T) {
+	const raw = `{
+		"openai": {
+			"id": "openai",
+			"name": "OpenAI",
+			"npm": "@ai-sdk/openai",
+			"models": {
+				"gpt-5.7": {
+					"id": "gpt-5.7",
+					"family": "gpt",
+					"tool_call": true,
+					"reasoning": true,
+					"modalities": {"input": ["text"], "output": ["text"]},
+					"limit": {"context": 1050000, "input": 922000, "output": 128000}
+				}
+			}
+		}
+	}`
+	provs, err := FromModelsDev([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provs) != 1 {
+		t.Fatalf("provider count = %d, want 1", len(provs))
+	}
+	row := provs[0].Models["gpt-5.7"]
+	if row.Caps.ContextWindow == nil || *row.Caps.ContextWindow != 1_050_000 {
+		t.Fatalf("ContextWindow = %v, want 1050000", row.Caps.ContextWindow)
+	}
+	if row.Caps.MaxInputTokens == nil || *row.Caps.MaxInputTokens != 922_000 {
+		t.Fatalf("MaxInputTokens = %v, want 922000", row.Caps.MaxInputTokens)
+	}
+	if row.Caps.MaxOutputTokens == nil || *row.Caps.MaxOutputTokens != 128_000 {
+		t.Fatalf("MaxOutputTokens = %v, want 128000", row.Caps.MaxOutputTokens)
 	}
 }
 

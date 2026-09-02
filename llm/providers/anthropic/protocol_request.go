@@ -13,6 +13,10 @@ import (
 // thinking bodies, ThinkingDisplay and ThinkingAlwaysOn refine it, and no
 // model-id branch remains.
 func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]any, err error) {
+	return buildProtocolBodyForOperation(req, res, true)
+}
+
+func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enforceCompletionContract bool) (out map[string]any, err error) {
 	// Every error this builder returns carries the instance, not the
 	// protocol id or a vendor literal (spec §7.5: provider identity is
 	// res.Instance). RewriteErrorProvider leaves errors with no provider
@@ -68,7 +72,7 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 	if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
 		tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
 	}
-	thinkingBudget := applyThinkingShape(body, req, caps)
+	applyThinkingShape(body, req, caps)
 	if ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any); ok {
 		for k, v := range ov {
 			if k == "beta_headers" {
@@ -77,16 +81,16 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 			body[k] = v
 		}
 	}
-	maxCap := 0
-	if caps.MaxOutputTokens != nil {
-		maxCap = *caps.MaxOutputTokens
+	normalizeThinkingToolChoice(body)
+	if enforceCompletionContract {
+		if err := reconcileThinkingContract(body, req, res); err != nil {
+			return nil, err
+		}
 	}
-	reconcileThinkingContract(body, maxTokens, thinkingBudget, maxCap)
 	return body, nil
 }
 
-// applyThinkingShape writes the thinking body the row's ThinkingShape
-// selects and returns the budget it committed to (0 when none):
+// applyThinkingShape writes the thinking body the row's ThinkingShape selects:
 // adaptive → {type: adaptive} plus display, sent when ThinkingAlwaysOn or
 // an effort is set, plus output_config.effort only for a caller effort;
 // budget → {type: enabled, budget_tokens} only for an effort;
@@ -95,9 +99,9 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 // so there is no value that says "off" here, and keeping the always-on body
 // would switch thinking on against the user's stated intent. An unset shape
 // sends nothing.
-func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) int {
+func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) {
 	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
-		return 0
+		return
 	}
 	effort := ""
 	if req.ReasoningEffort != nil {
@@ -106,7 +110,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 	switch registry.StringValue(caps.ThinkingShape) {
 	case "adaptive":
 		if !registry.BoolValue(caps.ThinkingAlwaysOn) && effort == "" {
-			return 0
+			return
 		}
 		thinking := map[string]any{"type": "adaptive"}
 		if display := registry.StringValue(caps.ThinkingDisplay); display != "" {
@@ -118,7 +122,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		}
 	case "budget", "budget+effort":
 		if effort == "" {
-			return 0
+			return
 		}
 		budget := llm.ReasoningBudget(effort)
 		if budget > 0 {
@@ -127,7 +131,5 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		if registry.StringValue(caps.ThinkingShape) == "budget+effort" {
 			body["output_config"] = map[string]any{"effort": effort}
 		}
-		return budget
 	}
-	return 0
 }

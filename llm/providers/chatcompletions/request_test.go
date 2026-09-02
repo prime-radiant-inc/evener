@@ -216,6 +216,71 @@ func TestBuildBody_CapsShapeStructure(t *testing.T) {
 	}
 }
 
+func TestBuildBody_ProviderOptionMaxTokensRespectsCapsAndFieldSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wire   int
+		want   int
+		mutate func(*registry.Caps)
+		field  string
+	}{
+		{name: "default field capped by MaxOutputTokens", wire: 1000, want: 50, field: "max_tokens"},
+		{name: "default field keeps lower positive wire value", wire: 25, want: 25, field: "max_tokens"},
+		{name: "alternate field capped by MaxOutputTokens", wire: 1000, want: 50, field: "max_completion_tokens", mutate: func(c *registry.Caps) { c.MaxTokensField = new("max_completion_tokens") }},
+		{name: "alternate field keeps lower positive wire value", wire: 25, want: 25, field: "max_completion_tokens", mutate: func(c *registry.Caps) { c.MaxTokensField = new("max_completion_tokens") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := userReq("hi")
+			req.MaxTokens = new(100)
+			req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{tc.field: tc.wire}}
+			body := build(t, req, resolved(func(c *registry.Caps) {
+				c.MaxOutputTokens = new(50)
+				if tc.mutate != nil {
+					tc.mutate(c)
+				}
+			}))
+			if got := body[tc.field]; got != tc.want {
+				t.Fatalf("%s = %v, want %d", tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildBody_ProviderOptionMaxTokensCanonicalizesCrossFieldOverlay(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		selected      string
+		alternate     string
+		providerValue any
+		want          int
+	}{
+		{name: "max_tokens row removes max_completion_tokens overlay", selected: "max_tokens", alternate: "max_completion_tokens", providerValue: 100, want: 30},
+		{name: "max_completion_tokens row removes max_tokens overlay", selected: "max_completion_tokens", alternate: "max_tokens", providerValue: 100, want: 30},
+		{name: "max_tokens row keeps lower alternate value", selected: "max_tokens", alternate: "max_completion_tokens", providerValue: 10, want: 10},
+		{name: "max_completion_tokens row keeps lower alternate value", selected: "max_completion_tokens", alternate: "max_tokens", providerValue: 10, want: 10},
+		{name: "non-positive alternate value adds no constraint", selected: "max_tokens", alternate: "max_completion_tokens", providerValue: 0, want: 30},
+		{name: "unknown alternate value adds no constraint", selected: "max_completion_tokens", alternate: "max_tokens", providerValue: "unknown", want: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolved(func(c *registry.Caps) {
+				c.MaxTokensField = new(tc.selected)
+				c.MaxOutputTokens = new(30)
+			})
+			req := userReq("hi")
+			req.MaxTokens = new(40)
+			req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{tc.alternate: tc.providerValue}}
+
+			body := build(t, req, res)
+			if got := body[tc.selected]; got != tc.want {
+				t.Fatalf("%s = %v, want %d: %s", tc.selected, got, tc.want, jsonOf(t, body))
+			}
+			if _, ok := body[tc.alternate]; ok {
+				t.Fatalf("alternate %s must be absent: %s", tc.alternate, jsonOf(t, body))
+			}
+		})
+	}
+}
+
 func TestBuildBody_AnthropicCacheControl(t *testing.T) {
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "sys"}}},

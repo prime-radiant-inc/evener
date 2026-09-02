@@ -66,6 +66,9 @@ func Classify(err error) ErrorClass {
 	if _, ok := errors.AsType[*AbortError](err); ok {
 		return ErrorClassPermanent
 	}
+	if _, ok := errors.AsType[*ContextBudgetError](err); ok {
+		return ErrorClassPermanent
+	}
 
 	if le, ok := errors.AsType[Error](err); ok {
 		// A provider may flag an otherwise-permanent status as retryable

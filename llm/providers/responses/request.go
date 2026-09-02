@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -138,7 +139,16 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 			body[k] = v
 		}
 	}
+	requestutil.ReconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
+}
+
+func reconcilePreparedOutput(body map[string]any, req llm.Request, caps registry.Caps) {
+	if !requestutil.WireFieldEnabled(caps, "max_output_tokens") {
+		delete(body, "max_output_tokens")
+		return
+	}
+	requestutil.ReconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
 }
 
 // reasoningObject is spec §8.4 for openai-responses: effort when set and

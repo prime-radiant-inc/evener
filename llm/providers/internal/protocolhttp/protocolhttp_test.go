@@ -114,6 +114,22 @@ func TestPrepareRunsPruneConstantsAuthPrepareInOrder(t *testing.T) {
 	}
 }
 
+func TestPrepareReturnsFinalizeBodyError(t *testing.T) {
+	want := errors.New("final body invalid")
+	_, err := Prepare(context.Background(), &Call{
+		Method: http.MethodPost,
+		URL:    "https://example.test",
+		Body:   map[string]any{},
+		Res:    registry.Resolved{Transport: registry.Transport{Auth: registry.AuthNone}},
+		FinalizeBody: func(map[string]any) error {
+			return want
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("Prepare error = %v, want finalizer error", err)
+	}
+}
+
 func TestURLAndModelInBody(t *testing.T) {
 	res := registry.Resolved{WireID: "models/x y", Transport: registry.Transport{BaseURL: "https://h/v1/", Endpoint: "/publishers/anthropic/models/{model}:rawPredict"}}
 	if got := URL(res, res.Transport.Endpoint); got != "https://h/v1/publishers/anthropic/models/models%2Fx%20y:rawPredict" {

@@ -88,7 +88,8 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 		clamped := ClampReasoningEffort(*req.ReasoningEffort, caps.EffortValues)
 		req.ReasoningEffort = &clamped
 	}
-	if req.MaxTokens == nil && caps.MaxOutputTokens != nil {
+	if caps.MaxOutputTokens != nil && *caps.MaxOutputTokens > 0 &&
+		(req.MaxTokens == nil || *req.MaxTokens > *caps.MaxOutputTokens) {
 		v := *caps.MaxOutputTokens
 		req.MaxTokens = &v
 	}

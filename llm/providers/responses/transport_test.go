@@ -103,7 +103,19 @@ func (streamingPreparer) PrepareRequest(context.Context, *http.Request, map[stri
 }
 func (streamingPreparer) RequiresStreamingComplete() bool { return true }
 
+type outputOverwritingPreparer struct{}
+
+func (outputOverwritingPreparer) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
+}
+func (outputOverwritingPreparer) PrepareRequest(_ context.Context, _ *http.Request, body map[string]any, _ llm.Request, _ registry.Resolved) error {
+	body["max_output_tokens"] = 1000
+	return nil
+}
+func (outputOverwritingPreparer) RequiresStreamingComplete() bool { return false }
+
 var registerOnce sync.Once
+var registerOutputOverwriterOnce sync.Once
 
 func TestCompleteDecodesOutputItems(t *testing.T) {
 	srv, got := server(t, 200, responseJSON)
@@ -120,6 +132,79 @@ func TestCompleteDecodesOutputItems(t *testing.T) {
 	}
 	if got.path != "/v1/responses" || got.header.Get("Authorization") != "Bearer k-1" || got.body["store"] != false {
 		t.Fatalf("wire: %s %v %v", got.path, got.header, got.body)
+	}
+}
+
+func TestCompleteReconcilesOutputAfterTransportPreparation(t *testing.T) {
+	registerOutputOverwriterOnce.Do(func() {
+		llm.RegisterAuthenticator("test-output-overwriter", outputOverwritingPreparer{})
+	})
+	for _, tc := range []struct {
+		name       string
+		configure  func(*registry.Resolved)
+		wantAbsent bool
+	}{
+		{
+			name: "transport body constant",
+			configure: func(res *registry.Resolved) {
+				res.Transport.Body = map[string]any{"max_output_tokens": 1000}
+			},
+		},
+		{
+			name: "request preparer",
+			configure: func(res *registry.Resolved) {
+				res.Transport.Auth = "test-output-overwriter"
+			},
+		},
+		{
+			name: "explicitly disabled field stays absent",
+			configure: func(res *registry.Resolved) {
+				res.Caps.Fields["max_output_tokens"] = false
+				res.Transport.Body = map[string]any{"max_output_tokens": 1000}
+			},
+			wantAbsent: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := server(t, 200, responseJSON)
+			res := liveRes(srv, openaiCaps)
+			tc.configure(&res)
+			req := userReq("hi")
+			req.MaxTokens = new(100)
+			if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, res); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			wire, present := got.body["max_output_tokens"]
+			if tc.wantAbsent {
+				if present {
+					t.Fatalf("max_output_tokens = %v, want absent", wire)
+				}
+				return
+			}
+			if wire != float64(100) {
+				t.Fatalf("max_output_tokens = %v, want 100", wire)
+			}
+		})
+	}
+}
+
+func TestStreamReconcilesOutputAfterTransportPreparation(t *testing.T) {
+	srv, got := server(t, 200, responseSSE)
+	res := liveRes(srv, openaiCaps)
+	res.Transport.Body = map[string]any{"max_output_tokens": 1000}
+	req := userReq("hi")
+	req.MaxTokens = new(100)
+	stream, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), req, res)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for event := range stream.Events() {
+		if event.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", event.Err)
+		}
+	}
+	if wire := got.body["max_output_tokens"]; wire != float64(100) {
+		t.Fatalf("max_output_tokens = %v, want 100", wire)
 	}
 }
 

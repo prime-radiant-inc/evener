@@ -536,6 +536,7 @@ func cloneTransportView(t Transport) Transport {
 func cloneCaps(c Caps) Caps {
 	out := c
 	out.ContextWindow = clonePointer(c.ContextWindow)
+	out.MaxInputTokens = clonePointer(c.MaxInputTokens)
 	out.MaxOutputTokens = clonePointer(c.MaxOutputTokens)
 	out.Tools = clonePointer(c.Tools)
 	out.StructuredOutput = clonePointer(c.StructuredOutput)

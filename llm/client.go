@@ -341,6 +341,13 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Response, error) {
+		if t.resolved {
+			var err error
+			req, err = shapeAndApplyTokenBudget(req, t.res)
+			if err != nil {
+				return Response{}, err
+			}
+		}
 		if t.override != nil {
 			return t.override.Complete(ctx, req)
 		}
@@ -375,6 +382,13 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Stream, error) {
+		if t.resolved {
+			var err error
+			req, err = shapeAndApplyTokenBudget(req, t.res)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if t.override != nil {
 			return t.override.Stream(ctx, req)
 		}
@@ -386,6 +400,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		return nil, RewriteErrorProvider(err, t.name)
 	}
 	return newProviderStampStream(st, t.name), nil
+}
+
+func shapeAndApplyTokenBudget(req Request, res registry.Resolved) (Request, error) {
+	req = ShapeRequest(req, res)
+	budgeted, _, err := ApplyTokenBudget(req, res)
+	return budgeted, err
 }
 
 // ModelListing is what Models returns: the instance's visible rows, after a

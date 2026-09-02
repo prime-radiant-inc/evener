@@ -131,6 +131,66 @@ func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
 	}
 }
 
+func TestProtocolBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wire int
+		want int
+	}{
+		{name: "capped by MaxOutputTokens", wire: 1000, want: 50},
+		{name: "keeps lower positive wire value", wire: 25, want: 25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := protoReq("")
+			req.MaxTokens = new(100)
+			req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
+				"generationConfig": map[string]any{"maxOutputTokens": tc.wire},
+			}}
+			body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.MaxOutputTokens = new(50) }))
+			gen := body["generationConfig"].(map[string]any)
+			if got := gen["maxOutputTokens"]; got != tc.want {
+				t.Fatalf("generationConfig.maxOutputTokens = %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProtocolBuildBody_GenerationConfigProviderOptionsAreNotMutated(t *testing.T) {
+	options := map[string]any{"generationConfig": map[string]any{"maxOutputTokens": 1000}}
+	buildWith := func(admitted int) int {
+		req := protoReq("")
+		req.MaxTokens = new(admitted)
+		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: options}
+		body := protoBuild(t, req, protoRes(nil))
+		return body["generationConfig"].(map[string]any)["maxOutputTokens"].(int)
+	}
+	if got := buildWith(100); got != 100 {
+		t.Fatalf("first maxOutputTokens = %d, want 100", got)
+	}
+	if got := buildWith(500); got != 500 {
+		t.Fatalf("second maxOutputTokens = %d, want 500", got)
+	}
+	if got := options["generationConfig"].(map[string]any)["maxOutputTokens"]; got != 1000 {
+		t.Fatalf("provider options mutated: maxOutputTokens = %v, want 1000", got)
+	}
+}
+
+func TestProtocolBuildBody_RejectsMalformedGenerationConfigProviderOption(t *testing.T) {
+	for _, malformed := range []any{nil, "not-an-object"} {
+		req := protoReq("")
+		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
+			"generationConfig": malformed,
+		}}
+		body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, protoRes(nil)), protoRes(nil))
+		if body != nil {
+			t.Fatalf("generationConfig %T produced body %v, want no request", malformed, body)
+		}
+		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
+			t.Fatalf("generationConfig %T error = %v, want *llm.ConfigurationError", malformed, err)
+		}
+	}
+}
+
 // TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
 // rule that every error stamp is res.Instance, not a provider literal.
 func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {

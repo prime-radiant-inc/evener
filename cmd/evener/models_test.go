@@ -70,6 +70,10 @@ func TestModelsInspect(t *testing.T) {
 	if out["protocol"] != "openai-responses" || out["wire_id"] != "gpt-5.5" || out["credential_source"] != "none" {
 		t.Fatalf("inspect output: %v", out)
 	}
+	caps := out["caps"].(map[string]any)
+	if caps["max_input_tokens"] != float64(922000) {
+		t.Fatalf("inspect caps.max_input_tokens = %v, want 922000", caps["max_input_tokens"])
+	}
 	req := out["request"].(map[string]any)
 	if req["url"] != "https://api.openai.com/v1/responses" || req["auth"] != "bearer" {
 		t.Fatalf("request skeleton: %v", req)

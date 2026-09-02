@@ -892,6 +892,7 @@ export interface ModelDescriptor {
   model: string;
   displayName?: string;
   contextWindow?: number;
+  maxInputTokens?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
   maxOutputTokens?: number;

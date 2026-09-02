@@ -19,6 +19,14 @@ func (p *Protocol) call(operation, family, method, u string, body map[string]any
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Body: body, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res.Instance)}
 }
 
+func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, family, method, u, body, req, res)
+	call.FinalizeBody = func(finalBody map[string]any) error {
+		return reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens)
+	}
+	return call
+}
+
 // reclassifyGemini applies the gRPC status remap of classifyGeminiError to
 // the runner's classified error (RESOURCE_EXHAUSTED on a 400 is a rate
 // limit, DEADLINE_EXCEEDED a timeout, UNAVAILABLE/INTERNAL a server error)
@@ -42,7 +50,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	call := p.call("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
 	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
 		return fromGeminiResponse(raw, req.Model), nil
 	})
@@ -54,7 +62,7 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	if err != nil {
 		return nil, err
 	}
-	call := p.call("streamGenerateContent", "google_stream_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("streamGenerateContent", "google_stream_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeGenerateContentStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
 	})
@@ -91,7 +99,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 			}
 			row := registry.Model{ID: strings.TrimPrefix(m.Name, "models/")}
 			if m.InputTokenLimit > 0 {
-				row.Caps.ContextWindow = new(m.InputTokenLimit)
+				row.Caps.MaxInputTokens = new(m.InputTokenLimit)
 			}
 			if m.OutputTokenLimit > 0 {
 				row.Caps.MaxOutputTokens = new(m.OutputTokenLimit)

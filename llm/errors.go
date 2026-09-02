@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 // Error is the unified error interface returned by provider adapters and the client.
@@ -28,6 +30,51 @@ type ConfigurationError struct {
 	Message string
 	Cause   error
 }
+
+// ContextBudgetError reports a request that Evener's local token admission
+// calculation proved cannot fit a known model limit. It is local and never
+// retryable; no provider request was made.
+type ContextBudgetError struct {
+	Provider     string
+	Model        string
+	Limit        string
+	InputTokens  int
+	OutputTokens int
+	Maximum      int
+}
+
+func newContextBudgetError(req Request, res registry.Resolved, limit string, input, output, maximum int) *ContextBudgetError {
+	provider, model := ResolveContextBudgetIdentity(req, res)
+	return &ContextBudgetError{
+		Provider: provider, Model: model, Limit: limit,
+		InputTokens: input, OutputTokens: output, Maximum: maximum,
+	}
+}
+
+// ResolveContextBudgetIdentity returns the provider instance and requested
+// model used to attribute a local context-budget failure.
+func ResolveContextBudgetIdentity(req Request, res registry.Resolved) (provider, model string) {
+	provider = strings.TrimSpace(res.Instance)
+	if provider == "" {
+		provider = strings.TrimSpace(req.Provider)
+	}
+	model = strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(res.ModelID)
+	}
+	return provider, model
+}
+
+// Error states that the request was blocked locally before provider dispatch.
+func (e *ContextBudgetError) Error() string {
+	return fmt.Sprintf("Evener blocked %s/%s before provider dispatch: token budget exceeds %s (input=%d output=%d maximum=%d)",
+		e.Provider, e.Model, e.Limit, e.InputTokens, e.OutputTokens, e.Maximum)
+}
+
+// Retryable returns false because retrying an unchanged request cannot fit it.
+func (*ContextBudgetError) Retryable() bool { return false }
+
+func (*ContextBudgetError) declaredKind() ErrorKind { return KindContextLength }
 
 // Error returns the configuration error message, prefixed with
 // "configuration error: " and with surrounding whitespace trimmed.
