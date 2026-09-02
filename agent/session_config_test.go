@@ -882,7 +882,7 @@ func TestSession_ObservationMaskOnlyQueuesNoTranscriptReminder(t *testing.T) {
 	sess.contextMgr.ObservationMaskThreshold = 0
 	sess.contextMgr.CheckpointThreshold = 2
 	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("observation-only operation"))}
-	compactionCtx, emitFn, flush := sess.compactionEmitFunc(context.Background(), &history)
+	compactionCtx, emitFn, flush, _ := sess.compactionEmitFunc(context.Background(), &history)
 	if err := sess.strategy.ManageContext(compactionCtx, &history, 0, emitFn); err != nil {
 		t.Fatalf("ManageContext: %v", err)
 	}

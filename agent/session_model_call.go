@@ -180,51 +180,103 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// --- Phase: ContextMgmt ---
 	tPhaseStart = s.sclock().Now()
 
-	// Copy history once for both context management and message expansion.
+	// Repair orphaned tool results through the shared locked helper (capture,
+	// repair, and publish are one critical section), then copy history once
+	// for both context management and message expansion.
+	s.repairOrphanedToolResults(ctx, "before model request")
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
-	if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
-		s.mu.Lock()
-		s.history = repaired
-		s.mu.Unlock()
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
-		s.maybeAutoSave()
-		s.retryPendingCallerWatchSendsAfterRepair(ctx)
-		s.mu.Lock()
-		historyTurns = append([]schema.Turn{}, s.history...)
-		s.mu.Unlock()
-	}
 
-	preManageLen := len(historyTurns)
-	managedLen := preManageLen
+	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
+	// historyTurns this request expands. A winning fold sets both atomically
+	// with its publication; every other path sets them with the consistent
+	// re-snapshot below. baselineSynced records which happened.
+	inFlightFrom := 0
+	baselineSynced := false
 
 	// Apply context management before each LLM request.
 	if s.strategy != nil {
 		// Populate compaction metadata so checkpoint/summarize have session context.
 		s.contextMgr.Meta = s.buildCompactionMeta()
 
-		// Variant B (forced note): if a compaction is imminent, elicit + pin a
-		// must-keep note from the model BEFORE the fold, so erosion-prone facts are
-		// re-stamped verbatim rather than decaying through successive summaries.
-		s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
+		// This can race another ForceCompact/ManageContext publisher
+		// (Compact(), applyPendingForceCompact, or the content-filter retry)
+		// the same way those three can race each other -- a competing fold
+		// publishing between this snapshot and this fold's own publish
+		// invalidates the prefix this fold assumed. Retry once against the
+		// current history on conflict.
+		//
+		// historyTurns, preManageLen, and snapRevision are (re-)captured
+		// together under ONE lock at the top of EVERY iteration, including
+		// the first -- mirroring foldWithForceCompact exactly. Capturing
+		// snapRevision separately (say, after maybeElicitNoteBeforeCompaction's
+		// potentially multi-second LLM call, itself after a historyTurns
+		// snapshot taken well before this block) would let a competing publish
+		// land in that gap and bump the revision BEFORE it is read, so the
+		// later equality check in publishFoldedHistory would pass and a stale
+		// fold would clobber the competing publish. Moving
+		// maybeElicitNoteBeforeCompaction inside the loop, after the atomic
+		// capture, is safe: its own "already pinned" guard makes a retry's
+		// second call cheap, and nothing about its ordering relative to the
+		// snapshot matters -- only that snapRevision is paired with the
+		// exact historyTurns being folded.
+		//
+		// If both attempts lose the race, historyTurns is left as the last
+		// attempt's discarded fold result -- the guarded re-snapshot below
+		// (baselineSynced still false) replaces it with the winning
+		// competitor's published state before anything else consumes it;
+		// the round must continue regardless, and the winning fold already
+		// relieved whatever pressure prompted this one.
+		const maxFoldAttempts = 2
+		for range maxFoldAttempts {
+			s.mu.Lock()
+			historyTurns = append([]schema.Turn{}, s.history...)
+			preManageLen := len(historyTurns)
+			snapRevision := s.historyRevision
+			s.mu.Unlock()
 
-		compactionCtx, emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
-		if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
-		}
-		flushCompactionHooks()
-		managedLen = len(historyTurns)
+			// Variant B (forced note): if a compaction is imminent, elicit +
+			// pin a must-keep note from the model BEFORE the fold, so
+			// erosion-prone facts are re-stamped verbatim rather than
+			// decaying through successive summaries.
+			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
 
-		s.mu.Lock()
-		// Context management works on a snapshot without holding s.mu. Preserve
-		// turns accepted while it ran so publishing the managed prefix cannot
-		// erase durable steering from the next model request.
-		if len(s.history) > preManageLen {
-			historyTurns = append(historyTurns, s.history[preManageLen:]...)
+			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns)
+			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, len(sys), emitFn); err != nil {
+				s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+			}
+			managedLen := len(historyTurns)
+			injectedTurns := foldInjectedCount()
+
+			// publishFoldTransaction commits publish + baseline + note claim
+			// + transcript entries + flush as one transaction (see its
+			// doc). The N4 baseline init/correction runs inside the publish
+			// critical section — publishFoldedHistory's own contract: a
+			// competing fold's atomic publish+shrink pair landing between
+			// this publish and a separate, later baseline write would be
+			// overwritten by round 0's absolute SET or misapplied against
+			// the wrong version. inFlightFrom is captured there too, so the
+			// boundary this request expands with
+			// matches the exact history this fold published.
+			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, historyTurns, commit, func(published []schema.Turn) {
+				if round == 0 {
+					s.turnHistoryBaseline = len(published)
+				} else {
+					s.shrinkTurnHistoryBaseline(preManageLen, managedLen, injectedTurns)
+				}
+				inFlightFrom = s.turnHistoryBaseline
+				baselineSynced = true
+			})
+			if ok {
+				historyTurns = pub
+				break
+			}
+			// Conflict: loop retries with a fresh, atomically-paired
+			// snapshot. commit is deliberately NOT run — this attempt's
+			// side effects must not take effect for a fold that never
+			// published.
 		}
-		s.history = historyTurns
-		s.mu.Unlock()
 	}
 
 	t.ContextMgmt = time.Since(tPhaseStart)
@@ -232,20 +284,24 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// --- Phase: HistoryExpand ---
 	tPhaseStart = s.sclock().Now()
 
-	// Establish the in-flight-turn boundary (spec N4 exemption): capture it at
-	// round 0, then track any mid-turn compaction that folds prior turns so the
-	// boundary keeps pointing at the current turn's first appended turn.
-	s.mu.Lock()
-	if round == 0 {
-		s.turnHistoryBaseline = len(historyTurns)
-	} else if shrink := preManageLen - managedLen; shrink > 0 {
-		s.turnHistoryBaseline -= shrink
-		if s.turnHistoryBaseline < 0 {
-			s.turnHistoryBaseline = 0
+	// Establish the in-flight-turn boundary (spec N4 exemption) for the
+	// paths that published no fold above — no strategy configured, or both
+	// fold attempts lost the race. Re-snapshot and initialize/read the
+	// boundary under ONE lock so the (historyTurns, inFlightFrom) pair is
+	// mutually consistent even against a concurrently publishing fold; a
+	// winning fold in this round already did both atomically with its own
+	// publication. Round > 0 has nothing to shrink here: this round folded
+	// nothing, and a competing fold's transaction
+	// corrects the boundary for whatever IT folds.
+	if !baselineSynced {
+		s.mu.Lock()
+		historyTurns = append([]schema.Turn{}, s.history...)
+		if round == 0 {
+			s.turnHistoryBaseline = len(historyTurns)
 		}
+		inFlightFrom = s.turnHistoryBaseline
+		s.mu.Unlock()
 	}
-	inFlightFrom := s.turnHistoryBaseline
-	s.mu.Unlock()
 
 	// Reuse historyTurns from context management — no redundant copy.
 	scope := replayScope{
@@ -299,6 +355,39 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// actually carries.
 	s.stageRootDelegateAttentionCoverage(req, historyTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
+}
+
+// shrinkTurnHistoryBaseline adjusts the N4 in-flight-turn boundary down so it
+// keeps pointing at the same logical turn after a fold. preLen/postLen are the
+// caller's own turn counts immediately before/after the fold call
+// (ManageContext or ForceCompact); injected is that same call's
+// compactionEmitFunc-reported count of turns runPreCompactHook appended
+// mid-fold (pinned-note handoff, PreCompact plugin hook, goal-objective
+// steering).
+//
+// A plain preLen-postLen delta nets the fold's real removal against those
+// appends and under-shrinks the boundary by exactly the injected count: the
+// injected turns land strictly after whatever the fold preserved, so they
+// never change where an earlier turn ends up, but they do inflate postLen.
+// Adding injected back (preLen - postLen + injected) recovers the count the
+// fold actually removed regardless of which compaction layers ran or how they
+// interacted with the injected turns — issue #634 Finding 1.
+//
+// Clamped at 0. Shared by prepareModelRequestWithError's mid-turn ManageContext
+// shrink and every ForceCompact caller that keeps the boundary consistent
+// (handleModelError's content-filter retry, applyPendingForceCompact's
+// compact_context tool) — they all fold history through the same
+// compactionEmitFunc/runPreCompactHook mechanism and so share this one
+// correction. Callers must hold s.mu.
+func (s *Session) shrinkTurnHistoryBaseline(preLen, postLen, injected int) {
+	shrink := preLen - postLen + injected
+	if shrink <= 0 {
+		return
+	}
+	s.turnHistoryBaseline -= shrink
+	if s.turnHistoryBaseline < 0 {
+		s.turnHistoryBaseline = 0
+	}
 }
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
@@ -603,6 +692,15 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
 		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
+		// This can race another ForceCompact/ManageContext publisher
+		// (Compact(), applyPendingForceCompact, or the round loop's own
+		// ManageContext); forceCompactForModelRecovery publishes through the
+		// revision-checked fold, which retries once against the current
+		// history on conflict. On total failure the retry proceeds
+		// regardless — s.history is whatever the winning competitor
+		// published, a valid state to retry against either way, and this
+		// path has no channel to report a compaction failure separately
+		// from the content-filter retry itself.
 		s.forceCompactForModelRecovery(ctx)
 		return true, nil
 	}
@@ -1212,22 +1310,13 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 		return
 	}
 	s.contextMgr.Meta = s.buildCompactionMeta()
-	s.mu.Lock()
-	history := append([]schema.Turn(nil), s.history...)
-	s.mu.Unlock()
-	preCompactLen := len(history)
-	compactionCtx, emitFn, flush := s.compactionEmitFunc(ctx, &history)
-	s.contextMgr.ForceCompact(compactionCtx, &history, "", emitFn)
-	flush()
-	s.mu.Lock()
-	if shrink := preCompactLen - len(history); shrink > 0 {
-		s.turnHistoryBaseline -= shrink
-		if s.turnHistoryBaseline < 0 {
-			s.turnHistoryBaseline = 0
-		}
-	}
-	s.history = history
-	s.mu.Unlock()
+	// Same revision-checked publication as every other ForceCompact caller:
+	// the fold retries once against the current history if a competing
+	// publisher wins, and applies the baseline shrink atomically with its
+	// publish. A total loss leaves s.history as the winning competitor
+	// published it, which is a valid state for the retry this recovery
+	// precedes.
+	_ = s.foldWithForceCompact(ctx, "")
 	s.maybeAutoSave()
 }
 

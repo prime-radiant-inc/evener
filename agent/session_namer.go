@@ -345,7 +345,17 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 }
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
-	s.reportCompactionTranscriptAppend(s.writeTranscript(t))
+	s.handleCompactionTurnEffects(t, s.writeTranscript(t))
+}
+
+// handleCompactionTurnEffects runs a compaction turn's post-write side
+// effects. writeErr is the outcome of the turn's transcript append — a fold
+// publisher performs that append inside its publication transaction's
+// transcript-commit phase (under attentionMu, where emitting is unsafe) and
+// hands the error here; the OnCompactionTurn fallback path above writes and
+// reports in one step.
+func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error) {
+	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
 		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
 		// folded away with it are gone from what the model sees, so the

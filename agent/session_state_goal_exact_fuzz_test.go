@@ -121,7 +121,7 @@ func fuzzExactRepair(t *testing.T) {
 	t.Helper()
 	call := llm.ToolCallData{ID: "orphan", Name: "tool"}
 	s := &Session{history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}})}}
-	if s.repairOrphanedToolResults("restore") != 1 {
+	if s.repairOrphanedToolResults(context.Background(), "restore") != 1 {
 		t.Fatal("orphan was not repaired")
 	}
 	s.retryPendingCallerWatchSendsAfterRepair(context.Background())

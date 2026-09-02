@@ -278,6 +278,7 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
+	historyRevision               int // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
 	// currentRoundRecorder is the in-flight round's salvage recorder: per retry
@@ -635,6 +636,7 @@ type Session struct {
 
 	// self-compaction state (compact tool)
 	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen       uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
 	pendingInstructions string // compaction_instructions awaiting the round-tail force
 	forceRequested      bool   // a compact tool call is pending this round
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
@@ -1626,6 +1628,15 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 func (s *Session) writeTranscript(t schema.Turn) error {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	return s.writeTranscriptLocked(t)
+}
+
+// writeTranscriptLocked is writeTranscript for a caller already holding
+// attentionMu — the fold publication transaction commits the fold's own
+// entries under the same attentionMu hold that decided the publish, so no
+// other writer's entry can interleave between the publish and the fold's
+// compaction markers.
+func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 	if s.holdTurnUntilTranscriptReady(t) {
 		return nil
 	}

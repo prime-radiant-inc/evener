@@ -994,7 +994,11 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		if resident.Kind != schema.TurnSteering || !reflect.DeepEqual(resident.Message, turn.Message) {
 			return fmt.Errorf("resident attention %q conflicts with durable content", turn.AttentionID)
 		}
+		// In-place replacement, not an append: a fold snapshotted before this
+		// must not be able to publish over it and silently resurrect the
+		// stale resident turn.
 		s.history[index] = turn
+		s.bumpHistoryRevisionLocked()
 		return nil
 	}
 	s.history = append(s.history, turn)
@@ -1006,7 +1010,11 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 	defer s.mu.Unlock()
 	for index := range s.history {
 		if reflect.DeepEqual(s.history[index], turn) {
+			// A deletion, not an append: a fold snapshotted before this must
+			// not be able to publish over it and silently resurrect the
+			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			s.bumpHistoryRevisionLocked()
 			return
 		}
 	}
