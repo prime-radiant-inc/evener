@@ -420,7 +420,7 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	if len(delegates) != 0 {
+	if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
 		if thread.Evener.Diagnostics == nil {
 			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
 		}
@@ -429,6 +429,15 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
 			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
 		}
+		// delegateDiagnostics must reach the wire independently of whether
+		// any delegate exists to also carry a copy on its own Diagnostics
+		// above via appwire.EvenerDiagnostics.DelegateDiagnostics: the
+		// len(delegates) != 0 gate used to be the ONLY place
+		// delegateDiagnostics was attached anywhere, silently dropping a
+		// diagnostic about the shared delegates.jsonl itself (e.g.
+		// delegatestore.ErrLineTooLong, which degrades to zero delegates)
+		// (roborev's #807 addendum finding, MAJOR).
+		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
 	if includeTurns {
 		var err error

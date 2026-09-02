@@ -68,21 +68,21 @@ func FuzzThreadDataPass5(f *testing.F) {
 		switch variant % 6 {
 		case 0:
 			live := appwire.Thread{ID: id, Preview: id, Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
-			got := mergePastMetadataForList(context.Background(), cfg, "local", live)
+			got, _ := mergePastMetadataForList(context.Background(), cfg, "local", live)
 			if got.Name != "Past title" || got.CWD == "" || got.Evener.Ref != "local:"+id {
 				t.Fatalf("merged metadata = %+v", got)
 			}
 			full := appwire.Thread{ID: id, SessionID: "keep", Preview: "keep", Name: "keep", ModelProvider: "keep", Path: "keep", CWD: "keep", Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + id, Profile: "keep"}}
-			if got := mergePastMetadataForList(context.Background(), cfg, "local", full); got.Name != "keep" {
+			if got, _ := mergePastMetadataForList(context.Background(), cfg, "local", full); got.Name != "keep" {
 				t.Fatalf("live metadata overwritten: %+v", got)
 			}
-			bySession := mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{SessionID: id})
+			bySession, _ := mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{SessionID: id})
 			if bySession.ID != id {
 				t.Fatalf("session-id merge = %+v", bySession)
 			}
-			_ = mergePastMetadataForList(context.Background(), hubcore.WebConfig{}, "local", live)
-			_ = mergePastMetadataForList(context.Background(), cfg, "remote", live)
-			_ = mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{ID: "missing"})
+			_, _ = mergePastMetadataForList(context.Background(), hubcore.WebConfig{}, "local", live)
+			_, _ = mergePastMetadataForList(context.Background(), cfg, "remote", live)
+			_, _ = mergePastMetadataForList(context.Background(), cfg, "local", appwire.Thread{ID: "missing"})
 			for _, status := range []string{"active", "notloaded", "systemerror", " Custom "} {
 				_ = normalizeThreadListStatusFilter(status)
 			}

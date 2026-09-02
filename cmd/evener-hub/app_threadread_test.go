@@ -264,6 +264,66 @@ func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testi
 	}
 }
 
+// TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates is the
+// wire-level red test for roborev's #807 addendum finding (MAJOR): the
+// independent scoped re-review proved empirically that
+// pastEntryThread's own containment fix -- degrading a corrupt shared
+// delegates.jsonl to zero delegates plus a diagnostic string, rather than
+// hard-failing (see agent's
+// TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing,
+// which proves the AGENT-side half of this) -- never actually reached the
+// WIRE: the only place that attached delegateDiagnostics was the
+// len(delegates) != 0 per-delegate loop, which never runs when delegates
+// is empty. This drives that exact containment case (an unterminated
+// trailing batch line, decoding to zero delegates with a
+// delegate_journal_torn_tail diagnostic -- cheaper to construct here than
+// the oversized-line case, but goes through the identical
+// scanRootDelegateState degrade-to-diagnostic path already proven above)
+// all the way through pastThreadForRead, and asserts the diagnostic lands
+// on the actual appwire.Thread payload's new
+// EvenerDiagnostics.DelegateDiagnostics field -- the wire itself, not an
+// internal agent.LoadSessionDelegateStatus return value.
+func TestPastThreadReadCarriesDelegateDiagnosticEvenWithZeroDelegates(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	delegateDir := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID)
+	if err := os.MkdirAll(delegateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A valid, terminated version header followed by an unterminated
+	// trailing batch line (no closing bracket, no newline): delegatestore's
+	// ScanEventsFrom treats ANY unterminated final line as a torn tail
+	// (discarded whole, never decoded, regardless of its partial content),
+	// so this decodes to zero events -- zero delegates -- with a
+	// delegate_journal_torn_tail diagnostic, exactly the "corrupt shared
+	// journal, no delegates to attach a per-delegate diagnostic to" shape
+	// the oversized-line case also produces, without needing a real 128 MiB
+	// fixture line.
+	journal := []byte("{\"version\":1}\n{\"events\":[{\"seq\":1")
+	if err := os.WriteFile(filepath.Join(delegateDir, "delegates.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, ok, err := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil {
+		t.Fatal("Diagnostics is nil, want it populated with a delegate-subsystem diagnostic")
+	}
+	if len(thread.Evener.Diagnostics.Delegates) != 0 {
+		t.Fatalf("Delegates = %+v, want empty (nothing survives a torn tail with no complete batch before it)", thread.Evener.Diagnostics.Delegates)
+	}
+	found := false
+	for _, d := range thread.Evener.Diagnostics.DelegateDiagnostics {
+		if strings.Contains(d, "torn_tail") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("DelegateDiagnostics = %v, want one naming the torn tail -- the wire response must carry this even though delegates is empty", thread.Evener.Diagnostics.DelegateDiagnostics)
+	}
+}
+
 func hasSkill(skills []appwire.EvenerSkillInfo, name string) bool {
 	for _, skill := range skills {
 		if skill.Name == name {
