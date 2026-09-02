@@ -87,14 +87,20 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 // single line's memory cost via MaxLineBytes independently of the file's
 // total size (see ScanLimits).
 //
-// toOffset is where this call actually got to: just past the last complete,
-// newline-terminated line it consumed. It is never mid-line, and it never
-// counts a genuinely unterminated trailing line (an in-flight append racing
-// the read, tolerated exactly as ReadEvents/ScanEvents have always tolerated
-// it) — that line's events ARE included in the returned slice for this one
-// call, matching the existing tolerance contract, but toOffset stops short
-// of it so the NEXT ScanEventsFrom call picks the same bytes back up once
-// they are complete, rather than silently skipping or double-counting them.
+// toOffset is where this call actually got to: just past the last line it
+// successfully decoded, whether or not that line's trailing newline had
+// landed yet. A successful decode makes a record complete and final on its
+// own: JSON's brace/bracket balancing means a valid decode can never be a
+// byte-prefix of a longer, still-arriving record on the same line, so once
+// json.Unmarshal succeeds there is nothing left pending for it but the
+// newline formality (or subsequent, separate lines) — toOffset advances
+// past it exactly like a terminated line, and its event IS included.
+// toOffset stops short of a line, and that line's event is excluded, only
+// when the line fails to decode at all — a genuinely incomplete in-flight
+// append racing the read, tolerated exactly as ReadEvents/ScanEvents have
+// always tolerated it — so the NEXT ScanEventsFrom call picks the same
+// bytes back up once they are complete, rather than silently skipping or
+// double-counting them.
 //
 // When MaxBytes or MaxEvents is hit, ScanEventsFrom returns the events
 // successfully decoded before the limit fired ALONGSIDE ErrScanLimitExceeded
@@ -133,6 +139,22 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
 		}
+		// Checked BEFORE even attempting to read the next line, not just
+		// before decoding it (roborev finding on #807's r5/r6 reviews): a
+		// MaxEvents-only scan (MaxLineBytes left at its generous default)
+		// could otherwise still pay the cost of buffering an oversized
+		// next line — up to MaxLineBytes — only to discover afterward the
+		// budget was already spent. jobstore is one event per line (unlike
+		// delegatestore's batches), so this single check, run once per
+		// line before it is read, is also sufficient on its own — no line
+		// can ever contribute more than the one event this check already
+		// accounts for.
+		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+			return events, 0, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+		}
 		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
@@ -165,13 +187,6 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			offset += consumed
 			continue
 		}
-		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
-			// Same coincidence risk as the byte-limit check above.
-			if err := ctx.Err(); err != nil {
-				return nil, 0, err
-			}
-			return events, 0, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
-		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
 			if !terminated && isIncompleteTrailingJSON(line, err) {
@@ -182,10 +197,19 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			}
 			return nil, 0, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
 		}
+		// A successful decode makes this record complete and final
+		// regardless of whether its trailing newline has landed yet (see
+		// ScanEventsFrom's doc comment on toOffset): include it and
+		// advance offset past it exactly like a terminated line. This
+		// must stay unconditional on terminated — advancing offset only
+		// when terminated while always including the event (the previous
+		// shape here) is the inconsistency that let a later incremental
+		// call, resuming from the stale offset once the newline landed,
+		// re-decode and duplicate this same event for a caller that
+		// concatenates its prior fold with the new delta
+		// (extendHistoricalJobFold's exact shape) — roborev finding on
+		// #807's r6 review.
 		events = append(events, e)
-		if !terminated {
-			break // consumed the final unterminated line; EOF follows, offset stays short of it
-		}
 		offset += consumed
 	}
 	return events, offset, nil
