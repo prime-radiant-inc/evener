@@ -53,5 +53,5 @@ func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (out map[stri
 	}
 	options, _ := req.ProviderOptions[registry.ProtocolGoogle].(map[string]any)
 	webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch)
-	return generateContentBody(req, system, contents, webSearch, options)
+	return generateContentBody(req, caps, system, contents, webSearch, options)
 }

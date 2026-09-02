@@ -358,6 +358,12 @@ func validateTransport(ts transportSchema, where string) error {
 }
 
 func validateCaps(c Caps, where string) error {
+	checkPositive := func(field string, v *int) error {
+		if v != nil && *v <= 0 {
+			return fmt.Errorf("%s: %s must be a positive integer", where, field)
+		}
+		return nil
+	}
 	check := func(field string, v *string, vocab map[string]bool) error {
 		if v != nil && !vocab[*v] {
 			return fmt.Errorf("%s: %s = %q is not one of %s", where, field, *v, vocabList(vocab))
@@ -374,6 +380,15 @@ func validateCaps(c Caps, where string) error {
 		check("reasoning_summary", c.ReasoningSummary, reasoningSummaries),
 		check("image_detail", c.ImageDetail, imageDetails),
 		check("default_effort", c.DefaultEffort, effortLevels),
+	} {
+		if e != nil {
+			return e
+		}
+	}
+	for _, e := range []error{
+		checkPositive("context_window", c.ContextWindow),
+		checkPositive("max_input_tokens", c.MaxInputTokens),
+		checkPositive("max_output_tokens", c.MaxOutputTokens),
 	} {
 		if e != nil {
 			return e

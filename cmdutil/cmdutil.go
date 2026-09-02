@@ -202,6 +202,9 @@ func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor 
 	if caps.ContextWindow != nil {
 		d.ContextWindow = new(*caps.ContextWindow)
 	}
+	if caps.MaxInputTokens != nil {
+		d.MaxInputTokens = new(*caps.MaxInputTokens)
+	}
 	if caps.MaxOutputTokens != nil {
 		d.MaxOutputTokens = new(*caps.MaxOutputTokens)
 	}

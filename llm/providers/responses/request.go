@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -138,6 +139,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 			body[k] = v
 		}
 	}
+	reconcileOutputField(body, "max_output_tokens", req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
 }
 
@@ -181,4 +183,53 @@ func appendUnique(values []string, value string) []string {
 		return values
 	}
 	return append(values, value)
+}
+
+func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
+	if ceiling := minPositiveInt(positiveInt(body[field]), positivePointerInt(admitted), positivePointerInt(outputCap)); ceiling > 0 {
+		body[field] = ceiling
+	}
+}
+
+func positivePointerInt(v *int) int {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return 0
+}
+
+func minPositiveInt(values ...int) int {
+	best := 0
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if best == 0 || v < best {
+			best = v
+		}
+	}
+	return best
+}
+
+func positiveInt(v any) int {
+	switch x := v.(type) {
+	case int:
+		if x > 0 {
+			return x
+		}
+	case int64:
+		if x > 0 {
+			return int(x)
+		}
+	case float64:
+		if x > 0 {
+			return int(x)
+		}
+	case json.Number:
+		i, err := x.Int64()
+		if err == nil && i > 0 {
+			return int(i)
+		}
+	}
+	return 0
 }

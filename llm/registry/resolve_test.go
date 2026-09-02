@@ -157,7 +157,7 @@ func TestResolve_AliasSeeding(t *testing.T) {
 		t.Fatalf("[1m] row: %+v", res)
 	}
 	res = mustResolve(t, r, "openai-codex/gpt-5.6")
-	if res.WireID != "gpt-5.6-sol" || res.Caps.Sampling == nil || *res.Caps.Sampling || *res.Caps.ContextWindow != 272000 || res.Caps.Cost == nil || len(res.Caps.EffortValues) != 6 {
+	if res.WireID != "gpt-5.6-sol" || res.Caps.Sampling == nil || *res.Caps.Sampling || *res.Caps.ContextWindow != 272_000 || res.Caps.MaxInputTokens == nil || *res.Caps.MaxInputTokens != 922_000 || res.Provenance["MaxInputTokens"] != "alias" || res.Caps.Cost == nil || len(res.Caps.EffortValues) != 6 {
 		t.Fatalf("codex gpt-5.6: %+v", res.Caps)
 	}
 	if res.Caps.Fields["temperature"] || res.Caps.Fields["max_output_tokens"] || !res.Caps.Fields["prompt_cache_key"] || !res.Caps.Fields["store"] || !res.Caps.Fields["metadata"] {

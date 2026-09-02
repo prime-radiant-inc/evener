@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"encoding/json"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -123,6 +124,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	if registry.StringValue(caps.CacheControl) == "anthropic" {
 		anthropicCacheControl(body, registry.StringValue(caps.CacheTTL))
 	}
+	reconcileOutputField(body, maxTokensField(caps), req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
 }
 
@@ -148,4 +150,62 @@ func promptCacheKey(req llm.Request, caps registry.Caps) string {
 		}
 	}
 	return ""
+}
+
+func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
+	values := []int{positiveInt(body[field]), positivePointerInt(admitted), positivePointerInt(outputCap)}
+	if field == "max_tokens" || field == "max_completion_tokens" {
+		alternate := "max_tokens"
+		if field == alternate {
+			alternate = "max_completion_tokens"
+		}
+		values = append(values, positiveInt(body[alternate]))
+		delete(body, alternate)
+	}
+	if ceiling := minPositiveInt(values...); ceiling > 0 {
+		body[field] = ceiling
+	}
+}
+
+func positivePointerInt(v *int) int {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return 0
+}
+
+func minPositiveInt(values ...int) int {
+	best := 0
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if best == 0 || v < best {
+			best = v
+		}
+	}
+	return best
+}
+
+func positiveInt(v any) int {
+	switch x := v.(type) {
+	case int:
+		if x > 0 {
+			return x
+		}
+	case int64:
+		if x > 0 {
+			return int(x)
+		}
+	case float64:
+		if x > 0 {
+			return int(x)
+		}
+	case json.Number:
+		i, err := x.Int64()
+		if err == nil && i > 0 {
+			return int(i)
+		}
+	}
+	return 0
 }

@@ -272,6 +272,14 @@ func (p *Profile) ContextWindowSize() int {
 	return 0
 }
 
+// MaxInputTokens is the row's input cap, or 0 when the row has none.
+func (p *Profile) MaxInputTokens() int {
+	if p.res.Caps.MaxInputTokens != nil {
+		return *p.res.Caps.MaxInputTokens
+	}
+	return 0
+}
+
 // MaxOutputTokens is the row's output cap, or 0 when the row has none — the
 // protocol's own default then governs.
 func (p *Profile) MaxOutputTokens() int {

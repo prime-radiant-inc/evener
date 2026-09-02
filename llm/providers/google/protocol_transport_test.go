@@ -135,10 +135,10 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 }
 
 func TestProtocolListModelsAndCountTokens(t *testing.T) {
-	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":1048576,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
+	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
 	res := protoLive(srv)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
-	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || *rows[0].Caps.ContextWindow != 1048576 || *rows[0].Caps.MaxOutputTokens != 65536 {
+	if err != nil || len(rows) != 1 || rows[0].ID != "gemini-2.5-flash" || rows[0].Caps.ContextWindow != nil || *rows[0].Caps.MaxInputTokens != 922000 || *rows[0].Caps.MaxOutputTokens != 128000 {
 		t.Fatalf("rows = %+v err = %v", rows, err)
 	}
 	if got.path != "/v1beta/models?pageSize=1000" || got.header.Get("x-goog-api-key") != "k-1" {

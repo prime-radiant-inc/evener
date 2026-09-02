@@ -64,7 +64,7 @@ func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
 		{"adaptive not always-on and no effort", "adaptive", "summarized", false, "", nil, nil},
 		{"budget", "budget", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, nil},
 		{"budget without effort", "budget", "", false, "", nil, nil},
-		{"budget+effort", "budget+effort", "", false, "high", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("high"))}, "high"},
+		{"budget+effort", "budget+effort", "", false, "medium", map[string]any{"type": "enabled", "budget_tokens": float64(llm.ReasoningBudget("medium"))}, "medium"},
 		// An explicit off means the user turned thinking off, so it must not
 		// fall through to the always-on body: no thinking object at all.
 		{"none clears everything, always-on included", "adaptive", "summarized", true, "none", nil, nil},
@@ -109,6 +109,7 @@ func anyOrNil(m map[string]any) any {
 
 func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	req := protoReq("high")
+	req.MaxTokens = new(64000)
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "required"}
 	req.WebSearch = true
@@ -117,7 +118,7 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	req.StopSequences = []string{"END"}
 	res := protoRes(func(c *registry.Caps) { c.ThinkingShape = new("budget"); c.CacheTTL = new("1h") })
 	body := protoBuild(t, req, res)
-	if body["model"] != "claude-x-wire" || body["max_tokens"].(int) <= llm.ReasoningBudget("high") {
+	if body["model"] != "claude-x-wire" || body["max_tokens"] != 64000 {
 		t.Fatalf("model/max_tokens: %v %v", body["model"], body["max_tokens"])
 	}
 	if body["metadata"].(map[string]any)["user_id"] != "u1" || len(body["metadata"].(map[string]any)) != 1 || body["service_tier"] != "auto" {
@@ -151,6 +152,81 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	unknown := protoRes(func(c *registry.Caps) { c.MaxOutputTokens = nil })
 	if b := protoBuild(t, protoReq(""), unknown); b["max_tokens"] != fallbackMaxTokens {
 		t.Fatalf("max_tokens fallback = %v", b["max_tokens"])
+	}
+}
+
+func TestProtocolBuildBody_ProviderOptionMaxTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wire int
+		want int
+	}{
+		{name: "capped by MaxOutputTokens", wire: 1000, want: 50},
+		{name: "keeps lower positive wire value", wire: 25, want: 25},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := protoReq("")
+			req.MaxTokens = new(100)
+			req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{"max_tokens": tc.wire}}
+			body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.MaxOutputTokens = new(50) }))
+			if got := body["max_tokens"]; got != tc.want {
+				t.Fatalf("max_tokens = %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProtocolBuildBody_ProviderOnlyThinkingBudgetFailsWithinAdmittedMax(t *testing.T) {
+	req := protoReq("")
+	req.MaxTokens = new(1000)
+	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{
+		"thinking": map[string]any{"type": "enabled", "budget_tokens": 1024},
+	}}
+	res := protoRes(nil)
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	var budgetErr *llm.ContextBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
+	}
+	if llm.Kind(err) != llm.KindContextLength {
+		t.Fatalf("Kind(err) = %v, want %v", llm.Kind(err), llm.KindContextLength)
+	}
+	if budgetErr.Provider != "anthropic-prod" || budgetErr.Model != "claude-x" || budgetErr.Limit != "max_output_tokens" || budgetErr.Maximum != 1000 || budgetErr.OutputTokens != 1025 {
+		t.Fatalf("ContextBudgetError = %+v, want provider=anthropic-prod model=claude-x limit=max_output_tokens maximum=1000 output=1025", budgetErr)
+	}
+}
+
+func TestProtocolBuildBody_FinalThinkingOverlayStateControlsReconciliation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		thinking       any
+		wantToolChoice string
+		wantBudget     any
+	}{
+		{name: "overlay lowers shaped budget", thinking: map[string]any{"type": "enabled", "budget_tokens": 512}, wantToolChoice: "auto", wantBudget: 512},
+		{name: "overlay replaces shaped budget with adaptive thinking", thinking: map[string]any{"type": "adaptive"}, wantToolChoice: "auto", wantBudget: nil},
+		{name: "overlay disables shaped thinking", thinking: map[string]any{"type": "disabled"}, wantToolChoice: "any", wantBudget: nil},
+		{name: "overlay removes shaped thinking", thinking: nil, wantToolChoice: "any", wantBudget: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := protoReq("low")
+			req.MaxTokens = new(1000)
+			req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
+			req.ToolChoice = &llm.ToolChoice{Mode: "required"}
+			req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{"thinking": tc.thinking}}
+			body := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.ThinkingShape = new("budget") }))
+			if got := body["tool_choice"].(map[string]any)["type"]; got != tc.wantToolChoice {
+				t.Fatalf("tool_choice.type = %v, want %q", got, tc.wantToolChoice)
+			}
+			thinking, _ := body["thinking"].(map[string]any)
+			got := any(nil)
+			if thinking != nil {
+				got = thinking["budget_tokens"]
+			}
+			if !reflect.DeepEqual(got, tc.wantBudget) {
+				t.Fatalf("thinking.budget_tokens = %v, want %v (body=%v)", got, tc.wantBudget, body["thinking"])
+			}
+		})
 	}
 }
 

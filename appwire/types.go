@@ -2003,6 +2003,7 @@ type ModelDescriptor struct {
 	// false/zero from a live provider instead of treating it as unknown.
 	DisplayName           string   `json:"displayName,omitempty"`
 	ContextWindow         *int     `json:"contextWindow,omitempty"`
+	MaxInputTokens        *int     `json:"maxInputTokens,omitempty"`
 	SupportsTools         *bool    `json:"supportsTools,omitempty"`
 	SupportsVision        *bool    `json:"supportsVision,omitempty"`
 	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`

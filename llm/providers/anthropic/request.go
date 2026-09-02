@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // fallbackMaxTokens is the output cap requested when the caller names none.
@@ -87,66 +88,108 @@ func applyAnthropicTools(body map[string]any, req llm.Request, webSearch bool) e
 	return nil
 }
 
-// reconcileThinkingContract enforces the two contracts Anthropic rejects
-// with a 400: no forced tool_choice while thinking is on, and max_tokens
-// strictly above budget_tokens (raised by the budget, clamped to maxCap
-// when that still satisfies the contract).
-func reconcileThinkingContract(body map[string]any, maxTokens, thinkingBudget, maxCap int) {
-	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
-	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
-	// When effort turned thinking on, downgrade forcing to "auto" so the request
-	// is accepted; the model still reasons and then chooses its tools. Done AFTER
-	// the provider-option merge, which can itself set a forcing tool_choice (or
-	// thinking) that would otherwise slip past this guard and 400.
-	if _, thinking := body["thinking"]; thinking {
+// reconcileThinkingContract enforces the Anthropic request contracts that
+// depend on the FINAL overlaid body state. Any active thinking shape triggers
+// tool-choice downgrade; only budget-shaped thinking triggers the strict
+// max_tokens > budget_tokens rule.
+func reconcileThinkingContract(body map[string]any, req llm.Request, res registry.Resolved) error {
+	thinkingBudget := finalThinkingBudget(body)
+	if finalThinkingActive(body) {
 		if tc, ok := body["tool_choice"].(map[string]any); ok {
 			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
 				body["tool_choice"] = map[string]any{"type": "auto"}
 			}
 		}
 	}
-	// Anthropic requires max_tokens > thinking.budget_tokens. Reconcile AFTER
-	// provider options, which may set their own max_tokens floor that would
-	// otherwise drop below the budget. max_tokens carries the desired output, so
-	// the budget is added on top of it.
+	reconcileOutputField(body, "max_tokens", req.MaxTokens, res.Caps.MaxOutputTokens)
 	if thinkingBudget > 0 {
-		out, ok := body["max_tokens"].(int)
-		if !ok || out < 1 {
-			// No usable output budget (unset, non-int, or a provider option set it
-			// to <= 0). Fall back to the default so the sum strictly exceeds the
-			// thinking budget — budget + 0 == budget would itself 400.
-			out = maxTokens
-		}
-		if out <= thinkingBudget {
-			raised := thinkingBudget + out
-			// With max_tokens now defaulting to the model's real maximum,
-			// budget + max can exceed the model ceiling and 400. Clamp to the
-			// cap when that still satisfies max_tokens > budget.
-			if maxCap > thinkingBudget && raised > maxCap {
-				raised = maxCap
-			}
-			body["max_tokens"] = raised
+		mt := intFromAny(body["max_tokens"])
+		if mt <= thinkingBudget {
+			return anthropicThinkingBudgetError(req, res, thinkingBudget+1, mt)
 		}
 	}
 	if invariant.Enabled {
-		// Anthropic rejects (HTTP 400) a request that BOTH enables extended
-		// thinking and forces tool use, or whose max_tokens does not strictly
-		// exceed the thinking budget. The guards above establish both contracts;
-		// assert they survived everything that runs after them (notably the
-		// provider-option merge, which can re-set tool_choice / max_tokens).
-		if _, thinking := body["thinking"]; thinking {
+		// When the final body carries a positive thinking budget, Anthropic rejects
+		// a request that also forces tool use, or whose max_tokens does not
+		// strictly exceed that budget. The guards above establish both contracts;
+		// assert they survived everything that runs after them.
+		if thinkingBudget > 0 {
 			if tc, ok := body["tool_choice"].(map[string]any); ok {
 				t, _ := tc["type"].(string)
 				invariant.Hold(t != "any" && t != "tool",
-					"anthropic request contract: tool_choice %q forces tool use while thinking is enabled", t)
+					"anthropic request contract: tool_choice %q forces tool use while budget thinking is enabled", t)
 			}
-		}
-		if thinkingBudget > 0 {
 			mt, _ := body["max_tokens"].(int)
 			invariant.Hold(mt > thinkingBudget,
 				"anthropic request contract: max_tokens %d does not exceed thinking budget %d", mt, thinkingBudget)
 		}
 	}
+	return nil
+}
+
+func finalThinkingActive(body map[string]any) bool {
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		return false
+	}
+	typ, _ := thinking["type"].(string)
+	return !strings.EqualFold(strings.TrimSpace(typ), "disabled")
+}
+
+func finalThinkingBudget(body map[string]any) int {
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil {
+		return 0
+	}
+	if typ, _ := thinking["type"].(string); typ != "enabled" {
+		return 0
+	}
+	return intFromAny(thinking["budget_tokens"])
+}
+
+func anthropicThinkingBudgetError(req llm.Request, res registry.Resolved, requiredOutput, maximum int) error {
+	provider := strings.TrimSpace(res.Instance)
+	if provider == "" {
+		provider = strings.TrimSpace(req.Provider)
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(res.ModelID)
+	}
+	return &llm.ContextBudgetError{
+		Provider:     provider,
+		Model:        model,
+		Limit:        "max_output_tokens",
+		InputTokens:  0,
+		OutputTokens: requiredOutput,
+		Maximum:      maximum,
+	}
+}
+
+func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
+	if ceiling := minPositiveInt(intFromAny(body[field]), positivePointerInt(admitted), positivePointerInt(outputCap)); ceiling > 0 {
+		body[field] = ceiling
+	}
+}
+
+func positivePointerInt(v *int) int {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return 0
+}
+
+func minPositiveInt(values ...int) int {
+	best := 0
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if best == 0 || v < best {
+			best = v
+		}
+	}
+	return best
 }
 
 func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string, error) {

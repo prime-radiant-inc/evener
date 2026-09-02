@@ -99,6 +99,7 @@ type Caps struct {
 	// Model facts. This block plus Surface and Family is what an alias row
 	// inherits (spec §4.2).
 	ContextWindow     *int     `toml:"context_window" json:"context_window,omitempty"`
+	MaxInputTokens    *int     `toml:"max_input_tokens" json:"max_input_tokens,omitempty"`
 	MaxOutputTokens   *int     `toml:"max_output_tokens" json:"max_output_tokens,omitempty"`
 	Tools             *bool    `toml:"tools" json:"tools,omitempty"`
 	StructuredOutput  *bool    `toml:"structured_output" json:"structured_output,omitempty"`

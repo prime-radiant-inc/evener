@@ -35,6 +35,7 @@ func TestListModelsFunc(t *testing.T) {
 		models: []registry.Model{
 			{ID: "m1", Caps: registry.Caps{
 				ContextWindow:   new(64_000),
+				MaxInputTokens:  new(48_000),
 				MaxOutputTokens: new(8_192),
 				Tools:           new(true),
 				Reasoning:       new(true),
@@ -57,6 +58,7 @@ func TestListModelsFunc(t *testing.T) {
 	}
 	first := items[0]
 	if first.ContextWindow == nil || *first.ContextWindow != 64_000 ||
+		first.MaxInputTokens == nil || *first.MaxInputTokens != 48_000 ||
 		first.MaxOutputTokens == nil || *first.MaxOutputTokens != 8_192 ||
 		first.SupportsTools == nil || !*first.SupportsTools ||
 		first.SupportsReasoning == nil || !*first.SupportsReasoning ||

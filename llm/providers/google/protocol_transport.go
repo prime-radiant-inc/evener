@@ -91,7 +91,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 			}
 			row := registry.Model{ID: strings.TrimPrefix(m.Name, "models/")}
 			if m.InputTokenLimit > 0 {
-				row.Caps.ContextWindow = new(m.InputTokenLimit)
+				row.Caps.MaxInputTokens = new(m.InputTokenLimit)
 			}
 			if m.OutputTokenLimit > 0 {
 				row.Caps.MaxOutputTokens = new(m.OutputTokenLimit)

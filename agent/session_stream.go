@@ -183,7 +183,12 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			FailFastAfter: modelRetryFailFastAfter,
 		}, func(ctx context.Context) (llm.AttemptReport, error) {
 			attemptStart := time.Now()
-			st, err := s.client.Stream(ctx, req)
+			dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+			if budgetErr != nil {
+				group.observe(attemptRecord{Phase: llm.PhaseOpen, Err: budgetErr, Duration: time.Since(attemptStart)}, nil)
+				return llm.AttemptReport{Phase: llm.PhaseOpen}, budgetErr
+			}
+			st, err := s.client.Stream(ctx, dispatchReq)
 			if streamUnavailable(err) || (err == nil && st == nil) {
 				// Nothing was attempted against the provider: the call falls
 				// through to the non-streaming path below, so no attempt is
@@ -234,7 +239,11 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}
 
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
-		return s.client.Complete(ctx, req)
+		dispatchReq, budgetErr := budgetModelDispatchRequest(profile, req)
+		if budgetErr != nil {
+			return llm.Response{}, budgetErr
+		}
+		return s.client.Complete(ctx, dispatchReq)
 	})
 	if err != nil {
 		return sessionModelResponse{}, err

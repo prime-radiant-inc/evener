@@ -22,3 +22,20 @@ func TestProfileMaxOutputTokens(t *testing.T) {
 		t.Errorf("a row without an output cap reports %d, want 0", got)
 	}
 }
+
+func TestProfileMaxInputTokens(t *testing.T) {
+	r := fixtureRegistry(t)
+	known := mustResolve(t, r, "openai/gpt-5.5")
+	if known.Resolved().Caps.MaxInputTokens == nil {
+		t.Fatal("the catalog carries an input cap for gpt-5.5; pick a model it covers")
+	}
+	if got, want := known.MaxInputTokens(), *known.Resolved().Caps.MaxInputTokens; got != want {
+		t.Errorf("MaxInputTokens() = %d, want the row's %d", got, want)
+	}
+
+	res := known.Resolved()
+	res.Caps.MaxInputTokens = nil
+	if got := known.WithResolved(res).MaxInputTokens(); got != 0 {
+		t.Errorf("a row without an input cap reports %d, want 0", got)
+	}
+}

@@ -84,6 +84,8 @@ func Kind(err error) ErrorKind {
 	switch {
 	case errorIs[*contentFilterError](err):
 		return KindContentFilter
+	case errorIs[*ContextBudgetError](err):
+		return KindContextLength
 	case errorIs[*contextLengthError](err):
 		return KindContextLength
 	case errorIs[*quotaExceededError](err):

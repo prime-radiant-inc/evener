@@ -27,7 +27,8 @@
     "caps": {}
   },
   "caps": {
-    "context_window": 922000,
+    "context_window": 1050000,
+    "max_input_tokens": 922000,
     "max_output_tokens": 128000,
     "tools": true,
     "structured_output": true,
@@ -115,6 +116,7 @@
     "ImageDetail": "overlay/glob:gpt-5.6*",
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
+    "MaxInputTokens": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
     "MaxTokensField": "overlay/provider",
     "Reasoning": "snapshot/row",

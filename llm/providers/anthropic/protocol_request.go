@@ -68,7 +68,7 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 	if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
 		tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
 	}
-	thinkingBudget := applyThinkingShape(body, req, caps)
+	applyThinkingShape(body, req, caps)
 	if ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any); ok {
 		for k, v := range ov {
 			if k == "beta_headers" {
@@ -77,11 +77,9 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 			body[k] = v
 		}
 	}
-	maxCap := 0
-	if caps.MaxOutputTokens != nil {
-		maxCap = *caps.MaxOutputTokens
+	if err := reconcileThinkingContract(body, req, res); err != nil {
+		return nil, err
 	}
-	reconcileThinkingContract(body, maxTokens, thinkingBudget, maxCap)
 	return body, nil
 }
 

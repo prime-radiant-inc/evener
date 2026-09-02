@@ -74,7 +74,7 @@ type liveListing struct{ rows map[string]Model }
 func liveFacts(m Model) Model {
 	out := Model{ID: m.ID, WireID: m.ID, Caps: Caps{
 		Tools: m.Caps.Tools, InputModalities: m.Caps.InputModalities, ContextWindow: m.Caps.ContextWindow,
-		MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
+		MaxInputTokens: m.Caps.MaxInputTokens, MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
 		DefaultEffort: m.Caps.DefaultEffort,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
@@ -413,7 +413,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bo
 // alias row's layer 0 (spec §4.2).
 func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string) {
 	facts := Caps{
-		ContextWindow: target.Caps.ContextWindow, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
+		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
 		DefaultEffort:   target.Caps.DefaultEffort,

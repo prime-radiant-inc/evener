@@ -9,12 +9,13 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // generateContentBody assembles generationConfig, systemInstruction,
 // tools (google_search only when webSearch is on and there are no
 // function declarations), toolConfig, and the caller's options.
-func generateContentBody(req llm.Request, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
+func generateContentBody(req llm.Request, caps registry.Caps, system string, contents []map[string]any, webSearch bool, options map[string]any) (map[string]any, error) {
 	genCfg := map[string]any{}
 	if req.Temperature != nil {
 		genCfg["temperature"] = *req.Temperature
@@ -98,7 +99,64 @@ func generateContentBody(req llm.Request, system string, contents []map[string]a
 		body["toolConfig"] = map[string]any{"functionCallingConfig": cfg}
 	}
 	maps.Copy(body, options)
+	if overlaid, ok := options["generationConfig"].(map[string]any); ok {
+		body["generationConfig"] = maps.Clone(overlaid)
+	}
+	reconcileOutputField(body, req.MaxTokens, caps.MaxOutputTokens)
 	return body, nil
+}
+
+func reconcileOutputField(body map[string]any, admitted, outputCap *int) {
+	genCfg, _ := body["generationConfig"].(map[string]any)
+	if genCfg == nil {
+		return
+	}
+	if ceiling := minPositiveInt(positiveInt(genCfg["maxOutputTokens"]), positivePointerInt(admitted), positivePointerInt(outputCap)); ceiling > 0 {
+		genCfg["maxOutputTokens"] = ceiling
+	}
+}
+
+func positivePointerInt(v *int) int {
+	if v != nil && *v > 0 {
+		return *v
+	}
+	return 0
+}
+
+func minPositiveInt(values ...int) int {
+	best := 0
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if best == 0 || v < best {
+			best = v
+		}
+	}
+	return best
+}
+
+func positiveInt(v any) int {
+	switch x := v.(type) {
+	case int:
+		if x > 0 {
+			return x
+		}
+	case int64:
+		if x > 0 {
+			return int(x)
+		}
+	case float64:
+		if x > 0 {
+			return int(x)
+		}
+	case json.Number:
+		i, err := x.Int64()
+		if err == nil && i > 0 {
+			return int(i)
+		}
+	}
+	return 0
 }
 
 func toGeminiFunctionDecls(tools []llm.ToolDefinition) []map[string]any {
