@@ -152,7 +152,7 @@ func sessionNamerUserPrompt(source, text string) string {
 	var label string
 	switch normalizeSessionNameSource(source) {
 	case sessionNameSourceCompaction:
-		label = "Use this compaction summary to refresh the session title. The title must still name the session's overarching goal, not the momentary activity: the summary's Current State and Pending Work sections describe what was happening at one instant, so do not title the session after them. Look for the goal in the user's original request and the conversation timeline."
+		label = "Use this compaction summary/checkpoint to refresh the session title. The title must still name the session's overarching goal, not the momentary activity. Find the goal in the user's original request and the conversation timeline."
 	default:
 		label = "Use this initial user prompt to name the session"
 	}
