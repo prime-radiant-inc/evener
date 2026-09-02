@@ -116,7 +116,8 @@ test("the secondary line surfaces the demoted metadata", () => {
   expect(screen.getByText("shell · exit 2 · boom")).toBeTruthy();
 });
 
-test("confirmed cancellation recedes while expanded diagnostics retain physical exit", () => {
+test("confirmed cancellation recedes while expanded diagnostics retain physical exit", async () => {
+  const user = userEvent.setup();
   render(
     <NotificationCard
       notification={notif({
@@ -141,7 +142,7 @@ test("confirmed cancellation recedes while expanded diagnostics retain physical 
   expect(screen.queryByText("error")).toBeNull();
   expect(screen.queryByText("warning")).toBeNull();
 
-  fireEvent.click(row);
+  await user.click(row);
   expect(screen.getByTestId("notification-field-status").textContent).toContain("cancelled");
   expect(screen.getByTestId("notification-field-reason").textContent).toContain("stopped_by_parent");
   expect(screen.getByTestId("notification-field-exit").textContent).toContain("-1");
