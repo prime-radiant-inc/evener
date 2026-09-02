@@ -1156,6 +1156,10 @@ type stableDelegateStatusResult struct {
 	NeedsAttention     bool                   `json:"needs_attention"`
 	NotResumableReason string                 `json:"not_resumable_reason,omitempty"`
 	TranscriptRef      string                 `json:"transcript_ref"`
+	Cwd                string                 `json:"cwd,omitempty"`
+	Isolation          string                 `json:"isolation,omitempty"`
+	SandboxMode        string                 `json:"sandbox_mode,omitempty"`
+	SandboxNetwork     *bool                  `json:"sandbox_network,omitempty"`
 	RunStartedAt       string                 `json:"run_started_at,omitempty"`
 	LatestActivityAt   string                 `json:"latest_activity_at,omitempty"`
 	RunningForMS       *int64                 `json:"running_for_ms,omitempty"`
@@ -1181,6 +1185,19 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		NotResumableReason: snapshot.notResumableReason,
 		TranscriptRef:      snapshot.transcriptRef,
 		LastOutcome:        snapshot.lastOutcome,
+		Cwd:                descriptor.WorkingDir,
+		Isolation:          descriptor.Isolation,
+	}
+	if descriptor.Sandbox != nil {
+		out.SandboxMode = descriptor.Sandbox.Mode
+		// A nil Network pointer means the sandbox did not explicitly disable
+		// networking, so the effective default is enabled. Normalize to true
+		// so the UI shows the effective setting rather than omitting it.
+		net := true
+		if descriptor.Sandbox.Network != nil {
+			net = *descriptor.Sandbox.Network
+		}
+		out.SandboxNetwork = &net
 	}
 	if !snapshot.runStartedAt.IsZero() {
 		out.RunStartedAt = snapshot.runStartedAt.UTC().Format(time.RFC3339Nano)

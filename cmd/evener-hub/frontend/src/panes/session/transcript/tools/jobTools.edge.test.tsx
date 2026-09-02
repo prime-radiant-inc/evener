@@ -1,9 +1,9 @@
 // Edge cases for jobTools.tsx that close remaining uncovered lines:
-// - CopyTextButton CopiedGlyph rendering (line 32)
-// - CopyTextButton timer effect (lines 47-48)
-// - CopyTextButton clipboard guard (lines 59-60)
-// - delegateSendFooter with started_job_id empty (lines 255-256)
-// - delegateSendFooter with watching field (line 271)
+// - CopyButton Copied feedback rendering
+// - CopyButton timer effect
+// - CopyButton clipboard guard
+// - delegateSendFooter with started_job_id empty
+// - delegateSendFooter with watching field
 
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,8 +23,8 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
-// --- CopyTextButton: CopiedGlyph (line 32), timer effect (lines 47-48) ---
-// CopyTextButton lives in the delegate_send body (UserMessageView actions slot),
+// --- CopyButton: Copied feedback, timer effect ---
+// CopyButton lives in the delegate_send body (UserMessageView actions slot),
 // NOT in the job_list body. We render the delegate_send body as JSX with proper
 // ToolRenderProps so the component receives { item, live } correctly.
 
@@ -56,7 +56,7 @@ test("delegate_send copy button shows Copied feedback after successful clipboard
   expect(writeText).toHaveBeenCalledWith("hello world");
 });
 
-// --- CopyTextButton: clipboard guard (lines 59-60) ---
+// --- CopyButton: clipboard guard ---
 
 test("delegate_send copy button is a no-op when clipboard API is unavailable", async () => {
   const user = userEvent.setup();

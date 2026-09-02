@@ -1,5 +1,5 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import type { ItemModel } from "../../../../protocol/model";
@@ -47,12 +47,253 @@ test("job controls keep same-owner job suffixes distinct in summaries", () => {
   }
 });
 
-test("job_status: body shows the raw JSON output text", () => {
+test("job_status: body falls back to raw text when item.raw is absent (legacy/stored transcript)", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   const output = JSON.stringify({ id: "dlg_42", type: "delegate", status: "idle" });
   render(<Body item={item({ toolName: "job_status", output })} live={false} />);
   expect(screen.getByText(output)).toBeTruthy();
+});
+
+test("job_status: body falls back to raw text when item.raw is not a delegate status (shell job)", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const output = JSON.stringify({
+    job_id: "job_99",
+    kind: "shell",
+    status: "completed",
+    started_at: "2026-01-01T00:00:00Z",
+  });
+  render(<Body item={item({ toolName: "job_status", output, raw: JSON.parse(output) })} live={false} />);
+  // Shell job output has no id+status delegate shape, so the structured body
+  // is bypassed and the raw text renders through HeadClippedOutputBody.
+  expect(screen.getByText(output)).toBeTruthy();
+});
+
+// --- job_status: structured delegate status body (DelegateStatusBody) ---
+// When item.raw carries a stableDelegateStatusResult (the State field of
+// tool.StateResult from agent/session_tools_jobs.go's
+// stableDelegateStatusTool), the body renders a structured card instead of
+// raw JSON.
+
+function delegateStatusRaw(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    id: "dlg_034HQ2kSDXfKFq1mm3idL1",
+    type: "delegate",
+    status: "running",
+    task: "You are implementing Task 2: Strict resource-schema validation.",
+    agent_type: "subagent",
+    tools: ["apply_patch", "communicate", "exec_command", "read_file", "write_file"],
+    model: "gpt-5.6-sol",
+    reasoning_effort: "high",
+    resumable: true,
+    needs_attention: false,
+    transcript_ref: "local:034HzkSDXiDAIUBDoff1h",
+    running_for_ms: 103652,
+    quiet_for_ms: 617,
+    run_started_at: "2026-09-02T19:10:07.136326Z",
+    last_outcome: { status: "completed", ended_at: "2026-09-01T14:03:21.048695-07:00" },
+    cwd: "/Users/jesse/git/prime-radiant/evener",
+    isolation: "worktree",
+    sandbox_mode: "workspace-write",
+    sandbox_network: true,
+    ...overrides,
+  };
+}
+
+test("job_status: body renders a structured card with the delegate ID", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  const output = JSON.stringify(raw);
+  render(<Body item={item({ toolName: "job_status", output, raw })} live={false} />);
+  expect(screen.getByText("dlg_034HQ2kSDXfKFq1mm3idL1")).toBeTruthy();
+});
+
+test("job_status: body shows a running status pill", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  // Chip renders "running" as its label text. The lifecycle meta line also
+  // contains "running" as a key, so query the Chip widget's span directly.
+  const chip = container.querySelector("[class*='chip']");
+  expect(chip?.textContent).toContain("running");
+});
+
+test("job_status: body shows needs attention pill when needs_attention is true", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ needs_attention: true });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText("Needs attention")).toBeTruthy();
+});
+
+test("job_status: idle status does not receive the alive/running tone", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ status: "idle", running_for_ms: undefined, quiet_for_ms: undefined });
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  // The Chip should render "idle" text in the neutral tone, not alive/running.
+  const chip = container.querySelector("[class*='chip']");
+  expect(chip?.textContent).toContain("idle");
+  expect(chip?.className).not.toContain("alive");
+});
+
+test("job_status: idle delegate with failed last outcome shows danger tone", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    running_for_ms: undefined,
+    quiet_for_ms: undefined,
+    last_outcome: { status: "failed", ended_at: "2026-09-01T14:03:21Z" },
+  });
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  const chip = container.querySelector("[class*='chip']");
+  expect(chip?.textContent).toContain("idle");
+  expect(chip?.className).toContain("danger");
+});
+
+test("job_status: body renders the mandate (first paragraph of task)", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText(/Strict resource-schema validation/)).toBeTruthy();
+});
+
+test("job_status: body shows a disclosure for a multi-paragraph mandate", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    task: "First paragraph of the mandate.\n\nSecond paragraph with more detail.\n\nThird paragraph.",
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText("First paragraph of the mandate.")).toBeTruthy();
+  expect(screen.getByText("Show full mandate")).toBeTruthy();
+});
+
+test("job_status: body renders available tools with a count", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText("Available tools (5)")).toBeTruthy();
+  expect(screen.getByText("apply_patch")).toBeTruthy();
+  expect(screen.getByText("write_file")).toBeTruthy();
+});
+
+test("job_status: body renders environment fields (cwd, isolation, sandbox, network)", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText("/Users/jesse/git/prime-radiant/evener")).toBeTruthy();
+  expect(screen.getByText("worktree")).toBeTruthy();
+  expect(screen.getByText("workspace-write")).toBeTruthy();
+  expect(screen.getByText("enabled")).toBeTruthy();
+});
+
+test("job_status: body renders config line with model, agent, reasoning", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByText("gpt-5.6-sol")).toBeTruthy();
+  expect(screen.getByText("subagent")).toBeTruthy();
+  expect(screen.getByText("high")).toBeTruthy();
+});
+
+test("job_status: body renders a copy raw JSON button", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByRole("button", { name: "Copy raw JSON" })).toBeTruthy();
+});
+
+test("job_status: copy button writes the normalized structured state, not item.output", async () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  // output carries trailing annotation text after the JSON — the copy button
+  // must write the validated state, not this raw string.
+  const outputWithJunk = `${JSON.stringify(raw)}\n--- breaker ---`;
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const originalClipboard = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  try {
+    render(<Body item={item({ toolName: "job_status", output: outputWithJunk, raw })} live={false} />);
+    const btn = screen.getByRole("button", { name: "Copy raw JSON" });
+    btn.click();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    // The copied text must be valid JSON of the structured state, not the
+    // raw output string (which has trailing junk). Compare parsed values
+    // (key ordering is not significant).
+    const copied = writeText.mock.calls[0]![0] as string;
+    expect(JSON.parse(copied)).toEqual(raw);
+    expect(copied).not.toContain("--- breaker ---");
+  } finally {
+    Object.defineProperty(navigator, "clipboard", {
+      value: originalClipboard,
+      configurable: true,
+    });
+  }
+});
+
+test("job_status: body renders not-resumable reason diagnostic", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({ not_resumable_reason: "Delegate was disposed" });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByTestId("delegate-not-resumable")).toBeTruthy();
+  expect(screen.getByText(/Not resumable: Delegate was disposed/)).toBeTruthy();
+});
+
+test("job_status: body renders failed outcome reason in danger text", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "failed", reason: "exec: command not found" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
+  expect(screen.getByText(/Last run failed: exec: command not found/)).toBeTruthy();
+});
+
+test("job_status: body renders exhausted outcome reason without danger text", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "exhausted", reason: "budget limit reached" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
+  expect(screen.getByText(/Last run exhausted: budget limit reached/)).toBeTruthy();
+});
+
+test("job_status: body renders stopped outcome reason without danger text", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "stopped", reason: "stopped_by_parent" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
+  expect(screen.getByText(/Last run stopped: stopped_by_parent/)).toBeTruthy();
 });
 
 test("job_read_output aliases to the same descriptor as job_status", () => {

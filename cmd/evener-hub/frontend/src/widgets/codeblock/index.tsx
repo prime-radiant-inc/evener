@@ -1,6 +1,6 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 import { Button } from "../button";
-import { IconButton } from "../iconbutton";
+import { CopyButton } from "../copybutton";
 import { requireClass } from "../internal/requireClass";
 import { parseAnsiLines } from "./ansi";
 import { AnsiLineContent } from "./ansiLine";
@@ -43,8 +43,6 @@ const CLASS = {
   fold: requireClass(styles.fold, "codeblock.module.css", "fold"),
 };
 
-const COPIED_RESET_MS = 2_000;
-
 // 67zh: a raw tool-output block (a pytest traceback, a shell dump) with no
 // cap fills an entire narrow viewport, forcing a reader to scroll THROUGH it
 // rather than past it. Past TAIL_VISIBLE_LINES lines, the block folds to its
@@ -56,23 +54,6 @@ const COPIED_RESET_MS = 2_000;
 // the end - a fold that hid the tail instead would hide the one thing a
 // reader who scrolled this far actually came for.
 const TAIL_VISIBLE_LINES = 14;
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-    </svg>
-  );
-}
-
-function CopiedIcon() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /**
  * A block of source/tool-output text: mono font, an optional language label
@@ -109,26 +90,6 @@ export function CodeBlock({
   const tailStart = folded ? allLines.length - TAIL_VISIBLE_LINES : 0;
   const visibleLines = folded ? allLines.slice(tailStart) : allLines;
   const hiddenCount = tailStart;
-
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  async function handleCopy() {
-    // Clipboard access requires a secure context and isn't implemented by
-    // every test/embed environment - degrade to a no-op rather than throw.
-    if (!navigator.clipboard?.writeText) return;
-    // Always the FULL text, never `visibleLines` - folding is a display
-    // convenience, not a truncation, and copy must give back exactly what
-    // the tool actually produced.
-    await navigator.clipboard.writeText(copyText ?? text);
-    setCopied(true);
-  }
-
   return (
     <div className={CLASS.root}>
       {/* The banner sits ABOVE the tail it's folding away: the hidden lines
@@ -149,13 +110,7 @@ export function CodeBlock({
         <div className={CLASS.header}>
           {language !== undefined && <span className={CLASS.language}>{language}</span>}
           <span className={CLASS.copy}>
-            <IconButton
-              label={copied ? "Copied" : copyLabel}
-              icon={copied ? <CopiedIcon /> : <CopyIcon />}
-              variant="quiet"
-              size="xs"
-              onClick={handleCopy}
-            />
+            <CopyButton text={copyText ?? text} label={copyLabel} />
           </span>
         </div>
         <pre className={CLASS.pre}>
