@@ -61,11 +61,14 @@ type Result[T any] struct {
 	// Epoch counts how many times this path's cached fold has been
 	// DISCARDED and restarted from byte zero because the file was not a
 	// pure append of what the cache had — shrunk, rewritten at the same
-	// size, or grown by a rewrite whose mtime happened to land in the same
-	// bucket as the content it replaced (jobstore.Store's fileCursor
+	// size, grown by a rewrite whose old prefix did not survive (regardless
+	// of whether its mtime coincided with the replaced content's or moved
+	// forward — mtime moving forward looks identical to an ordinary append
+	// and proves nothing by itself; only the tail probe does), or deleted
+	// and later recreated under the same path (jobstore.Store's fileCursor
 	// documents the same-size/same-mtime residual for its own, writer-owned
-	// cursor; this cache's tail probe additionally resolves the two cases
-	// above that mtime alone cannot). A resumable position derived from one
+	// cursor; this cache's tail probe additionally resolves the cases above
+	// that mtime alone cannot). A resumable position derived from one
 	// Result (e.g. a count of entries already rendered from Value) stays
 	// safe to apply to a LATER Result for the same path for exactly as long
 	// as Epoch is unchanged: an ordinary append never reorders or
@@ -104,6 +107,21 @@ type Stats struct {
 // it); a confirmed hit still pays it once (Get's own fast path), a
 // concurrent pile of confirmed hits on the same path pays it once total
 // (coalesced through the same singleflight flight as any other refresh).
+//
+// Accepted residual: the probe only samples the LAST tailProbeBytes bytes
+// ending at the cached offset, not the whole file, so a same-size (or
+// same-prefix-length) rewrite that changes only EARLIER bytes while
+// reproducing the exact trailing tailProbeBytes byte-for-byte still reads
+// as a match. This is deliberately not strengthened to a whole-file hash:
+// for real journal content — an append-only sequence of JSON records —
+// reproducing 64 bytes of a LATER record exactly while silently rewriting
+// an EARLIER one requires the earlier edit to leave every downstream byte,
+// including record boundaries, bit-for-bit identical, which is not a
+// realistic corruption or rewrite shape for this cache's actual inputs
+// (confirmed by #807's independent scoped re-review). A general-purpose
+// tamper-detection guarantee would need to hash the whole file every Get,
+// defeating the incremental-cost point of this cache for a threat this
+// package's real callers do not face.
 const tailProbeBytes = 64
 
 // epochState is a path's staleness bookkeeping: the (size, mtime) pair
@@ -118,12 +136,15 @@ const tailProbeBytes = 64
 // raced an eviction).
 //
 // Unbounded in count — one entry per distinct path this process has ever
-// Get'd, never pruned except via drop on ErrNotExist (see drop) — which is
-// a deliberate, accepted tradeoff, not an oversight: at
-// tailProbeBytes+~40 bytes each, even tens of thousands of distinct paths
-// cost single-digit megabytes, and pruning on anything OTHER than a
-// confirmed deletion would reopen exactly the bug this type exists to
-// close (an evicted-and-forgotten path silently starting back at epoch 0).
+// Get'd, never actually pruned (removed from the map): drop on ErrNotExist
+// (see drop) replaces a path's state with a tombstone rather than deleting
+// it, so the count never shrinks either. This is a deliberate, accepted
+// tradeoff, not an oversight: at tailProbeBytes+~40 bytes each, even tens
+// of thousands of distinct paths cost single-digit megabytes, and actually
+// removing an entry on anything — eviction OR deletion — would reopen
+// exactly the bug this type exists to close (a forgotten path silently
+// starting back at epoch 0, whether that forgetting came from an LRU evict
+// or the file disappearing and later reappearing under the same path).
 type epochState struct {
 	size   int64
 	mod    time.Time
@@ -337,9 +358,34 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 				// short-circuit to a cached value the way sameSizeAmbiguous
 				// can; the probe here only decides the epoch signal.
 				growthAmbiguous = true
-			} else if element != nil {
-				if e := element.Value.(*entry[T]); e.valid {
-					prior, fromOffset = e.value, e.offset
+			} else {
+				// Grew AND mtime moved forward — looks like an ordinary
+				// append, but "mtime moved forward" is exactly what a
+				// truncate-and-rewrite-larger with different content also
+				// produces: nothing about (size, mtime) alone
+				// distinguishes them (roborev's #807 r6 HIGH finding —
+				// this branch used to trust it outright with zero
+				// verification, unlike the same-mtime sibling above,
+				// which already probes). Verify the tail probe against
+				// the cached offset before trusting an incremental
+				// resume from it, mirroring sameSizeAmbiguous's own
+				// probe-then-branch shape below.
+				match, tailErr := tailProbeMatches(path, st.offset, st.tail)
+				if tailErr != nil {
+					var zero Result[T]
+					return zero, tailErr
+				}
+				if !match {
+					// The old prefix did not survive: a rewrite, not an
+					// append. Discard and bump epoch exactly like a
+					// shrink or a same-size rewrite; fromOffset stays 0
+					// so extend performs a full rescan of the new
+					// content.
+					epoch++
+				} else if element != nil {
+					if e := element.Value.(*entry[T]); e.valid && e.offset == st.offset {
+						prior, fromOffset = e.value, e.offset
+					}
 				}
 			}
 		}
@@ -415,7 +461,11 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 // offset in the file at path still equal want (see epochState). A file
 // shorter than expected is treated as a mismatch, not an error: something
 // about the file changed underneath regardless of exactly how, and the
-// caller's job either way is "force a full rescan."
+// caller's job either way is "force a full rescan." A match is not a
+// whole-file guarantee — see tailProbeBytes' doc comment for the accepted,
+// deliberately un-strengthened residual: a rewrite of only the bytes
+// BEFORE this window, reproducing the trailing tailProbeBytes exactly,
+// reads as a match.
 func tailProbeMatches(path string, offset int64, want []byte) (bool, error) {
 	if len(want) == 0 {
 		// Nothing was ever read from this path before (offset 0) -- there
@@ -521,15 +571,20 @@ func (c *Cache[T]) publishLocked(path string, e entry[T]) {
 	c.entries[path] = element
 }
 
-// drop removes path's entry AND its epochState (if any) — used when the
-// file no longer exists, so a later Get for a path that reappears starts
-// completely clean rather than resuming from a cursor, or comparing against
-// a tail probe, over bytes that may no longer be the same file at all. This
-// is also epochStates' one pruning path (see epochState's doc comment):
-// deletion is a genuine, detectable "this path is done" signal, unlike
-// eviction, which only means "not resident right now." Unlike the
-// *Locked methods above, drop manages its own locking: its only caller
-// (Get, on ErrNotExist) does not hold mu.
+// drop removes path's entry and tombstones its epochState (if any) — used
+// when the file no longer exists, so a later Get for a path that reappears
+// starts completely clean content-wise (nothing resumable, nothing
+// tail-probed against pre-deletion bytes) rather than comparing against
+// bytes that may no longer be the same file at all. The epoch itself
+// survives the tombstone and is bumped, rather than being deleted outright
+// (roborev's #807 r6 finding: deleting epochState entirely let a path that
+// reappeared start back at epoch 0 — indistinguishable from "never seen" —
+// silently accepting a continuation minted before the deletion against the
+// unrelated new content that replaced it). A path with no epochState yet
+// was never cached in the first place, so there is no epoch to preserve —
+// drop leaves epochStates untouched for it rather than fabricating one.
+// Unlike the *Locked methods above, drop manages its own locking: its only
+// caller (Get, on ErrNotExist) does not hold mu.
 func (c *Cache[T]) drop(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -537,7 +592,9 @@ func (c *Cache[T]) drop(path string) {
 		delete(c.entries, path)
 		c.order.Remove(element)
 	}
-	delete(c.epochStates, path)
+	if st, ok := c.epochStates[path]; ok {
+		c.epochStates[path] = &epochState{epoch: st.epoch + 1}
+	}
 }
 
 func (c *Cache[T]) finishFlight(flightKey string) {
