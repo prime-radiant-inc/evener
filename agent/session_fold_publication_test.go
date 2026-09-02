@@ -996,6 +996,595 @@ func TestFoldPublication_StaleFoldFlushDoesNotOverrideNewerFoldNaming(t *testing
 	}
 }
 
+// TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride pins
+// the completion-side half of the staleness gate: the flush-time check alone
+// runs when a flush STARTS, so if fold A publishes and starts its flush
+// (launching its async compaction-namer goroutine) BEFORE fold B publishes,
+// A's launch passes the start-time gate — and A's namer could then FINISH
+// after B's, overwriting B's newer name. The suppression must also bind at
+// COMPLETION time: the naming goroutine re-checks the newest published fold
+// revision, under the same lock hold that applies the name, immediately
+// before applying its result.
+func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *testing.T) {
+	t.Parallel()
+	const provider = "namer-completion-cheap"
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, provider, func(llm.Request) llm.Response {
+		if summarizeCalls.Add(1) == 1 {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
+
+	// The REAL namer path (no nameSessionFromTextFunc seam): the completion
+	// gate sits between the namer LLM call returning and the name applying,
+	// so the test scripts the namer client itself. A's summary-naming call
+	// parks; checkpoint-naming calls return an empty name (a namer error,
+	// applying nothing); B's returns immediately.
+	aNamerIn := make(chan struct{})
+	releaseANamer := make(chan struct{})
+	var aParked sync.Once
+	namerClient := llm.NewClient()
+	namerClient.Register(&agenttest.ScriptedAdapter{Provider: provider, Responder: func(req llm.Request) llm.Response {
+		var reqText strings.Builder
+		for _, m := range req.Messages {
+			reqText.WriteString(m.Text())
+		}
+		switch {
+		case strings.Contains(reqText.String(), "fold A summary"):
+			aParked.Do(func() {
+				close(aNamerIn)
+				<-releaseANamer
+			})
+			return llm.Response{Message: llm.Assistant(`{"name":"name-A"}`)}
+		case strings.Contains(reqText.String(), "fold B summary"):
+			return llm.Response{Message: llm.Assistant(`{"name":"name-B"}`)}
+		default:
+			return llm.Response{Message: llm.Assistant(`{"name":""}`)}
+		}
+	}})
+	updateSessionTestConfig(s, func(cfg *testConfig) { cfg.namerClient = namerClient })
+
+	nameChanges := make(chan events.SessionNameChangedData, 8)
+	go func() {
+		defer close(nameChanges)
+		for ev := range s.Events() {
+			if d, ok := ev.Data.(events.SessionNameChangedData); ok {
+				nameChanges <- d
+			}
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil { // fold A: publishes, flushes, launches its namer
+		t.Fatalf("Compact (A): %v", err)
+	}
+	<-aNamerIn // A's summary namer is mid-LLM-call, past the start-time gate
+
+	if err := s.Compact(context.Background()); err != nil { // fold B: publishes and flushes while A's namer is in flight
+		t.Fatalf("Compact (B): %v", err)
+	}
+	if d := <-nameChanges; d.Name != "name-B" {
+		t.Fatalf("first applied name = %q, want fold B's name-B", d.Name)
+	}
+
+	close(releaseANamer) // A's namer completes AFTER B's newer fold flushed and named
+
+	// Join A's namer goroutine — application decision included — WITHOUT
+	// closing the session: Close sets the closing state first, and the apply
+	// path's closingOrClosedLocked guard would then suppress A's stale apply
+	// for the wrong reason, masking the race this test exists to pin.
+	s.sendersWG.Wait()
+
+	s.mu.Lock()
+	finalName := s.naming.value
+	s.mu.Unlock()
+	if finalName != "name-B" {
+		t.Fatalf("final session name = %q after fold A's namer completed post-B; fold B published later, so its name must survive", finalName)
+	}
+}
+
+// TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory pins the
+// winning-fold path's defensive copy: publishFoldTransaction must not hand
+// back the SAME slice publishFoldedHistory assigned to s.history, because
+// expandHistory then iterates that backing array with no lock — while
+// delegate-attention delivery goroutines mutate s.history IN PLACE under
+// s.mu (retainDelegateAttentionTurn's s.history[index] = turn;
+// removeUnverifiedDelegateAttentionTurn's element shift). A torn multi-word
+// schema.Turn read corrupts model input. The delegate path copies under
+// s.mu; the winning path must too. The race detector is this test's
+// assertion: it fails under -race on an aliased slice and runs clean once
+// the published slice is defensively copied.
+func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
+
+	// A retained delegate-attention turn seeded inside the preserved window,
+	// so it survives the fold INTO the published slice — the exact region
+	// the in-place retain replacement then keeps rewriting.
+	attn := schema.NewTurn(schema.TurnSteering, llm.User("retained delegate attention alias-race"))
+	attn.AttentionID = "att-alias-race"
+	s.mu.Lock()
+	s.history = append(s.history, attn)
+	s.mu.Unlock()
+
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the round-1 fold folds and publishes
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var flushes atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			if flushes.Add(1) == 1 {
+				close(parked)
+				<-release
+			}
+		}
+	})
+
+	var rt events.RoundTimings
+	prepErr := make(chan error, 1)
+	go func() {
+		_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt)
+		prepErr <- err
+	}()
+	<-parked // the fold has published; prep has not yet reached expandHistory
+
+	// Hammer in-place replacements of the retained turn (the production
+	// mutation shape: same AttentionID, DeepEqual message, s.history[index]
+	// overwritten under s.mu) across prep's post-publish reads.
+	stop := make(chan struct{})
+	mutatorDone := make(chan struct{})
+	go func() {
+		defer close(mutatorDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if err := s.retainDelegateAttentionTurn(attn); err != nil {
+					t.Errorf("retainDelegateAttentionTurn: %v", err)
+					return
+				}
+			}
+		}
+	}()
+
+	close(release)
+	if err := <-prepErr; err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	close(stop)
+	<-mutatorDone
+}
+
+// TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication pins the
+// staleness gate's binding to PUBLICATION order rather than FLUSH order: a
+// gate that advanced as flushes ran would let an older fold whose deferred
+// flush runs while a newer fold is published-but-not-yet-flushed sail
+// through and fire its last-write-wins effects — a stale compaction-namer
+// launch (transiently applying the older name) and stale task/artifact
+// steering. Once a newer fold has published, an older fold's flush runs none
+// of its last-write-wins effects, regardless of which flush happens first —
+// and the newest-published fold's own flush can never be suppressed by an
+// older one's. (The inverse — the newer flush marked superseded by the
+// older's — cannot occur with the strict '<' comparison and
+// publication-monotone stamps.)
+func TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication(t *testing.T) {
+	t.Parallel()
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "pub-order-gate-cheap", func(llm.Request) llm.Response {
+		if summarizeCalls.Add(1) == 1 {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold A summary\n[END SUMMARY]")}
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nfold B summary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds actually fold
+
+	// Launch-granularity observable: the flush gate suppresses BEFORE the
+	// namer launch, so a suppressed fold never reaches this seam.
+	var nameMu sync.Mutex
+	var namedTexts []string
+	s.nameSessionFromTextFunc = func(_ context.Context, _, text string) error {
+		nameMu.Lock()
+		namedTexts = append(namedTexts, text)
+		nameMu.Unlock()
+		return nil
+	}
+
+	aParked := make(chan struct{})
+	releaseA := make(chan struct{})
+	bParked := make(chan struct{})
+	releaseB := make(chan struct{})
+	var flushes atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldSideEffectsFlush = func() {
+			switch flushes.Add(1) {
+			case 1:
+				close(aParked)
+				<-releaseA
+			case 2:
+				close(bParked)
+				<-releaseB
+			}
+		}
+	})
+
+	errA := make(chan error, 1)
+	go func() {
+		errA <- s.Compact(context.Background()) // fold A: publishes first, parks before its flush
+	}()
+	<-aParked // A (older) has published; its deferred flush has not run
+
+	errB := make(chan error, 1)
+	go func() {
+		errB <- s.Compact(context.Background()) // fold B: publishes second, parks before its flush
+	}()
+	<-bParked // B (newer) has published; neither flush has run
+
+	close(releaseA) // the OLDER fold's flush runs first
+	if err := <-errA; err != nil {
+		t.Fatalf("Compact (A): %v", err)
+	}
+
+	close(releaseB) // then the newer fold's flush
+	if err := <-errB; err != nil {
+		t.Fatalf("Compact (B): %v", err)
+	}
+	s.Close() // joins the namer goroutines so every launch has recorded
+
+	nameMu.Lock()
+	defer nameMu.Unlock()
+	sawB := false
+	for _, text := range namedTexts {
+		if strings.Contains(text, "fold A summary") {
+			t.Fatalf("fold A's flush, running after fold B had already PUBLISHED, launched the compaction namer for A's older summary -- last-write-wins suppression must bind to publication order, not flush order (named texts: %q)", namedTexts)
+		}
+		if strings.Contains(text, "fold B summary") {
+			sawB = true
+		}
+	}
+	if !sawB {
+		t.Fatalf("the newest-published fold's own flush must never be suppressed: fold B's summary never reached the namer (named texts: %q)", namedTexts)
+	}
+}
+
+// compactionEmitFunc is stageCompactionEffects for a test driving the
+// staged-effects machinery directly, OUTSIDE a publication transaction: the
+// returned commit closure performs the full commit immediately — the note
+// claim (under s.mu), the transcript commit (under attentionMu), and then
+// the deferred flush.
+//
+// It lives in test code deliberately: its phases
+// run under SEPARATE lock acquisitions, s.mu before attentionMu — the
+// inverse of publishFoldTransaction's atomic attentionMu→s.mu nesting — so
+// a stray production caller could deadlock against a fold publisher and
+// would reopen the publish/claim/transcript races the transaction closes.
+// Keeping it out of the production surface makes that caller impossible;
+// production publishers use stageCompactionEffects + publishFoldTransaction.
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), func(), func() int) {
+	ctx, emitFn, commit, injected := s.stageCompactionEffects(ctx, history)
+	commitNow := func() {
+		s.mu.Lock()
+		commit.claimNoteLocked()
+		commit.publishedRevision = s.historyRevision
+		s.mu.Unlock()
+		s.attentionMu.Lock()
+		commit.commitTranscriptsLocked()
+		s.attentionMu.Unlock()
+		commit.flush()
+	}
+	return ctx, emitFn, commitNow, injected
+}
+
+// TestFoldPublication_NamerGateEvaluationRacesPublication overlaps an async
+// namer's completion-gate evaluation (the newestPublishedFoldRevision read
+// that decides supersession) with a stream of fold publications (the field's
+// writes) and lets the race detector adjudicate. The read's safety is
+// lexical: the comparison lives inside applySessionNameResult's locked
+// apply body, not in a closure whose lock coverage is only a contract of
+// the call site. This test must run -race-clean; it exists so any future
+// drift that moves the gate evaluation outside the applying lock hold is
+// caught immediately.
+func TestFoldPublication_NamerGateEvaluationRacesPublication(t *testing.T) {
+	t.Parallel()
+	const provider = "gate-race-cheap"
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, provider, func(llm.Request) llm.Response {
+		n := summarizeCalls.Add(1)
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): fold 1 actually folds
+
+	// Real namer path: fold 1's summary-naming call parks mid-LLM-call, so
+	// its completion-gate evaluation can be released to run concurrently
+	// with later publications; every other naming call answers immediately.
+	aNamerIn := make(chan struct{})
+	releaseANamer := make(chan struct{})
+	var aParked sync.Once
+	namerClient := llm.NewClient()
+	namerClient.Register(&agenttest.ScriptedAdapter{Provider: provider, Responder: func(req llm.Request) llm.Response {
+		var reqText strings.Builder
+		for _, m := range req.Messages {
+			reqText.WriteString(m.Text())
+		}
+		if strings.Contains(reqText.String(), "fold 1 summary") {
+			aParked.Do(func() {
+				close(aNamerIn)
+				<-releaseANamer
+			})
+		}
+		return llm.Response{Message: llm.Assistant(`{"name":"gate-race-name"}`)}
+	}})
+	updateSessionTestConfig(s, func(cfg *testConfig) { cfg.namerClient = namerClient })
+
+	if err := s.Compact(context.Background()); err != nil { // fold 1: publishes, flushes, launches its namer
+		t.Fatalf("Compact (1): %v", err)
+	}
+	<-aNamerIn // fold 1's namer is mid-call; its gate evaluation is still ahead
+
+	// Hammer further publications (each writes newestPublishedFoldRevision
+	// under the transaction's s.mu) while releasing the parked namer, so its
+	// gate read overlaps the writes.
+	hammerDone := make(chan error, 1)
+	go func() {
+		for range 25 {
+			if err := s.Compact(context.Background()); err != nil {
+				hammerDone <- err
+				return
+			}
+		}
+		hammerDone <- nil
+	}()
+	close(releaseANamer)
+
+	if err := <-hammerDone; err != nil {
+		t.Fatalf("hammer Compact: %v", err)
+	}
+	s.sendersWG.Wait() // join every namer goroutine, gate evaluations included
+}
+
+// TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta pins per-call
+// compaction metadata: a fold publisher that wrote the SHARED contextMgr.Meta
+// field (slice fields included) before folding, with the fold layers reading
+// it mid-fold, would race another publisher's mid-fold reads — the
+// publication model deliberately allows concurrent folds. Compaction
+// metadata must be per-call (threaded through the fold's context by
+// stageCompactionEffects), leaving no shared field for publishers to touch.
+// The race detector is the red signal; the marker assertion guards that the
+// per-call meta actually reaches the checkpoint content.
+func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
+	t.Parallel()
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "meta-race-cheap", func(llm.Request) llm.Response {
+		n := summarizeCalls.Add(1)
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): the prep fold actually folds
+
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var parked sync.Once
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		parked.Do(func() {
+			close(entered)
+			<-proceed
+		})
+		return "", nil
+	}
+	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the fold and the elicit seam both fire
+
+	var rt events.RoundTimings
+	prepErr := make(chan error, 1)
+	go func() {
+		_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt)
+		prepErr <- err
+	}()
+	<-entered // prep's fold is committed; its compaction-meta reads are still ahead
+
+	// Hammer competing Compacts (each historically re-wrote contextMgr.Meta
+	// on entry) across prep's mid-fold meta reads. Total publication-race
+	// losses are expected under this contention and are not failures.
+	hammerDone := make(chan error, 1)
+	go func() {
+		for range 15 {
+			if err := s.Compact(context.Background()); err != nil && !strings.Contains(err.Error(), "concurrent compaction") {
+				hammerDone <- err
+				return
+			}
+		}
+		hammerDone <- nil
+	}()
+	close(proceed)
+
+	if err := <-prepErr; err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if err := <-hammerDone; err != nil {
+		t.Fatalf("hammer Compact: %v", err)
+	}
+
+	// The per-call meta must still reach the fold content. The contention
+	// phase above has racy fold outcomes by design (any given fold may lose
+	// its publication), so probe deterministically: one final quiescent
+	// Compact publishes unopposed, and its checkpoint layer always folds the
+	// post-hammer history (a summary plus the preserved window, always past
+	// PreserveRecentTurns), so ITS id-bearing checkpoint marker entry is
+	// guaranteed to reach the transcript. The scripted summarize layer
+	// replaces that turn in LIVE history, hence the transcript assertion.
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("final quiescent Compact: %v", err)
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	found := false
+	var survey []string
+	for _, e := range data.Entries {
+		text := e.Turn.Message.Text()
+		if e.Turn.Kind == schema.TurnCheckpoint &&
+			strings.Contains(text, "This session's id is "+s.id) {
+			found = true
+		}
+		if len(text) > 80 {
+			text = text[:80]
+		}
+		survey = append(survey, string(e.Turn.Kind)+": "+text)
+	}
+	if !found {
+		t.Fatalf("no published checkpoint marker carries the session id — the per-call compaction meta did not reach the fold content; transcript entries:\n%s", strings.Join(survey, "\n"))
+	}
+}
+
+// TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished pins the
+// unpublished-instructions warning: when BOTH fold attempts lose the
+// publication race, applyPendingForceCompact skips — right for the fold
+// itself (a competitor relieved the pressure), wrong for the caller-provided
+// compaction_instructions, which are intent, not pressure. An unpublished
+// instruction set must surface as a warning; a published fold must not warn.
+func TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished(t *testing.T) {
+	t.Parallel()
+	const instructions = "keep the metrics table verbatim"
+
+	warningsContaining := func(evs *[]events.SessionEvent, mu *sync.Mutex, substr string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, ev := range *evs {
+			if d, ok := ev.Data.(events.WarningData); ok && strings.Contains(d.Message, substr) {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("both attempts lose: warning names the unpublished instructions", func(t *testing.T) {
+		t.Parallel()
+		// The competing result stays LONGER than PreserveRecentTurns: were it
+		// short, the retry attempt would have nothing to summarize, make no
+		// LLM call, meet no competitor, and publish its no-op fold — winning
+		// instead of losing. Eight turns keep every attempt folding for
+		// real, so every attempt's summarize call lands a fresh competing
+		// publish after that attempt's snapshot and BOTH attempts lose.
+		competingResult := func(n int32) []schema.Turn {
+			turns := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.User(fmt.Sprintf("[CONTEXT SUMMARY]\ncompeting %d\n[END SUMMARY]", n)))}
+			for i := range 7 {
+				turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("competing filler %d-%d", n, i))))
+			}
+			return turns
+		}
+		var summarizeCalls atomic.Int32
+		var s *Session
+		s = newScriptedSummaryCompactSession(t, "instr-lose-cheap", func(llm.Request) llm.Response {
+			n := summarizeCalls.Add(1)
+			s.mu.Lock()
+			_, ok := s.publishFoldedHistory(len(s.history), s.historyRevision, competingResult(n))
+			s.mu.Unlock()
+			if !ok {
+				t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
+			}
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nlosing summary\n[END SUMMARY]")}
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		evs, mu, done := collectEvents(s)
+		seedNumberedSessionHistory(t, s, 12)
+
+		if err := s.requestForceCompact(instructions); err != nil {
+			t.Fatalf("requestForceCompact: %v", err)
+		}
+		s.applyPendingForceCompact(context.Background())
+		s.Close()
+		<-done
+
+		if n := warningsContaining(evs, mu, "instructions"); n == 0 {
+			t.Fatal("both fold attempts lost the publication race and the caller's compaction_instructions vanished without a warning")
+		}
+		if n := warningsContaining(evs, mu, instructions); n == 0 {
+			t.Fatal("the warning does not name the unpublished instructions")
+		}
+	})
+
+	t.Run("published fold: no unpublished-instructions warning", func(t *testing.T) {
+		t.Parallel()
+		s := newScriptedSummaryCompactSession(t, "instr-win-cheap", func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+		evs, mu, done := collectEvents(s)
+		seedNumberedSessionHistory(t, s, 12)
+		if err := s.requestForceCompact(instructions); err != nil {
+			t.Fatalf("requestForceCompact: %v", err)
+		}
+		s.applyPendingForceCompact(context.Background())
+		s.Close()
+		<-done
+
+		if n := warningsContaining(evs, mu, "instructions were not applied"); n != 0 {
+			t.Fatalf("a published fold must not warn about unpublished instructions (%d warning(s))", n)
+		}
+	})
+}
+
+// TestFoldPublication_StaleSteeringEffectCannotLandAfterNewerPublication
+// pins the supersession check against a newer publication landing BETWEEN
+// the check and the last-write-wins steering effects: fold A's flush finds
+// itself current, fold B then publishes and flushes its own transcript
+// reminder, and only afterwards does A reach its reminder. The queue must
+// hold exactly B's reminder — A's stale one must be refused at the moment
+// it would be enqueued, not judged by a check that is already out of date.
+func TestFoldPublication_StaleSteeringEffectCannotLandAfterNewerPublication(t *testing.T) {
+	t.Parallel()
+	var summarizeCalls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "stale-steer-cheap", func(llm.Request) llm.Response {
+		n := summarizeCalls.Add(1)
+		return llm.Response{Message: llm.Assistant(fmt.Sprintf("[CONTEXT SUMMARY]\nfold %d summary\n[END SUMMARY]", n))}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): both folds produce a summary artifact
+	if !s.canInstructTool("read_transcript") {
+		t.Skip("session cannot instruct read_transcript; the transcript reminder never fires here")
+	}
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var checks atomic.Int32
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterFoldSupersessionCheck = func() {
+			if checks.Add(1) == 1 {
+				close(parked)
+				<-release
+			}
+		}
+	})
+
+	errA := make(chan error, 1)
+	go func() {
+		errA <- s.Compact(context.Background()) // fold A: publishes, judges itself current, parks before its effects
+	}()
+	<-parked
+
+	if err := s.Compact(context.Background()); err != nil { // fold B: publishes AND flushes its reminder in A's window
+		t.Fatalf("Compact (B): %v", err)
+	}
+
+	close(release)
+	if err := <-errA; err != nil {
+		t.Fatalf("Compact (A): %v", err)
+	}
+
+	s.mu.Lock()
+	reminders := 0
+	for _, msg := range s.steeringQueue {
+		if msg.Kind == events.SteeringKindTranscriptPointer {
+			reminders++
+		}
+	}
+	s.mu.Unlock()
+	if reminders != 1 {
+		t.Fatalf("%d transcript reminders queued, want exactly 1 (fold B's): fold A's stale reminder landed after B's newer publication because the supersession check was evaluated before the effect, not with it", reminders)
+	}
+}
+
 // syncSnapshotFS models a crash for the fold publication's durability
 // contract: only bytes an fsync has covered survive. Every successful Sync
 // snapshots the transcript's contents, and the test restores from that

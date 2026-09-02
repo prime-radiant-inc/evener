@@ -326,12 +326,34 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 }
 
 func (s *Session) trySteerMessage(entry steeringMessage) bool {
+	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
+}
+
+// steerKindForFold is SteerKind for a fold flush's last-write-wins steering
+// (the task-list and transcript reminders): the steering is refused, at the
+// moment it would be enqueued, once a newer fold has published.
+func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) {
+	_ = s.trySteerMessageUnlessSuperseded(steeringMessage{Text: msg, Kind: kind}, publishedRevision)
+}
+
+// trySteerMessageUnlessSuperseded enqueues entry unless publishedRevision
+// (a fold's publication revision, or ungatedFoldRevision for steering that
+// is not tied to a fold) is older than the newest published fold. The
+// publication-order check runs under the SAME s.mu hold that appends to the
+// queue, so a newer publication cannot slip in between the check and the
+// enqueue: a stale fold's steering is refused rather than landing after
+// the newer fold's own.
+func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publishedRevision int) bool {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return false
 	}
 	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
 		s.mu.Unlock()
 		return false
 	}
