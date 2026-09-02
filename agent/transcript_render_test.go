@@ -1073,6 +1073,7 @@ func TestToolInputSummary(t *testing.T) {
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
 		{"delegate shows task/type/max_wait_ms", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
+		{"delegate shows a legacy task brief", "delegate", `{"task":"legacy brief","agent_type":"explorer"}`, "legacy brief", "background"},
 		{"delegate omits max_wait_ms when zero", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
 		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
 		{"delegate_send shows delegate/message", "delegate_send", `{"to":"dlg_01J","message":"continue"}`, "dlg_01J", ""},

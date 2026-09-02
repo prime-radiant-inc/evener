@@ -275,6 +275,13 @@ func TestDelegateRenderer(t *testing.T) {
 	if !strings.Contains(r.Target(args), "do something") {
 		t.Errorf("delegate target should include task: %q", r.Target(args))
 	}
+	legacy := toolArgsFromJSON(`{"task":"legacy brief"}`)
+	if !strings.Contains(r.Target(legacy), "legacy brief") {
+		t.Errorf("delegate target should fall back to a legacy task key: %q", r.Target(legacy))
+	}
+	if body := delegateBody(legacy, "", 80); !strings.Contains(body, "legacy brief") {
+		t.Errorf("delegate body should fall back to a legacy task key: %q", body)
+	}
 }
 
 func TestJobSendMessageRenderer(t *testing.T) {

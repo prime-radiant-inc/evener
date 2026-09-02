@@ -1323,3 +1323,18 @@ test("defaults apply at each level; an explicit summary choice persists across l
   );
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
+
+test("delegate rows from transcripts recorded before the prompt rename still show the brief", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        id: "legacy_delegate",
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ task: "Legacy brief from an older transcript" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-intent").textContent).toContain("Legacy brief");
+});

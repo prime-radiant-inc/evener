@@ -154,3 +154,18 @@ func TestCreateDelegate_SubagentDelegatesOnlyWhenGranted(t *testing.T) {
 		})
 	}
 }
+
+// A delegate that shares its parent's task store cannot be seeded with its
+// own task_list: PopulateFromTemplates is a no-op on a non-empty store, so the
+// items would vanish silently. Refuse at creation instead.
+func TestCreateDelegate_TaskListRejectedWhenSharingTaskStore(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	root.cfg.ShareTasksWithChildren = true
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "brief", TaskList: []taskpkg.TaskTemplate{{Title: "inspect", Prompt: "read the spec"}}})
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "invalid_request") || !strings.Contains(result.Err.Error(), "task_list") {
+		t.Fatalf("createDelegate with task_list on a shared store: err = %v, want invalid_request naming task_list", result.Err)
+	}
+	if plain := root.createDelegate(context.Background(), delegateArgs{Task: "brief"}); plain.Err != nil {
+		t.Fatalf("createDelegate without task_list on a shared store: %v", plain.Err)
+	}
+}

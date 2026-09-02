@@ -72,7 +72,9 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   const statedIntent = statedIntentOf(item);
   if (statedIntent !== undefined) return statedIntent;
 
-  const brief = str(parseArgs(item.argumentsJSON), "prompt")?.replace(/\s+/g, " ").trim();
+  const args = parseArgs(item.argumentsJSON);
+  // Transcripts recorded before the rename carry the brief under `task`.
+  const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 

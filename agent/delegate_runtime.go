@@ -1138,6 +1138,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if isolationName != "" && isolationName != "worktree" {
 		return delegateStartFailed(fmt.Errorf("invalid_request: isolation %q is not supported (expected \"worktree\")", isolationName))
 	}
+	if len(args.TaskList) > 0 && s.cfg.ShareTasksWithChildren {
+		// A shared store already has the parent's tasks and is never
+		// re-seeded, so the items would vanish; say so instead.
+		return delegateStartFailed(errors.New("invalid_request: task_list cannot seed a delegate that shares your task store; add the steps to your own task_list instead"))
+	}
 	if strings.TrimSpace(s.stateDir) == "" {
 		return delegateStartFailed(errors.New("delegate creation requires a durable state directory"))
 	}

@@ -1548,7 +1548,13 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		return quoteIfSet(get("query"))
 
 	case "delegate":
-		parts := []string{truncRunes(get("prompt"), 80)}
+		// Older transcripts carry the brief under the retired task key;
+		// display only, invocation validation stays prompt-only.
+		brief := get("prompt")
+		if brief == "" {
+			brief = get("task")
+		}
+		parts := []string{truncRunes(brief, 80)}
 		if at := get("agent_type"); at != "" {
 			parts = append(parts, "type="+at)
 		}

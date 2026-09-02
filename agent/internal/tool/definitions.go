@@ -177,7 +177,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The brief. It is the only input the delegate receives: none of your conversation, the user's message, or what you have learned reaches it. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). For a unit with more than one step, put the steps in task_list rather than here.",
+					"description": "The brief: the delegate's only top-level input (task_list adds the ordered step prompts). None of your conversation, the user's message, or what you have learned reaches it. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). For a unit with more than one step, put the steps in task_list rather than here.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
