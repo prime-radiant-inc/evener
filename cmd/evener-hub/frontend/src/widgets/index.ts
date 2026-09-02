@@ -23,6 +23,8 @@ export type { ConfirmDialogProps } from "./confirmdialog";
 export { ConfirmDialog } from "./confirmdialog";
 export type { ContextCardProps } from "./contextcard";
 export { ContextCard } from "./contextcard";
+export type { CopyButtonProps } from "./copybutton";
+export { CopyButton } from "./copybutton";
 export type { DialogProps } from "./dialog";
 export { Dialog } from "./dialog";
 export type { DiffBlockProps } from "./diffblock";

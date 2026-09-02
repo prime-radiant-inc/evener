@@ -1,11 +1,11 @@
 // Descriptors for job_* and delegate_send follow-up calls.
-import { useEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { IconButton } from "../../../../widgets";
+import { CopyButton } from "../../../../widgets";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
+import { DelegateStatusBody } from "./delegateStatus";
 import { clip, clipJobID, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { statusWordFromText } from "./subagentModule";
 
@@ -15,52 +15,6 @@ type JsonObject = Record<string, unknown>;
 
 function asJsonObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
-}
-
-const COPIED_RESET_MS = 2_000;
-
-function CopyGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
-    </svg>
-  );
-}
-
-function CopiedGlyph() {
-  return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
-      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// CopyTextButton is the CodeBlock copy control's idiom (clipboard guard,
-// "Copied" feedback with a timed reset) as a standalone header action: the
-// chat bubbles carry prose, not a code block, so the affordance moves into
-// the bubble header's actions slot.
-function CopyTextButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), COPIED_RESET_MS);
-    return () => clearTimeout(timer);
-  }, [copied]);
-  return (
-    <IconButton
-      label={copied ? "Copied" : label}
-      icon={copied ? <CopiedGlyph /> : <CopyGlyph />}
-      variant="quiet"
-      size="xs"
-      onClick={() => {
-        // Clipboard access requires a secure context and isn't implemented by
-        // every test/embed environment - degrade to a no-op rather than throw.
-        if (!navigator.clipboard?.writeText) return;
-        void navigator.clipboard.writeText(text).then(() => setCopied(true));
-      }}
-    />
-  );
 }
 
 interface JobListState {
@@ -149,7 +103,7 @@ registerToolRenderer({
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
     return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
   },
-  body: HeadClippedOutputBody,
+  body: DelegateStatusBody,
 });
 
 registerToolRenderer({
@@ -354,7 +308,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
             timeIso={item.startedAt}
             opensExchange={false}
-            actions={<CopyTextButton text={message} label="Copy message" />}
+            actions={<CopyButton text={message} label="Copy message" />}
           />
         </section>
       ) : null}
@@ -366,7 +320,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Delegate" : `${target} (delegate)`}
             timeIso={item.completedAt ?? item.startedAt}
             opensExchange={false}
-            actions={<CopyTextButton text={response} label="Copy response" />}
+            actions={<CopyButton text={response} label="Copy response" />}
           />
         </section>
       ) : null}
