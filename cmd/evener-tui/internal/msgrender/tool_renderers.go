@@ -449,7 +449,7 @@ func init() {
 	toolRenderers["delegate"] = ToolRenderer{
 		Verb: func(_ ToolArgs) string { return "delegate" },
 		Target: func(args ToolArgs) string {
-			task := args.Str("task")
+			task := args.Str("prompt")
 			if len(task) > 80 {
 				task = task[:80] + "…"
 			}

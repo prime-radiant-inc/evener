@@ -38,10 +38,10 @@ func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
 		name string
 		args string
 	}{
-		{name: "max_wait_ms", args: `{"task":"must not start","max_wait_ms":1000}`},
-		{name: "block", args: `{"task":"must not start","block":true}`},
-		{name: "block_timeout_ms", args: `{"task":"must not start","block_timeout_ms":1000}`},
-		{name: "background", args: `{"task":"must not start","background":true}`},
+		{name: "max_wait_ms", args: `{"prompt":"must not start","max_wait_ms":1000}`},
+		{name: "block", args: `{"prompt":"must not start","block":true}`},
+		{name: "block_timeout_ms", args: `{"prompt":"must not start","block_timeout_ms":1000}`},
+		{name: "background", args: `{"prompt":"must not start","background":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(s.delegateController.Snapshot().rows)

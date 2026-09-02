@@ -175,7 +175,7 @@ func TestSummarizeTool_WebSearch(t *testing.T) {
 }
 
 func TestSummarizeTool_Delegate(t *testing.T) {
-	desc, _ := SummarizeTool("delegate", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+	desc, _ := SummarizeTool("delegate", `{"prompt":"Explore the codebase and find all usages of the Foo interface"}`)
 	if !strings.Contains(desc, "Explore") {
 		t.Errorf("got %q", desc)
 	}

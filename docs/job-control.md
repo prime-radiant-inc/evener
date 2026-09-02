@@ -49,7 +49,9 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID.
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
-- Use `delegate` to start a new delegate conversation. It returns `dlg_...`,
+- Use `delegate` to start a new delegate conversation: `prompt` is the brief
+  (the only input the delegate receives) and `task_list` seeds its task list,
+  one item per step. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.

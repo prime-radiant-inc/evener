@@ -1072,8 +1072,8 @@ func TestToolInputSummary(t *testing.T) {
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
-		{"delegate shows task/type/max_wait_ms", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
-		{"delegate omits max_wait_ms when zero", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
+		{"delegate shows task/type/max_wait_ms", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
+		{"delegate omits max_wait_ms when zero", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
 		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
 		{"delegate_send shows delegate/message", "delegate_send", `{"to":"dlg_01J","message":"continue"}`, "dlg_01J", ""},
 		{"use_skill shows skill", "use_skill", `{"skill_name":"brainstorming"}`, "brainstorming", ""},
@@ -1981,7 +1981,7 @@ func TestRenderMarkdown_DelegateToolCallAppears(t *testing.T) {
 	})
 	entries := []transcript.Entry{
 		// seq 0: assistant turn issuing a delegate call.
-		toolCallEntry(call("call_delegate", "delegate", `{"task":"investigate the render path","agent_type":"explorer"}`)),
+		toolCallEntry(call("call_delegate", "delegate", `{"prompt":"investigate the render path","agent_type":"explorer"}`)),
 		// seq 1: the paired delegate result.
 		toolResultEntry(result("call_delegate", "delegate", body, false)),
 	}
@@ -2038,7 +2038,7 @@ func TestRenderMarkdown_BatchedDelegateToolCallsAppear(t *testing.T) {
 	calls := make([]*llm.ToolCallData, len(specs))
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
-		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"batched research task %d"}`, i))
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"batched research task %d"}`, i))
 		body := delegateCreateBody(t, stableDelegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",
@@ -2086,7 +2086,7 @@ func TestRenderOutline_DelegateToolCallAppears(t *testing.T) {
 		TranscriptRef: childRef,
 	})
 	entries := []transcript.Entry{
-		toolCallEntry(call("call_del", "delegate", `{"task":"map the render path"}`)),
+		toolCallEntry(call("call_del", "delegate", `{"prompt":"map the render path"}`)),
 		toolResultEntry(result("call_del", "delegate", body, false)),
 	}
 	out, _, _ := renderOutline(entries, 0, len(entries)-1)
@@ -2123,7 +2123,7 @@ func TestRenderOutline_BatchedDelegateToolCallsAppear(t *testing.T) {
 	calls := make([]*llm.ToolCallData, len(specs))
 	results := make([]*llm.ToolResultData, len(specs))
 	for i, sp := range specs {
-		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"task":"outline batch task %d"}`, i))
+		calls[i] = call(sp.callID, "delegate", fmt.Sprintf(`{"prompt":"outline batch task %d"}`, i))
 		body := delegateCreateBody(t, stableDelegateCreateResult{
 			DelegateID:    sp.delegateID,
 			Type:          "delegate",

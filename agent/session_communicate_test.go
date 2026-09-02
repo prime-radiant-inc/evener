@@ -398,7 +398,7 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 	c := llm.NewClient()
 
 	delegateArgs, _ := json.Marshal(map[string]any{
-		"task": "Return CHILD_DONE.",
+		"prompt": "Return CHILD_DONE.",
 	})
 	delegate := llm.ToolCallData{
 		ID:        "delegate_1",

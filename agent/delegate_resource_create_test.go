@@ -212,7 +212,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 		}
 		return nil
 	}
-	raw, err := json.Marshal(map[string]any{"task": "retain stable identity after oversized construction failure"})
+	raw, err := json.Marshal(map[string]any{"prompt": "retain stable identity after oversized construction failure"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestDelegateResourceCreate_RegisteredResultPreservesWorktreeAndModelFallbac
 		ID:   "registered-create-metadata",
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
-			"task":"preserve creation metadata",
+			"prompt":"preserve creation metadata",
 			"agent_type":"reviewer",
 			"isolation":"worktree"
 		}`),
@@ -1543,7 +1543,7 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := json.Marshal(map[string]any{
-		"task":        "reject creation wait",
+		"prompt":      "reject creation wait",
 		"max_wait_ms": 1,
 	})
 	if err != nil {
@@ -1657,7 +1657,7 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 
 func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *Session, task string, allowance int) map[string]any {
 	t.Helper()
-	arguments := map[string]any{"task": task}
+	arguments := map[string]any{"prompt": task}
 	if allowance != 0 {
 		arguments["delegation_allowance"] = allowance
 	}

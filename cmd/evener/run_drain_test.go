@@ -75,7 +75,7 @@ func messagesText(messages []llm.Message) string {
 }
 
 func scriptedDelegateCall(id, task string) llm.Response {
-	args, _ := json.Marshal(map[string]any{"task": task})
+	args, _ := json.Marshal(map[string]any{"prompt": task})
 	return scriptedToolCalls(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 

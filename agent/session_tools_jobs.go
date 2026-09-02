@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 const (
@@ -455,8 +456,11 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 // tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
 // without minting a delegate.
 func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
+	if strings.TrimSpace(stringArg(args, "prompt")) == "" {
+		return delegateArgs{}, errors.New("invalid_request: prompt is required")
+	}
 	a := delegateArgs{
-		Task:            stringArg(args, "task"),
+		Task:            stringArg(args, "prompt"),
 		AgentType:       stringArg(args, "agent_type"),
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
@@ -505,7 +509,48 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}
+	taskList, err := delegateTaskListArg(args)
+	if err != nil {
+		return delegateArgs{}, err
+	}
+	a.TaskList = taskList
 	return a, nil
+}
+
+// delegateTaskListArg decodes the delegate tool's task_list items into task
+// templates. Every item needs a title and a prompt; the delegate sees nothing
+// but these strings, so an empty prompt is an error rather than a blank task.
+func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
+	raw, ok := args["task_list"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("invalid_request: task_list must be an array")
+	}
+	out := make([]taskpkg.TaskTemplate, 0, len(items))
+	for i, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid_request: task_list[%d] must be an object", i)
+		}
+		title := strings.TrimSpace(stringArg(fields, "title"))
+		if title == "" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].title is required", i)
+		}
+		prompt := strings.TrimSpace(stringArg(fields, "prompt"))
+		if prompt == "" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
+		}
+		out = append(out, taskpkg.TaskTemplate{
+			Title:           title,
+			Prompt:          prompt,
+			ReasoningEffort: strings.TrimSpace(stringArg(fields, "reasoning_effort")),
+			Type:            strings.TrimSpace(stringArg(fields, "type")),
+		})
+	}
+	return out, nil
 }
 
 func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {

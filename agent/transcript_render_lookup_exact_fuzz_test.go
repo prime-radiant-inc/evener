@@ -92,7 +92,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 		{"glob", `{"pattern":"*.go","path":"/tmp"}`, "`*.go` in /tmp"},
 		{"web_fetch", `{"url":"https://example.com/x","question":"q"}`, "example.com `q`"},
 		{"web_search", `{"query":"q"}`, "`q`"},
-		{"delegate", `{"task":"t","agent_type":"coder","max_wait_ms":3}`, "t type=coder max_wait_ms=3"},
+		{"delegate", `{"prompt":"t","agent_type":"coder","max_wait_ms":3}`, "t type=coder max_wait_ms=3"},
 		{"job_send_message", `{"target":"j","message":"m"}`, "j `m`"},
 		{"delegate_send", `{"to":"j","message":"m"}`, "j `m`"},
 		{"use_skill", `{"skill_name":"s"}`, "s"},

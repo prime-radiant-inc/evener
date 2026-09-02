@@ -244,8 +244,8 @@ func delegateBody(args ToolArgs, output string, width int) string {
 
 	th := tuitheme.ActiveTheme()
 	summaryLabel := "delegate"
-	if task := strings.TrimSpace(args.Str("task")); task != "" {
-		summaryLabel = task
+	if brief := strings.TrimSpace(args.Str("prompt")); brief != "" {
+		summaryLabel = brief
 	}
 	identity := identifier.AbbreviateJobID(jobID, 26)
 	if identity != "" {

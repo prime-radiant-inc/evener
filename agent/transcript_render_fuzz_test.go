@@ -410,7 +410,7 @@ func FuzzToolInputSummary(f *testing.F) {
 		{"glob", `{"pattern":"**/*.go","path":"/src"}`},
 		{"web_fetch", `{"url":"https://example.com/x?y=1","question":"why"}`},
 		{"web_search", `{"query":"how to fuzz"}`},
-		{"delegate", `{"task":"do the thing","agent_type":"coder","max_wait_ms":5000}`},
+		{"delegate", `{"prompt":"do the thing","agent_type":"coder","max_wait_ms":5000}`},
 		{"job_send_message", `{"target":"job7","message":"ping"}`},
 		{"delegate_send", `{"to":"child","message":"go on"}`},
 		{"use_skill", `{"skill_name":"par"}`},
@@ -770,7 +770,7 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 			panic(err)
 		}
 		entries := []transcript.Entry{
-			entry(schema.TurnAssistant, call("job", "delegate", `{"task":"child"}`)),
+			entry(schema.TurnAssistant, call("job", "delegate", `{"prompt":"child"}`)),
 			entry(schema.TurnToolResults, result("job", "delegate", string(bodyBytes), false)),
 		}
 		return header, entries, "last:2", opt

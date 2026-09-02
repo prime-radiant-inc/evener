@@ -1139,7 +1139,7 @@ func TestCovDelegateSandboxToolResultFrom(t *testing.T) {
 // (session_tools_jobs.go lines 345-382): validation branches.
 func TestCovDecodeDelegateArgs2(t *testing.T) {
 	// Valid minimal.
-	a, err := decodeDelegateArgs(map[string]any{"task": "do work"})
+	a, err := decodeDelegateArgs(map[string]any{"prompt": "do work"})
 	if err != nil {
 		t.Fatalf("minimal: %v", err)
 	}
@@ -1148,13 +1148,13 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// sandbox_net as non-boolean — error.
-	_, err = decodeDelegateArgs(map[string]any{"sandbox_net": "false"})
+	_, err = decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": "false"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox_net must be a JSON boolean") {
 		t.Fatalf("non-bool sandbox_net: %v", err)
 	}
 
 	// sandbox_net as true.
-	a, err = decodeDelegateArgs(map[string]any{"sandbox_net": true})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": true})
 	if err != nil {
 		t.Fatalf("sandbox_net true: %v", err)
 	}
@@ -1163,7 +1163,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// sandbox_net as false.
-	a, err = decodeDelegateArgs(map[string]any{"sandbox_net": false})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": false})
 	if err != nil {
 		t.Fatalf("sandbox_net false: %v", err)
 	}
@@ -1172,7 +1172,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// sandbox_net absent — nil (inherit).
-	a, err = decodeDelegateArgs(map[string]any{})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p"})
 	if err != nil {
 		t.Fatalf("absent sandbox_net: %v", err)
 	}
@@ -1181,13 +1181,13 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// delegation_allowance negative — error.
-	_, err = decodeDelegateArgs(map[string]any{"delegation_allowance": -1})
+	_, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": -1})
 	if err == nil || !strings.Contains(err.Error(), "must be non-negative") {
 		t.Fatalf("negative allowance: %v", err)
 	}
 
 	// delegation_allowance positive — OK.
-	a, err = decodeDelegateArgs(map[string]any{"delegation_allowance": 3})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": 3})
 	if err != nil {
 		t.Fatalf("positive allowance: %v", err)
 	}
@@ -1196,7 +1196,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// delegation_allowance zero — unset (strict-zero).
-	a, err = decodeDelegateArgs(map[string]any{"delegation_allowance": 0})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "delegation_allowance": 0})
 	if err != nil {
 		t.Fatalf("zero allowance: %v", err)
 	}
@@ -1205,7 +1205,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 	}
 
 	// result_schema present.
-	a, err = decodeDelegateArgs(map[string]any{"result_schema": map[string]any{"type": "object"}})
+	a, err = decodeDelegateArgs(map[string]any{"prompt": "p", "result_schema": map[string]any{"type": "object"}})
 	if err != nil {
 		t.Fatalf("result_schema: %v", err)
 	}
@@ -1215,7 +1215,7 @@ func TestCovDecodeDelegateArgs2(t *testing.T) {
 
 	// Full args.
 	a, err = decodeDelegateArgs(map[string]any{
-		"task":                 "work",
+		"prompt":               "work",
 		"agent_type":           "researcher",
 		"model":                "gpt-5",
 		"reasoning_effort":     "high",

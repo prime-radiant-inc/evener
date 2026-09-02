@@ -170,10 +170,13 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Fatalf("Strict = %v, want false", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"task", "agent_type", "model", "reasoning_effort", "result_schema"} {
+	for _, p := range []string{"prompt", "task_list", "agent_type", "model", "reasoning_effort", "result_schema"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefDelegate missing param %q", p)
 		}
+	}
+	if _, ok := props["task"]; ok {
+		t.Errorf("DefDelegate must not have the renamed task param")
 	}
 	if _, ok := props["background"]; ok {
 		t.Errorf("DefDelegate must not have the removed background param")
@@ -185,8 +188,8 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Errorf("DefDelegate must not expose creation max_wait_ms")
 	}
 	req := def.Parameters["required"].([]string)
-	if len(req) != 1 || req[0] != "task" {
-		t.Errorf("required = %v, want [task]", req)
+	if len(req) != 1 || req[0] != "prompt" {
+		t.Errorf("required = %v, want [prompt]", req)
 	}
 	at := props["agent_type"].(map[string]any)
 	enum := at["enum"].([]string)
@@ -885,5 +888,47 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	}
 	if top, has := params["required"]; has {
 		t.Fatalf("schema must not force-require add/update at top level: %v", top)
+	}
+}
+
+// TestDefDelegatePromptAndTaskListSchema pins the delegate brief contract: the
+// brief parameter is `prompt`, it carries a description (the delegate sees
+// nothing but this string and its role prompt), and `task_list` seeds the
+// delegate's task list with title+prompt items.
+func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	prompt := props["prompt"].(map[string]any)
+	if prompt["type"] != "string" {
+		t.Errorf("prompt type = %v, want string", prompt["type"])
+	}
+	if desc, _ := prompt["description"].(string); desc == "" {
+		t.Error("prompt must carry a description; it is the only input the delegate sees")
+	}
+	tl, ok := props["task_list"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate has no task_list param")
+	}
+	if tl["type"] != "array" {
+		t.Errorf("task_list type = %v, want array", tl["type"])
+	}
+	if desc, _ := tl["description"].(string); desc == "" {
+		t.Error("task_list must carry a description")
+	}
+	items := tl["items"].(map[string]any)
+	if items["type"] != "object" {
+		t.Errorf("task_list items type = %v, want object", items["type"])
+	}
+	itemProps := items["properties"].(map[string]any)
+	for _, p := range []string{"title", "prompt", "reasoning_effort", "type"} {
+		if _, ok := itemProps[p]; !ok {
+			t.Errorf("task_list item missing property %q", p)
+		}
+	}
+	req := items["required"].([]string)
+	if len(req) != 2 || req[0] != "title" || req[1] != "prompt" {
+		t.Errorf("task_list item required = %v, want [title prompt]", req)
+	}
+	if items["additionalProperties"] != false {
+		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
 	}
 }
