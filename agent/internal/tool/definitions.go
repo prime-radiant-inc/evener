@@ -258,15 +258,14 @@ func DelegateSandboxEnumFromModes(modes []string, parentNetwork, parentModeOff b
 func DefDelegateWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "delegate_wait",
-		Description: "Block for up to max_wait_ms until the named delegates finish, and return each one's report (the same fields delegate_send returns after an inline wait). Omit targets to wait for every delegate you started that is still running. Use it right after spawning a batch of independent units instead of ending your turn to be notified one delegate at a time. Delegates still running when the budget ends are listed as running and their reports arrive later as notifications, as usual. A report returned here counts as delivered.",
+		Description: "Block until the named delegates finish, and return each one's report (the same fields delegate_send returns after an inline wait). Omit targets to wait for every delegate you started that is still running. Use it right after spawning a batch of independent units instead of ending your turn to be notified one delegate at a time. This is a wait, not a poll: delegates take minutes, so omit max_wait_ms (10 minutes) or give a budget in minutes; a short budget just returns everything as still running. Delegates still running when the budget ends are listed as running and their reports arrive later as notifications, as usual. A report returned here counts as delivered.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"targets":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Delegate ids (`dlg_...`) to wait for. Omit to wait for every running delegate you own."},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "Upper bound on the wait in milliseconds; must be positive. Delegates take minutes: budget accordingly (up to 30 minutes; larger values are clamped)."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "Upper bound on the wait in milliseconds. Default 600000 (10 minutes); up to 30 minutes, larger values are clamped. Do not use it to poll."},
 			},
-			"required": []string{"max_wait_ms"},
 		},
 	}
 }

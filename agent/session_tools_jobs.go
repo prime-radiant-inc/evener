@@ -52,6 +52,11 @@ func clampJobBlockTimeout(ms int) time.Duration {
 // real wait; the harness or the caller's own budget is the outer limit.
 const maxDelegateWaitMS = 30 * 60 * 1000
 
+// defaultDelegateWaitMS is the budget when delegate_wait is called without
+// one: long enough for a real unit of work, so an omitted budget is a wait
+// and not a poll.
+const defaultDelegateWaitMS = 10 * 60 * 1000
+
 // clampDelegateWaitTimeout clamps a positive delegate_wait budget into
 // [minJobBlockTimeoutMS, maxDelegateWaitMS].
 func clampDelegateWaitTimeout(ms int) time.Duration {

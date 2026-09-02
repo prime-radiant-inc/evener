@@ -153,9 +153,13 @@ func stableDelegateWaitTool(ctx context.Context, s *Session, args map[string]any
 	if s == nil || s.delegateController == nil {
 		return nil, errors.New("delegate controller is unavailable")
 	}
-	waitMS, ok := shellIntArg(args, "max_wait_ms")
-	if !ok || waitMS <= 0 {
-		return nil, errors.New("invalid_request: max_wait_ms must be a positive integer")
+	waitMS := defaultDelegateWaitMS
+	if _, present := args["max_wait_ms"]; present {
+		n, ok := shellIntArg(args, "max_wait_ms")
+		if !ok || n <= 0 {
+			return nil, errors.New("invalid_request: max_wait_ms must be a positive integer")
+		}
+		waitMS = n
 	}
 	actor, err := s.delegateActor(ctx)
 	if err != nil {

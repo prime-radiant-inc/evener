@@ -902,9 +902,8 @@ func TestDefDelegateWaitSchema(t *testing.T) {
 	if !ok || wait["type"] != "integer" {
 		t.Fatalf("max_wait_ms = %v, want integer", props["max_wait_ms"])
 	}
-	req := def.Parameters["required"].([]string)
-	if len(req) != 1 || req[0] != "max_wait_ms" {
-		t.Errorf("required = %v, want [max_wait_ms]", req)
+	if req, _ := def.Parameters["required"].([]string); len(req) != 0 {
+		t.Errorf("required = %v, want nothing required: the budget defaults to minutes", req)
 	}
 	if desc, _ := def.Description, ""; desc == "" {
 		t.Error("delegate_wait needs a description")

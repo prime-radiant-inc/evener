@@ -114,10 +114,31 @@ func TestDelegateWaitTool_ReturnsCompletedChildReport(t *testing.T) {
 	}
 }
 
+// An omitted budget waits the default (minutes, not a poll).
+func TestDelegateWaitTool_DefaultBudgetIsMinutes(t *testing.T) {
+	if defaultDelegateWaitMS < 5*60*1000 {
+		t.Fatalf("default budget %d ms is a poll, want minutes", defaultDelegateWaitMS)
+	}
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	result := root.createDelegate(context.Background(), delegateArgs{Task: "report READY"})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_wait_3")
+	raw, err := stableDelegateWaitTool(ctx, root, map[string]any{"targets": []any{result.DelegateID}}, 8192)
+	if err != nil {
+		t.Fatalf("delegate_wait without a budget: %v", err)
+	}
+	var out delegateWaitResult
+	if err := json.Unmarshal([]byte(raw.(string)), &out); err != nil || len(out.Results) != 1 || out.Results[0].Action != "completed" {
+		t.Fatalf("default-budget wait = %v (%v), want the completed child", raw, err)
+	}
+}
+
 func TestDelegateWaitTool_RejectsBadArguments(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_wait_2")
-	for _, args := range []map[string]any{{}, {"max_wait_ms": 0}, {"max_wait_ms": -5}, {"max_wait_ms": 100, "targets": "dlg_x"}, {"max_wait_ms": 100, "targets": []any{"job_123"}}} {
+	for _, args := range []map[string]any{{"max_wait_ms": 0}, {"max_wait_ms": -5}, {"max_wait_ms": 100, "targets": "dlg_x"}, {"max_wait_ms": 100, "targets": []any{"job_123"}}} {
 		if _, err := stableDelegateWaitTool(ctx, root, args, 8192); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 			t.Errorf("args %v: err = %v, want invalid_request", args, err)
 		}
