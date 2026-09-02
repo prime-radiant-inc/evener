@@ -58,8 +58,8 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		if mode&1 != 0 {
 			source = sessionNameSourceCompaction
 		}
-		prompt := sessionNamerUserPrompt(source, text)
-		if again := sessionNamerUserPrompt(source, text); prompt != again {
+		prompt := sessionNamerUserPrompt(source, text, "")
+		if again := sessionNamerUserPrompt(source, text, ""); prompt != again {
 			t.Fatalf("session namer prompt was not deterministic")
 		}
 		clean := sanitizeSessionName(candidate)
@@ -97,23 +97,23 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		}
 
 		// Exercise public input guards before constructing a valid scripted call.
-		if _, err := nameSession(context.Background(), nil, profile, source, text, noNamerSleep); err == nil {
+		if _, err := nameSession(context.Background(), nil, profile, source, text, "", noNamerSleep); err == nil {
 			t.Fatal("nil client was accepted")
 		}
-		if _, err := nameSession(context.Background(), llm.NewClient(), nil, source, text, noNamerSleep); err == nil {
+		if _, err := nameSession(context.Background(), llm.NewClient(), nil, source, text, "", noNamerSleep); err == nil {
 			t.Fatal("nil profile was accepted")
 		}
-		if _, err := nameSession(context.Background(), llm.NewClient(), profile, source, " ", noNamerSleep); err == nil {
+		if _, err := nameSession(context.Background(), llm.NewClient(), profile, source, " ", "", noNamerSleep); err == nil {
 			t.Fatal("empty source text was accepted")
 		}
 		// A record with no model id: the degenerate profile the namer must refuse.
 		emptyModel := provider.FromResolved(registry.Resolved{Instance: "openai"}, nil)
-		if _, err := nameSession(context.Background(), llm.NewClient(), emptyModel, source, text, noNamerSleep); err == nil {
+		if _, err := nameSession(context.Background(), llm.NewClient(), emptyModel, source, text, "", noNamerSleep); err == nil {
 			t.Fatal("empty model was accepted")
 		}
 		failureClient := llm.NewClient()
 		failureClient.Register(namerFuzzErrorAdapter{})
-		if _, err := nameSession(context.Background(), failureClient, profile, source, text, noNamerSleep); err == nil || !strings.Contains(err.Error(), "scripted failure") {
+		if _, err := nameSession(context.Background(), failureClient, profile, source, text, "", noNamerSleep); err == nil || !strings.Contains(err.Error(), "scripted failure") {
 			t.Fatalf("scripted provider error = %v", err)
 		}
 
@@ -136,7 +136,7 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		}}
 		client := llm.NewClient()
 		client.Register(adapter)
-		result, err := nameSession(context.Background(), client, profile, source, text, noNamerSleep)
+		result, err := nameSession(context.Background(), client, profile, source, text, "", noNamerSleep)
 		if wantNameError {
 			if err == nil || !strings.Contains(err.Error(), "generated name is empty") {
 				t.Fatalf("empty scripted name error = %v", err)
