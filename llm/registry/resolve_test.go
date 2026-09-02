@@ -812,6 +812,71 @@ web_search = true
 	}
 }
 
+// TestResolve_WebSearchVertexLocationValidation pins the host-rule-input
+// blind spot: GOOGLE_VERTEX_LOCATION sits in path position in the base_url
+// template, but the vertex-location host rule derives the AUTHORITY from
+// that very value (vertexHost), so a hostile location poisons the actual
+// and canonical resolutions identically and template-position
+// classification alone would compare the two poisoned URLs equal. A
+// location is a region token (a single RFC-1123 hostname label: letters,
+// digits, interior hyphens - us-central1), never a host: anything else
+// fails closed on both layers - the rule refuses to derive a host from it
+// (the "invalid GOOGLE_VERTEX_LOCATION" warning), and the canonical
+// lookup refuses to admit it, so the comparison diverges and web_search
+// strips. Label-shaped locations resolve exactly as before.
+func TestResolve_WebSearchVertexLocationValidation(t *testing.T) {
+	cfg := `
+[providers.vertexlocslash]
+base = "google-vertex-anthropic"
+[providers.vertexlocslash.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "evil.com/"
+
+[providers.vertexlocdots]
+base = "google-vertex-anthropic"
+[providers.vertexlocdots.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "evil.com"
+
+[providers.vertexlocport]
+base = "google-vertex-anthropic"
+[providers.vertexlocport.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "us-central1:8443"
+
+[providers.vertexlocok]
+base = "google-vertex-anthropic"
+[providers.vertexlocok.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "us-central1"
+`
+	r := fixtureLoad(t, nil, cfg)
+	cases := []struct {
+		ref         string
+		want        string
+		wantWarn    bool
+		wantInvalid bool
+		desc        string
+	}{
+		{"vertexlocslash/claude-opus-5", "false", true, true, "a location with a slash rewrites the derived authority's host and path"},
+		{"vertexlocdots/claude-opus-5", "false", true, true, "a location with dots is a host, not a region label"},
+		{"vertexlocport/claude-opus-5", "false", true, true, "a location with a port is not a region label"},
+		{"vertexlocok/claude-opus-5", "true", false, false, "a label-shaped region derives the canonical host on both sides"},
+	}
+	for _, c := range cases {
+		res := mustResolve(t, r, c.ref)
+		if got := bp(res.Caps.WebSearch); got != c.want {
+			t.Errorf("%s: web_search = %s, want %s (%s)", c.ref, got, c.want, c.desc)
+		}
+		if got := hasWarning(res, "web_search disabled"); got != c.wantWarn {
+			t.Errorf("%s: web_search-disabled warning present = %v, want %v (%s): %v", c.ref, got, c.wantWarn, c.desc, res.Warnings)
+		}
+		if got := hasWarning(res, "invalid GOOGLE_VERTEX_LOCATION"); got != c.wantInvalid {
+			t.Errorf("%s: invalid-location warning present = %v, want %v (%s): %v", c.ref, got, c.wantInvalid, c.desc, res.Warnings)
+		}
+	}
+}
+
 // TestResolve_WebSearchInheritedCuratedRowBaseURL guards against treating
 // an inherited curated row's own base_url as a user override: Google
 // Vertex MaaS rows carry a row-level base_url straight from models.dev's

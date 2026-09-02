@@ -937,6 +937,10 @@ func (r *Registry) resolveBaseURLVia(t Transport, lookup, env func(string) (stri
 			if !ok {
 				return "", false
 			}
+			if !validVertexLocation(loc) {
+				warnings = append(warnings, fmt.Sprintf("invalid GOOGLE_VERTEX_LOCATION %q: a Vertex location is a single hostname label (letters, digits, and interior hyphens, like us-central1)", loc))
+				return "", false
+			}
 			return vertexHost(loc), true
 		}
 	}

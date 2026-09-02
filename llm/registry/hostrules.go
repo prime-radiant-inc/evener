@@ -123,8 +123,32 @@ func validateOllamaURL(raw string, normalizePath bool) (string, error) {
 	return u.String(), nil
 }
 
+// validVertexLocation reports whether a Vertex location is shaped like the
+// region token vertexHost may compose into a hostname: a single RFC-1123
+// label - letters, digits, and interior hyphens, at most 63 bytes. A
+// location is us-central1 or global, never a host: a dot, slash, colon, or
+// any other byte would let the derivation build an authority outside
+// *.googleapis.com (or smuggle a path into it), so the vertex-location
+// rule refuses to derive from anything else (resolveBaseURLVia, load.go)
+// and the canonical first-party comparison refuses to admit it
+// (hostRuleInputAdmissible, instances.go).
+func validVertexLocation(loc string) bool {
+	if len(loc) == 0 || len(loc) > 63 || loc[0] == '-' || loc[len(loc)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(loc); i++ {
+		c := loc[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // vertexHost is the vertex-location rule (spec §9.4): the Vertex API host
-// for a location.
+// for a location. Callers validate the location first (validVertexLocation);
+// this function only composes.
 func vertexHost(location string) string {
 	switch location {
 	case "global":
