@@ -215,6 +215,7 @@ Watch event triggered: file changed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch triggered");
+  expect(n.tone).toBe("warning");
 });
 
 test("an Observer callback parses as a notification", () => {
@@ -358,6 +359,7 @@ excerpt:
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.message).toBe("**done** with the work");
   expect(n.concerns).toEqual(["watch the edge case"]);
+  expect(n.tone).toBe("warning");
 });
 
 // A delegate's communicate envelope rides the excerpt as body content, so
