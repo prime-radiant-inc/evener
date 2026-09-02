@@ -23,9 +23,11 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1522,6 +1524,127 @@ func TestApplyPendingForceCompact_WarnsWhenInstructionsUnpublished(t *testing.T)
 
 		if n := warningsContaining(evs, mu, "instructions were not applied"); n != 0 {
 			t.Fatalf("a published fold must not warn about unpublished instructions (%d warning(s))", n)
+		}
+	})
+}
+
+// restoreAttentionCompactionFixture builds and restores a root session whose
+// transcript carries one unresolved and one consumed delegate attention —
+// and, when withMarker is set, a compaction marker recorded AFTER them, so
+// ResumeHistory's last-marker anchor drops the attention entries from the
+// resumed history.
+func restoreAttentionCompactionFixture(t *testing.T, withMarker bool) (restored *Session, pendingText, consumedText, pendingID string) {
+	t.Helper()
+	stateDir := t.TempDir()
+	rootID := identifier.MustNewSessionID()
+	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	pendingID = "delegate:dlg_fold/delivery/1"
+	const consumedID = "delegate:dlg_fold/delivery/2"
+	pendingText = `<delegate-notification delegate_id="dlg_fold">unresolved attention recorded before the fold</delegate-notification>`
+	consumedText = `<delegate-notification delegate_id="dlg_fold">already resolved before the fold</delegate-notification>`
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, rootID), transcript.Header{SessionID: rootID, ProfileID: "openai", Model: "gpt-5.2"})
+	if err != nil {
+		t.Fatalf("create root transcript: %v", err)
+	}
+	pending := schema.NewTurn(schema.TurnSteering, llm.User(pendingText))
+	pending.AttentionID = pendingID
+	pending.StableTurnID = newQueueEntryID()
+	if err := writer.AppendDurable(pending); err != nil {
+		t.Fatalf("append pending attention: %v", err)
+	}
+	consumed := schema.NewTurn(schema.TurnSteering, llm.User(consumedText))
+	consumed.AttentionID = consumedID
+	consumed.StableTurnID = newQueueEntryID()
+	if err := writer.AppendDurable(consumed); err != nil {
+		t.Fatalf("append consumed attention: %v", err)
+	}
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{
+		AttentionID: consumedID,
+		Disposition: string(delegateAttentionConsumed),
+	}
+	if err := writer.AppendDurable(resolution); err != nil {
+		t.Fatalf("append resolution: %v", err)
+	}
+	if withMarker {
+		marker := schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\npost-attention fold\n[END SUMMARY]"))
+		if err := writer.AppendDurable(marker); err != nil {
+			t.Fatalf("append compaction marker: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close root transcript: %v", err)
+	}
+	meta := schema.SessionMeta{ID: rootID, ProfileID: "openai", Model: "gpt-5.2"}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("save root metadata: %v", err)
+	}
+	restored, err = RestoreSessionFromMeta(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	return restored, pendingText, consumedText, pendingID
+}
+
+// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart pins the
+// attention machinery's side of the restart story: attention turns are
+// deliberately excluded from the fold-publication rewrite (no
+// session-transcript pair, no pair-log entry), and ResumeHistory drops every
+// entry before the last compaction marker — so an UNRESOLVED attention
+// recorded before a fold marker would re-arm after restart as a pending
+// attention ID with NO model-visible content. The rearm folds the full
+// durable turns from the transcript already; it must also restore a pending
+// attention's turn into the resumed history. Guards both directions: a
+// RESOLVED attention must not resurrect, and a boundary-free restart must
+// not duplicate the resident turn.
+func TestRootDelegateAttention_PendingContentSurvivesCompactionRestart(t *testing.T) {
+	t.Run("pending content survives a compaction-boundary restart", func(t *testing.T) {
+		t.Parallel()
+		restored, pendingText, consumedText, pendingID := restoreAttentionCompactionFixture(t, true)
+
+		history := currentHistory(t, restored)
+		if indexOfTurnText(history, pendingText) < 0 {
+			t.Fatal("the unresolved attention re-armed as a pending ID but its model-visible turn is missing from the resumed history -- the attention run has nothing explaining what must be addressed")
+		}
+		count := 0
+		for _, turn := range history {
+			if turn.Message.Text() == pendingText {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("the pending attention turn appears %d times in the resumed history, want exactly 1", count)
+		}
+		if indexOfTurnText(history, consumedText) >= 0 {
+			t.Fatal("a RESOLVED attention turn resurrected into the resumed history")
+		}
+		restored.attentionMu.Lock()
+		_, armed := restored.rootAttentionWakeIDs[pendingID]
+		restored.attentionMu.Unlock()
+		if !armed {
+			t.Fatal("test fixture: the pending attention did not re-arm")
+		}
+	})
+
+	t.Run("boundary-free restart keeps exactly one resident copy", func(t *testing.T) {
+		t.Parallel()
+		restored, pendingText, consumedText, _ := restoreAttentionCompactionFixture(t, false)
+
+		history := currentHistory(t, restored)
+		count := 0
+		for _, turn := range history {
+			if turn.Message.Text() == pendingText {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("the pending attention turn appears %d times after a boundary-free restart, want exactly 1 (the rearm must replace the resident turn in place, never append a duplicate)", count)
+		}
+		if indexOfTurnText(history, consumedText) < 0 {
+			t.Fatal("without a compaction boundary the resolved attention's turn is part of the plainly resumed history and must remain")
 		}
 	})
 }
