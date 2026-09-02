@@ -266,27 +266,55 @@ func TestNameSession_NoRetryWithoutTemperatureInMessage(t *testing.T) {
 	}
 }
 
-// TestIsTemperatureUnsupported pins the retry predicate's phrasings: each
-// provider's rejection form triggers it, and a message naming temperature
-// without a rejection phrase (or an unrelated parameter) does not.
+// TestIsTemperatureUnsupported pins the retry predicate: every rejection
+// shape the classifier recognizes (spec §12 message patterns and structured
+// error.param codes) triggers it for temperature, other parameters and
+// non-rejection messages do not, and non-invalid-request kinds never do.
 func TestIsTemperatureUnsupported(t *testing.T) {
-	cases := []struct {
+	// Message shapes the classifier's parameterMessagePatterns match; these
+	// flow through ErrorFromHTTPStatus → parameterNameFromMessage.
+	msgCases := []struct {
 		name string
 		msg  string
 		want bool
 	}{
-		{"bedrock quoted", `openai error (status=400): responses.create failed: Unsupported parameter: 'temperature' is not supported with this model.`, true},
-		{"openai unknown parameter", `openai error (status=400): Unknown parameter: 'temperature'.`, true},
-		{"underscore form", `openai error (status=400): unknown_parameter: temperature`, true},
-		{"unquoted", `bedrock error (status=400): Unsupported parameter: temperature is not supported with this model.`, true},
-		{"other parameter rejected", `openai error (status=400): Unsupported parameter: 'top_p' is not supported with this model.`, false},
-		{"mentions temperature without rejection", `openai error (status=400): temperature value out of range`, false},
-		{"unrelated", `openai error (status=400): model not found`, false},
+		{"bedrock quoted", `responses.create failed: Unsupported parameter: 'temperature' is not supported with this model.`, true},
+		{"openai unknown parameter", `Unknown parameter: 'temperature'.`, true},
+		{"unrecognized argument", `Unrecognized request argument supplied: temperature`, true},
+		{"unknown field", `Invalid value for 'temperature': unknown field temperature`, true},
+		{"other parameter rejected", `Unsupported parameter: 'top_p' is not supported with this model.`, false},
+		{"mentions temperature without rejection", `temperature value out of range`, false},
+		{"unrelated", `model not found`, false},
 	}
-	for _, tc := range cases {
+	for _, tc := range msgCases {
 		err := llm.ErrorFromHTTPStatus("openai", 400, tc.msg, nil, nil)
 		if got := isTemperatureUnsupported(err); got != tc.want {
 			t.Errorf("%s: isTemperatureUnsupported(%q) = %v, want %v", tc.name, tc.msg, got, tc.want)
 		}
+	}
+
+	// Structured rejections: code unknown_parameter/unsupported_parameter
+	// with error.param naming the parameter. These classify through
+	// ClassifyHTTPError, whose paramFromError reads error.param.
+	structured := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"structured param temperature", `{"error":{"message":"Unsupported parameter","type":"invalid_request_error","param":"temperature","code":"unknown_parameter"}}`, true},
+		{"structured param other", `{"error":{"message":"Unsupported parameter","type":"invalid_request_error","param":"top_p","code":"unknown_parameter"}}`, false},
+	}
+	res := registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}
+	for _, tc := range structured {
+		err := llm.ClassifyHTTPError("responses.create", 400, nil, []byte(tc.body), res)
+		if got := isTemperatureUnsupported(err); got != tc.want {
+			t.Errorf("%s: isTemperatureUnsupported(body %q) = %v, want %v", tc.name, tc.body, got, tc.want)
+		}
+	}
+
+	// Non-invalid-request kinds never trigger, even naming temperature.
+	quota := llm.ErrorFromHTTPStatus("openai", 429, `Unsupported parameter: 'temperature'`, nil, nil)
+	if isTemperatureUnsupported(quota) {
+		t.Error("non-400 status naming temperature must not trigger the retry")
 	}
 }

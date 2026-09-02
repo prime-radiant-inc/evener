@@ -40,7 +40,8 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		return &contextLengthError{base}
 	case code == "unknown_parameter", code == "unsupported_parameter":
 		base.retryable = false
-		base.hint = fieldHint(paramFromError(raw), res)
+		base.rejectedParam = paramFromError(raw)
+		base.hint = fieldHint(base.rejectedParam, res)
 		return &invalidRequestError{base}
 	}
 	if usageLimitCodes[code] {
@@ -59,7 +60,8 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	if err := classifyByMessage(base); err != nil {
 		return err
 	}
-	base.hint = fieldHint(parameterNameFromMessage(base.message), res)
+	base.rejectedParam = parameterNameFromMessage(base.message)
+	base.hint = fieldHint(base.rejectedParam, res)
 	return &invalidRequestError{base}
 }
 
