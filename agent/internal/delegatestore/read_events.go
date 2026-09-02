@@ -61,17 +61,47 @@ var ErrScanLimitExceeded = errors.New("delegatestore: journal exceeds scan limit
 // package themselves.
 var ErrLineTooLong = linecap.ErrTooLong
 
+// ReadEvents reads and decodes path's raw events WITHOUT folding or
+// validating them as a coherent delegate history — see
+// ReadEventsWithDiagnostics' doc comment.
 func ReadEvents(path string) ([]Event, error) {
 	events, _, err := ReadEventsWithDiagnostics(path)
 	return events, err
 }
 
-// ReadEventsWithDiagnostics performs an unbounded scan; ScanEvents is the
-// context-aware, budget-enforcing counterpart used by callers (like the
-// persisted job-activity loader) that must bound how much of a journal they
-// will decode.
+// ReadEventsWithDiagnostics performs an unbounded scan and validates the
+// result folds into a coherent delegate history (Fold) before returning it
+// — the full-read wrapper's own contract, distinct from ScanEvents/
+// ScanEventsFrom below.
+//
+// #807's r5 round dropped this fold-validation entirely, reasoning that
+// ScanEvents/ScanEventsFrom (the context-aware, budget-enforcing streaming
+// path this wrapper is built on, shared with the incremental-fold path)
+// must never fold internally: a caller extending a prior fold incrementally
+// already folds each event itself as it extends (agent/internal/foldcache's
+// Extend callbacks), so a second internal fold there is pure duplicated
+// work that can also swallow a genuine ErrScanLimitExceeded behind a Fold
+// error on a partial prefix (see ScanEventsFrom's own doc comment and
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError). That
+// reasoning is correct for ScanEvents/ScanEventsFrom, which still never
+// fold — but it dropped fold-validation here too, in the ONE place meant to
+// hand a caller a fully validated read without folding itself: a
+// syntactically valid but semantically invalid delegate history (e.g. an
+// orphan event with no preceding Created, or an out-of-order Seq) was
+// silently accepted instead of reported (roborev finding on #807's r6
+// review). Restored here, specifically, rather than in ScanEvents/
+// ScanEventsFrom: this wrapper always reads the WHOLE journal from byte
+// zero (never a delta), so there is no partial-prefix/ErrScanLimitExceeded
+// case for a Fold error to mask.
 func ReadEventsWithDiagnostics(path string) ([]Event, ReadDiagnostics, error) {
-	return ScanEvents(context.Background(), path, ScanLimits{})
+	events, diagnostics, err := ScanEvents(context.Background(), path, ScanLimits{})
+	if err != nil {
+		return nil, diagnostics, err
+	}
+	if _, err := Fold(events); err != nil {
+		return nil, ReadDiagnostics{}, fmt.Errorf("delegatestore: %s does not fold into a coherent delegate history: %w", path, err)
+	}
+	return events, diagnostics, nil
 }
 
 // ScanEvents is ReadEventsWithDiagnostics' context-aware, budget-enforcing
@@ -104,14 +134,17 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, R
 // same bytes back up once they are complete, rather than silently skipping
 // or double-counting them.
 //
-// fromOffset == 0 folds the decoded events (discarding the result) purely to
-// validate they form a coherent sequence starting at 1, matching every
-// existing caller's expectation; fromOffset > 0 skips that validation, since
-// a delta's sequence numbers do not start at 1 — a caller extending a prior
-// fold incrementally (agent/internal/foldcache's Extend callbacks) is
-// expected to validate sequence continuity itself against whatever it last
-// saw, the same way Store.Append assigns and Fold verifies sequence numbers
-// but this function does not re-derive "what came before" on its own.
+// ScanEventsFrom never folds internally, regardless of fromOffset (stale
+// doc text here previously claimed fromOffset == 0 folds the decoded
+// events purely to validate — that never matched this function's actual
+// behavior; roborev finding on #807's r6 review). Folding, when needed, is
+// entirely the caller's responsibility: ReadEventsWithDiagnostics folds
+// the whole result itself for a fromOffset-0 full read (see its own doc
+// comment), while a caller extending a prior fold incrementally
+// (agent/internal/foldcache's Extend callbacks) is expected to validate
+// sequence continuity itself against whatever it last saw, the same way
+// Store.Append assigns and Fold verifies sequence numbers but this
+// function does not re-derive "what came before" on its own.
 //
 // When MaxBytes or MaxEvents is hit, ScanEventsFrom degrades to partial
 // rather than discarding everything read: it returns the events
@@ -207,6 +240,20 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		if err := ctx.Err(); err != nil {
 			return nil, 0, ReadDiagnostics{}, err
 		}
+		// Checked BEFORE even attempting to read the next line, not just
+		// before decoding it (roborev finding on #807's r5/r6 reviews): a
+		// MaxEvents-only scan (MaxLineBytes left at its generous default)
+		// could otherwise still pay the cost of buffering an oversized next
+		// line — up to MaxLineBytes — only to discover afterward the
+		// budget was already spent. See
+		// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted.
+		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, ReadDiagnostics{}, err
+			}
+			limitErr = fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+			break
+		}
 		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
@@ -238,26 +285,6 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			diagnostics.TornTail = true
 			break
 		}
-		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
-			// Checked BEFORE decoding this line, not after (roborev finding
-			// on #807): a batch line can hold many events, so checking only
-			// once the line is already fully decoded would still let a
-			// MaxEvents: 1 scan materialize an oversized (or malformed —
-			// see TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted)
-			// later batch just to discover afterward that the budget was
-			// already spent. The tradeoff (roborev finding on #807's
-			// saturation commit): this check is per LINE, not per event, so
-			// a line that was allowed to decode because len(events) was
-			// still under the limit can push events past MaxEvents by up to
-			// that whole batch — deliberately not truncated mid-batch,
-			// since a batch's events are not independently safe to split
-			// for fold semantics (see ScanLimits.MaxEvents).
-			if err := ctx.Err(); err != nil {
-				return nil, 0, ReadDiagnostics{}, err
-			}
-			limitErr = fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
-			break
-		}
 		var batch batchRecord
 		if err := decodeJSONLine(line, &batch); err != nil {
 			return nil, 0, ReadDiagnostics{}, fmt.Errorf("delegatestore: decode batch line %d: %w", lineNum, err)
@@ -267,22 +294,44 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		}
 		events = append(events, batch.Events...)
 		offset += consumed
+		if limits.MaxEvents > 0 && len(events) > limits.MaxEvents {
+			// A batch line can hold many events at once, so the top-of-loop
+			// check above (checked once per LINE, not per event —
+			// deliberately: see ScanLimits.MaxEvents' doc comment on why a
+			// batch is never truncated mid-line) can still let a single
+			// batch push len(events) past the limit. Without this,
+			// reaching that same line as the file's LAST one would let the
+			// loop simply end via a clean EOF next iteration, silently
+			// returning more than MaxEvents events with no error at all
+			// (roborev finding on #807's r6 review) — the top-of-loop
+			// check only ever fires on a LATER call that this file may
+			// never have.
+			if err := ctx.Err(); err != nil {
+				return nil, 0, ReadDiagnostics{}, err
+			}
+			limitErr = fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+			break
+		}
 	}
 
 	// No internal Fold call here (roborev finding on #807, and independently
-	// true for a delta too): extendHistoricalDelegateFold, this function's
-	// only caller, already validates sequence continuity and folds each
-	// event itself via delegatestore.Apply as it extends the cached state —
-	// so folding here too, for either a from-the-start scan or a delta, is
-	// pure duplicated work. Worse, it could silently replace a genuine
-	// ErrScanLimitExceeded with a Fold error whenever the partial prefix a
-	// limit degrades to didn't happen to fold cleanly on its own (e.g.
-	// ending mid-relationship, referencing a delegate whose Created event is
-	// in a later, never-read batch), defeating the documented
-	// degrade-to-partial contract in exactly the cases it exists for.
-	// Folding — and deciding what an unfoldable partial prefix means — is
-	// the caller's job. (A delta, fromOffset > 0, could not have passed
-	// Fold's own sequence check anyway: its Seq values do not start at 1.)
+	// true for a delta too): this function's two callers each own folding
+	// at whatever point makes sense for them instead. extendHistoricalDelegateFold
+	// (a fromOffset > 0 delta, or the first fromOffset-0 call for a path)
+	// already validates sequence continuity and folds each event itself via
+	// delegatestore.Apply as it extends the cached state; ReadEventsWithDiagnostics
+	// (always fromOffset 0, via ScanEvents) folds the WHOLE result itself,
+	// one level up, immediately after this call returns — see its own doc
+	// comment. Folding here too would be pure duplicated work for both, and
+	// worse, could silently replace a genuine ErrScanLimitExceeded with a
+	// Fold error whenever the partial prefix a limit degrades to didn't
+	// happen to fold cleanly on its own (e.g. ending mid-relationship,
+	// referencing a delegate whose Created event is in a later, never-read
+	// batch), defeating the documented degrade-to-partial contract in
+	// exactly the cases it exists for. Folding — and deciding what an
+	// unfoldable partial prefix means — is the caller's job. (A delta,
+	// fromOffset > 0, could not have passed Fold's own sequence check
+	// anyway: its Seq values do not start at 1.)
 	cloned := cloneEvents(events)
 	if limitErr != nil {
 		return cloned, 0, diagnostics, limitErr

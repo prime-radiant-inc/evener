@@ -630,6 +630,109 @@ func TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted(t *testing.T) {
 	}
 }
 
+// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted covers
+// roborev's finding on #807's r5 review: MaxEvents was checked only after
+// linecap.ReadLine had already fully buffered the next line (up to
+// MaxLineBytes), not before attempting to read it at all -- a
+// MaxEvents-only scan (MaxLineBytes left at its large default, or set
+// explicitly but still generous) could still pay the cost of buffering an
+// oversized next line just to discover, only afterward, that the event
+// budget was already spent. This is the read-level sibling of
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted, which
+// already proved decoding is skipped but -- since linecap.ReadLine reads
+// bytes long before batchRecord decoding ever sees them -- does not by
+// itself prove the READ is skipped too.
+//
+// A line that exceeds MaxLineBytes gives an unambiguous, black-box-
+// observable signal either way: if ScanEvents ever attempts to read it,
+// linecap.ReadLine reports ErrTooLong; if the budget check correctly runs
+// first, that read is never attempted and ScanEvents reports
+// ErrScanLimitExceeded instead.
+func TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	event := createdEvent("dlg_0", "")
+	event.Seq = 1
+	firstBatch, err := json.Marshal(batchRecord{Events: []Event{event}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(firstBatch)
+	buf.WriteByte('\n')
+	// Line 2 is well-formed JSON but far longer than the MaxLineBytes set
+	// below -- must never even be attempted, let alone actually exceed it.
+	// maxLineBytes is sized relative to firstBatch itself (not a fixed
+	// guess): a real createdEvent's Descriptor already carries enough
+	// fields to exceed a small fixed constant on its own, which would
+	// reject the FIRST (legitimate) line instead of exercising line 2 at
+	// all.
+	maxLineBytes := len(firstBatch) + 20
+	buf.WriteString(`{"events":[` + strings.Repeat(" ", maxLineBytes*4) + `]}` + "\n")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1, MaxLineBytes: int64(maxLineBytes)})
+	if errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("ScanEvents error = %v (ErrLineTooLong) -- line 2 was read at all despite the event budget already being spent before it", err)
+	}
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded", err)
+	}
+}
+
+// TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend covers roborev's
+// finding on #807's r6 review: MaxEvents was checked only at the TOP of
+// the loop, once per line, before that line was even read -- but a single
+// batch line can hold multiple events, so if the batch that pushes
+// len(events) past MaxEvents happens to be the file's LAST line, the loop
+// simply ends via a clean EOF on the next iteration without ever
+// re-checking the budget, silently returning more than MaxEvents events
+// with no error at all.
+func TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	// ONE batch line holding 3 events -- with MaxEvents:1, this single
+	// line alone overshoots the budget, and it is also the file's last
+	// line: nothing follows to trigger the top-of-loop check on a later
+	// call.
+	e0 := createdEvent("dlg_0", "")
+	e0.Seq = 1
+	e1 := createdEvent("dlg_1", "")
+	e1.Seq = 2
+	e2 := createdEvent("dlg_2", "")
+	e2.Seq = 3
+	batch, err := json.Marshal(batchRecord{Events: []Event{e0, e1, e2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(batch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ScanEvents(context.Background(), path, ScanLimits{MaxEvents: 1})
+	if !errors.Is(err, ErrScanLimitExceeded) {
+		t.Fatalf("ScanEvents error = %v, want ErrScanLimitExceeded (a 3-event batch exceeding MaxEvents:1, as the file's last line, must not silently succeed)", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d partial events, want exactly the 3 decoded from the one over-budget batch (retained in full, not truncated mid-batch — see ScanLimits.MaxEvents)", len(events))
+	}
+}
+
 // TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError covers
 // roborev's finding on #807: when the partial prefix ScanEvents degrades to
 // on hitting a limit would NOT fold cleanly on its own (e.g. it ends
@@ -678,5 +781,50 @@ func TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError(t *testing.T
 	}
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want the 1 decoded before the limit fired", len(events))
+	}
+}
+
+// TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid
+// covers roborev's finding on #807's r6 review: ReadEventsWithDiagnostics
+// (the full-read wrapper, unbounded) used to fold the complete journal
+// internally, so a syntactically valid but semantically invalid delegate
+// history -- e.g. an orphan event with no preceding Created -- surfaced as
+// an error. #807's r5 round removed that internal fold (correctly: this
+// package's ScanEvents/ScanEventsFrom, the context-aware streaming path
+// shared with the incremental-fold path, must never fold internally -- see
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError above),
+// but the removal reached the full-read wrapper too, silently accepting
+// what used to be reported. The fix restores fold-validation in the
+// wrapper specifically, leaving the streaming scans un-folded.
+func TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	var buf bytes.Buffer
+	header, err := json.Marshal(versionRecord{Version: CurrentVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(header)
+	buf.WriteByte('\n')
+	orphan := startedEvent("dlg_orphan", 1, TriggerInitial)
+	orphan.Seq = 1
+	batch, err := json.Marshal(batchRecord{Events: []Event{orphan}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(batch)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, err := ReadEventsWithDiagnostics(path)
+	if err == nil {
+		t.Fatalf("ReadEventsWithDiagnostics accepted a semantically invalid history (orphan event, no preceding Created): events=%+v", events)
+	}
+	if !strings.Contains(err.Error(), "dlg_orphan") {
+		t.Fatalf("error = %v, want it to name the orphan delegate", err)
+	}
+	if events != nil {
+		t.Fatalf("events = %+v, want nil on a fold-validation failure", events)
 	}
 }
