@@ -77,6 +77,16 @@ test("the progress head reads '<done> of <total> done' from the tool output foot
   expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
 });
 
+test("the progress head preserves cancelled and remaining outcomes from the new footer", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "cancelled" }] },
+      "Updated 3→cancelled. Progress: 0 done, 3 cancelled, 0 remaining (3 total).",
+    ),
+  );
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("0 done, 3 cancelled, 0 remaining (3 total)");
+});
+
 test("a completed update renders a flagged touched-done row", () => {
   renderItem(
     taskItem(

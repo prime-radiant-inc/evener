@@ -616,6 +616,17 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, false)
+}
+
+// ExecutePreparedCall runs a session-prepared call. Preparation has already
+// normalized and prevalidated arguments, so it preserves ExecuteCall's generic
+// execution behavior without applying a RegisteredTool.PreValidate twice.
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, true)
+}
+
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prevalidated bool) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -679,7 +690,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		args = normalized
 	}
 
-	if t.PreValidate != nil {
+	if !prevalidated && t.PreValidate != nil {
 		if err := t.PreValidate(args); err != nil {
 			return truncateResult(name, callID, err.Error(), true, t.Limit)
 		}

@@ -211,7 +211,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
-| `evener/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
+| `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
 | `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
@@ -1421,6 +1421,8 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `total` | `int` |  |  |
 | `done` | `int` |  |  |
+| `cancelled` | `int` |  |  |
+| `remaining` | `int` |  |  |
 | `current` | `*appwire.TaskSummary` | yes |  |
 
 

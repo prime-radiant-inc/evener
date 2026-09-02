@@ -534,7 +534,12 @@ func persistedTaskAggregate(stateDir, sessionID string) *appwire.TaskAggregate {
 		return nil
 	}
 	summary := taskpkg.Summarize(tasks.View())
-	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	aggregate := &appwire.TaskAggregate{
+		Total:     summary.Total,
+		Done:      summary.Done,
+		Cancelled: summary.Cancelled,
+		Remaining: summary.Remaining,
+	}
 	if summary.Current != nil {
 		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}

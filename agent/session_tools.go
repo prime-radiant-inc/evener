@@ -787,7 +787,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			Err:        prep.Err,
 		}
 	} else {
-		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	// M7: on a sandbox denial in an interactive root session, raise a human approval

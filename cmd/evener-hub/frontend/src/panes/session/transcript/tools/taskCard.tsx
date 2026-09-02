@@ -67,6 +67,8 @@ interface TouchedRow {
 interface Progress {
   done: number;
   total: number;
+  cancelled?: number;
+  remaining?: number;
 }
 
 function asObjectArray(value: unknown): Record<string, unknown>[] {
@@ -158,9 +160,19 @@ const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
 };
 
 const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/;
+const OUTCOME_PROGRESS_RE = /Progress:\s*(\d+)\s+done,\s*(\d+)\s+cancelled,\s*(\d+)\s+remaining\s*\((\d+)\s+total\)/;
 
 function parseProgress(output: string | undefined): Progress | undefined {
   if (!output) return undefined;
+  const outcome = OUTCOME_PROGRESS_RE.exec(output);
+  if (outcome) {
+    return {
+      done: Number(outcome[1]),
+      cancelled: Number(outcome[2]),
+      remaining: Number(outcome[3]),
+      total: Number(outcome[4]),
+    };
+  }
   const m = PROGRESS_RE.exec(output);
   if (!m) return undefined;
   return { done: Number(m[1]), total: Number(m[2]) };
@@ -220,11 +232,17 @@ function TaskCardBody({ item }: ToolRenderProps) {
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.done} of {progress.total} done
+            {progress.cancelled === undefined || progress.remaining === undefined
+              ? `${progress.done} of ${progress.total} done`
+              : `${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`}
           </span>
           <Meter
-            label={`Task progress: ${progress.done} of ${progress.total} complete`}
-            value={progress.done}
+            label={
+              progress.cancelled === undefined || progress.remaining === undefined
+                ? `Task progress: ${progress.done} of ${progress.total} complete`
+                : `Task progress: ${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`
+            }
+            value={progress.done + (progress.cancelled ?? 0)}
             max={progress.total}
             tone="neutral"
           />

@@ -1478,6 +1478,8 @@ export interface Source {
 export interface TaskAggregate {
   total: number;
   done: number;
+  cancelled: number;
+  remaining: number;
   current?: TaskSummary;
 }
 
@@ -1499,6 +1501,8 @@ export interface TaskUpdatedParams {
   ref: string;
   total: number;
   done: number;
+  cancelled: number;
+  remaining: number;
   current?: TaskSummary;
 }
 
