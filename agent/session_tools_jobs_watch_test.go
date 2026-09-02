@@ -465,6 +465,43 @@ func TestWatchArgsFromToolArgsRequiresWatchIDWithActionableShape(t *testing.T) {
 	}
 }
 
+func TestWatchArgsFromToolArgsCombinesMissingWatchIDAndMeaningfulTriggerDiagnostics(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"inspect", "clear"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			_, err := watchArgsFromToolArgs(map[string]any{
+				"operation":            operation,
+				"output_match":         "ready",
+				"progress_interval_ms": 5000,
+				"events":               []any{"communicate"},
+				"every":                2,
+				"event_filter":         map[string]any{"tool_name": "read_file"},
+			})
+			if err == nil {
+				t.Fatal("watchArgsFromToolArgs succeeded, want invalid_request")
+			}
+			repair := fmt.Sprintf(`{"operation":%q,"watch_id":"watch_..."}`, operation)
+			for _, want := range []string{
+				"watch_id is required",
+				`output_match="ready"`,
+				"progress_interval_ms=5000",
+				`events=["communicate"]`,
+				"every=2",
+				`event_filter={"tool_name":"read_file"}`,
+				repair,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err, want)
+				}
+			}
+			if !strings.HasSuffix(err.Error(), repair) {
+				t.Fatalf("error = %q, want it to end with repair %q", err, repair)
+			}
+		})
+	}
+}
+
 // TestWatchArgsFromToolArgsAcceptsTriggerFieldsOnCreate pins the flip side of the
 // rejection above: every trigger field stays valid on create, so the new guard
 // cannot start rejecting legitimate installs.

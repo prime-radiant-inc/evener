@@ -200,6 +200,7 @@ func TestConfigureWatchRejectsImpossibleConcreteJobEventWatches(t *testing.T) {
 		{"communicate", []string{"communicate"}, nil, []string{"communicate", "concrete shell job"}},
 		{"assistant tool filter", []string{"assistant.tool"}, &watchEventFilter{ToolName: "read_file"}, []string{"assistant.tool", "concrete shell job"}},
 		{"terminal notification", []string{"job.notification"}, nil, []string{"automatic", "end its turn"}},
+		{"wildcard", []string{"*"}, nil, []string{"*", "automatic", "output_match"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := jm.configureWatch(watchArgs{Operation: "create", Source: rec.JobID, Target: rec.JobID, Events: tc.events, EventFilter: tc.filter})

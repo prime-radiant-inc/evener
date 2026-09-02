@@ -1978,6 +1978,7 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	}
 	a.EventFilter = eventFilter
 	normalizeWatchArgsForOperation(&a)
+	missingWatchID := false
 	switch a.Operation {
 	case "create":
 		if a.Source == "" {
@@ -1989,13 +1990,16 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		}
 	case "inspect", "clear":
 		if a.WatchID == "" {
-			return watchArgs{}, fmt.Errorf("invalid_request: watch_id is required for operation=%q; use %s", a.Operation, watchOperationRepairShape(a))
+			missingWatchID = true
 		}
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
 	if err := rejectWatchTriggerFieldsOnNonCreate(args, a); err != nil {
 		return watchArgs{}, err
+	}
+	if missingWatchID {
+		return watchArgs{}, fmt.Errorf("invalid_request: watch_id is required for operation=%q; use %s", a.Operation, watchOperationRepairShape(a))
 	}
 	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
@@ -2047,9 +2051,14 @@ func rejectWatchTriggerFieldsOnNonCreate(args map[string]any, a watchArgs) error
 	if len(supplied) == 0 {
 		return nil
 	}
+	missingWatchID := (a.Operation == "inspect" || a.Operation == "clear") && a.WatchID == ""
+	missing := ""
+	if missingWatchID {
+		missing = fmt.Sprintf("watch_id is required for operation=%q; ", a.Operation)
+	}
 	return fmt.Errorf(
-		"invalid_request: trigger fields apply only to operation=\"create\"; received %s with operation=%q — set operation=\"create\" to arm a watch, or remove those fields and use %s",
-		strings.Join(supplied, ", "), a.Operation, watchOperationRepairShape(a),
+		"invalid_request: %strigger fields apply only to operation=\"create\"; received %s with operation=%q — set operation=\"create\" to arm a watch, or remove those fields and use %s",
+		missing, strings.Join(supplied, ", "), a.Operation, watchOperationRepairShape(a),
 	)
 }
 
