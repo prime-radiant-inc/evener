@@ -455,7 +455,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		func(llm.Request) llm.Response {
 			return toolCallResponse(llm.ToolCallData{
 				ID: "watch-it", Name: "job_watch", Type: "function",
-				Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","events":["job.notification"]}`),
+				Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","output_match":"READY"}`),
 			})
 		},
 		func(llm.Request) llm.Response {
@@ -522,11 +522,9 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	watched.deliveries = watchDeliveryBudget - 1
 	sess.jobManager.mu.Unlock()
 
-	// This is a real matching session event, and the next delivery crosses the
-	// actual budget auto-clear path rather than merely deleting jm.watches.
-	onSessionEventKD(sess.jobManager, events.EventJobFinished, events.JobFinishedData{
-		JobID: jobID, JobType: "shell", Status: "completed",
-	})
+	// This real output match crosses the actual budget auto-clear path rather
+	// than merely deleting jm.watches.
+	feedJob(sess.jobManager, jobID, []byte("READY\n"))
 	sess.jobManager.mu.Lock()
 	stillLive := false
 	for _, cfg := range sess.jobManager.watches {

@@ -128,12 +128,11 @@ func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 		waitForShellDone(t, s.jobManager, jobID)
 	})
 
-	if _, err := jobWatchTool(s, map[string]any{
-		"operation": "create",
-		"source":    jobID,
-		"events":    []any{"job.notification"},
-	}, jobToolResultDefaultMaxChar); err != nil {
-		t.Fatalf("job_watch create: %v", err)
+	// Public job_watch rejects a concrete job.notification watch because a
+	// completion notification is already automatic. This test exercises the
+	// retained internal coalescing mechanism directly.
+	if _, err := s.jobManager.configureWatch(watchArgs{Target: jobID, Events: []string{"job.notification"}}); err != nil {
+		t.Fatalf("configure watch: %v", err)
 	}
 	s.jobManager.mu.Lock()
 	var watched *watchConfig

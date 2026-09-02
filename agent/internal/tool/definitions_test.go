@@ -456,6 +456,21 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	}
 }
 
+func TestDefJobWatchOptionalTriggerFieldsAreNullable(t *testing.T) {
+	props := DefJobWatch([]string{"communicate"}).Parameters["properties"].(map[string]any)
+	for _, name := range []string{"output_match", "events", "event_filter"} {
+		t.Run(name, func(t *testing.T) {
+			typeValues, ok := props[name].(map[string]any)["type"].([]string)
+			if !ok {
+				t.Fatalf("%s type = %#v, want nullable type array", name, props[name].(map[string]any)["type"])
+			}
+			if !slices.Contains(typeValues, "null") {
+				t.Fatalf("%s type = %#v, want null", name, typeValues)
+			}
+		})
+	}
+}
+
 func TestDefJobWatchUsesSourceAndOmitsSend(t *testing.T) {
 	def := DefJobWatch([]string{"assistant.tool", "communicate", "job.notification"})
 	props := def.Parameters["properties"].(map[string]any)

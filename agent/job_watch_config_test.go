@@ -182,6 +182,39 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsImpossibleConcreteJobEventWatches(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "watched"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	for _, tc := range []struct {
+		name   string
+		events []string
+		filter *watchEventFilter
+		wants  []string
+	}{
+		{"assistant tool", []string{"assistant.tool"}, nil, []string{"assistant.tool", "concrete shell job"}},
+		{"communicate", []string{"communicate"}, nil, []string{"communicate", "concrete shell job"}},
+		{"assistant tool filter", []string{"assistant.tool"}, &watchEventFilter{ToolName: "read_file"}, []string{"assistant.tool", "concrete shell job"}},
+		{"terminal notification", []string{"job.notification"}, nil, []string{"automatic", "end its turn"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := jm.configureWatch(watchArgs{Operation: "create", Source: rec.JobID, Target: rec.JobID, Events: tc.events, EventFilter: tc.filter})
+			if err == nil {
+				t.Fatal("configureWatch succeeded, want impossible concrete-job event rejection")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestJobWatchAliasTargetWithoutContextFailsTargetNotFound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

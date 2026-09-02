@@ -802,6 +802,29 @@ func validateWatchTriggerShape(a watchArgs) error {
 	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: session event watches use events/event_filter/every; progress_interval_ms is for periodic progress watches")
 	}
+	// Internal watch machinery retains concrete-job event predicates for
+	// coalescing and delivery bookkeeping. The public job_watch create surface is
+	// narrower: a shell process cannot originate assistant/communicate events, and
+	// its terminal notification is delivered automatically.
+	if a.Operation == "create" && strings.HasPrefix(a.Target, "job_") {
+		var reasons []string
+		var impossible []string
+		for _, name := range a.Events {
+			switch name {
+			case "assistant.tool", "communicate":
+				impossible = append(impossible, name)
+			}
+		}
+		if len(impossible) > 0 {
+			reasons = append(reasons, fmt.Sprintf("concrete shell job %q cannot emit session events %s; use output_match for its output or progress_interval_ms for periodic progress", a.Target, strings.Join(impossible, ", ")))
+		}
+		if slices.Contains(a.Events, "job.notification") {
+			reasons = append(reasons, fmt.Sprintf("concrete shell job %q terminal notification is automatic; do not create a job.notification watch — end its turn and await the completion notification", a.Target))
+		}
+		if len(reasons) > 0 {
+			return fmt.Errorf("invalid_request: %s", strings.Join(reasons, "; "))
+		}
+	}
 	return nil
 }
 
