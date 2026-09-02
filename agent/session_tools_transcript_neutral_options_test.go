@@ -1,12 +1,16 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // TestReadTranscriptNeutralMaterializedRetainedOptions covers the provider shape
@@ -25,14 +29,16 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("omitted options: %v", err)
 		}
-		materialized, err := execReadTranscript(deps, map[string]any{
+		materializedArgs := map[string]any{
 			"transcript_ref": ref,
 			"range":          "",
 			"expand_turn":    float64(0),
 			"format":         "markdown",
 			"output_match":   "",
 			"context_lines":  float64(0),
-		})
+		}
+		normalized, _ := normalizeRetainedReadArgsForRepair(materializedArgs)
+		materialized, err := execReadTranscript(deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
 		}
@@ -47,13 +53,15 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("omitted options: %v", err)
 		}
-		materialized, err := execReadTranscript(deps, map[string]any{
+		materializedArgs := map[string]any{
 			"transcript_ref": ref,
 			"range":          nil,
 			"expand_turn":    nil,
 			"output_match":   "",
 			"context_lines":  float64(0),
-		})
+		}
+		normalized, _ := normalizeRetainedReadArgsForRepair(materializedArgs)
+		materialized, err := execReadTranscript(deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
 		}
@@ -61,6 +69,135 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			t.Fatalf("materialized artifact defaults changed result:\nomitted=%#v\nmaterialized=%#v", omitted, materialized)
 		}
 	})
+}
+
+func TestSessionExecToolRepairsMaterializedRetainedReadDefaults(t *testing.T) {
+	t.Run("job defaults reach the registered executor", func(t *testing.T) {
+		stateDir := t.TempDir()
+		sess := newSession(t, withConfig(SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 1,
+			NoProjectPrompts: true,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		}))
+		jobID := identifier.MustNewJobID(sess.ID())
+		seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+		repairedCh := drainRepairedEvents(sess)
+
+		result := execReadTranscriptThroughSession(t, sess, "job-defaults", map[string]any{
+			"transcript_ref": "job:" + jobID,
+			"range":          "",
+			"expand_turn":    float64(0),
+			"format":         "markdown",
+			"output_match":   "",
+			"context_lines":  float64(0),
+		})
+		if result.IsError {
+			t.Fatalf("registered job read failed: %s", result.Output)
+		}
+		nullableResult := execReadTranscriptThroughSession(t, sess, "job-null-defaults", map[string]any{
+			"transcript_ref": "job:" + jobID,
+			"range":          nil,
+			"expand_turn":    nil,
+			"format":         nil,
+		})
+		if nullableResult.IsError {
+			t.Fatalf("registered nullable job read failed: %s", nullableResult.Output)
+		}
+		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
+		assertReadRepairTelemetry(t, repaired, "job-defaults", "range", "expand_turn", "format", "output_match", "context_lines")
+		assertReadRepairTelemetry(t, repaired, "job-null-defaults", "range", "expand_turn", "format")
+	})
+
+	t.Run("artifact defaults reach the registered executor while format remains explicit", func(t *testing.T) {
+		sess := newArtifactTestRoot(t)
+		ref, err := sess.artifactStore.Put([]byte("ready\n"))
+		if err != nil {
+			t.Fatalf("put artifact: %v", err)
+		}
+		repairedCh := drainRepairedEvents(sess)
+		result := execReadTranscriptThroughSession(t, sess, "artifact-defaults", map[string]any{
+			"transcript_ref": ref,
+			"range":          nil,
+			"expand_turn":    nil,
+			"output_match":   "",
+			"context_lines":  float64(0),
+		})
+		if result.IsError {
+			t.Fatalf("registered artifact read failed: %s", result.Output)
+		}
+		formatResult := execReadTranscriptThroughSession(t, sess, "artifact-null-format", map[string]any{"transcript_ref": ref, "format": nil})
+		if !formatResult.IsError || !strings.Contains(formatResult.Output, "format is not supported for artifact") {
+			t.Fatalf("artifact explicit null format = %#v, want artifact format rejection", formatResult)
+		}
+		assertReadRepairTelemetry(t, closeAndDrainRepairedEvents(sess, repairedCh), "artifact-defaults", "range", "expand_turn", "output_match", "context_lines")
+	})
+}
+
+func TestReadTranscriptCompositeInvalidJobReportsParseAndModeFields(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	_, err := execReadTranscript(&toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+		"transcript_ref": "job:" + jobID,
+		"range":          "1-2",
+		"expand_turn":    float64(1),
+		"format":         "outline",
+		"context_lines":  float64(-1),
+	})
+	if err == nil {
+		t.Fatal("composite invalid job read succeeded")
+	}
+	for _, want := range []string{`range="1-2"`, "expand_turn=1", `format="outline"`, "context_lines=-1", `{"transcript_ref":"job:<job_id>"}`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func execReadTranscriptThroughSession(t *testing.T, sess *Session, id string, args map[string]any) tool.ExecResult {
+	t.Helper()
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return sess.execTool(context.Background(), llm.ToolCallData{ID: id, Name: "read_transcript", Arguments: encoded}, "")
+}
+
+func closeAndDrainRepairedEvents(sess *Session, repairedCh <-chan []events.ToolCallRepairedData) []events.ToolCallRepairedData {
+	sess.Close()
+	return <-repairedCh
+}
+
+func assertReadRepairTelemetry(t *testing.T, repaired []events.ToolCallRepairedData, callID string, fields ...string) {
+	t.Helper()
+	for _, event := range repaired {
+		if event.ToolName != "read_transcript" || event.CallID != callID {
+			continue
+		}
+		if len(event.Changes) != len(fields) {
+			t.Fatalf("repair changes = %v, want one per field %v", event.Changes, fields)
+		}
+		for _, field := range fields {
+			found := false
+			for _, change := range event.Changes {
+				if strings.HasPrefix(change, "normalize_default:"+field+":") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("repair changes = %v, want normalized %q", event.Changes, field)
+			}
+		}
+		return
+	}
+	t.Fatalf("no read_transcript repair event for %q: %+v", callID, repaired)
 }
 
 func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
@@ -76,17 +213,17 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 		{name: "session empty and defaults", ref: "current", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: fields},
 		{name: "session meaningful", ref: "current", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
-		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
+		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"output_match"}},
 		{name: "job empty and defaults", ref: "job:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}},
 		{name: "job meaningful", ref: "job:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "artifact absent", ref: "artifact:abc", args: map[string]any{}},
-		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format"}},
+		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format", "output_match"}},
 		{name: "artifact empty and defaults", ref: "artifact:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: []string{"format"}},
 		{name: "artifact meaningful", ref: "artifact:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			normalized := normalizeRetainedReadArgs(tc.args, tc.ref)
+			normalized, _ := normalizeRetainedReadArgsForRepair(mapWithTranscriptRef(tc.args, tc.ref))
 			want := make(map[string]bool, len(tc.wantPresent))
 			for _, name := range tc.wantPresent {
 				want[name] = true
@@ -104,7 +241,7 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 func TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset(t *testing.T) {
 	for _, ref := range []string{"job:abc", "artifact:abc"} {
 		t.Run(ref, func(t *testing.T) {
-			normalized := normalizeRetainedReadArgs(map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)}, ref)
+			normalized, _ := normalizeRetainedReadArgsForRepair(map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
 			if _, present := normalized["offset_bytes"]; !present {
 				t.Fatal("normalization removed explicit offset_bytes=0")
 			}
@@ -114,6 +251,15 @@ func TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mapWithTranscriptRef(args map[string]any, ref string) map[string]any {
+	withRef := make(map[string]any, len(args)+1)
+	for key, value := range args {
+		withRef[key] = value
+	}
+	withRef["transcript_ref"] = ref
+	return withRef
 }
 
 func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
