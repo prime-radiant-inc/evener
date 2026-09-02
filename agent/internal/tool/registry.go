@@ -359,6 +359,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// PreValidate optionally rejects a tool-specific argument shape before the
+	// generic JSON schema validator renders its diagnostic.
+	PreValidate func(args map[string]any) error
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -674,6 +677,12 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			return truncateResult(name, callID, err.Error(), true, t.Limit)
 		}
 		args = normalized
+	}
+
+	if t.PreValidate != nil {
+		if err := t.PreValidate(args); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
 	}
 
 	if err := t.Schema.Validate(args); err != nil {

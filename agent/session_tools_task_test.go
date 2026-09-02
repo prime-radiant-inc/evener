@@ -425,6 +425,82 @@ func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
 	}
 }
 
+func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
+	tests := []struct {
+		name string
+		args map[string]any
+		want []string
+	}{
+		{
+			name: "add brief instead of description",
+			args: map[string]any{"add": []any{map[string]any{
+				"type": "implement", "brief": "wrong field", "prompt": "do it",
+			}}},
+			want: []string{"brief", "description", "type", "prompt"},
+		},
+		{
+			name: "add missing description",
+			args: map[string]any{"add": []any{map[string]any{
+				"type": "implement", "prompt": "do it",
+			}}},
+			want: []string{"description", "type", "prompt"},
+		},
+		{
+			name: "add unknown field alongside valid mutation",
+			args: map[string]any{"add": []any{
+				map[string]any{"type": "implement", "description": "valid", "prompt": "do it"},
+				map[string]any{"type": "verify", "description": "invalid", "prompt": "check it", "unknown": true},
+			}},
+			want: []string{"unknown"},
+		},
+		{
+			name: "malformed update alongside valid mutation",
+			args: map[string]any{"update": []any{
+				map[string]any{"id": 1, "status": "done"},
+				map[string]any{"id": 1, "brief": "invalid"},
+			}},
+			want: []string{"brief", "description"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "keep me"}})
+			res := h.call(t, tc.args)
+			if !res.IsError {
+				t.Fatalf("nested unknown field must be rejected: %s", res.FullOutput)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(res.FullOutput, want) {
+					t.Errorf("diagnostic = %q, want %q", res.FullOutput, want)
+				}
+			}
+			view := h.store.View()
+			if len(view) != 1 || view[0].Status != taskpkg.TaskOpen || view[0].Description != "existing" {
+				t.Fatalf("invalid batch mutated tasks: %+v", view)
+			}
+		})
+	}
+}
+
+func TestTaskTool_CancelledTerminalListUsesOutcomeSummary(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "stop", Prompt: "stop"}})
+	res := h.update(t, map[string]any{"id": 1, "status": "cancelled"})
+	if res.IsError {
+		t.Fatalf("cancel task: %s", res.FullOutput)
+	}
+	for _, want := range []string{
+		"No actionable tasks remain.",
+		"0 done, 1 cancelled, 0 remaining (1 total)",
+	} {
+		if !strings.Contains(res.FullOutput, want) {
+			t.Errorf("terminal response = %q, want %q", res.FullOutput, want)
+		}
+	}
+	if strings.Contains(res.FullOutput, "All tasks complete") {
+		t.Fatalf("cancelled terminal response must not say all tasks complete: %q", res.FullOutput)
+	}
+}
+
 // TestTaskTool_UpdateDependsOnSameCallAddRejected: an update's depends_on
 // may not reference an ID this call's add would assign — the model cannot
 // know it, and allowing it invites ID-guessing (the same reason update

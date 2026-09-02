@@ -382,7 +382,7 @@ func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T)
 	}
 }
 
-func TestSummarizeCountsDoneAndSelectsFirstInProgress(t *testing.T) {
+func TestSummarizeCountsOutcomesAndSelectsFirstInProgress(t *testing.T) {
 	tasks := []Task{
 		{ID: 1, Status: TaskDone, Description: "done"},
 		{ID: 2, Status: TaskInProgress, Description: "first current"},
@@ -392,11 +392,33 @@ func TestSummarizeCountsDoneAndSelectsFirstInProgress(t *testing.T) {
 	}
 
 	summary := Summarize(tasks)
-	if summary.Total != 5 || summary.Done != 1 {
-		t.Fatalf("Summarize = %+v, want Total=5 Done=1", summary)
+	if summary.Total != 5 || summary.Done != 1 || summary.Cancelled != 1 || summary.Remaining != 3 {
+		t.Fatalf("Summarize = %+v, want Total=5 Done=1 Cancelled=1 Remaining=3", summary)
 	}
 	if summary.Current == nil || summary.Current.ID != 2 || summary.Current.Description != "first current" {
 		t.Fatalf("Summarize Current = %+v, want task 2 first current", summary.Current)
+	}
+}
+
+func TestListSummaryProgressText(t *testing.T) {
+	tests := []struct {
+		name  string
+		tasks []Task
+		want  string
+	}{
+		{name: "empty", want: "0 done, 0 cancelled, 0 remaining (0 total)"},
+		{name: "open", tasks: []Task{{Status: TaskOpen}}, want: "0 done, 0 cancelled, 1 remaining (1 total)"},
+		{name: "in progress", tasks: []Task{{Status: TaskInProgress}}, want: "0 done, 0 cancelled, 1 remaining (1 total)"},
+		{name: "done", tasks: []Task{{Status: TaskDone}}, want: "1 done, 0 cancelled, 0 remaining (1 total)"},
+		{name: "cancelled", tasks: []Task{{Status: TaskCancelled}}, want: "0 done, 1 cancelled, 0 remaining (1 total)"},
+		{name: "mixed", tasks: []Task{{Status: TaskDone}, {Status: TaskCancelled}, {Status: TaskOpen}, {Status: TaskInProgress}}, want: "1 done, 1 cancelled, 2 remaining (4 total)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Summarize(tc.tasks).ProgressText(); got != tc.want {
+				t.Fatalf("ProgressText() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -426,18 +448,18 @@ func TestSummarizeReturnsOwnedCurrentTask(t *testing.T) {
 	}
 }
 
-func TestTaskStore_ProgressCountsOnlyDone(t *testing.T) {
+func TestTaskStore_ProgressReturnsDistinctOutcomeCounts(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
 	_ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
 	_ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}})
-	total, done := s.Progress()
-	if total != 3 || done != 1 {
-		t.Errorf("Progress = (%d,%d), want (3,1) — cancelled is not done", total, done)
+	total, done, cancelled, remaining := s.Progress()
+	if total != 3 || done != 1 || cancelled != 1 || remaining != 1 {
+		t.Errorf("Progress = (%d,%d,%d,%d), want (3,1,1,1)", total, done, cancelled, remaining)
 	}
 	summary := Summarize(s.View())
-	if total != summary.Total || done != summary.Done {
-		t.Errorf("Progress = (%d,%d), Summarize = (%d,%d)", total, done, summary.Total, summary.Done)
+	if total != summary.Total || done != summary.Done || cancelled != summary.Cancelled || remaining != summary.Remaining {
+		t.Errorf("Progress = (%d,%d,%d,%d), Summarize = (%d,%d,%d,%d)", total, done, cancelled, remaining, summary.Total, summary.Done, summary.Cancelled, summary.Remaining)
 	}
 }
 

@@ -115,27 +115,50 @@ type TaskUpdateSnapshot struct {
 	After  []Task
 }
 
-// ListSummary is the transport-neutral progress and current-work view of a task
-// list. Current is an owned copy and may be mutated independently of the input.
+// ListSummary is the transport-neutral outcome and current-work view of a task
+// list. Done and Cancelled are distinct terminal outcomes; Remaining includes
+// open and in-progress tasks. Current is an owned copy and may be mutated
+// independently of the input.
 type ListSummary struct {
-	Total   int
-	Done    int
-	Current *Task
+	Total     int
+	Done      int
+	Cancelled int
+	Remaining int
+	Current   *Task
 }
 
-// Summarize derives progress and the first in-progress task from one list
-// snapshot. Only done tasks count as complete.
+// ProgressText is the shared human-readable outcome contract for task clients.
+func (s ListSummary) ProgressText() string {
+	return fmt.Sprintf("%d done, %d cancelled, %d remaining (%d total)", s.Done, s.Cancelled, s.Remaining, s.Total)
+}
+
+// AllDone reports whether every non-empty task list member finished normally.
+func (s ListSummary) AllDone() bool {
+	return s.Total > 0 && s.Done == s.Total
+}
+
+// NoActionableTasks reports whether every task has a terminal outcome.
+func (s ListSummary) NoActionableTasks() bool {
+	return s.Remaining == 0
+}
+
+// Summarize derives distinct task outcomes and the first in-progress task from
+// one list snapshot.
 func Summarize(tasks []Task) ListSummary {
 	summary := ListSummary{Total: len(tasks)}
 	for i := range tasks {
-		if tasks[i].Status == TaskDone {
+		switch tasks[i].Status {
+		case TaskDone:
 			summary.Done++
+		case TaskCancelled:
+			summary.Cancelled++
 		}
 		if summary.Current == nil && tasks[i].Status == TaskInProgress {
 			current := cloneTasks(tasks[i : i+1])[0]
 			summary.Current = &current
 		}
 	}
+	summary.Remaining = summary.Total - summary.Done - summary.Cancelled
 	return summary
 }
 
@@ -453,14 +476,14 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	return added, nil
 }
 
-// Progress returns (total tasks, completed tasks). Only tasks with
-// status "done" count as completed. Cancelled tasks are not complete.
-func (s *TaskStore) Progress() (total, done int) {
+// Progress returns total, done, cancelled, and remaining task counts from one
+// locked snapshot. Done and cancelled remain distinct terminal outcomes.
+func (s *TaskStore) Progress() (total, done, cancelled, remaining int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	summary := Summarize(s.tasks)
-	return summary.Total, summary.Done
+	return summary.Total, summary.Done, summary.Cancelled, summary.Remaining
 }
 
 // NextEligible returns open tasks whose dependencies are all satisfied

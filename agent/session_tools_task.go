@@ -60,7 +60,7 @@ func formatTaskList(tasks []taskpkg.Task) string {
 		}
 	}
 	summary := taskpkg.Summarize(tasks)
-	fmt.Fprintf(&b, "\nProgress: %d/%d tasks complete.", summary.Done, summary.Total)
+	fmt.Fprintf(&b, "\nProgress: %s.", summary.ProgressText())
 	return b.String()
 }
 
@@ -150,13 +150,16 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		if !ok {
 			return nil, nil, fmt.Errorf("add entry %d must be an object with type, description, and prompt", i)
 		}
+		if err := validateTaskListItemFields("add", i, m); err != nil {
+			return nil, nil, err
+		}
 		var input taskpkg.TaskInput
 		if t, ok := m["type"].(string); ok {
 			input.Type = taskpkg.TaskType(t)
 		}
 		description, ok := m["description"].(string)
 		if !ok {
-			return nil, nil, fmt.Errorf("add entry %d requires a string description", i)
+			return nil, nil, fmt.Errorf("add entry %d requires the field named description as a string; valid add shape: {type, description, prompt}", i)
 		}
 		input.Description = description
 		prompt, ok := m["prompt"].(string)
@@ -189,6 +192,9 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		m, ok := r.(map[string]any)
 		if !ok {
 			return nil, nil, fmt.Errorf("update entry %d must be an object with id", i)
+		}
+		if err := validateTaskListItemFields("update", i, m); err != nil {
+			return nil, nil, err
 		}
 		idFloat, ok := m["id"].(float64)
 		if !ok {
@@ -224,6 +230,58 @@ func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []ta
 		updates = append(updates, u)
 	}
 	return adds, updates, nil
+}
+
+func validateTaskListItemFields(kind string, index int, item map[string]any) error {
+	allowed := map[string]bool{}
+	switch kind {
+	case "add":
+		for _, field := range []string{"type", "description", "prompt", "depends_on", "reasoning_effort"} {
+			allowed[field] = true
+		}
+	case "update":
+		for _, field := range []string{"id", "status", "notes", "depends_on", "reasoning_effort"} {
+			allowed[field] = true
+		}
+	}
+	for field := range item {
+		if allowed[field] {
+			continue
+		}
+		if field == "brief" {
+			return fmt.Errorf("%s entry %d has invalid field brief; use the required field named description instead; valid add shape: {type, description, prompt}", kind, index)
+		}
+		return fmt.Errorf("%s entry %d has unknown field %q", kind, index, field)
+	}
+	return nil
+}
+
+func validateTaskListArgs(args map[string]any) error {
+	for _, kind := range []string{"add", "update"} {
+		raw, supplied := args[kind]
+		if !supplied {
+			continue
+		}
+		items, ok := raw.([]any)
+		if !ok {
+			continue // The JSON schema reports an array type mismatch.
+		}
+		for i, rawItem := range items {
+			item, ok := rawItem.(map[string]any)
+			if !ok {
+				continue // The JSON schema reports an object type mismatch.
+			}
+			if err := validateTaskListItemFields(kind, i, item); err != nil {
+				return err
+			}
+			if kind == "add" {
+				if _, ok := item["description"]; !ok {
+					return fmt.Errorf("add entry %d requires the field named description; valid add shape: {type, description, prompt}", i)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // decodeIDList converts a JSON array of numbers into []int.
@@ -287,7 +345,8 @@ func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) e
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
-		Definition: tool.DefTaskList(deps.reasoningEffortLevels),
+		Definition:  tool.DefTaskList(deps.reasoningEffortLevels),
+		PreValidate: validateTaskListArgs,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()
@@ -330,7 +389,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "", epoch, revision)
 					deps.emit(events.EventTaskUpdated, taskUpdate)
 					return tool.StateResult{
-						Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
+						Output: fmt.Sprintf("Added %d task(s). Progress: %s.", len(added), taskpkg.Summarize(tasks).ProgressText()),
 						State:  tasks,
 					}, nil
 				}
@@ -417,17 +476,25 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
-							allDone := taskListAllDone(finalTasks)
-							if allDone && len(finalTasks) > 0 {
+							summary := taskpkg.Summarize(finalTasks)
+							if summary.NoActionableTasks() && summary.Total > 0 {
 								var blockingDelegateIDs []string
 								if deps.blockingDelegateIDs != nil {
 									blockingDelegateIDs = deps.blockingDelegateIDs()
 								}
-								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+								deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs)
 								if len(blockingDelegateIDs) == 0 {
-									msg.WriteString("All tasks complete. ")
+									if summary.AllDone() {
+										msg.WriteString("All tasks complete. ")
+									} else {
+										msg.WriteString("No actionable tasks remain. ")
+									}
 								} else {
-									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+									if summary.AllDone() {
+										msg.WriteString("All tasks complete; waiting for delegate(s) ")
+									} else {
+										msg.WriteString("No actionable tasks remain; waiting for delegate(s) ")
+									}
 									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
 									msg.WriteString(". ")
 								}
@@ -436,9 +503,10 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 				}
 
-				taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "", epoch, revision)
+				summary := taskpkg.Summarize(finalTasks)
+				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
-				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
+				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())
 				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
 			})
 		},
@@ -468,13 +536,4 @@ func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string
 		TaskPublicationEpoch:    publicationEpoch,
 		TaskPublicationRevision: publicationRevision,
 	}
-}
-
-func taskListAllDone(tasks []taskpkg.Task) bool {
-	for _, task := range tasks {
-		if task.Status == taskpkg.TaskOpen || task.Status == taskpkg.TaskInProgress {
-			return false
-		}
-	}
-	return true
 }

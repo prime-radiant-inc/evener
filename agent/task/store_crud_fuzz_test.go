@@ -207,6 +207,7 @@ func checkTaskInvariants(t *testing.T, s *TaskStore) {
 	status := make(map[int]TaskStatus, len(view))
 	inProgress := 0
 	doneCount := 0
+	cancelledCount := 0
 	for _, tk := range view {
 		if ids[tk.ID] {
 			t.Fatalf("duplicate task ID %d", tk.ID)
@@ -221,6 +222,8 @@ func checkTaskInvariants(t *testing.T, s *TaskStore) {
 			inProgress++
 		case TaskDone:
 			doneCount++
+		case TaskCancelled:
+			cancelledCount++
 		}
 	}
 	if inProgress > 1 {
@@ -241,13 +244,19 @@ func checkTaskInvariants(t *testing.T, s *TaskStore) {
 		t.Fatalf("committed dependency graph contains a cycle")
 	}
 
-	// Progress mirrors the view.
-	total, done := s.Progress()
+	// Progress mirrors the view's distinct outcomes.
+	total, done, cancelled, remaining := s.Progress()
 	if total != len(view) {
 		t.Fatalf("Progress total=%d, want %d", total, len(view))
 	}
 	if done != doneCount {
 		t.Fatalf("Progress done=%d, want %d", done, doneCount)
+	}
+	if cancelled != cancelledCount {
+		t.Fatalf("Progress cancelled=%d, want %d", cancelled, cancelledCount)
+	}
+	if remaining != len(view)-doneCount-cancelledCount {
+		t.Fatalf("Progress remaining=%d, want %d", remaining, len(view)-doneCount-cancelledCount)
 	}
 
 	// NextEligible: open tasks with satisfied deps, strictly ID-sorted.

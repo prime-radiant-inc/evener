@@ -121,8 +121,8 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 	if err := s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}}); err != nil {
 		t.Fatalf("Update cancelled task: %v", err)
 	}
-	if total, done := s.Progress(); total != 4 || done != 1 {
-		t.Fatalf("Progress = (%d, %d), want (4, 1)", total, done)
+	if total, done, cancelled, remaining := s.Progress(); total != 4 || done != 1 || cancelled != 1 || remaining != 2 {
+		t.Fatalf("Progress = (%d, %d, %d, %d), want (4, 1, 1, 2)", total, done, cancelled, remaining)
 	}
 	eligible := s.NextEligible()
 	if len(eligible) != 2 || eligible[0].ID != added[2].ID || eligible[1].ID != dependent[0].ID {

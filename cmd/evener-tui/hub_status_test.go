@@ -6,9 +6,23 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
+
+func TestTaskSummaryUsesSharedOutcomeCounts(t *testing.T) {
+	tasks := []taskpkg.Task{
+		{Status: taskpkg.TaskDone},
+		{Status: taskpkg.TaskCancelled},
+		{Status: taskpkg.TaskOpen},
+		{Status: taskpkg.TaskInProgress},
+	}
+	const want = "1 done, 1 cancelled, 2 remaining (4 total)"
+	if got := taskSummary(tasks); got != want {
+		t.Fatalf("taskSummary() = %q, want %q", got, want)
+	}
+}
 
 // TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary guards the
 // existing contract: when EvenerDiagnostics is nil, the rendered status is
