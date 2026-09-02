@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 const (
@@ -143,21 +144,20 @@ func sessionNamerModel(profile *provider.Profile) string {
 
 // sessionNamerTemperature returns the naming call's temperature setting: a
 // pointer to 0.0 when the resolved cheap-model row vouches for the parameter,
-// nil when it does not or cannot vouch. The unknown cases — a synthesized row
-// (no catalog row, no live listing) or an instance that fails to resolve —
-// carry no facts, and an unknown capability must read as "do not send" rather
-// than "send": a wrong send is a provider 400 (issue #834), while a wrong omit
-// only loses a determinism hint the naming prompt's low-stakes output barely
-// uses.
+// nil when it does not or cannot vouch. Unknown capability must read as "do
+// not send" rather than "send": a wrong send is a provider 400 (issue #834),
+// while a wrong omit only loses a determinism hint the naming prompt's
+// low-stakes output barely uses. The voucher is registry.TemperatureSupported,
+// which requires a catalog row (a live-only or synthesized row inherits the
+// protocol's send-by-default baseline without any catalog fact) and reads the
+// protocol-keyed temperature path, so Google rows are judged on
+// generationConfig.temperature.
 func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
 	if client == nil || profile == nil || model == "" {
 		return nil
 	}
 	res, err := client.Resolve(profile.CheapProvider() + "/" + model)
-	if err != nil || res.Synthesized {
-		return nil
-	}
-	if !res.Caps.Fields["temperature"] {
+	if err != nil || !registry.TemperatureSupported(res) {
 		return nil
 	}
 	temp := 0.0
@@ -165,10 +165,17 @@ func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, mode
 }
 
 // isTemperatureUnsupported reports whether err is a rejected-request error
-// whose message names the temperature parameter (e.g. Bedrock's "Unsupported
-// parameter: 'temperature' is not supported with this model").
+// rejecting the temperature parameter specifically (e.g. Bedrock's "Unsupported
+// parameter: 'temperature' is not supported with this model"). Matching a bare
+// "temperature" substring would over-retry on unrelated invalid-request
+// messages that merely mention the word, so this matches the
+// unsupported-parameter phrasing with the parameter in quotes.
 func isTemperatureUnsupported(err error) bool {
-	return llm.Kind(err) == llm.KindInvalidRequest && strings.Contains(err.Error(), "temperature")
+	if llm.Kind(err) != llm.KindInvalidRequest {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unsupported parameter") && strings.Contains(msg, "'temperature'")
 }
 
 func configuredSessionNamerModel(profile *provider.Profile) string {

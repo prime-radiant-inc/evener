@@ -58,6 +58,43 @@ func PrunablePaths(protocol string) []string {
 	return paths
 }
 
+// TemperaturePath returns the prunable path that controls the temperature
+// parameter for a protocol (e.g. "temperature" for the OpenAI and Anthropic
+// protocols, "generationConfig.temperature" for Google), or "" when the
+// protocol is unknown.
+func TemperaturePath(protocol string) string {
+	switch protocol {
+	case ProtocolGoogle:
+		return "generationConfig.temperature"
+	default:
+		if table, ok := prunable[protocol]; ok {
+			if _, has := table["temperature"]; has {
+				return "temperature"
+			}
+		}
+		return ""
+	}
+}
+
+// TemperatureSupported reports whether a resolved row vouches that its model
+// accepts the temperature parameter. The answer is tri-state in spirit: false
+// for a false or absent Fields flag, but the row's provenance must also show a
+// catalog row (model = "row:…", including the region/dated spellings) — a
+// live-only or synthesized row inherits the protocol's send-by-default
+// baseline without any catalog fact, and that default must not read as
+// support (issue #834: such rows 400 on the parameter).
+func TemperatureSupported(res Resolved) bool {
+	path := TemperaturePath(res.Protocol)
+	if path == "" {
+		return false
+	}
+	step, _, isRow := strings.Cut(res.Provenance["model"], ":")
+	if !isRow || step != "row" && step != "region" && step != "dated" {
+		return false
+	}
+	return res.Caps.Fields[path]
+}
+
 // Baseline returns a copy of the protocol's path → send-by-default table.
 func Baseline(protocol string) map[string]bool {
 	table, ok := prunable[protocol]
