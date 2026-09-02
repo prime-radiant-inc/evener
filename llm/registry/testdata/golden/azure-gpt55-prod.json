@@ -83,7 +83,8 @@
       "text.verbosity": false,
       "top_p": true,
       "truncation": false
-    }
+    },
+    "web_search": false
   },
   "provenance": {
     "ContextWindow": "alias",

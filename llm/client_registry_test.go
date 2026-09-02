@@ -413,3 +413,39 @@ func TestClientCanServe(t *testing.T) {
 		t.Fatal("unknown instances and Codex ids off the allowlist are not (spec §7.3)")
 	}
 }
+
+// TestClientWebSearchGatedInstanceSendsNoHostedTool traces the registry's
+// web_search endpoint gate end to end, through the one seam it cannot test
+// alone: the protocol builders treat Caps.WebSearch == nil as permissive
+// (each protocol's *_WebSearchNilCapsIsFailOpen test), so the registry must
+// resolve a non-first-party endpoint to an explicit false even when no
+// layer ever granted web_search (azure grants it nowhere). With that false
+// in the resolved record, a caller setting req.WebSearch = true directly -
+// never consulting registry.Caps - still produces a wire request with no
+// hosted tool, closing issue #738's crash path.
+func TestClientWebSearchGatedInstanceSendsNoHostedTool(t *testing.T) {
+	srv, seen := responsesServer(t)
+	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
+		"azuregw": {Base: "azure", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL}},
+	})
+	res, err := r.Resolve("azuregw/gpt-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.WebSearch == nil || *res.Caps.WebSearch {
+		t.Fatalf("the gate must resolve a nil-capped non-first-party instance to an explicit false, got %v", res.Caps.WebSearch)
+	}
+	c := llm.NewClient(llm.WithRegistry(r))
+	req := userRequest("azuregw", "gpt-5.5")
+	req.WebSearch = true
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	reqs := seen()
+	if len(reqs) != 1 || reqs[0].Path != "/responses" {
+		t.Fatalf("wire: %+v", reqs)
+	}
+	if tools, has := reqs[0].Body["tools"]; has {
+		t.Fatalf("the hosted web_search tool must not reach a gated endpoint: %v", tools)
+	}
+}

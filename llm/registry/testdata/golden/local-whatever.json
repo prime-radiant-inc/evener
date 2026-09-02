@@ -46,7 +46,8 @@
       "temperature": true,
       "top_p": true,
       "user": false
-    }
+    },
+    "web_search": false
   },
   "provenance": {
     "ContextWindow": "overlay/provider",
