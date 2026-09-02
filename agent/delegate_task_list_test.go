@@ -119,7 +119,7 @@ func TestBuiltinAgents_SubagentCarriesDelegationTools(t *testing.T) {
 	for _, tool := range agents["subagent"].Tools {
 		have[tool] = true
 	}
-	for _, want := range []string{"delegate", "delegate_send", "job_status", "job_watch", "job_stop", "job_list", "read_transcript"} {
+	for _, want := range []string{"delegate", "delegate_send", "job_status", "job_stop", "job_list", "read_transcript"} {
 		if !have[want] {
 			t.Errorf("subagent role missing tool %q", want)
 		}
@@ -148,8 +148,8 @@ func TestCreateDelegate_SubagentDelegatesOnlyWhenGranted(t *testing.T) {
 			if names["delegate"] != tc.want {
 				t.Errorf("child has delegate tool = %v, want %v (allowance %d)", names["delegate"], tc.want, tc.allowance)
 			}
-			if tc.want && !names["job_watch"] {
-				t.Error("granted subagent should also have job_watch to supervise its own delegates")
+			if names["job_watch"] != tc.want {
+				t.Errorf("child has job_watch = %v, want %v: a granted subagent supervises its delegates with it, a leaf does not get it", names["job_watch"], tc.want)
 			}
 		})
 	}
