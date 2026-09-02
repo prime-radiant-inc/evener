@@ -543,11 +543,21 @@ func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 		if prompt == "" {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].prompt is required", i)
 		}
+		effort := strings.TrimSpace(stringArg(fields, "reasoning_effort"))
+		if effort != "" && effort != "low" && effort != "medium" && effort != "high" {
+			return nil, fmt.Errorf("invalid_request: task_list[%d].reasoning_effort must be one of low, medium, high", i)
+		}
+		kind := strings.TrimSpace(stringArg(fields, "type"))
+		switch taskpkg.TaskType(kind) {
+		case "", taskpkg.TaskTypeResearch, taskpkg.TaskTypeImplement, taskpkg.TaskTypeVerify, taskpkg.TaskTypeFix:
+		default:
+			return nil, fmt.Errorf("invalid_request: task_list[%d].type must be one of research, implement, verify, fix", i)
+		}
 		out = append(out, taskpkg.TaskTemplate{
 			Title:           title,
 			Prompt:          prompt,
-			ReasoningEffort: strings.TrimSpace(stringArg(fields, "reasoning_effort")),
-			Type:            strings.TrimSpace(stringArg(fields, "type")),
+			ReasoningEffort: effort,
+			Type:            kind,
 		})
 	}
 	return out, nil

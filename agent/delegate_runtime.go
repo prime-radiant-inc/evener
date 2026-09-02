@@ -1132,7 +1132,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
-		return delegateStartFailed(errors.New("invalid_request: task is required"))
+		return delegateStartFailed(errors.New("invalid_request: prompt is required"))
 	}
 	isolationName := strings.TrimSpace(args.Isolation)
 	if isolationName != "" && isolationName != "worktree" {

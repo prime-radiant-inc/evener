@@ -180,7 +180,7 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
               toolName: "delegate",
               callId: "call_delegate",
               description: "Observed delegate",
-              argumentsJson: JSON.stringify({ task: "inspect the observed thread" }),
+              argumentsJson: JSON.stringify({ prompt: "inspect the observed thread" }),
               output: JSON.stringify({ delegate_id: "dlg_observed", status: "running" }),
               status: "completed",
             },

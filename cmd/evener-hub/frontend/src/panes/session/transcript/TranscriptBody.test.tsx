@@ -510,7 +510,7 @@ describe("TranscriptBody", () => {
       text: "",
       toolName: "delegate",
       description: "Inspect a child session",
-      argumentsJSON: '{"task":"inspect"}',
+      argumentsJSON: '{"prompt":"inspect"}',
       output: JSON.stringify({ delegate_id: "dlg_ordinary", status: "running", transcript_ref: "local:child" }),
       status: "completed",
     };

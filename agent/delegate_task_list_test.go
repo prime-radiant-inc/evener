@@ -48,6 +48,8 @@ func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 		{"item not an object", map[string]any{"prompt": "p", "task_list": []any{"step one"}}, "task_list[0] must be an object"},
 		{"missing prompt", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "inspect"}}}, "task_list[0].prompt is required"},
 		{"missing title", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"prompt": "read"}}}, "task_list[0].title is required"},
+		{"bad reasoning_effort", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "reasoning_effort": "xhigh"}}}, "task_list[0].reasoning_effort must be one of low, medium, high"},
+		{"bad type", map[string]any{"prompt": "p", "task_list": []any{map[string]any{"title": "t", "prompt": "read", "type": "bogus"}}}, "task_list[0].type must be one of research, implement, verify, fix"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
