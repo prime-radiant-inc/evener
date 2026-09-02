@@ -700,3 +700,113 @@ func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
 		t.Fatalf("epoch unchanged (%d) across a growing rewrite whose old prefix did NOT survive -- a continuation minted against the old 4-byte content would wrongly pass its staleness check against this entirely different content", first.Epoch)
 	}
 }
+
+// TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe covers r6's
+// HIGH finding on #807's roborev review: growth where mtime DID change was
+// unconditionally trusted as a safe append -- refresh's default case handed
+// extend the OLD cached (prior, fromOffset) pair with no verification at
+// all, unlike its TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch
+// sibling (same-mtime growth), which already runs the tail probe. A
+// truncate-and-replace with different, LARGER content and a genuinely later
+// mtime is indistinguishable from a real append using (size, mtime) alone --
+// "mtime moved forward" is exactly what a real writer's progress looks like
+// too. This constructs exactly that case: without the probe, extend
+// resumes from the stale offset and reads into the middle of the new
+// file's unrelated bytes, welding a nonsense fold (neither the old value
+// nor the new file's true content) instead of forcing a clean full rescan.
+func TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2}) // "1\n2\n" == 4 bytes
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstMTime := info.ModTime()
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	// Truncate and replace with different, LARGER content -- not an
+	// append: the old prefix does not survive. Unlike the unchanged-mtime
+	// sibling, give this a genuinely LATER mtime: the exact case
+	// (size, mtime) alone cannot distinguish from a real append.
+	writeLines(t, path, []int{30, 40, 50})
+	laterMTime := firstMTime.Add(time.Second)
+	if err := os.Chtimes(path, laterMTime, laterMTime); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if second.Value.sum != 120 || second.Value.lines != 3 {
+		t.Fatalf("second value = %+v, want sum=120 lines=3 (30+40+50) -- an unverified resume from the stale offset welds the old fold onto a misaligned read of the new content instead of a clean full rescan", second.Value)
+	}
+	if calls[len(calls)-1] != 0 {
+		t.Fatalf("last call fromOffset = %d, want 0 (a growing rewrite with a changed mtime must still be probed, not trusted outright, and a mismatch must force a full rescan)", calls[len(calls)-1])
+	}
+	if second.Epoch == first.Epoch {
+		t.Fatalf("epoch unchanged (%d) across a growing rewrite with a different mtime whose old prefix did NOT survive -- a continuation minted against the old 4-byte content would wrongly pass its staleness check against this entirely different content", first.Epoch)
+	}
+}
+
+// TestCache_DeletedFileEpochSurvivesAcrossRecreation covers roborev's r6
+// finding on #807's review: dropping a deleted path's epochState outright
+// let a path that later reappeared start back at epoch 0 -- indistinguishable
+// from "never seen" -- silently accepting a continuation minted before the
+// deletion against the unrelated new content that replaced it. drop must
+// instead tombstone: keep the epoch (bumped past its pre-deletion value),
+// discard every content signal (size/mod/offset/tail), so the recreated
+// path is read completely fresh but its epoch still records that the file
+// underneath the path changed identity.
+func TestCache_DeletedFileEpochSurvivesAcrossRecreation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nums.txt")
+	writeLines(t, path, []int{1, 2})
+	var calls []int64
+	c := New[intsFold](8)
+	ctx := context.Background()
+	extend := countingLineExtend(t, &calls)
+
+	first, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on deleted file: %v", err)
+	}
+	if missing.Value != (intsFold{}) {
+		t.Fatalf("missing-file value = %+v, want the zero value", missing.Value)
+	}
+
+	// Recreate with entirely different content -- a new file that just
+	// happens to reuse the same path.
+	writeLines(t, path, []int{100, 200, 300})
+
+	recreated, err := c.Get(ctx, path, extend)
+	if err != nil {
+		t.Fatalf("Get on recreated file: %v", err)
+	}
+	if recreated.Value.sum != 600 || recreated.Value.lines != 3 {
+		t.Fatalf("recreated value = %+v, want sum=600 lines=3 (100+200+300)", recreated.Value)
+	}
+	if calls[len(calls)-1] != 0 {
+		t.Fatalf("last call fromOffset = %d, want 0 (a recreated file must be read fresh, never resumed from the deleted file's offset)", calls[len(calls)-1])
+	}
+	if recreated.Epoch <= first.Epoch {
+		t.Fatalf("recreated epoch (%d) did not advance past the pre-deletion epoch (%d) -- a continuation minted before the deletion would wrongly pass its staleness check against this entirely unrelated new content", recreated.Epoch, first.Epoch)
+	}
+}
