@@ -964,6 +964,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	t.StableTurnID = msg.StableTurnID
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
+			t,
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
@@ -1024,6 +1025,7 @@ func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
 	err := s.appendTurnAfterTranscriptWrite(
+		t,
 		func() error { return s.writeTranscriptDurableLocked(t) },
 		func() { s.history = append(s.history, t) },
 	)

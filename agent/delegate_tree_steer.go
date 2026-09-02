@@ -481,6 +481,7 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 	turn.SteeringKind = kind
 	turn.StableTurnID = stableTurnID
 	if err := s.appendTurnAfterTranscriptWrite(
+		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {

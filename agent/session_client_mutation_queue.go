@@ -1242,6 +1242,7 @@ func (s *Session) recordClientMutationFailure(
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
 		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
 			func() error { return s.writeTranscriptDurableLocked(turn) },
 			func() {
 				s.clientMutationAppendedTurn = true
@@ -1264,6 +1265,7 @@ func (s *Session) recordClientMutationFailure(
 		turn.StableTurnID = pending.TurnID
 		turn.Error = info
 		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
 			func() error { return s.writeTranscriptDurableLocked(turn) },
 			func() {
 				s.clientMutationAppendedTurn = true

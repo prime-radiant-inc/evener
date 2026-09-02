@@ -1694,6 +1694,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
 			func() error { return s.appendClientMutationTranscriptLocked(turn) },
 			func() { s.history = append(s.history, turn) },
 		); err != nil {
