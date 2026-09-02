@@ -181,10 +181,10 @@ func (r *infiniteReader) Read(p []byte) (int, error) {
 // the test explicitly permits it via allow, so a test can deterministically
 // control exactly how many reads happen before reacting -- with no
 // dependence on how fast the reading goroutine happens to be scheduled
-// relative to the test goroutine (an earlier, wall-clock-polling version of
-// TestReadLine_DrainObservesCancellationWithoutDrainingIndefinitely was
-// flaky for exactly this reason: an unthrottled infiniteReader could race
-// through its own drain cap before the polling loop ever woke up).
+// relative to the test goroutine. Wall-clock polling instead of this gate
+// is flaky here: an unthrottled infiniteReader can race through its own
+// drain cap before a polling loop ever wakes up to observe the
+// intermediate state.
 type gatedReader struct {
 	reads atomic.Int64
 	allow chan struct{}
@@ -199,14 +199,14 @@ func (r *gatedReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestReadLine_DrainObservesCancellationWithoutDrainingIndefinitely covers
-// the adversarial regression review's MAJOR finding: once a line is over
-// maxLineBytes, ReadLine's drain-to-the-next-newline loop never checked ctx
-// at all, so a canceled request would not be noticed until the drain
-// reached a real newline or EOF -- unbounded, given #448's incremental-fold
-// round also removed the whole-file MaxBytes ceiling that used to catch
-// this earlier. ctx must be checked WHILE draining, not just once before
-// ReadLine is called (every existing caller already does that separately).
+// TestReadLine_DrainObservesCancellationWithoutDrainingIndefinitely proves
+// ReadLine's drain-to-the-next-newline loop, once a line is over
+// maxLineBytes, must check ctx WHILE draining, not just once before
+// ReadLine is called (every existing caller already does that separately):
+// without an in-loop check, a canceled request would not be noticed until
+// the drain reached a real newline or EOF -- unbounded, since nothing else
+// bounds how much of the stream a single pathological line can force this
+// loop to consume.
 func TestReadLine_DrainObservesCancellationWithoutDrainingIndefinitely(t *testing.T) {
 	src := &gatedReader{allow: make(chan struct{})}
 	reader := bufio.NewReaderSize(src, 16) // tiny buffer: each Read fully satisfies one ReadSlice call

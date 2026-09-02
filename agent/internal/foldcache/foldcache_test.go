@@ -498,13 +498,13 @@ func TestCache_MissingFileReadsAsZeroValueWithoutError(t *testing.T) {
 	}
 }
 
-// TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch covers the
-// adversarial coherence review's CRITICAL finding: eviction used to reset a
-// path's epoch counter to 0 (indistinguishable from "never seen"), so a
-// continuation minted while a path's epoch was 0 -- the common case, since
-// genuine rewrites are rare -- would pass its staleness check after ANY
-// eviction, even one that raced a genuine rewrite. Epoch bookkeeping must
-// survive eviction of the (potentially large) cached value.
+// TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch proves
+// eviction must never reset a path's epoch counter to 0 (indistinguishable
+// from "never seen"): a continuation minted while a path's epoch was 0 --
+// the common case, since genuine rewrites are rare -- would then pass its
+// staleness check after ANY eviction, even one that raced a genuine
+// rewrite. Epoch bookkeeping must survive eviction of the (potentially
+// large) cached value.
 func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
 	dir := t.TempDir()
 	pathA := filepath.Join(dir, "a.txt")
@@ -543,12 +543,12 @@ func TestCache_EvictionDoesNotHideAnInterveningRewriteFromEpoch(t *testing.T) {
 	}
 }
 
-// TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter covers the adversarial
-// coherence review's MAJOR finding: Get's singleflight coalescing used to
-// deliver the flight OWNER's context-cancellation error to every coalesced
-// WAITER, even a waiter whose own context was live and healthy. The owner's
-// own cancellation must still surface to the owner; a coalesced waiter with
-// its own healthy context must get the real result.
+// TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter proves Get's
+// singleflight coalescing must never deliver the flight OWNER's
+// context-cancellation error to a coalesced WAITER whose own context is
+// live and healthy. The owner's own cancellation must still surface to the
+// owner; a coalesced waiter with its own healthy context must get the real
+// result.
 func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nums.txt")
@@ -610,12 +610,12 @@ func TestCache_CanceledOwnerDoesNotPoisonAHealthyWaiter(t *testing.T) {
 	}
 }
 
-// TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe covers the
-// adversarial coherence review's MAJOR finding: a same-size, same-mtime
-// rewrite used to be an undetectable silent stale hit -- Get's own
-// early-return "true hit" path never even reached refresh's staleness
-// switch. A cheap tail probe closes this: the bytes at the cached offset
-// must still match what was last observed before a hit is trusted.
+// TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe proves a
+// same-size, same-mtime rewrite cannot be an undetectable silent stale
+// hit: without a tail probe, Get's own early-return "true hit" path would
+// never even reach refresh's staleness switch. A cheap tail probe closes
+// this: the bytes at the cached offset must still match what was last
+// observed before a hit is trusted.
 func TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nums.txt")
@@ -655,12 +655,11 @@ func TestCache_SameSizeSameMTimeRewriteIsDetectedViaTailProbe(t *testing.T) {
 	}
 }
 
-// TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch covers the
-// adversarial coherence review's MAJOR finding: growth with an
-// unresolvable (unchanged) mtime was unconditionally treated as a safe
-// append and never bumped epoch, even when the growth is actually a
-// truncate-and-rewrite-larger that happens to coincide with the old mtime
-// bucket. Unlike TestCache_GrowthWithUnchangedMTimeReadsFromZeroWithoutBumpingEpoch
+// TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch proves growth with
+// an unresolvable (unchanged) mtime must never be treated unconditionally
+// as a safe append with epoch left unbumped, even when the growth is
+// actually a truncate-and-rewrite-larger that happens to coincide with the
+// old mtime bucket. Unlike TestCache_GrowthWithUnchangedMTimeReadsFromZeroWithoutBumpingEpoch
 // (a genuine append, where epoch correctly stays put), this constructs the
 // untested sibling: a rewrite whose old prefix does NOT survive.
 func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
@@ -701,13 +700,13 @@ func TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch(t *testing.T) {
 	}
 }
 
-// TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe covers r6's
-// HIGH finding on #807's roborev review: growth where mtime DID change was
-// unconditionally trusted as a safe append -- refresh's default case handed
-// extend the OLD cached (prior, fromOffset) pair with no verification at
-// all, unlike its TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch
-// sibling (same-mtime growth), which already runs the tail probe. A
-// truncate-and-replace with different, LARGER content and a genuinely later
+// TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe proves
+// growth where mtime DID change cannot be trusted as a safe append without
+// verification: refresh's default case must not hand extend the OLD cached
+// (prior, fromOffset) pair unverified, the same as its
+// TestCache_GrowingRewriteWithUnchangedMTimeBumpsEpoch sibling (same-mtime
+// growth), which already runs the tail probe. A truncate-and-replace with
+// different, LARGER content and a genuinely later
 // mtime is indistinguishable from a real append using (size, mtime) alone --
 // "mtime moved forward" is exactly what a real writer's progress looks like
 // too. This constructs exactly that case: without the probe, extend
@@ -758,9 +757,9 @@ func TestCache_GrowingRewriteWithChangedMTimeIsDetectedViaTailProbe(t *testing.T
 	}
 }
 
-// TestCache_DeletedFileEpochSurvivesAcrossRecreation covers roborev's r6
-// finding on #807's review: dropping a deleted path's epochState outright
-// let a path that later reappeared start back at epoch 0 -- indistinguishable
+// TestCache_DeletedFileEpochSurvivesAcrossRecreation proves dropping a
+// deleted path's epochState outright must not happen: doing so would let a
+// path that later reappears start back at epoch 0 -- indistinguishable
 // from "never seen" -- silently accepting a continuation minted before the
 // deletion against the unrelated new content that replaced it. drop must
 // instead tombstone: keep the epoch (bumped past its pre-deletion value),
