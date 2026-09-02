@@ -77,19 +77,26 @@ func TemperaturePath(protocol string) string {
 }
 
 // TemperatureSupported reports whether a resolved row vouches that its model
-// accepts the temperature parameter. The answer is tri-state in spirit: false
-// for a false or absent Fields flag, but the row's provenance must also show a
-// catalog row (model = "row:…", including the region/dated spellings) — a
-// live-only or synthesized row inherits the protocol's send-by-default
-// baseline without any catalog fact, and that default must not read as
-// support (issue #834: such rows 400 on the parameter).
+// accepts the temperature parameter. Two catalog facts must agree: the row's
+// Sampling cap must not be explicitly false (models.dev rows with
+// temperature=false map to Sampling=false while their Fields flag stays at the
+// send-by-default baseline — ShapeRequest drops the parameter for exactly
+// these rows), and the protocol-keyed Fields flag must be true. The row's
+// provenance must also show a catalog row (model = "row:…", including the
+// region/dated spellings) — a live-only or synthesized row inherits the
+// protocol's send-by-default baseline without any catalog fact, and that
+// default must not read as support (issue #834: such rows 400 on the
+// parameter).
 func TemperatureSupported(res Resolved) bool {
 	path := TemperaturePath(res.Protocol)
 	if path == "" {
 		return false
 	}
+	if res.Caps.Sampling != nil && !*res.Caps.Sampling {
+		return false
+	}
 	step, _, isRow := strings.Cut(res.Provenance["model"], ":")
-	if !isRow || step != "row" && step != "region" && step != "dated" {
+	if !isRow || (step != "row" && step != "region" && step != "dated") {
 		return false
 	}
 	return res.Caps.Fields[path]
