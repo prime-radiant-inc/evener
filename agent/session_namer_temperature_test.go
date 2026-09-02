@@ -217,6 +217,12 @@ func TestNameSession_RetriesOnceWithoutTemperature(t *testing.T) {
 		name: "openai",
 		respondWith: func(req llm.Request, call int) (llm.Response, error) {
 			if call == 1 {
+				// The capability gate said the row vouches for temperature, so
+				// the first request must carry it — otherwise this test would
+				// pass without exercising the retry path at all.
+				if req.Temperature == nil {
+					t.Error("first request omitted temperature: capability gate broken, retry not exercised")
+				}
 				return llm.Response{}, llm.ErrorFromHTTPStatus(req.Provider, 400,
 					"responses.create failed: Unsupported parameter: 'temperature' is not supported with this model.", nil, nil)
 			}
@@ -316,5 +322,33 @@ func TestIsTemperatureUnsupported(t *testing.T) {
 	quota := llm.ErrorFromHTTPStatus("openai", 429, `Unsupported parameter: 'temperature'`, nil, nil)
 	if isTemperatureUnsupported(quota) {
 		t.Error("non-400 status naming temperature must not trigger the retry")
+	}
+
+	// A structured error.param in the raw body reaches the predicate through
+	// ErrorFromHTTPStatus too, not only ClassifyHTTPError.
+	raw := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature"}}
+	statusErr := llm.ErrorFromHTTPStatus("openai", 400, "Unsupported", raw, nil)
+	if !isTemperatureUnsupported(statusErr) {
+		t.Error("ErrorFromHTTPStatus with structured param temperature must trigger the retry")
+	}
+
+	// Google rejections use the nested spelling; the protocol stamped on the
+	// error selects it, and an unattributed error accepts either spelling.
+	googleRes := registry.Resolved{Instance: "google", Protocol: registry.ProtocolGoogle}
+	googleErr := llm.ClassifyHTTPError("generateContent", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported","code":400,"status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
+		googleRes)
+	if !isTemperatureUnsupported(googleErr) {
+		t.Error("Google-protocol rejection naming generationConfig.temperature must trigger the retry")
+	}
+	plainGoogleErr := llm.ErrorFromHTTPStatus("anyone", 400, "Unsupported parameter: 'generationConfig.temperature'", nil, nil)
+	if !isTemperatureUnsupported(plainGoogleErr) {
+		t.Error("unattributed rejection naming generationConfig.temperature must trigger the retry")
+	}
+	googlePlainTemp := llm.ClassifyHTTPError("generateContent", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature'","code":400,"status":"INVALID_ARGUMENT"}}`),
+		googleRes)
+	if isTemperatureUnsupported(googlePlainTemp) {
+		t.Error("Google-protocol rejection naming plain temperature must not trigger the retry")
 	}
 }

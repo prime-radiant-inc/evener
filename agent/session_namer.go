@@ -171,10 +171,26 @@ func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, mode
 // (Bedrock's "Unsupported parameter: 'temperature'", OpenAI's "Unrecognized
 // request argument supplied: temperature", the "unknown field temperature"
 // form, structured unknown_parameter/unsupported_parameter codes) — instead of
-// re-matching provider prose here.
+// re-matching provider prose here. The comparison is against the rejected
+// protocol's own temperature path: a Google-protocol rejection names the
+// nested spelling ("generationConfig.temperature"), everything else the plain
+// one, and an error with no protocol attribution is compared against both.
 func isTemperatureUnsupported(err error) bool {
-	return llm.Kind(err) == llm.KindInvalidRequest &&
-		llm.RejectedParameter(err) == "temperature"
+	if llm.Kind(err) != llm.KindInvalidRequest {
+		return false
+	}
+	param := llm.RejectedParameter(err)
+	if param == "" {
+		return false
+	}
+	switch llm.ErrorProtocol(err) {
+	case registry.ProtocolGoogle:
+		return param == "generationConfig.temperature"
+	case "":
+		return param == "temperature" || param == "generationConfig.temperature"
+	default:
+		return param == "temperature"
+	}
 }
 
 func configuredSessionNamerModel(profile *provider.Profile) string {

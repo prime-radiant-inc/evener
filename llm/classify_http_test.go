@@ -248,4 +248,24 @@ func TestRejectedParameter(t *testing.T) {
 	if got := RejectedParameter(quota); got != "temperature" {
 		t.Errorf("non-400 status: RejectedParameter = %q, want temperature (callers gate on Kind)", got)
 	}
+
+	// ErrorFromHTTPStatus reads a structured error.param from raw, not only
+	// message patterns (the raw shape mirrors a decoded provider body).
+	rawStructured := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported", rawStructured, nil); RejectedParameter(err) != "temperature" {
+		t.Error("ErrorFromHTTPStatus must extract structured error.param from raw")
+	}
+	// Structured param takes precedence over a message naming another one.
+	rawBoth := map[string]any{"error": map[string]any{"message": "Unsupported parameter: 'top_p'", "param": "temperature"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported parameter: 'top_p'", rawBoth, nil); RejectedParameter(err) != "temperature" {
+		t.Error("structured error.param must take precedence over the message pattern")
+	}
+	// The classifier's structured code path falls back to the message when
+	// error.param is absent (JSON null, as OpenAI sends).
+	classified := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.","type":"invalid_request_error","param":null,"code":"unsupported_parameter"}}`),
+		responsesRes)
+	if got := RejectedParameter(classified); got != "temperature" {
+		t.Errorf("classifier structured path with null param must fall back to the message: got %q", got)
+	}
 }
