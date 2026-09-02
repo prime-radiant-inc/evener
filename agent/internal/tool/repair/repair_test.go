@@ -101,6 +101,22 @@ func TestRepairArgs_Coerce_NumberIsFloat64(t *testing.T) {
 	}
 }
 
+func TestRepairArgs_Coerce_NullableIntegerFromString(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"expand_turn": map[string]any{"type": []any{"integer", "null"}},
+		},
+	}
+	out, changes := RepairArgs(params, map[string]any{"expand_turn": "1"})
+	if got, ok := out["expand_turn"].(float64); !ok || got != 1 {
+		t.Fatalf("expand_turn = %#v, want float64(1)", out["expand_turn"])
+	}
+	if len(changes) != 1 || changes[0].Kind != ChangeCoerceType || changes[0].Field != "expand_turn" {
+		t.Fatalf("changes = %+v, want coercion of expand_turn", changes)
+	}
+}
+
 func TestRepairArgs_Coerce_ScalarToArray(t *testing.T) {
 	out, _ := RepairArgs(coerceParams(), map[string]any{"tags": "x"})
 	if !reflect.DeepEqual(out["tags"], []any{"x"}) {
