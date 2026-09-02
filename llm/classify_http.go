@@ -40,7 +40,7 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		return &contextLengthError{base}
 	case code == "unknown_parameter", code == "unsupported_parameter":
 		base.retryable = false
-		base.rejectedParam = paramFromError(raw)
+		base.rejectedParam = rejectedParameter(raw, base.message)
 		base.hint = fieldHint(base.rejectedParam, res)
 		return &invalidRequestError{base}
 	}
@@ -60,7 +60,7 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	if err := classifyByMessage(base); err != nil {
 		return err
 	}
-	base.rejectedParam = parameterNameFromMessage(base.message)
+	base.rejectedParam = rejectedParameter(raw, base.message)
 	base.hint = fieldHint(base.rejectedParam, res)
 	return &invalidRequestError{base}
 }
@@ -85,16 +85,20 @@ func ErrorProtocol(err error) string {
 	return ""
 }
 
-// paramFromError reads error.param from a decoded provider body, or "" when
-// the body has no error object or the param is absent or non-string
-// (including JSON null, which OpenAI sends when no parameter is implicated).
-func paramFromError(raw map[string]any) string {
-	errObj, ok := raw["error"].(map[string]any)
-	if !ok {
-		return ""
+// rejectedParameter extracts the parameter a provider rejection named: the
+// structured error.param takes precedence, with the spec §12 message patterns
+// as fallback. raw is the decoded provider body (any shape; non-maps yield
+// ""), message the failure message. One extraction shared by every error
+// construction path, so a rejection identified either way carries the name.
+func rejectedParameter(raw any, message string) string {
+	if m, ok := raw.(map[string]any); ok {
+		if errObj, ok := m["error"].(map[string]any); ok {
+			if param, _ := errObj["param"].(string); param != "" {
+				return param
+			}
+		}
 	}
-	param, _ := errObj["param"].(string)
-	return param
+	return parameterNameFromMessage(message)
 }
 
 // retryDelayFromHeaders honors Retry-After first, then the

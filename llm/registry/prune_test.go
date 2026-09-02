@@ -176,6 +176,13 @@ func TestTemperatureSupported(t *testing.T) {
 		}
 		return map[string]string{"model": step + ":" + model}
 	}
+	// catalogRow is a row lookup that also carries a snapshot-attributed fact,
+	// as every real catalog row does (context window, family, …).
+	catalogRow := func(step, model string) map[string]string {
+		prov := row(step, model)
+		prov["ContextWindow"] = LayerSnapshot + "/row"
+		return prov
+	}
 	cases := []struct {
 		name string
 		res  Resolved
@@ -183,25 +190,25 @@ func TestTemperatureSupported(t *testing.T) {
 	}{
 		{
 			name: "catalog row with fields true",
-			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
 		{
 			name: "region-prefixed catalog row",
-			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("region", "gpt-x"),
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("region", "gpt-x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
 		{
 			name: "dated-suffix catalog row",
-			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("dated", "gpt-x"),
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("dated", "gpt-x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
 		{
 			name: "catalog row with fields false",
-			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": false}}},
 		},
 		{
@@ -226,25 +233,57 @@ func TestTemperatureSupported(t *testing.T) {
 		},
 		{
 			name: "sampling true keeps fields verdict",
-			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "gpt-x"),
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
 				Caps: Caps{Sampling: boolPtr(true), Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
 		{
 			name: "google row keys generationConfig.temperature",
-			res: Resolved{Protocol: ProtocolGoogle, Provenance: row("row", "gemini-x"),
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: catalogRow("row", "gemini-x"),
 				Caps: Caps{Fields: map[string]bool{"generationConfig.temperature": true}}},
 			want: true,
 		},
 		{
 			name: "google row with plain temperature key only reads as absent",
-			res: Resolved{Protocol: ProtocolGoogle, Provenance: row("row", "gemini-x"),
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: catalogRow("row", "gemini-x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 		},
 		{
 			name: "unknown protocol",
 			res: Resolved{Protocol: "unknown", Provenance: row("row", "x"),
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// A user-configured custom row with no catalog facts and no explicit
+			// temperature field: baseline true is silence, not support.
+			name: "user-configured row with no facts",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "my-model"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// A user-configured row with facts but none catalog-attributed and no
+			// explicit temperature field: still silence.
+			name: "user-configured row with config-attributed facts only",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["ContextWindow"] = LayerConfig + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// An explicit fields.temperature = true from any layer is a deliberate
+			// choice and vouches without catalog backing.
+			name: "user-configured row with explicit fields temperature true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["Fields.temperature"] = LayerConfig + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
 		},
 	}
 	for _, tc := range cases {

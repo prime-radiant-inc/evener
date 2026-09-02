@@ -389,7 +389,7 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 		provider:      strings.TrimSpace(provider),
 		statusCode:    statusCode,
 		message:       message,
-		rejectedParam: parameterNameFromMessage(message),
+		rejectedParam: rejectedParameter(raw, message),
 		errorCode:     extractErrorCode(raw),
 		retryAfter:    retryAfter,
 		rawResponse:   raw,
