@@ -23,6 +23,18 @@ const (
 	activityMaxEncodedBytes = 4 << 20
 	activityMaxTokenBytes   = 16 << 10
 	activityContinuationV1  = 1
+	// activityMaxContinuationPathLength bounds a client-supplied
+	// continuation's Path — deliberately activityMaxNewDepth+1, not
+	// activityMaxNewDepth (roborev finding on #807's r5 review): depth
+	// truncation fires when a delegate's own depth reaches
+	// activityMaxNewDepth, and the continuation it mints
+	// (markActivityDelegateTruncated, via projectStableActivityDelegate)
+	// names that delegate ITSELF as the path's last hop — the same
+	// "resume treats the named node as a fresh depth-0 root" pattern
+	// work-budget truncation uses — so the longest Path projection ever
+	// legitimately emits is activityMaxNewDepth+1 hops, not
+	// activityMaxNewDepth.
+	activityMaxContinuationPathLength = activityMaxNewDepth + 1
 )
 
 // activityContinuation is a real, checked cursor position (#448's
@@ -50,6 +62,22 @@ type activityContinuation struct {
 	ResumeIndex    int      `json:"idx,omitempty"`
 	JobsEpoch      uint64   `json:"jobs_epoch,omitempty"`
 	DelegatesEpoch uint64   `json:"dlg_epoch,omitempty"`
+	// Revision is the root's jobActivityClock revision (see
+	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
+	// own Revision field, carried into the continuation too. Only checked
+	// on resume when the root is LIVE (loadActivitySnapshotForParamsWithCache):
+	// a live session's JobsEpoch/DelegatesEpoch above are always 0 (it
+	// reads neither fold cache), so they provide no staleness protection
+	// at all for a live continuation — 0 == 0 always passes, even across a
+	// real mutation. Revision closes that gap the same way epoch closes it
+	// for historical sessions (roborev finding on #807's r6 review). For a
+	// historical continuation this is still populated (mint time's
+	// activitySnapshotPersistedRevision) but not validated — the epoch
+	// fields already cover that case, and this field's value there is not
+	// guaranteed stable in the same way (a sibling's unrelated change can
+	// legitimately move it), so re-checking it would risk false staleness
+	// rejections rather than closing a real gap.
+	Revision uint64 `json:"rev,omitempty"`
 }
 
 // activitySessionSnapshot is the lock-free input to the activity projection.
@@ -100,19 +128,24 @@ type activityBudget struct {
 	usedWork     int
 	maxDepth     int
 	now          time.Time
+	// revision is the value markActivitySessionTruncated and
+	// markActivityDelegateTruncated embed as activityContinuation.Revision
+	// — see that field's doc comment.
+	revision uint64
 }
 
 func newActivityBudget() *activityBudget {
 	return &activityBudget{visiting: make(map[string]bool)}
 }
 
-func newBoundedActivityBudget(rootID string, now time.Time) *activityBudget {
+func newBoundedActivityBudget(rootID string, now time.Time, revision uint64) *activityBudget {
 	return &activityBudget{
 		visiting:     make(map[string]bool),
 		bounded:      true,
 		rootID:       rootID,
 		maxWorkUnits: activityMaxWorkUnits,
 		maxDepth:     activityMaxNewDepth,
+		revision:     revision,
 		now:          now,
 	}
 }
@@ -152,9 +185,13 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	// to open many historical sessions' files with no bound at all, since
 	// ordinary (non-continuation) traversal's own depth limit
 	// (activityMaxNewDepth) is enforced by buildActivityFullSnapshot's
-	// recursion, which this path-following code doesn't go through.
-	if len(cont.Path) > activityMaxNewDepth {
-		return activityContinuation{}, fmt.Errorf("continuation path length %d exceeds %d", len(cont.Path), activityMaxNewDepth)
+	// recursion, which this path-following code doesn't go through. The
+	// limit itself is activityMaxContinuationPathLength
+	// (activityMaxNewDepth+1), not activityMaxNewDepth — see its doc
+	// comment for why a legitimately-minted depth-boundary continuation
+	// needs the extra hop.
+	if len(cont.Path) > activityMaxContinuationPathLength {
+		return activityContinuation{}, fmt.Errorf("continuation path length %d exceeds %d", len(cont.Path), activityMaxContinuationPathLength)
 	}
 	if cont.ResumeIndex < 0 {
 		return activityContinuation{}, fmt.Errorf("continuation resume index %d is negative", cont.ResumeIndex)
@@ -263,22 +300,39 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 // files (checked in loadHistoricalActivityBase). It returns the resumeIndex
 // a continuation's mid-list cutoff carried (0 for a fresh, non-continuation
 // load), for projectBoundedActivityTree to apply against the target
-// session's own entries.
+// session's own entries. A thin wrapper over
+// loadActivitySnapshotForParamsWithCache that discards the cache, for the
+// two (live-session) callers that have no further use for it.
 func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, error) {
+	snapshot, startDepth, resumeIndex, _, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
+	return snapshot, startDepth, resumeIndex, err
+}
+
+// loadActivitySnapshotForParamsWithCache is loadActivitySnapshotForParams'
+// full form: it also returns the historicalActivityCache the load ran
+// against, so a caller that needs to do MORE loading against the same root
+// afterward — LoadSessionJobActivityTree's revision computation, see below —
+// can reuse the same cache instead of starting a second, independently-fresh
+// one (roborev finding on #807's r5 review: two independent
+// historicalActivityCache instances for what is one client request meant
+// two independent work-unit budgets, silently doubling the effective
+// traversal-breadth allowance and letting the two loads visit, and charge
+// for, different session sets).
+func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, *historicalActivityCache, error) {
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
 		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
-		return snapshot, 0, 0, err
+		return snapshot, 0, 0, cache, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, cache, err
 	}
 	visited := map[string]bool{root.sessionID: true}
 	snapshot, jobsEpoch, delegatesEpoch, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, cache, err
 	}
 	// The target session's fold-cache generations must still match what the
 	// continuation was minted against: an ordinary append never moves
@@ -286,9 +340,24 @@ func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLoca
 	// ever rejects a resume whose underlying journal was rewritten or
 	// shrunk since — exactly the case ResumeIndex is unsafe to apply to.
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch {
-		return nil, 0, 0, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
+		return nil, 0, 0, cache, errors.New("activity continuation is stale: the underlying journal changed; restart pagination without a continuation")
 	}
-	return snapshot, -len(cont.Path), cont.ResumeIndex, nil
+	// A live root has no fold-cache epoch at all (jobsEpoch/delegatesEpoch
+	// above are always 0 for it — activitySessionSnapshot's doc comment),
+	// so the check above provides no protection here: 0 == 0 always
+	// passes, even across a real mutation (roborev's #807 r6 finding —
+	// "live pagination lacks cross-request revision guard"). Revision
+	// closes that gap the same way epoch closes it for historical
+	// sessions: checked against the SAME jobActivityClock
+	// projectStableLiveActivityTreeAt's own before/after retry loop reads,
+	// so any mutation between mint and resume — not just one within a
+	// single request — is caught here.
+	if root.live != nil {
+		if current := activityCurrentRootRevision(root.live.jobActivityClock); cont.Revision != current {
+			return nil, 0, 0, cache, errors.New("activity continuation is stale: the live session changed; restart pagination without a continuation")
+		}
+	}
+	return snapshot, -len(cont.Path), cont.ResumeIndex, cache, nil
 }
 
 // buildActivityFullSnapshot loads loc's full subtree.
@@ -643,10 +712,37 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 }
 
 func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth, resumeIndex int, revision uint64, now time.Time) (appwire.JobActivityTree, error) {
-	budget := newBoundedActivityBudget(rootID, now)
+	budget := newBoundedActivityBudget(rootID, now, revision)
 	root := projectActivitySessionAt(snapshot, budget, startDepth, nil, resumeIndex)
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
-	return trimActivityTreeToFit(tree, rootID)
+	// Collected from snapshot (the internal tree projection just consumed)
+	// before trimming works purely on the flattened wire shape, which
+	// carries no epoch information of its own — see
+	// collectActivityJobsEpochs and trimActivityTrailingEntry. revision is
+	// the same value just seeded into budget.revision above, embedded the
+	// same way in whatever continuation trimming mints too.
+	return trimActivityTreeToFit(tree, rootID, snapshot.DelegatesEpoch, collectActivityJobsEpochs(snapshot), revision)
+}
+
+// collectActivityJobsEpochs walks snapshot's Children tree and returns
+// every visited session's own JobsEpoch, keyed by SessionID.
+// trimActivityTrailingEntry needs this because it operates AFTER
+// projection has already flattened the internal snapshot tree to its wire
+// (appwire.JobActivitySession) shape, which has no epoch fields of its
+// own.
+func collectActivityJobsEpochs(snapshot activitySessionSnapshot) map[string]uint64 {
+	epochs := make(map[string]uint64)
+	var walk func(s activitySessionSnapshot)
+	walk = func(s activitySessionSnapshot) {
+		epochs[s.SessionID] = s.JobsEpoch
+		for _, child := range s.Children {
+			if child != nil {
+				walk(*child)
+			}
+		}
+	}
+	walk(snapshot)
+	return epochs
 }
 
 func activitySnapshotPersistedRevision(snapshot *activitySessionSnapshot, rootID string) uint64 {
@@ -988,7 +1084,11 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	childPath := appendActivityPath(path, row.id)
 	if budget != nil && budget.bounded && depth >= budget.maxDepth {
-		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath)
+		// child's own JobsEpoch (its jobs.jsonl fold generation), paired
+		// with snapshot's DelegatesEpoch (the shared root delegates.jsonl
+		// generation, uniform across every session under this root) —
+		// see markActivityDelegateTruncated.
+		markActivityDelegateTruncated(&delegate, budget, child.SessionID, childPath, child.JobsEpoch, snapshot.DelegatesEpoch)
 		return delegate
 	}
 	projectedChild := projectActivitySessionAt(*child, budget, depth+1, childPath, resumeIndex)
@@ -1086,21 +1186,31 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 			ResumeIndex:    resumeIndex,
 			JobsEpoch:      jobsEpoch,
 			DelegatesEpoch: delegatesEpoch,
+			Revision:       budget.revision,
 		})
 	}
 }
 
-func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget *activityBudget, sessionID string, path []string) {
+// markActivityDelegateTruncated mints a depth-truncated delegate's
+// continuation. jobsEpoch and delegatesEpoch — the truncated delegate's own
+// JobsEpoch and the shared root's DelegatesEpoch — are carried the same way
+// markActivitySessionTruncated carries them (roborev's #807 r6 finding:
+// this used to omit them entirely, minting a continuation whose staleness
+// check could never detect a rewrite that raced the truncation).
+func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget *activityBudget, sessionID string, path []string, jobsEpoch, delegatesEpoch uint64) {
 	if delegate == nil {
 		return
 	}
 	delegate.Branch.Truncated = true
 	if budget != nil && budget.rootID != "" {
 		delegate.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    budget.rootID,
-			SessionID: sessionID,
-			Path:      append([]string(nil), path...),
+			Version:        activityContinuationV1,
+			RootID:         budget.rootID,
+			SessionID:      sessionID,
+			Path:           append([]string(nil), path...),
+			JobsEpoch:      jobsEpoch,
+			DelegatesEpoch: delegatesEpoch,
+			Revision:       budget.revision,
 		})
 	}
 }
@@ -1211,7 +1321,11 @@ func activityBranchComplete(branch appwire.JobActivityBranchState) bool {
 	return branch.Error == "" && !branch.Truncated && branch.Continuation == ""
 }
 
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire.JobActivityTree, error) {
+// trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
+// encodes within activityMaxEncodedBytes. delegatesEpoch, jobsEpochs, and
+// revision feed every continuation trimming mints — see
+// trimActivityTrailingEntry.
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) (appwire.JobActivityTree, error) {
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1221,30 +1335,47 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil) {
+		if !trimActivityTrailingEntry(&tree.Root, rootID, nil, delegatesEpoch, jobsEpochs, revision) {
 			return tree, nil
 		}
 	}
 }
 
-func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string) bool {
+// trimActivityTrailingEntry drops the deepest, last entry from session's
+// tree (recursing into a delegate child before trimming session's own
+// entries) and marks whichever session actually lost an entry truncated,
+// with a continuation resuming right after it. delegatesEpoch is the
+// shared root's DelegatesEpoch (uniform across every session under one
+// root); jobsEpochs maps EACH session's own SessionID to its own JobsEpoch
+// (see collectActivityJobsEpochs) — trimming can strike any session in the
+// tree, not just the root, and each has its own jobs.jsonl fold
+// generation. revision is the root's live-clock revision at mint time (see
+// activityContinuation.Revision), likewise uniform across the tree.
+// Carrying these (roborev's #807 r6 finding: previously omitted entirely,
+// always silently zero) lets a resumed continuation's staleness check
+// actually detect a rewrite — or, for a live root, a mutation — that raced
+// this trim.
+func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string, delegatesEpoch uint64, jobsEpochs map[string]uint64, revision uint64) bool {
 	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID)) {
+		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID), delegatesEpoch, jobsEpochs, revision) {
 			return true
 		}
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:   activityContinuationV1,
-		RootID:    rootID,
-		SessionID: session.SessionID,
-		Path:      append([]string(nil), path...),
+		Version:        activityContinuationV1,
+		RootID:         rootID,
+		SessionID:      session.SessionID,
+		Path:           append([]string(nil), path...),
+		JobsEpoch:      jobsEpochs[session.SessionID],
+		DelegatesEpoch: delegatesEpoch,
+		Revision:       revision,
 	})
 	return true
 }

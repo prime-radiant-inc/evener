@@ -187,8 +187,8 @@ func TestNewActivityBudget(t *testing.T) {
 func TestNewBoundedActivityBudget(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(5000, 0)
-	b := newBoundedActivityBudget("root", now)
-	if b == nil || !b.bounded || b.rootID != "root" || b.maxWorkUnits != activityMaxWorkUnits || b.maxDepth != activityMaxNewDepth {
+	b := newBoundedActivityBudget("root", now, 17)
+	if b == nil || !b.bounded || b.rootID != "root" || b.maxWorkUnits != activityMaxWorkUnits || b.maxDepth != activityMaxNewDepth || b.revision != 17 {
 		t.Fatalf("bounded budget = %+v", b)
 	}
 	if !b.now.Equal(now) {

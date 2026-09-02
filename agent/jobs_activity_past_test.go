@@ -350,6 +350,99 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 	}
 }
 
+// TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget
+// covers roborev's finding on #807's r5 review: the continuation path
+// rebuilt an entire second full-tree snapshot solely to compute the
+// response's revision number, using a SEPARATE, independently-fresh
+// historicalActivityCache (and thus a separate, independently-fresh
+// work-unit budget) from the one the continuation's own load already
+// spent budget against. Two independent 2000-unit budgets for what is,
+// from the client's perspective, ONE request meant the revision
+// computation could visit (and charge for) a DIFFERENT session set than
+// the continuation load did, silently doubling the effective per-request
+// traversal-breadth allowance.
+//
+// Fixture: root has exactly activityMaxWorkUnits (2000) direct stable
+// delegates -- one continuation target ("aaaspecial", named to sort
+// first) plus activityMaxWorkUnits-1 (1999) plain "wide" leaves (named to
+// sort after it). The continuation resolves to aaaspecial via exactly one
+// hop, charging exactly 1 work unit for that hop
+// (buildActivityContinuationAt's per-hop charge) before the revision
+// computation's own full-tree walk ever begins.
+//
+//   - Two INDEPENDENT budgets: the revision walk starts fresh at 2000,
+//     visits aaaspecial again (1) then all 1999 wide children (1999) --
+//     2000 total, exactly fits, every wide child's journal gets scanned.
+//   - ONE SHARED budget (the fix): the revision walk starts already at 1
+//     (the continuation's own hop charge), visits aaaspecial again (2)
+//     then wide children until the shared 2000-unit ceiling is hit at
+//     1998 of them -- the last (highest-sorting) wide child's journal is
+//     NEVER scanned.
+func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "revisionsharebudgetroot"
+	started := time.Unix(600, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	specialID := "aaaspecial"
+	var descriptors []delegatestore.Descriptor
+	descriptors = append(descriptors, pastStableDescriptor(rootID, specialID, "continuation target"))
+	s1cov_writeJobLog(t, stateDir, specialID,
+		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + specialID, Type: jobstore.JobShell, OwnerSessionID: specialID, VisibleToSession: specialID, StartedAt: &started},
+	)
+	savePastActivityMetaWithTreeRevision(t, stateDir, specialID, "Special", rootID, 0)
+
+	const wideCount = activityMaxWorkUnits - 1
+	wideJobsPaths := make([]string, 0, wideCount)
+	for i := range wideCount {
+		childID := fmt.Sprintf("widechild%04d", i)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, "wide sibling"))
+		wideJobsPaths = append(wideJobsPaths, s1cov_writeJobLog(t, stateDir, childID,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID, Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started},
+		))
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Wide", rootID, 0)
+	}
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+
+	cont := activityContinuation{
+		Version: activityContinuationV1, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
+	}
+	token := encodeActivityContinuation(cont)
+
+	var scannedPaths []string
+	original := scanJobJournal
+	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
+		scannedPaths = append(scannedPaths, path)
+		return original(ctx, path, fromOffset, limits)
+	}
+	defer func() { scanJobJournal = original }()
+
+	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+
+	scanned := make(map[string]bool, len(scannedPaths))
+	for _, p := range scannedPaths {
+		scanned[p] = true
+	}
+	neverScanned := 0
+	for _, p := range wideJobsPaths {
+		if !scanned[p] {
+			neverScanned++
+		}
+	}
+	if neverScanned == 0 {
+		t.Fatalf("all %d wide children's journals were scanned across the whole request -- the continuation load's own 1-unit hop charge and the revision computation's full-tree walk are still spending two independent 2000-unit budgets instead of one shared one", wideCount)
+	}
+	if neverScanned != 1 {
+		t.Fatalf("neverScanned = %d, want exactly 1 (one shared 2000-unit budget across a 1-unit continuation hop charge + 2000 direct children -- 2001 units of demand, exactly 1 short): scannedPaths=%v", neverScanned, scannedPaths)
+	}
+}
+
 // TestLoadSessionJobActivityTree_BoundsRecursionDepth covers the depth half
 // of #448's finding 1: a chain of sessions longer than activityMaxNewDepth
 // must not be recursed into (and its jobs.jsonl must never be opened) past
@@ -551,6 +644,83 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 	}
 }
 
+// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable
+// covers roborev's finding on #807's r5 review: depth truncation mints a
+// continuation whose Path names the depth-boundary delegate ITSELF (so a
+// resume can treat it as a fresh depth-0 root, the same pattern the
+// incremental-fold round already established for work-budget truncation) --
+// meaning the minted Path is exactly depth+1 hops long when it fires at
+// depth == activityMaxNewDepth, i.e. activityMaxNewDepth+1 hops. But
+// decodeActivityContinuation rejected any path longer than
+// activityMaxNewDepth, so this exact, legitimately-minted boundary
+// continuation could never be submitted back -- an end-to-end dead end.
+func TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable(t *testing.T) {
+	stateDir := t.TempDir()
+	started := time.Unix(700, 0).UTC()
+
+	const chainLen = activityMaxNewDepth + 5
+	sessionIDs := make([]string, chainLen)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("depthboundarychain%d", i)
+	}
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		s1cov_writeJobLog(t, stateDir, id,
+			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started},
+		)
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+
+	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+
+	// Descend to the depth-truncated delegate (BoundsRecursionDepth already
+	// proves this chain produces exactly one, at the depth boundary) and
+	// grab its minted continuation.
+	session := first.Root
+	var boundaryToken string
+	for {
+		var delegate *appwire.JobActivityDelegate
+		for i := range session.Entries {
+			if session.Entries[i].Delegate != nil {
+				delegate = session.Entries[i].Delegate
+			}
+		}
+		if delegate == nil {
+			t.Fatal("chain never reached a depth-truncated delegate")
+		}
+		if delegate.Child == nil {
+			if delegate.Branch.Continuation == "" {
+				t.Fatal("depth-boundary delegate has no continuation to submit")
+			}
+			boundaryToken = delegate.Branch.Continuation
+			break
+		}
+		session = *delegate.Child
+	}
+
+	// The actual regression: decodeActivityContinuation must accept the
+	// Path depth truncation legitimately mints, not reject it as
+	// too-long.
+	second, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: boundaryToken})
+	if err != nil {
+		t.Fatalf("LoadSessionJobActivityTree (resumed with the depth-boundary continuation): %v -- a continuation depth truncation legitimately mints must be submittable", err)
+	}
+	if len(second.Root.Entries) == 0 {
+		t.Fatalf("resumed tree has no entries, want the boundary delegate's own rendered content")
+	}
+}
+
 // TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant covers
 // #448's regression finding: a canceled request must surface as a real
 // error even when the cancellation lands while loading a DESCENDANT (not the
@@ -612,7 +782,15 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 // buildActivityFullSnapshot's recursion, which this path-following code
 // doesn't go through).
 func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
-	path := make([]string, activityMaxNewDepth+1)
+	// activityMaxContinuationPathLength (activityMaxNewDepth+1), not
+	// activityMaxNewDepth itself, is the real limit (roborev finding on
+	// #807's r5 review): a depth-boundary continuation legitimately mints
+	// a path exactly activityMaxNewDepth+1 hops long (see
+	// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable),
+	// so this test's own path must exceed THAT to prove genuinely-too-long
+	// paths are still rejected, not merely restate the old (too strict)
+	// boundary.
+	path := make([]string, activityMaxContinuationPathLength+1)
 	for i := range path {
 		path[i] = fmt.Sprintf("hop%d", i)
 	}
@@ -620,7 +798,7 @@ func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) 
 		Version: activityContinuationV1, RootID: "root", SessionID: "session", Path: path,
 	})
 	if _, err := decodeActivityContinuation(token, "root"); err == nil {
-		t.Fatal("expected an error for a continuation path longer than activityMaxNewDepth")
+		t.Fatal("expected an error for a continuation path longer than activityMaxContinuationPathLength")
 	}
 }
 
