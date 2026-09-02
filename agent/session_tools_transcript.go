@@ -292,7 +292,9 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
 		}
 	}
-	parsed, operation, err := parseRetainedReadArgs(args)
+	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	retainedArgs := normalizeRetainedReadArgs(args, ref)
+	parsed, operation, err := parseRetainedReadArgs(retainedArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -315,12 +317,90 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 		if operation == retainedReadSearch {
 			return searchJobTranscript(deps, parsed)
 		}
-		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(args, "range")), strings.TrimSpace(stringArg(args, "format")))
+		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(retainedArgs, "range")), strings.TrimSpace(stringArg(retainedArgs, "format")))
 	}
 	if operation == retainedReadSearch {
 		return nil, errors.New("invalid_request: output_match applies only to job: and artifact: refs")
 	}
 	return execReadSessionTranscript(deps, args)
+}
+
+// normalizeRetainedReadArgs removes neutral provider-materialized values before
+// retained-output mode selection. Session refs intentionally retain their
+// original values: expand_turn=0, for example, identifies the first turn.
+// Artifact formats are also intentionally retained because every explicitly
+// supplied format is invalid for artifact refs.
+func normalizeRetainedReadArgs(args map[string]any, ref string) map[string]any {
+	jobRef := strings.HasPrefix(ref, "job:")
+	artifactRef := strings.HasPrefix(ref, "artifact:")
+	if !jobRef && !artifactRef {
+		return args
+	}
+	normalized := make(map[string]any, len(args))
+	for name, value := range args {
+		normalized[name] = value
+	}
+	if isNeutralStringArg(normalized["range"]) {
+		delete(normalized, "range")
+	}
+	if isNeutralIntegerArg(normalized["expand_turn"]) {
+		delete(normalized, "expand_turn")
+	}
+	if isNeutralStringArg(normalized["output_match"]) {
+		delete(normalized, "output_match")
+	}
+	if isNeutralIntegerArg(normalized["context_lines"]) && stringArg(normalized, "output_match") == "" {
+		delete(normalized, "context_lines")
+	}
+	if jobRef && isNeutralJobFormatArg(normalized["format"]) {
+		delete(normalized, "format")
+	}
+	return normalized
+}
+
+func isNeutralStringArg(value any) bool {
+	return value == nil || value == ""
+}
+
+func isNeutralIntegerArg(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case float64:
+		return value == 0
+	case float32:
+		return value == 0
+	case int:
+		return value == 0
+	case int8:
+		return value == 0
+	case int16:
+		return value == 0
+	case int32:
+		return value == 0
+	case int64:
+		return value == 0
+	case uint:
+		return value == 0
+	case uint8:
+		return value == 0
+	case uint16:
+		return value == 0
+	case uint32:
+		return value == 0
+	case uint64:
+		return value == 0
+	default:
+		return false
+	}
+}
+
+func isNeutralJobFormatArg(value any) bool {
+	if value == nil {
+		return true
+	}
+	format, ok := value.(string)
+	return ok && (format == "" || strings.TrimSpace(format) == formatMarkdown)
 }
 
 func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadOperation, error) {
@@ -359,37 +439,62 @@ func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadO
 }
 
 func validateArtifactReadArgs(args map[string]any, operation retainedReadOperation) error {
-	_ = operation
-	for _, name := range []string{"range", "expand_turn"} {
-		if _, present := args[name]; present {
-			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+	normalized := normalizeRetainedReadArgs(args, "artifact:")
+	incompatible := make([]string, 0, 3)
+	for _, name := range []string{"range", "expand_turn", "format"} {
+		if _, present := normalized[name]; present {
+			incompatible = append(incompatible, name)
 		}
 	}
-	if _, present := args["format"]; present {
-		return errors.New("invalid_request: format is not supported for artifact: refs")
+	if len(incompatible) > 0 {
+		return retainedReadIncompatibleArgsError("artifact", args, incompatible, operation)
 	}
 	return nil
 }
 
 func validateJobReadArgs(args map[string]any, operation retainedReadOperation) error {
-	for _, name := range []string{"range", "expand_turn"} {
-		if _, present := args[name]; present {
-			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+	normalized := normalizeRetainedReadArgs(args, "job:")
+	incompatible := make([]string, 0, 3)
+	for _, name := range []string{"range", "expand_turn", "format"} {
+		if _, present := normalized[name]; present {
+			incompatible = append(incompatible, name)
 		}
 	}
-	format, formatSet := args["format"]
-	if !formatSet {
-		return nil
+	if len(incompatible) > 0 {
+		return retainedReadIncompatibleArgsError("job", args, incompatible, operation)
 	}
-	if strings.TrimSpace(fmt.Sprint(format)) == formatMarkdown {
-		// markdown is the default view; it is always compatible with offset_bytes
-		// and output_match on job: refs, so accept it as a no-op format hint.
-		return nil
+	return nil
+}
+
+// retainedReadIncompatibleArgsError is deliberately diagnostic: tool results
+// are retained as repair telemetry, so include every rejected option exactly as
+// received and a smallest valid call instead of naming only the first key.
+func retainedReadIncompatibleArgsError(refKind string, args map[string]any, names []string, operation retainedReadOperation) error {
+	received := make([]string, 0, len(names))
+	reasons := make([]string, 0, len(names))
+	for _, name := range names {
+		encoded, err := json.Marshal(args[name])
+		if err != nil {
+			encoded = []byte(fmt.Sprintf("%#v", args[name]))
+		}
+		received = append(received, fmt.Sprintf("%s=%s", name, encoded))
+		switch name {
+		case "range", "expand_turn":
+			reasons = append(reasons, fmt.Sprintf("%s applies only to session transcript refs", name))
+		case "format":
+			if refKind == "artifact" {
+				reasons = append(reasons, "format is not supported for artifact: refs")
+			} else if operation != retainedReadDefault {
+				reasons = append(reasons, "format cannot be combined with offset_bytes or output_match on job: refs")
+			} else {
+				reasons = append(reasons, "job: refs support only format=markdown")
+			}
+		}
 	}
-	if operation != retainedReadDefault {
-		return errors.New("invalid_request: format cannot be combined with offset_bytes or output_match on job: refs")
+	if refKind == "artifact" {
+		return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"artifact:<id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
 	}
-	return errors.New("invalid_request: job: refs support only format=markdown")
+	return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"job:<job_id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
 }
 
 func compileOutputMatch(expression string) (*regexp.Regexp, error) {
