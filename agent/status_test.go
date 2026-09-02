@@ -825,14 +825,12 @@ func TestDetailedStatus_HookEvents(t *testing.T) {
 }
 
 // TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing
-// covers the adversarial regression review's CRITICAL finding: an oversized
-// delegates.jsonl line propagated ErrLineTooLong unclassified all the way
-// through LoadSessionDelegateStatus into the hub's ThreadRead RPC, hard-
-// failing the chat/transcript view for every session sharing that root --
-// live or historical -- on a single corrupt line. The posture ruling is
-// "loud but CONTAINED": LoadSessionDelegateStatus must not fail, and must
-// carry a diagnosed error (with file + line info) rather than swallowing it
-// silently.
+// asserts an oversized delegates.jsonl line does not hard-fail the
+// chat/transcript view for every session sharing that root -- live or
+// historical -- on a single corrupt line: the posture is "loud but
+// CONTAINED". LoadSessionDelegateStatus must not fail, and must carry a
+// diagnosed error (with file + line info) rather than propagating
+// ErrLineTooLong unclassified or swallowing it silently.
 func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagnosticInsteadOfFailing(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "oversizedelegateroot"

@@ -525,14 +525,13 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 	}
 }
 
-// TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation covers roborev's
-// r6 finding on #807's review: trimActivityTrailingEntry minted a
-// continuation with JobsEpoch/DelegatesEpoch always omitted (silently
-// zero) instead of the trimmed session's own epochs from the projection
-// snapshot, weakening the staleness check a resumed continuation relies
-// on. The per-session jobsEpochs map lets a nested session (whose own
-// JobsEpoch differs from its ancestors') get ITS OWN epoch embedded, not
-// an ancestor's.
+// TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation asserts
+// trimActivityTrailingEntry mints a continuation carrying the trimmed
+// session's own JobsEpoch/DelegatesEpoch from the projection snapshot,
+// rather than the zero value: omitting them would weaken the staleness
+// check a resumed continuation relies on. The per-session jobsEpochs map
+// lets a nested session (whose own JobsEpoch differs from its
+// ancestors') get ITS OWN epoch embedded, not an ancestor's.
 func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 	t.Parallel()
 	child := &appwire.JobActivitySession{
@@ -569,12 +568,13 @@ func TestTrimActivityTrailingEntry_EmbedsEpochsInContinuation(t *testing.T) {
 	}
 }
 
-// TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation covers
-// roborev's r6 finding on #807's review: markActivityDelegateTruncated
-// minted a continuation with JobsEpoch/DelegatesEpoch always omitted
-// (silently zero) instead of the truncated delegate's own JobsEpoch and
-// the shared root's DelegatesEpoch. Revision (budget.revision) covers the
-// companion "live pagination lacks cross-request revision guard" finding.
+// TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation asserts
+// markActivityDelegateTruncated mints a continuation carrying the
+// truncated delegate's own JobsEpoch and the shared root's
+// DelegatesEpoch (not the zero value), plus the root's live-clock
+// Revision (budget.revision): all three let a resumed continuation's
+// staleness check detect a rewrite or live mutation that raced the
+// truncation.
 func TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation(t *testing.T) {
 	t.Parallel()
 	delegate := &appwire.JobActivityDelegate{DelegateID: "dlg_1"}
@@ -598,10 +598,11 @@ func TestMarkActivityDelegateTruncated_EmbedsEpochsInContinuation(t *testing.T) 
 	}
 }
 
-// TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation covers the
-// same "live pagination lacks cross-request revision guard" finding for
-// markActivitySessionTruncated's own continuation (its JobsEpoch/
-// DelegatesEpoch threading predates this round and is covered elsewhere).
+// TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation asserts
+// markActivitySessionTruncated mints a continuation carrying the root's
+// live-clock Revision (budget.revision) -- the value a live resume's
+// staleness check compares against to detect a mutation between mint and
+// resume. Its JobsEpoch/DelegatesEpoch threading is exercised elsewhere.
 func TestMarkActivitySessionTruncated_EmbedsRevisionInContinuation(t *testing.T) {
 	t.Parallel()
 	session := &appwire.JobActivitySession{SessionID: "root"}
@@ -887,9 +888,9 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 	}
 }
 
-// TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges is the
-// end-to-end red test for roborev's r6 finding "live pagination lacks
-// cross-request revision guard": a live root's JobsEpoch/DelegatesEpoch are
+// TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges asserts
+// a live root's continuation is rejected on resume once the tree has
+// mutated since mint time: a live root's JobsEpoch/DelegatesEpoch are
 // always 0 (loadLiveActivityBase reads neither fold cache), so the epoch
 // check in loadActivitySnapshotForParamsWithCache provides no protection
 // at all for a live continuation -- 0 == 0 always passes, even across a
@@ -897,9 +898,9 @@ func TestActivityFilterSnapshotToDelegate(t *testing.T) {
 // markActivitySessionTruncated's own shape for the root's own list),
 // forces a real mutation on the live tree (bumping jobActivityClock the
 // same way an actual job-started/job-finished event would), and asserts
-// resuming with the now-stale continuation is rejected -- proving the new
-// Revision check (jobs_activity.go's loadActivitySnapshotForParamsWithCache)
-// actually fires, not just that continuations carry the field.
+// resuming with the now-stale continuation is rejected -- proving the
+// Revision check in loadActivitySnapshotForParamsWithCache actually
+// fires, not just that continuations carry the field.
 func TestJobActivityTree_LiveContinuationRejectedAfterRevisionChanges(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t,

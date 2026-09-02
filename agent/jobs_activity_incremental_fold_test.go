@@ -17,12 +17,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// This file holds the six crux tests for #448's incremental-fold round
-// (Jesse's ruling on PR #807: 200k events is a normal Tuesday here —
-// truncating legit history is unacceptable; make reads O(new events) so
-// there's nothing to truncate). Crux (d) — an advancing continuation, two
-// pages, no re-read from byte zero — lives at the hub integration level
-// instead: cmd/evener-hub/app_jobs_test.go's
+// This file holds the six crux tests proving job-activity loading is a pure
+// incremental fold: 200k events is a normal Tuesday here, truncating
+// legitimate history is unacceptable, so reads must cost O(new events) with
+// nothing left to truncate (Jesse's ruling). Crux (d) — an advancing
+// continuation, two pages, no re-read from byte zero — lives at the hub
+// integration level instead: cmd/evener-hub/app_jobs_test.go's
 // TestHubJobsListMidListTruncationMintsAdvancingContinuation.
 
 // writeJobLogFast raw-writes n newline-delimited job_started records for
@@ -64,10 +64,9 @@ func writeJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
 
 // TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates is crux
 // (a): 200k+ events fold FULLY, with zero truncation at the LOAD layer, and
-// paginating all the way through renders every one of them exactly once —
-// the issue's old ~2000-record repro (round 3's
-// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget) is
-// a strict subset of this at ~1% the scale.
+// paginating all the way through renders every one of them exactly once.
+// TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget
+// covers the same property at roughly 1% the scale.
 func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "tuesdayroot"
@@ -76,10 +75,9 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 
 	// The LOAD layer itself must fold the complete history — no per-file
-	// ceiling degrades or truncates it (#448's historicalJobScanLimits is
-	// gone; historicalJobFoldCache has no size ceiling, only a MaxLineBytes
-	// per-line pathology tripwire — see writeJobLogFast, which writes
-	// ordinary-sized lines).
+	// ceiling degrades or truncates it: historicalJobFoldCache has no size
+	// ceiling, only a MaxLineBytes per-line pathology tripwire (see
+	// writeJobLogFast, which writes ordinary-sized lines).
 	records, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("loadCachedJobRecords: %v", err)
@@ -92,7 +90,7 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	// per page is a deliberate, separate response-size bound, not a load-time
 	// ceiling) — but paginating all the way through must show every job
 	// exactly once: no gaps (a job silently dropped), no repeats (a
-	// continuation that doesn't advance — #812).
+	// continuation that never advances, looping the same page forever).
 	seen := make(map[string]bool, totalJobs)
 	params := appwire.JobsListParams{Ref: "local:" + rootID}
 	const maxPages = 200 // generous: totalJobs/activityMaxWorkUnits ~= 100
