@@ -512,6 +512,14 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // exact-path exception because it is pane content, not a widget stylesheet.
 // Its --alive ring marks an actually in-progress task, which is precisely the
 // semantic "agent working" meaning the token contract reserves for that hue.
+//
+// delegate-status: panes/session/transcript/tools/delegateStatus.module.css
+// earns the same exception for the same structural reason - it lives under
+// panes/session/transcript/tools/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
+// .dangerText — failure text for a delegate's not-resumable reason and last
+// failed outcome reason. Error text is the danger hue's canonical, ungateable
+// job, the same as railDialog.module.css's .pickerError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
@@ -522,6 +530,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/chrome/activitypanel.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/tools/sandboxescalation.module.css",
+  "panes/session/transcript/tools/delegateStatus.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {

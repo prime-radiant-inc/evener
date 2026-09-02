@@ -1,0 +1,193 @@
+/* DelegateStatusBody: structured card for job_status delegate output.
+   Follows the design system (docs/web-ui/design-system.md): all colors,
+   spacing, radii, and fonts use var(--token) from tokens.css. The 4px
+   space grid (--space-1..4) sizes all gaps and padding. Section eyebrows
+   use the micro-label pattern (caption size, --font-weight-medium,
+   --ink-low, uppercase, --tracking-micro). Mono (--font-mono) is reserved
+   for machine text (delegate ID, paths, model, sandbox mode, tool chips,
+   transcript ref). The four attention hues carry their designated meanings:
+   --alive for running, --attention for needs-human, --danger for failure. */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  overflow: hidden;
+}
+
+/* --- Header: ID + status chip (Chip widget provides the pill) --- */
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.headId {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-hi);
+  font-weight: 500;
+}
+
+.headSpacer {
+  flex: 1;
+}
+
+/* --- Meta line: inline ·-separated key:value segments --- */
+.meta {
+  padding: 0 var(--space-3) var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+  color: var(--ink-mid);
+}
+
+.metaSeg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 var(--space-2);
+}
+
+.metaSeg:first-child {
+  padding-left: 0;
+}
+
+.metaSep {
+  color: var(--edge-strong);
+  user-select: none;
+  margin-right: 2px;
+}
+
+.metaK {
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+}
+
+.metaV {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Section eyebrow (micro-label pattern, design system §6) --- */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-low);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
+  margin-bottom: var(--space-1);
+}
+
+/* --- Mandate --- */
+.mandate {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+}
+
+.mandateBody {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-hi);
+}
+
+/* --- Diagnostics: not-resumable reason, failed-outcome reason ---
+   Same visual treatment as mandate (bordered section, body text) but
+   semantically distinct — these are failure diagnostics, not a mandate. */
+.diagnostic {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+}
+
+.diagnosticBody {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-hi);
+}
+
+.dangerText {
+  color: var(--danger-ink);
+}
+
+/* --- Environment: meta table idiom (design system §10) --- */
+.env {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+}
+
+.envRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.envRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.envK {
+  width: 88px;
+  flex-shrink: 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.envV {
+  color: var(--ink-hi);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.envVmono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.envVmuted {
+  color: var(--ink-mid);
+}
+
+/* --- Available tools --- */
+.tools {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+}
+
+.toolsChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.toolChip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-mid);
+  background: var(--surface-inset);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-chip);
+  padding: 1px 6px;
+}
+
+/* --- Footer --- */
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-inset);
+}
+
+.footerSpacer {
+  flex: 1;
+}
