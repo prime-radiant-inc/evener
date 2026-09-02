@@ -207,3 +207,45 @@ func TestClassifyHTTPErrorKeepsProviderMessageVerbatim(t *testing.T) {
 		t.Fatal("plain errors carry no protocol or hint")
 	}
 }
+
+// TestRejectedParameter pins the exported accessor callers use instead of
+// re-matching provider prose: the structured error.param code path, every
+// message pattern the classifier recognizes, and the no-parameter cases.
+func TestRejectedParameter(t *testing.T) {
+	structured := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter","type":"invalid_request_error","param":"temperature","code":"unknown_parameter"}}`),
+		responsesRes)
+	if got := RejectedParameter(structured); got != "temperature" {
+		t.Errorf("structured param: RejectedParameter = %q, want temperature", got)
+	}
+
+	msgs := []struct {
+		msg  string
+		want string
+	}{
+		{"Unrecognized request argument supplied: temperature", "temperature"},
+		{"Unknown parameter: 'temperature'", "temperature"},
+		{"Unsupported parameter: 'temperature' is not supported with this model.", "temperature"},
+		{"Invalid value: unknown field temperature", "temperature"},
+		{"Unsupported parameter: 'top_p' is not supported with this model.", "top_p"},
+		{"temperature value out of range", ""},
+		{"model not found", ""},
+	}
+	for _, tc := range msgs {
+		err := ErrorFromHTTPStatus("openai", 400, tc.msg, nil, nil)
+		if got := RejectedParameter(err); got != tc.want {
+			t.Errorf("RejectedParameter(%q) = %q, want %q", tc.msg, got, tc.want)
+		}
+	}
+
+	// Non-provider errors carry no parameter.
+	if got := RejectedParameter(errors.New("plain")); got != "" {
+		t.Errorf("plain error: RejectedParameter = %q, want \"\"", got)
+	}
+	// A rejection-shaped message on a non-400 status still names its
+	// parameter — the accessor reports the fact; callers gate on Kind.
+	quota := ErrorFromHTTPStatus("openai", 429, "Unsupported parameter: 'temperature'", nil, nil)
+	if got := RejectedParameter(quota); got != "temperature" {
+		t.Errorf("non-400 status: RejectedParameter = %q, want temperature (callers gate on Kind)", got)
+	}
+}
