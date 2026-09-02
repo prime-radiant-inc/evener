@@ -784,7 +784,7 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
 	"lint-naming":        "go run ./cmd/evener-dev/bin tomlcheck",
-	"lint-gofmt":         "gofmt -l",
+	"lint-gofmt":         "/bin/gofmt\" -l",
 	"lint-evenerfuzz":    "-tags evenerfuzz",
 	"lint-eval":          "-tags eval ",
 	"lint-internal":      "go run ./cmd/evener-dev/bin internalcheck",
