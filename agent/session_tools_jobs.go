@@ -497,14 +497,15 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
 	}
-	// delegation_allowance: 0/absent = leaf delegate (cannot delegate); positive
-	// = grant; negative = invalid_request. Zero reads as unset (strict-zero rule).
-	// createDelegate enforces the grant rule (strictly less than own allowance).
-	if n, ok := shellIntArg(args, "delegation_allowance"); ok && n != 0 {
+	// delegation_allowance: absent = the default grant (one level below the
+	// creator, resolved by createDelegate); 0 = leaf delegate; positive =
+	// grant; negative = invalid_request. createDelegate enforces the grant
+	// rule (strictly less than own allowance).
+	if n, ok := shellIntArg(args, "delegation_allowance"); ok {
 		if n < 0 {
 			return delegateArgs{}, errors.New("invalid_request: delegation_allowance must be non-negative")
 		}
-		a.DelegationAllowance = n
+		a.DelegationAllowance = &n
 	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema

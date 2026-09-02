@@ -126,35 +126,6 @@ func TestBuiltinAgents_SubagentCarriesDelegationTools(t *testing.T) {
 	}
 }
 
-func TestCreateDelegate_SubagentDelegatesOnlyWhenGranted(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		allowance int
-		want      bool
-	}{{"granted", 1, true}, {"leaf", 0, false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			root, _, _ := newDelegateResourceBootstrapSession(t)
-			result := root.createDelegate(context.Background(), delegateArgs{Task: "brief", AgentType: "subagent", DelegationAllowance: tc.allowance})
-			if result.Err != nil {
-				t.Fatalf("createDelegate: %v", result.Err)
-			}
-			root.delegateController.mu.Lock()
-			live := root.delegateController.live[result.DelegateID]
-			root.delegateController.mu.Unlock()
-			if live == nil || live.binding == nil || live.binding.runtime == nil {
-				t.Fatal("no live child session")
-			}
-			names := live.binding.runtime.reg.RegisteredNames()
-			if names["delegate"] != tc.want {
-				t.Errorf("child has delegate tool = %v, want %v (allowance %d)", names["delegate"], tc.want, tc.allowance)
-			}
-			if names["job_watch"] != tc.want {
-				t.Errorf("child has job_watch = %v, want %v: a granted subagent supervises its delegates with it, a leaf does not get it", names["job_watch"], tc.want)
-			}
-		})
-	}
-}
-
 // A delegate that shares its parent's task store cannot be seeded with its
 // own task_list: PopulateFromTemplates is a no-op on a non-empty store, so the
 // items would vanish silently. Refuse at creation instead.

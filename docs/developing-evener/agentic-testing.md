@@ -1047,7 +1047,7 @@ file a kata. Don't try to drive past the gate from the scenario.
   the Setup checklist, never Jesse's real one.
 - **Follow-up turn** (after the initial spawn prompt): send AppWire `turn/start` with `ref:"local:<SID>"`, a unique `clientMutationId`, and `input:[{"type":"text","text":"..."}]` (the spawn only starts turn 1; subsequent user turns use `turn/start`).
 - **Session URL**: `/s/local:<SID>`. A bare `/s/<SID>` renders "Page not found" client-side, by design.
-- **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
+- **Recursion depth** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` sets the root's own delegation allowance to N; each delegate is granted one level below its creator by default. Omitted/default is 2 (the root's delegates may delegate once more; their delegates are leaves). Set 1 to make every delegate a leaf.
 - **Per-session transcript**: `$HOME/.local/state/evener/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **Per-daemon log** (everything a spawned session's `evener serve` writes,

@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: "Implementer for one bounded unit of work: owns the paths its brief names, makes the change, runs the check that proves it, and reports the evidence. Also handles a scoped investigation or review when that is what the brief asks for. Delegates in turn only when its parent grants a `delegation_allowance`; with the default allowance of 0 it is a leaf."
+description: "Implementer for one bounded unit of work: owns the paths its brief names, makes the change, runs the check that proves it, and reports the evidence. Also handles a scoped investigation or review when that is what the brief asks for. Delegates in turn by default, one level below its parent's allowance; a parent that passes `delegation_allowance` 0 makes it a leaf."
 model: inherit
 color: blue
 tools: [glob, grep, read_file, write_file, apply_patch, shell, task_list, web_fetch, delegate, delegate_send, job_status, job_list, job_stop, read_transcript]
