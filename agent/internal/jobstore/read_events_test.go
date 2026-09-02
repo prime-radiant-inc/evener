@@ -8,8 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 func TestReadEvents_RoundTrip(t *testing.T) {
@@ -125,21 +126,6 @@ func TestReadEvents_ErrorsOnMidFileCorruption(t *testing.T) {
 	}
 }
 
-// countdownContext reports itself canceled once its Err method has been
-// called more times than allow, so a test can deterministically stop a scan
-// partway through a journal without depending on real time or file size.
-type countdownContext struct {
-	context.Context
-	allow int32
-}
-
-func (c *countdownContext) Err() error {
-	if atomic.AddInt32(&c.allow, -1) < 0 {
-		return context.Canceled
-	}
-	return nil
-}
-
 // writeScanEvents writes n newline-delimited events built by line to path,
 // for tests that need a journal larger than the few hand-written lines above.
 func writeScanEvents(t *testing.T, path string, n int, line func(i int) Event) {
@@ -231,10 +217,9 @@ func TestScanEvents_ErrorsOnMidFileCorruption(t *testing.T) {
 	}
 }
 
-// TestScanEvents_ChecksCancellationBetweenRecords covers #448's acceptance
-// criterion that a large-journal scan checks ctx between records (not just
-// once per file), so a canceled request stops before decoding the rest of a
-// large journal.
+// TestScanEvents_ChecksCancellationBetweenRecords verifies a large-journal
+// scan checks ctx between records, not just once per file, so a canceled
+// request stops before decoding the rest of a large journal.
 func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -243,7 +228,7 @@ func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
 		return Event{Kind: EventWatchRegistered, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
 	})
 
-	ctx := &countdownContext{Context: context.Background(), allow: 10}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
 	events, err := ScanEvents(ctx, path, ScanLimits{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ScanEvents error = %v, want context.Canceled", err)
@@ -253,10 +238,10 @@ func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
 	}
 }
 
-// TestScanEvents_ManyNonJobEventsExceedEventLimit covers #448's evidence that
-// journals include non-job lifecycle events (notify/watch) that consume scan
-// work but produce no job row — the raw event ceiling must count them too,
-// not only job_started/job_finished records.
+// TestScanEvents_ManyNonJobEventsExceedEventLimit verifies the raw event
+// ceiling counts non-job lifecycle events (notify/watch) too, not only
+// job_started/job_finished records: journals include lines that consume
+// scan work but produce no job row.
 func TestScanEvents_ManyNonJobEventsExceedEventLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -284,7 +269,7 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing
 	writeScanEvents(t, path, 5, func(i int) Event {
 		return Event{Kind: EventWatchSendPending, Seq: int64(i + 1), WatchID: fmt.Sprintf("w%d", i)}
 	})
-	ctx := &countdownContext{Context: context.Background(), allow: 2}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 2}
 
 	_, err := ScanEvents(ctx, path, ScanLimits{MaxEvents: 1})
 	if !errors.Is(err, context.Canceled) {
@@ -320,12 +305,11 @@ func TestScanEvents_MaxEventsReturnsPartialEventsAlongsideError(t *testing.T) {
 	}
 }
 
-// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted covers
-// roborev's finding on #807's r5 review: MaxEvents was checked only after
-// linecap.ReadLine had already fully buffered the next line, not before
-// attempting to read it at all -- a MaxEvents-only scan could still pay
-// the cost of buffering an oversized next line just to discover, only
-// afterward, that the event budget was already spent.
+// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted verifies
+// MaxEvents is checked before linecap.ReadLine buffers the next line, not
+// just before decoding it: otherwise a MaxEvents-only scan could pay the
+// cost of buffering an oversized next line only to discover, afterward,
+// that the event budget was already spent.
 //
 // A line that exceeds MaxLineBytes gives an unambiguous, black-box-
 // observable signal either way: if ScanEvents ever attempts to read it,
@@ -386,13 +370,13 @@ func TestScanEvents_MaxBytesReturnsPartialEventsAlongsideError(t *testing.T) {
 	}
 }
 
-// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit covers
-// roborev's finding on #448: if ctx is canceled during the ReadBytes call
-// whose chunk ALSO happens to push totalBytes past MaxBytes, the next
-// iteration's ctx.Err() check never gets a chance to run — ScanEvents would
-// return ErrScanLimitExceeded, silently swallowing the fact that the caller
-// had already asked to stop. A second ctx check belongs right at the
-// byte-limit return itself, not only at the top of the next iteration.
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit verifies
+// that when ctx is canceled during a read whose chunk ALSO happens to push
+// totalBytes past MaxBytes, cancellation still wins: the next iteration's
+// top-of-loop ctx.Err() check never gets a chance to run, so a second ctx
+// check right at the byte-limit return itself is what catches it — without
+// that, ScanEvents would return ErrScanLimitExceeded, silently swallowing
+// the fact that the caller had already asked to stop.
 func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -413,7 +397,7 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.
 	// top-of-iteration checks for lines 1 and 2 — then reports canceled on
 	// every call after, including a check placed right before the
 	// byte-limit return on line 2's iteration.
-	ctx := &countdownContext{Context: context.Background(), allow: 2}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 2}
 
 	_, err = ScanEvents(ctx, path, ScanLimits{MaxBytes: oneLineSize})
 	if !errors.Is(err, context.Canceled) {
@@ -442,21 +426,12 @@ func TestScanEvents_RefusesRawByteLimit(t *testing.T) {
 
 // TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
 // unterminated-final-chunk path specifically: a single line with no trailing
-// newline at all, longer than MaxBytes, must be refused rather than
-// tolerated as an in-flight partial write. 5 MB matches the scale the
-// adversarial review empirically probed bufio.Reader.ReadBytes at (it has no
-// internal cap, unlike Scanner's MaxScanTokenSize, so it will buffer a line
-// of any length before returning it) — the underlying reader must itself be
-// bounded via io.LimitReader so this refusal doesn't require buffering the
-// whole 5 MB line first.
-// TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
-// unterminated-final-chunk path specifically: a single line with no trailing
 // newline at all, longer than MaxLineBytes, must be refused rather than
-// tolerated as an in-flight partial write. This is now MaxLineBytes'
-// responsibility, not MaxBytes' — #448's incremental-fold round removes
-// MaxBytes as a truncating per-file ceiling (a legitimate large journal must
-// fold in full, not get cut off), but a single pathological line is still
-// corruption, not Tuesday, so it keeps its own independent, always-on cap.
+// tolerated as an in-flight partial write. This is MaxLineBytes'
+// responsibility, not MaxBytes': MaxBytes is not a truncating per-file
+// ceiling (a legitimate large journal must fold in full, not get cut off),
+// but a single pathological line is still corruption, not Tuesday, so it
+// keeps its own independent, always-on cap.
 func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -599,27 +574,21 @@ func TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets(t *testin
 }
 
 // TestScanEventsFrom_UnterminatedButCompleteJSONLineIsNotDuplicatedAcrossOffsets
-// covers roborev's finding on #807's r6 review: an unterminated final line
-// whose JSON payload is nonetheless COMPLETE and valid (an in-flight write
-// caught after flushing the payload but before its trailing newline) used
-// to be decoded into events with offset only advancing past it when
-// terminated -- an inconsistent pairing. A later incremental call resuming
-// from that stale offset would then re-read and re-decode the identical
-// bytes once the newline landed, producing the SAME event twice for a
-// caller that concatenates prior.events with the new delta
-// (extendHistoricalJobFold's exact shape). roborev's finding offered two
-// fixes: exclude the line, or make its offset contract compatible with
-// incremental extension. Excluding it was tried first and reverted: it
-// broke FuzzTask8OutputRecovery's mode-0 seed, which pins that ReadEvents
-// recovers a complete-but-unterminated trailing record the same way Store's
-// own reopen recovery does (jobstore/task8_output_recovery_fuzz_test.go).
-// The chosen fix instead advances offset past a successfully decoded
-// record unconditionally, matching its inclusion in events -- so THIS
-// test's oracle is that offset already covers the line the moment it is
-// included, and a later resume from that offset therefore sees only what
-// comes after it, never re-decoding it. This is the sibling of
+// verifies that an unterminated final line whose JSON payload is
+// nonetheless COMPLETE and valid (an in-flight write caught after flushing
+// the payload but before its trailing newline) is both included in events
+// AND has offset advanced past it, keeping the two consistent. Excluding
+// such a line instead of including it is not a viable alternative: ReadEvents
+// and Store's own reopen recovery both treat a complete-but-unterminated
+// trailing record as recoverable (see FuzzTask8OutputRecovery's mode-0 seed,
+// jobstore/task8_output_recovery_fuzz_test.go), so offset must stay
+// consistent with events -- covering exactly what got included, nothing
+// more -- so a later incremental call resuming from that offset sees only
+// what comes after this line, never re-decoding it for a caller that
+// concatenates prior.events with the new delta (extendHistoricalJobFold's
+// exact shape). This is the sibling of
 // TestScanEventsFrom_ToleratesUnterminatedTrailingLineAcrossOffsets, which
-// only ever exercises a SYNTACTICALLY INCOMPLETE trailing line -- a
+// only exercises a SYNTACTICALLY INCOMPLETE trailing line -- a
 // complete-but-unterminated line takes a different path through
 // ScanEventsFrom (json.Unmarshal succeeds) that test never reaches.
 func TestScanEventsFrom_UnterminatedButCompleteJSONLineIsNotDuplicatedAcrossOffsets(t *testing.T) {

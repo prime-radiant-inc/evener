@@ -9,9 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 func TestReadEventsMissingFileDoesNotCreate(t *testing.T) {
@@ -139,21 +140,6 @@ func TestReadEventsRejectsUnknownVersionWithoutMutation(t *testing.T) {
 	}
 }
 
-// countdownContext reports itself canceled once its Err method has been
-// called more times than allow, so a test can deterministically stop a scan
-// partway through a journal without depending on real time or file size.
-type countdownContext struct {
-	context.Context
-	allow int32
-}
-
-func (c *countdownContext) Err() error {
-	if atomic.AddInt32(&c.allow, -1) < 0 {
-		return context.Canceled
-	}
-	return nil
-}
-
 // writeDelegateJournal writes a valid version header followed by n batch
 // lines, each holding one distinct top-level delegate-created event, so
 // scan-limit and cancellation tests can control the exact line count.
@@ -236,15 +222,15 @@ func TestScanEvents_Missing(t *testing.T) {
 	}
 }
 
-// TestScanEvents_ChecksCancellationBetweenRecords covers #448's acceptance
-// criterion that a large-journal scan checks ctx between records (here, one
-// event per batch line), not just once per file.
+// TestScanEvents_ChecksCancellationBetweenRecords verifies a large-journal
+// scan checks ctx between records (here, one event per batch line), not
+// just once per file.
 func TestScanEvents_ChecksCancellationBetweenRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	const total = 200
 	writeDelegateJournal(t, path, total)
 
-	ctx := &countdownContext{Context: context.Background(), allow: 10}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 10}
 	events, _, err := ScanEvents(ctx, path, ScanLimits{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ScanEvents error = %v, want context.Canceled", err)
@@ -357,16 +343,15 @@ func TestScanEvents_UnterminatedVersionHeaderOnEntireFileWithoutNewline(t *testi
 	}
 }
 
-// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit covers
-// roborev's finding on #448 (jobstore's counterpart is
-// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit in
-// agent/internal/jobstore): if ctx is canceled during the read whose chunk
-// ALSO happens to push totalBytes past MaxBytes, that must still be
-// reported as context.Canceled, not silently swallowed by
-// ErrScanLimitExceeded. MaxBytes is set to exactly the header+line-1 size:
-// both fit (totalBytes == MaxBytes, not over), so the limit fires on line
-// 2's byte check — deterministically, not by guessing a fraction of the
-// whole file's size.
+// TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit verifies
+// that when ctx is canceled during a read whose chunk ALSO happens to push
+// totalBytes past MaxBytes, that must still be reported as
+// context.Canceled, not silently swallowed by ErrScanLimitExceeded
+// (jobstore has the same test, of the same name, in
+// agent/internal/jobstore). MaxBytes is set to exactly the header+line-1
+// size: both fit (totalBytes == MaxBytes, not over), so the limit fires on
+// line 2's byte check — deterministically, not by guessing a fraction of
+// the whole file's size.
 func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 1)
@@ -380,7 +365,7 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.
 	// top-of-read checks for the header, line 1, and line 2 — then reports
 	// canceled on every call after, including the check placed right before
 	// the byte-limit return on line 2's iteration.
-	ctx := &countdownContext{Context: context.Background(), allow: 3}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 3}
 
 	_, _, err = ScanEvents(ctx, path, ScanLimits{MaxBytes: headerPlusLine1Size})
 	if !errors.Is(err, context.Canceled) {
@@ -397,7 +382,7 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentByteLimit(t *testing.
 func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 5)
-	ctx := &countdownContext{Context: context.Background(), allow: 3}
+	ctx := &agenttest.CountdownContext{Context: context.Background(), Allow: 3}
 
 	_, _, err := ScanEvents(ctx, path, ScanLimits{MaxEvents: 1})
 	if !errors.Is(err, context.Canceled) {
@@ -407,19 +392,12 @@ func TestScanEvents_CancellationTakesPriorityOverCoincidentEventLimit(t *testing
 
 // TestScanEvents_RefusesSingleOversizedUnterminatedLine mirrors jobstore's
 // test of the same name: a single batch line with no trailing newline at
-// all, longer than MaxBytes, must be refused rather than tolerated as an
-// in-flight partial write — and the underlying reader must itself be
-// bounded via io.LimitReader so this refusal doesn't require buffering the
-// whole oversized line first (bufio.Reader.ReadBytes has no size cap of its
-// own, unlike Scanner's MaxScanTokenSize).
-// TestScanEvents_RefusesSingleOversizedUnterminatedLine covers the
-// unterminated-final-chunk path: a single batch line with no trailing
-// newline at all, longer than MaxLineBytes, must be refused rather than
-// tolerated as an in-flight partial write. This is now MaxLineBytes'
-// responsibility, not MaxBytes' — #448's incremental-fold round removes
-// MaxBytes as a truncating per-file ceiling (a legitimate large journal must
-// fold in full, not get cut off), but a single pathological line is still
-// corruption, not Tuesday, so it keeps its own independent, always-on cap.
+// all, longer than MaxLineBytes, must be refused rather than tolerated as
+// an in-flight partial write. This is MaxLineBytes' responsibility, not
+// MaxBytes': MaxBytes is not a truncating per-file ceiling (a legitimate
+// large journal must fold in full, not get cut off), but a single
+// pathological line is still corruption, not Tuesday, so it keeps its own
+// independent, always-on cap.
 func TestScanEvents_RefusesSingleOversizedUnterminatedLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 0)
@@ -570,12 +548,12 @@ func TestScanEvents_TornTailTrueOnGenuineUnterminatedFile(t *testing.T) {
 	}
 }
 
-// TestScanEvents_TornTailFalseOnArtificialByteCutoff covers roborev's
-// finding on #448: TornTail must reflect whether the journal genuinely ends
-// without a terminating newline, not whether an artificial MaxBytes cutoff
-// happened to land mid-line. The journal here is cleanly terminated — an
-// unbounded read would show TornTail=false — so a MaxBytes cutoff reporting
-// TornTail=true would be reporting corruption that isn't there.
+// TestScanEvents_TornTailFalseOnArtificialByteCutoff verifies TornTail
+// reflects whether the journal genuinely ends without a terminating
+// newline, not whether an artificial MaxBytes cutoff happened to land
+// mid-line. The journal here is cleanly terminated — an unbounded read
+// would show TornTail=false — so a MaxBytes cutoff reporting TornTail=true
+// would be reporting corruption that isn't there.
 func TestScanEvents_TornTailFalseOnArtificialByteCutoff(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	writeDelegateJournal(t, path, 200)
@@ -593,15 +571,15 @@ func TestScanEvents_TornTailFalseOnArtificialByteCutoff(t *testing.T) {
 	}
 }
 
-// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted covers
-// roborev's finding on #807: MaxEvents must be checked BEFORE attempting to
-// decode the next batch line, not after — otherwise a MaxEvents: 1 scan can
-// still fully decode an oversized (or, as here, malformed) later batch just
-// to discover afterward that the budget was already spent. Line 1 holds
-// exactly one valid event (bringing the running count to MaxEvents); line 2
-// is malformed JSON. If the fix checks the budget first, ScanEvents never
-// attempts to decode line 2 at all and reports ErrScanLimitExceeded; the
-// pre-fix behavior decodes line 2 first and reports a decode error instead.
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted verifies
+// MaxEvents is checked BEFORE attempting to decode the next batch line, not
+// after — otherwise a MaxEvents: 1 scan could still fully decode an
+// oversized (or, as here, malformed) later batch just to discover
+// afterward that the budget was already spent. Line 1 holds exactly one
+// valid event (bringing the running count to MaxEvents); line 2 is
+// malformed JSON: since the budget check runs first, ScanEvents never
+// attempts to decode line 2 at all and reports ErrScanLimitExceeded rather
+// than a decode error.
 func TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	var buf bytes.Buffer
@@ -630,18 +608,17 @@ func TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted covers
-// roborev's finding on #807's r5 review: MaxEvents was checked only after
-// linecap.ReadLine had already fully buffered the next line (up to
-// MaxLineBytes), not before attempting to read it at all -- a
-// MaxEvents-only scan (MaxLineBytes left at its large default, or set
-// explicitly but still generous) could still pay the cost of buffering an
-// oversized next line just to discover, only afterward, that the event
-// budget was already spent. This is the read-level sibling of
-// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted, which
-// already proved decoding is skipped but -- since linecap.ReadLine reads
-// bytes long before batchRecord decoding ever sees them -- does not by
-// itself prove the READ is skipped too.
+// TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted verifies
+// MaxEvents is checked before linecap.ReadLine buffers the next line at
+// all, not just before decoding it: otherwise a MaxEvents-only scan
+// (MaxLineBytes left at its large default, or set explicitly but still
+// generous) could pay the cost of buffering an oversized next line only to
+// discover, afterward, that the event budget was already spent. This is
+// the read-level sibling of
+// TestScanEvents_StopsBeforeDecodingOnceEventBudgetExhausted, which proves
+// decoding is skipped but -- since linecap.ReadLine reads bytes long
+// before batchRecord decoding ever sees them -- does not by itself prove
+// the READ is skipped too.
 //
 // A line that exceeds MaxLineBytes gives an unambiguous, black-box-
 // observable signal either way: if ScanEvents ever attempts to read it,
@@ -687,14 +664,14 @@ func TestScanEvents_StopsBeforeReadingOnceEventBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend covers roborev's
-// finding on #807's r6 review: MaxEvents was checked only at the TOP of
-// the loop, once per line, before that line was even read -- but a single
-// batch line can hold multiple events, so if the batch that pushes
+// TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend verifies MaxEvents
+// is also checked immediately after appending a batch's events, not only
+// at the TOP of the loop once per line before that line is even read: a
+// single batch line can hold multiple events, so if the batch that pushes
 // len(events) past MaxEvents happens to be the file's LAST line, the loop
-// simply ends via a clean EOF on the next iteration without ever
-// re-checking the budget, silently returning more than MaxEvents events
-// with no error at all.
+// would otherwise simply end via a clean EOF on the next iteration without
+// ever re-checking the budget, silently returning more than MaxEvents
+// events with no error at all.
 func TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	var buf bytes.Buffer
@@ -733,9 +710,9 @@ func TestScanEvents_ChecksMaxEventsAfterTheFinalBatchAppend(t *testing.T) {
 	}
 }
 
-// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError covers
-// roborev's finding on #807: when the partial prefix ScanEvents degrades to
-// on hitting a limit would NOT fold cleanly on its own (e.g. it ends
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError verifies
+// that when the partial prefix ScanEvents degrades to on hitting a limit
+// would NOT fold cleanly on its own (e.g. it ends
 // mid-relationship — a RunStarted for a delegate whose own Created event is
 // in a later, never-read batch), ScanEvents must still report
 // ErrScanLimitExceeded, not a Fold error. Folding is the caller's job
@@ -785,17 +762,15 @@ func TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError(t *testing.T
 }
 
 // TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid
-// covers roborev's finding on #807's r6 review: ReadEventsWithDiagnostics
-// (the full-read wrapper, unbounded) used to fold the complete journal
-// internally, so a syntactically valid but semantically invalid delegate
-// history -- e.g. an orphan event with no preceding Created -- surfaced as
-// an error. #807's r5 round removed that internal fold (correctly: this
-// package's ScanEvents/ScanEventsFrom, the context-aware streaming path
-// shared with the incremental-fold path, must never fold internally -- see
-// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError above),
-// but the removal reached the full-read wrapper too, silently accepting
-// what used to be reported. The fix restores fold-validation in the
-// wrapper specifically, leaving the streaming scans un-folded.
+// verifies ReadEventsWithDiagnostics (the full-read wrapper, unbounded)
+// folds the complete journal and reports a syntactically valid but
+// semantically invalid delegate history -- e.g. an orphan event with no
+// preceding Created -- as an error, even though this package's
+// ScanEvents/ScanEventsFrom (the context-aware streaming path shared with
+// the incremental-fold path) never fold internally -- see
+// TestScanEvents_DoesNotSwallowScanLimitExceededBehindAFoldError above.
+// Fold-validation belongs specifically in the full-read wrapper, leaving
+// the streaming scans un-folded.
 func TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSyntaxIsValid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delegates.jsonl")
 	var buf bytes.Buffer
