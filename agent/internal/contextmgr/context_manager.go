@@ -665,8 +665,15 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
 			continue
 		}
+		// Copy-on-write: the caller's history is typically a fold snapshot
+		// whose Turn structs share Message.Content backing arrays and
+		// *ToolResultData payloads with the live s.history. Writing through
+		// them would leak a LOSING fold's masking into the live history, so
+		// a turn that masks anything gets a fresh Content slice and fresh
+		// ToolResultData; the shared originals are never written.
+		var rebuilt []llm.ContentPart
 		for j := range t.Message.Content {
-			p := &t.Message.Content[j]
+			p := t.Message.Content[j]
 			if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 				continue
 			}
@@ -676,8 +683,16 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 			args := findToolCallArgs(history[:i], tr.ToolCallID)
 
 			if newContent, mask := maskToolResultContent(tr, resultToolName, summarizeToolResult, args); mask {
-				tr.Content = newContent
+				if rebuilt == nil {
+					rebuilt = append([]llm.ContentPart(nil), t.Message.Content...)
+				}
+				masked := *tr
+				masked.Content = newContent
+				rebuilt[j].ToolResult = &masked
 			}
+		}
+		if rebuilt != nil {
+			t.Message.Content = rebuilt
 		}
 	}
 }
@@ -879,8 +894,11 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 		if t.Kind != schema.TurnAssistant {
 			continue
 		}
+		// Copy-on-write over the shared *ThinkingData payloads, for the same
+		// losing-fold leak maskObservations documents.
+		var rebuilt []llm.ContentPart
 		for j := range t.Message.Content {
-			p := &t.Message.Content[j]
+			p := t.Message.Content[j]
 			if p.Kind != llm.ContentThinking || p.Thinking == nil {
 				continue
 			}
@@ -896,7 +914,15 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 			if oldLen == 0 {
 				continue
 			}
-			p.Thinking.Text = fmt.Sprintf("[thinking: %d chars]", oldLen)
+			if rebuilt == nil {
+				rebuilt = append([]llm.ContentPart(nil), t.Message.Content...)
+			}
+			cleared := *p.Thinking
+			cleared.Text = fmt.Sprintf("[thinking: %d chars]", oldLen)
+			rebuilt[j].Thinking = &cleared
+		}
+		if rebuilt != nil {
+			t.Message.Content = rebuilt
 		}
 	}
 }
