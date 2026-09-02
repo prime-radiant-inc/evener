@@ -86,6 +86,35 @@ func TestProtocolBuildBody(t *testing.T) {
 	}
 }
 
+// TestProtocolBuildBody_WebSearchNilCapsIsFailOpen pins the mechanism
+// behind issue #738's endpoint gate on this protocol too (the Responses
+// and Anthropic twins share the name): the gate here,
+// req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch)
+// (protocol.go), treats an unset capability as permissive - trust the
+// caller's own req.WebSearch - so the registry's endpoint gate
+// (llm/registry/resolve.go, gateWebSearch) can never represent "denied
+// because this endpoint is not the vendor's first-party API" as a bare
+// nil: a caller setting req.WebSearch = true without consulting
+// registry.Caps would still get google_search sent to an endpoint that
+// rejects it. The registry closes this by carrying an explicit false,
+// never nil; this test pins why that is necessary at this layer and that
+// the explicit false actually holds the tool back.
+func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	req := protoReq("")
+	req.WebSearch = true
+	res := protoRes(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
+	if res.Caps.WebSearch != nil {
+		t.Fatal("test setup: protoRes(nil) must leave WebSearch nil")
+	}
+	tools, _ := protoBuild(t, req, res)["tools"].([]map[string]any)
+	if len(tools) != 1 || tools[0]["google_search"] == nil {
+		t.Fatalf("nil Caps.WebSearch is fail-open at this layer: a caller setting req.WebSearch still gets google_search: %v", tools)
+	}
+	if _, has := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.WebSearch = new(false) }))["tools"]; has {
+		t.Fatal("an explicit false must hold google_search back")
+	}
+}
+
 func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shot", Arguments: []byte(`{}`)}}}},
