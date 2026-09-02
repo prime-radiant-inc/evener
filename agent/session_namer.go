@@ -41,7 +41,9 @@ type sessionNameResult struct {
 // production passes s.cfg.LLMSleep (nil, so GenerateObject uses the real
 // DefaultSleep), while tests inject a no-op so a retryable provider error
 // doesn't burn the full 1+2+4+8s backoff as real wall time.
-func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text string, sleep llm.SleepFunc) (sessionNameResult, error) {
+// currentTitle is the session's existing title when refreshing from a
+// compaction turn, or "" when naming from the initial prompt (no title yet).
+func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text, currentTitle string, sleep llm.SleepFunc) (sessionNameResult, error) {
 	if client == nil {
 		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
@@ -72,7 +74,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 		Provider:    profile.CheapProvider(),
 		Model:       model,
 		System:      new(sessionNamerSystemPrompt),
-		Prompt:      new(sessionNamerUserPrompt(source, text)),
+		Prompt:      new(sessionNamerUserPrompt(source, text, currentTitle)),
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,
 		Sleep:       sleep,
@@ -148,15 +150,19 @@ Rules:
   session after the current activity, the file being edited, or the test being
   debugged.`
 
-func sessionNamerUserPrompt(source, text string) string {
+func sessionNamerUserPrompt(source, text, currentTitle string) string {
 	var label string
 	switch normalizeSessionNameSource(source) {
 	case sessionNameSourceCompaction:
-		label = "Use this compaction summary/checkpoint to refresh the session title. The title must still name the session's overarching goal, not the momentary activity. Find the goal in the user's original request and the conversation timeline."
+		label = "Use this compaction summary/checkpoint to refresh the session title. The title must still name the session's overarching goal, not the momentary activity. Keep the current title unless it no longer names the goal. Find the goal in the user's original request and the conversation timeline."
 	default:
 		label = "Use this initial user prompt to name the session"
 	}
-	return label + ":\n\n" + trimForSessionNamer(text)
+	prompt := label + ":\n\n"
+	if title := strings.TrimSpace(currentTitle); title != "" {
+		prompt += "Current title: " + title + "\n\n"
+	}
+	return prompt + trimForSessionNamer(text)
 }
 
 func sessionNameSchema() map[string]any {
@@ -377,6 +383,16 @@ func (s *Session) shouldNameFromCompaction() bool {
 	return source == sessionNameSourcePrompt || source == sessionNameSourceCompaction
 }
 
+// currentSessionName returns the session's existing title, or "" when none is
+// set. The compaction namer passes it into the naming prompt so a refresh can
+// preserve a goal-level title instead of re-deriving one from text that may
+// have lost the original goal to compaction truncation or shedding.
+func (s *Session) currentSessionName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.naming.value
+}
+
 func (s *Session) nameSessionFromText(ctx context.Context, source, text string) error {
 	source = normalizeSessionNameSource(source)
 	if !s.shouldApplySessionName(source) {
@@ -391,7 +407,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	if s.cfg.testOnly.namerClient != nil {
 		namerClient = s.cfg.testOnly.namerClient
 	}
-	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.cfg.LLMSleep)
+	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.currentSessionName(), s.cfg.LLMSleep)
 	if err != nil {
 		// Record the suppression before writing the advisory: the advisory is
 		// the only externally observable marker that this attempt finished, so

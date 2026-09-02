@@ -144,7 +144,7 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		if *new(text) != text || sessionNameSourceLabel(string(mode)) != normalizeSessionNameSource(string(mode)) {
 			t.Fatal("session-name source helpers disagree")
 		}
-		if _, err := nameSession(context.Background(), nil, nil, string(mode), text, nil); err == nil {
+		if _, err := nameSession(context.Background(), nil, nil, string(mode), text, "", nil); err == nil {
 			t.Fatal("session namer accepted a nil client")
 		}
 
