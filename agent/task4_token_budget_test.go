@@ -221,6 +221,48 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 	if requests[0].MaxTokens == nil || *requests[0].MaxTokens > 8_192 {
 		t.Fatalf("fallback MaxTokens = %v, want <= 8192", requests[0].MaxTokens)
 	}
+	if requests[0].HistoryMode != llm.HistoryModeFullHistory || len(requests[0].Messages) != 1 || requests[0].Messages[0].Text() != "task" {
+		t.Fatalf("fallback history = mode %q messages %+v, want original full-history task", requests[0].HistoryMode, requests[0].Messages)
+	}
+}
+
+func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T) {
+	client := llm.NewClient()
+	primaryAdapter := &fakeErrAdapter{name: "delta-primary", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("delta-primary", 403, "primary rejected", nil, nil)
+		},
+	}}
+	fallbackAdapter := &fakeAdapter{name: "delta-fallback", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("unsafe fallback") },
+	}}
+	client.Register(primaryAdapter)
+	client.Register(fallbackAdapter)
+	primary := testOpenAICompatProfile("delta-primary", "primary", 0)
+	fallback := testOpenAICompatProfile("delta-fallback", "fallback", 0)
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	sess.cfg.ModelFallbacks = []string{"delta-fallback/fallback"}
+	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	req := llm.Request{
+		Provider:           primary.ID(),
+		Model:              primary.Model(),
+		Messages:           []llm.Message{llm.User("delta only")},
+		HistoryMode:        llm.HistoryModeResponsesDelta,
+		PreviousResponseID: "resp-anchor",
+	}
+	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err == nil {
+		t.Fatal("callModelWithFallback succeeded by relabeling delta messages as full history")
+	}
+	if got := len(primaryAdapter.Requests()); got != 1 {
+		t.Fatalf("primary provider requests = %d, want 1", got)
+	}
+	if got := len(fallbackAdapter.Requests()); got != 0 {
+		t.Fatalf("fallback provider requests = %d, want 0 without full history", got)
+	}
 }
 
 func TestSessionContextBudgetCompactRetry(t *testing.T) {
@@ -486,7 +528,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"budget-gemini/gemini-test"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallbackProfile, nil }
-	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4OnePixelPNG()}}}}}
+	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG()}}}}}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: fullHistory, MaxTokens: new(131_072), FullHistoryInputTokensEstimate: 100_000}
 	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, fullHistory, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
@@ -714,7 +756,7 @@ func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
 	}
 }
 
-func task4OnePixelPNG() []byte {
+func task4LargePNG() []byte {
 	var out bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 1024, 1024))
 	if err := png.Encode(&out, img); err != nil {

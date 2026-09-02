@@ -44,18 +44,25 @@ type ContextBudgetError struct {
 }
 
 func newContextBudgetError(req Request, res registry.Resolved, limit string, input, output, maximum int) *ContextBudgetError {
-	provider := strings.TrimSpace(res.Instance)
-	if provider == "" {
-		provider = strings.TrimSpace(req.Provider)
-	}
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = strings.TrimSpace(res.ModelID)
-	}
+	provider, model := ResolveContextBudgetIdentity(req, res)
 	return &ContextBudgetError{
 		Provider: provider, Model: model, Limit: limit,
 		InputTokens: input, OutputTokens: output, Maximum: maximum,
 	}
+}
+
+// ResolveContextBudgetIdentity returns the provider instance and requested
+// model used to attribute a local context-budget failure.
+func ResolveContextBudgetIdentity(req Request, res registry.Resolved) (provider, model string) {
+	provider = strings.TrimSpace(res.Instance)
+	if provider == "" {
+		provider = strings.TrimSpace(req.Provider)
+	}
+	model = strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(res.ModelID)
+	}
+	return provider, model
 }
 
 // Error states that the request was blocked locally before provider dispatch.

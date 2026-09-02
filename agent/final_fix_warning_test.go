@@ -177,6 +177,100 @@ func TestSessionLocalAdmissionCompactionEmitsOneWarningBeforeCompaction(t *testi
 	assertWarningPrecedesCompaction(t, captured)
 }
 
+func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *testing.T) {
+	client := llm.NewClient()
+	profile := testOpenAICompatProfile("local-no-manager", "local-model", 0)
+	resolved := profile.Resolved()
+	resolved.Caps.ContextWindow = new(100)
+	resolved.Caps.MaxOutputTokens = new(8)
+	profile = profile.WithResolved(resolved)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.contextMgr = nil
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded despite unrecoverable local budget")
+	}
+	sess.Close()
+	captured := <-eventsDone
+	if warnings := warningEvents(captured); len(warnings) != 0 {
+		t.Fatalf("warnings = %d, want none when no recovery can run: %+v", len(warnings), warnings)
+	}
+	for _, event := range captured {
+		if event.Kind == events.EventContextCompaction {
+			t.Fatal("local admission without a context manager emitted a compaction event")
+		}
+	}
+}
+
+func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *testing.T) {
+	client := llm.NewClient()
+	adapter := &fakeErrAdapter{name: "local-post-dispatch", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
+		},
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
+		},
+	}}
+	client.Register(adapter)
+	profile := testOpenAICompatProfile("local-post-dispatch", "local-model", 0)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.contextMgr = nil
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded despite post-dispatch local budget error")
+	}
+	sess.Close()
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("provider requests = %d, want one without a no-op recovery retry", got)
+	}
+	if warnings := warningEvents(<-eventsDone); len(warnings) != 0 {
+		t.Fatalf("warnings = %d, want none when no local recovery can run: %+v", len(warnings), warnings)
+	}
+}
+
+func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
+	client := llm.NewClient()
+	adapter := &fakeErrAdapter{name: "provider-no-manager", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
+		},
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
+		},
+	}}
+	client.Register(adapter)
+	profile := testOpenAICompatProfile("provider-no-manager", "provider-model", 0)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	sess.strategy = nil
+	sess.contextMgr = nil
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
+		t.Fatal("ProcessInput succeeded despite provider context error")
+	}
+	sess.Close()
+	captured := <-eventsDone
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("provider requests = %d, want one without a no-op recovery retry", got)
+	}
+	for _, event := range captured {
+		if event.Kind == events.EventContextCompaction {
+			t.Fatal("provider context error without a context manager emitted a compaction event")
+		}
+	}
+}
+
 func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testing.T) {
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "provider-warning", steps: []func(llm.Request) (llm.Response, error){

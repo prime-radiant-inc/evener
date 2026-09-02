@@ -596,15 +596,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// allowing the next request to succeed. Try once.
 		*contentFilterRetried = true
 		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
-		s.mu.Lock()
-		histCopy := append([]schema.Turn{}, s.history...)
-		s.mu.Unlock()
-		compactionCtx, emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-		s.contextMgr.ForceCompact(compactionCtx, &histCopy, "", emitFn)
-		flushCompactionHooks()
-		s.mu.Lock()
-		s.history = histCopy
-		s.mu.Unlock()
+		s.forceCompactForModelRecovery(ctx)
 		return true, nil
 	}
 
@@ -1025,7 +1017,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq := responsesContinuationModelFallbackRequest(req, fullHistory)
+			fbReq, ok := responsesContinuationModelFallbackRequest(req, fullHistory)
+			if !ok {
+				break
+			}
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			// The same rule as the primary path, against the FALLBACK model's
@@ -1138,10 +1133,13 @@ func responsesContinuationFullHistoryFallbackRequest(req llm.Request, fullHistor
 	return fallbackReq
 }
 
-// responsesContinuationModelFallbackRequest un-anchors a delta request for a
-// different model: the fallback model has no claim on this endpoint's stored
-// response, so it gets the round's full history instead.
-func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
+// responsesContinuationModelFallbackRequest un-anchors a request for a
+// different model. A continuation delta can be relabeled as full history only
+// when the round retained that full history; otherwise it refuses construction.
+func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
+	if req.HistoryMode == llm.HistoryModeResponsesDelta && len(fullHistory) == 0 {
+		return llm.Request{}, false
+	}
 	fallbackReq := req
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistory
 	if len(fullHistory) > 0 {
@@ -1153,7 +1151,7 @@ func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []ll
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
 	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(fallbackReq)
-	return fallbackReq
+	return fallbackReq, true
 }
 
 func budgetModelDispatchRequest(profile *provider.Profile, req llm.Request) (llm.Request, error) {

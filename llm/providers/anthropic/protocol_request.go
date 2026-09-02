@@ -83,8 +83,7 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 	return body, nil
 }
 
-// applyThinkingShape writes the thinking body the row's ThinkingShape
-// selects and returns the budget it committed to (0 when none):
+// applyThinkingShape writes the thinking body the row's ThinkingShape selects:
 // adaptive → {type: adaptive} plus display, sent when ThinkingAlwaysOn or
 // an effort is set, plus output_config.effort only for a caller effort;
 // budget → {type: enabled, budget_tokens} only for an effort;
@@ -93,9 +92,9 @@ func buildProtocolBody(req llm.Request, res registry.Resolved) (out map[string]a
 // so there is no value that says "off" here, and keeping the always-on body
 // would switch thinking on against the user's stated intent. An unset shape
 // sends nothing.
-func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) int {
+func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) {
 	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
-		return 0
+		return
 	}
 	effort := ""
 	if req.ReasoningEffort != nil {
@@ -104,7 +103,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 	switch registry.StringValue(caps.ThinkingShape) {
 	case "adaptive":
 		if !registry.BoolValue(caps.ThinkingAlwaysOn) && effort == "" {
-			return 0
+			return
 		}
 		thinking := map[string]any{"type": "adaptive"}
 		if display := registry.StringValue(caps.ThinkingDisplay); display != "" {
@@ -116,7 +115,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		}
 	case "budget", "budget+effort":
 		if effort == "" {
-			return 0
+			return
 		}
 		budget := llm.ReasoningBudget(effort)
 		if budget > 0 {
@@ -125,7 +124,5 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		if registry.StringValue(caps.ThinkingShape) == "budget+effort" {
 			body["output_config"] = map[string]any{"effort": effort}
 		}
-		return budget
 	}
-	return 0
 }

@@ -8,6 +8,46 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+func TestResolveContextBudgetIdentity(t *testing.T) {
+	tests := []struct {
+		name         string
+		req          Request
+		res          registry.Resolved
+		wantProvider string
+		wantModel    string
+	}{
+		{
+			name:         "resolved instance and requested model take precedence",
+			req:          Request{Provider: " request-instance ", Model: " requested-model "},
+			res:          registry.Resolved{Instance: " resolved-instance ", ModelID: "resolved-model"},
+			wantProvider: "resolved-instance",
+			wantModel:    "requested-model",
+		},
+		{
+			name:         "request provider is the instance fallback",
+			req:          Request{Provider: " request-instance ", Model: "requested-model"},
+			res:          registry.Resolved{ModelID: "resolved-model"},
+			wantProvider: "request-instance",
+			wantModel:    "requested-model",
+		},
+		{
+			name:         "resolved model is the request fallback",
+			req:          Request{Provider: "request-instance"},
+			res:          registry.Resolved{Instance: "resolved-instance", ModelID: " resolved-model "},
+			wantProvider: "resolved-instance",
+			wantModel:    "resolved-model",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, model := ResolveContextBudgetIdentity(tt.req, tt.res)
+			if provider != tt.wantProvider || model != tt.wantModel {
+				t.Fatalf("identity = %q/%q, want %q/%q", provider, model, tt.wantProvider, tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestApplyTokenBudget_IncidentMaxInputAndTotalClamp(t *testing.T) {
 	req := Request{
 		Model:               "glm-5.2-vision",

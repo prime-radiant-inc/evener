@@ -149,14 +149,7 @@ func finalThinkingBudget(body map[string]any) int {
 }
 
 func anthropicThinkingBudgetError(req llm.Request, res registry.Resolved, requiredOutput, maximum int) error {
-	provider := strings.TrimSpace(res.Instance)
-	if provider == "" {
-		provider = strings.TrimSpace(req.Provider)
-	}
-	model := strings.TrimSpace(req.Model)
-	if model == "" {
-		model = strings.TrimSpace(res.ModelID)
-	}
+	provider, model := llm.ResolveContextBudgetIdentity(req, res)
 	return &llm.ContextBudgetError{
 		Provider:     provider,
 		Model:        model,
