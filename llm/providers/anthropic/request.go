@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -167,29 +168,9 @@ func anthropicThinkingBudgetError(req llm.Request, res registry.Resolved, requir
 }
 
 func reconcileOutputField(body map[string]any, field string, admitted, outputCap *int) {
-	if ceiling := minPositiveInt(intFromAny(body[field]), positivePointerInt(admitted), positivePointerInt(outputCap)); ceiling > 0 {
+	if ceiling := requestutil.MinPositiveInt(requestutil.PositiveInt(body[field]), requestutil.PositivePointerInt(admitted), requestutil.PositivePointerInt(outputCap)); ceiling > 0 {
 		body[field] = ceiling
 	}
-}
-
-func positivePointerInt(v *int) int {
-	if v != nil && *v > 0 {
-		return *v
-	}
-	return 0
-}
-
-func minPositiveInt(values ...int) int {
-	best := 0
-	for _, v := range values {
-		if v <= 0 {
-			continue
-		}
-		if best == 0 || v < best {
-			best = v
-		}
-	}
-	return best
 }
 
 func applyAnthropicResponseFormat(system string, rf *llm.ResponseFormat) (string, error) {

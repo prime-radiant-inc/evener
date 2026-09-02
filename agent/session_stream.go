@@ -158,6 +158,10 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	// rejection streams nothing, so the assistant-text reset (which needs partial
 	// output) never fires and a long rate limit is indistinguishable from a hang.
 	policy.OnRetry = s.emitModelRetry(policy, req, group)
+	// Admission runs here so typed local errors reach the session's warning and
+	// bounded-recovery paths before provider attempt handling. llm.Client repeats
+	// the check immediately before dispatch by design, protecting both paths from
+	// middleware that mutates an already admitted request.
 	if profile.SupportsStreaming() {
 		// Retry the whole open+consume cycle: a retryable failure can surface
 		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the

@@ -279,15 +279,19 @@ func (r opRecord) opContainsCompact() bool {
 }
 
 // opAllowsHistoryShrink reports whether this op is permitted to shrink history.
-// Compaction is the one sanctioned shrink, reached two ways: an explicit compact
-// tool call in the script, OR a content-filter fault — handleModelError's
-// content-filter recovery force-compacts to drop the offending content before
-// retrying the round, which legitimately shortens history.
+// Compaction is the one sanctioned shrink, reached by an explicit compact tool
+// call, content-filter recovery, or provider context-length recovery. Both
+// recovery paths force-compact before retrying the round, which legitimately
+// shortens history.
 func (r opRecord) opAllowsHistoryShrink() bool {
 	if r.opContainsCompact() {
 		return true
 	}
-	return lifecycleOpCode(r.Code) == opLLMError && llmFaultKind(r.FaultKind) == faultContentFilter
+	if lifecycleOpCode(r.Code) != opLLMError {
+		return false
+	}
+	fault := llmFaultKind(r.FaultKind)
+	return fault == faultContentFilter || fault == faultContextLength
 }
 
 // opRecord is one drawn operation with every parameter it needs, so the artifact
@@ -304,8 +308,8 @@ type opRecord struct {
 
 // llmFaultKind selects the TYPED provider error opLLMError injects on a turn's
 // first model call, so the fuzzer drives each distinct handleModelError arm:
-// content-filter recovery (compact + retry), non-retryable terminal turn (auth), the
-// context-length warning, and the retryable paths (rate-limit/server).
+// content-filter recovery (compact + retry), non-retryable terminal turn (auth),
+// context-length recovery (compact + retry), and retryable paths (rate-limit/server).
 type llmFaultKind int
 
 const (
@@ -313,7 +317,7 @@ const (
 	faultContentFilter                     // 400 content-filter → compact-and-retry recovery
 	faultRateLimit                         // 429 → retryable
 	faultServer                            // 503 → retryable
-	faultContextLength                     // 413 → context-length warning + terminal
+	faultContextLength                     // 413 → context-length compact-and-retry recovery
 	faultAuth                              // 401 → non-retryable terminal turn
 	numFaultKinds
 )

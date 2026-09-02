@@ -1365,8 +1365,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if isProviderContextLengthError(err) && !providerContextRecovered {
 				s.emit(events.EventWarning, warningDataFromError(
 					"Context length exceeded: Provider context disagreement for "+profile.ID()+"/"+profile.Model()+"; compacting context and retrying: "+err.Error(), err))
-			}
-			if isProviderContextLengthError(err) && !providerContextRecovered {
 				providerContextRecovered = true
 				s.forceCompactForModelRecovery(ctx)
 				continue
