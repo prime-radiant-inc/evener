@@ -72,8 +72,8 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   const statedIntent = statedIntentOf(item);
   if (statedIntent !== undefined) return statedIntent;
 
-  const task = str(parseArgs(item.argumentsJSON), "task")?.replace(/\s+/g, " ").trim();
-  return task === undefined || task === "" ? undefined : clipDelegateIntent(task, DELEGATE_INTENT_PREVIEW_MAX);
+  const brief = str(parseArgs(item.argumentsJSON), "prompt")?.replace(/\s+/g, " ").trim();
+  return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
 // Both status readers take the delegate call's ALREADY-PARSED output envelope

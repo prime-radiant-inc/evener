@@ -362,7 +362,7 @@ Canonical background shape:
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high"
@@ -373,7 +373,11 @@ Full target shape (no `max_wait_ms`):
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
+  "task_list": [
+    {"title": "Reproduce", "prompt": "Run the parser test suite and capture the failing case verbatim."},
+    {"title": "Report", "prompt": "Report the failing input, the stack, and the smallest change that would fix it.", "type": "research"}
+  ],
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high",
