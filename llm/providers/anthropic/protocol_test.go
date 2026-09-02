@@ -48,6 +48,37 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 	}
 }
 
+// TestProtocolBuildBody_WebSearchNilCapsIsFailOpen pins the mechanism
+// behind issue #738's endpoint gate on this protocol too (the Responses
+// twin is TestBuildBody_WebSearchNilCapsIsFailOpen): the gate here,
+// req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch)
+// (protocol_request.go), treats an unset capability as permissive. That is
+// the right default for a model this adapter has no catalog opinion about -
+// trust the caller's own req.WebSearch - but it means the registry's
+// endpoint gate (llm/registry/resolve.go, gateWebSearch) can never
+// represent "denied because this endpoint is not the vendor's first-party
+// API" as a bare nil: a caller that sets req.WebSearch = true without
+// consulting registry.Caps would still get the hosted tool sent to an
+// endpoint that rejects it. The registry closes this by carrying an
+// explicit false, never nil; this test pins why that is necessary at this
+// layer - nil is let through right here, by design - and that the
+// explicit false actually holds the tool back.
+func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	req := protoReq("")
+	req.WebSearch = true
+	res := protoRes(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
+	if res.Caps.WebSearch != nil {
+		t.Fatal("test setup: protoRes(nil) must leave WebSearch nil")
+	}
+	tools, _ := protoBuild(t, req, res)["tools"].([]map[string]any)
+	if len(tools) != 1 || tools[0]["type"] != "web_search_20250305" {
+		t.Fatalf("nil Caps.WebSearch is fail-open at this layer: a caller setting req.WebSearch still gets the tool: %v", tools)
+	}
+	if _, has := protoBuild(t, req, protoRes(func(c *registry.Caps) { c.WebSearch = new(false) }))["tools"]; has {
+		t.Fatal("an explicit false must hold the web search tool back")
+	}
+}
+
 func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
 	cases := []struct {
 		name         string

@@ -244,6 +244,9 @@ func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 	if strings.Contains(strings.Join(instOK.Warnings, "\n"), "web_search disabled") {
 		t.Fatalf("ResolveInstance: an explicit web_search = true must suppress the warning: %v", instOK.Warnings)
 	}
+	if instOK.Caps.WebSearch == nil || !*instOK.Caps.WebSearch {
+		t.Fatalf("ResolveInstance: the explicit opt-in must survive as a non-nil true, not merely avoid the warning: %v", bp(instOK.Caps.WebSearch))
+	}
 	modelOK, err := r.Resolve("optedin/gpt-5.5")
 	if err != nil {
 		t.Fatalf("Resolve(optedin/gpt-5.5): %v", err)
