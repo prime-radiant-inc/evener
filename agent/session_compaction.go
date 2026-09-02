@@ -43,11 +43,14 @@ func (s *Session) Compact(ctx context.Context) error {
 	// askPendingCount() guard above does not check for an active round loop —
 	// so this can race another ForceCompact/ManageContext publisher
 	// (applyPendingForceCompact, the content-filter retry, or the round
-	// loop's own ManageContext). foldWithForceCompact retries once against
-	// the current history on conflict; report to the
-	// caller rather than silently no-op'ing if both attempts lose the race.
+	// loop's own ManageContext) — and any other non-append history mutation
+	// that bumps historyRevision (orphan repair, attention replacement) can
+	// win the publication race just the same. foldWithForceCompact retries
+	// once against the current history on conflict; report the general
+	// conflict to the caller rather than silently no-op'ing if both attempts
+	// lose.
 	if !s.foldWithForceCompact(ctx, "") {
-		return errors.New("a concurrent compaction is already in progress; try again")
+		return errors.New("a concurrent history change won the publication race; try again")
 	}
 
 	s.maybeAutoSave()
