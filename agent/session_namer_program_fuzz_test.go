@@ -58,8 +58,8 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		if mode&1 != 0 {
 			source = sessionNameSourceCompaction
 		}
-		prompt := sessionNamerUserPrompt(source, text)
-		if again := sessionNamerUserPrompt(source, text); prompt != again {
+		prompt := sessionNamerUserPrompt(source, text, "")
+		if again := sessionNamerUserPrompt(source, text, ""); prompt != again {
 			t.Fatalf("session namer prompt was not deterministic")
 		}
 		clean := sanitizeSessionName(candidate)

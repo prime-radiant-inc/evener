@@ -135,7 +135,7 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 		} else if utf8.ValidString(text) && !utf8.ValidString(trimmed) {
 			t.Fatal("session-namer trimming corrupted valid UTF-8")
 		}
-		if !strings.Contains(sessionNamerUserPrompt(string(mode), text), trimForSessionNamer(text)) {
+		if !strings.Contains(sessionNamerUserPrompt(string(mode), text, ""), trimForSessionNamer(text)) {
 			t.Fatal("namer prompt omitted the bounded source text")
 		}
 		if schema := sessionNameSchema(); schema["type"] != "object" {
