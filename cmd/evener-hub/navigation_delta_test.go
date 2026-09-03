@@ -97,7 +97,7 @@ func TestNavigationHistoryEvictsOldestGlobally(t *testing.T) {
 			t.Fatal(err)
 		}
 		version := appwire.NavigationReadBase{GenerationID: "g", Revision: revision, ETag: fmt.Sprintf("tag-%d", revision)}
-		if err := history.Remember(view, version, &snapshot, false); err != nil {
+		if err := history.Remember(view, version, &snapshot); err != nil {
 			t.Fatal(err)
 		}
 	}

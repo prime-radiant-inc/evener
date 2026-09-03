@@ -443,7 +443,7 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 			if err != nil {
 				return navigationReadResult{}, err
 			}
-			_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot, false)
+			_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot)
 			return navigationReadResult{Response: response}, nil
 		}
 	}
@@ -452,7 +452,7 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 	if err != nil {
 		return navigationReadResult{}, err
 	}
-	_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot, false)
+	_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot)
 	return navigationReadResult{Response: response}, nil
 }
 

@@ -15,7 +15,6 @@ type navigationHistoryEntry struct {
 	view  string
 	base  appwire.NavigationReadBase
 	data  []byte
-	gone  bool
 	bytes int64
 }
 
@@ -34,7 +33,7 @@ func newNavigationHistory(maxEntries int, maxBytes int64) *navigationHistory {
 func (h *navigationHistory) key(view navigationResourceKey, base appwire.NavigationReadBase) string {
 	return fmt.Sprintf("%s|%s|%d|%s", view.View().String(), base.GenerationID, base.Revision, base.ETag)
 }
-func (h *navigationHistory) Remember(view navigationResourceKey, version appwire.NavigationReadBase, snapshot *hubapi.NavigationSnapshot, gone bool) error {
+func (h *navigationHistory) Remember(view navigationResourceKey, version appwire.NavigationReadBase, snapshot *hubapi.NavigationSnapshot) error {
 	if version.GenerationID == "" || version.ETag == "" {
 		return errors.New("invalid navigation history version")
 	}
@@ -48,14 +47,14 @@ func (h *navigationHistory) Remember(view navigationResourceKey, version appwire
 			return err
 		}
 		data = encoded
-	} else if !gone {
+	} else {
 		return errors.New("navigation history snapshot is nil")
 	}
 	size := int64(len(data)) + int64(len(version.GenerationID)+len(version.ETag))
 	if size < 0 {
 		return errors.New("navigation history size overflow")
 	}
-	entry := navigationHistoryEntry{view: view.View().String(), base: version, data: append([]byte(nil), data...), gone: gone, bytes: size}
+	entry := navigationHistoryEntry{view: view.View().String(), base: version, data: append([]byte(nil), data...), bytes: size}
 	key := h.key(view, version)
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -95,9 +94,6 @@ func (h *navigationHistory) Lookup(view navigationResourceKey, base appwire.Navi
 	}
 	h.order.MoveToFront(element)
 	entry := element.Value.(navigationHistoryEntry)
-	if entry.gone {
-		return hubapi.NavigationSnapshot{}, true
-	}
 	var snapshot hubapi.NavigationSnapshot
 	if json.Unmarshal(entry.data, &snapshot) != nil {
 		return hubapi.NavigationSnapshot{}, false

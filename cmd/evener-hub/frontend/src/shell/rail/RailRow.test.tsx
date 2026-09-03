@@ -6,8 +6,17 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
+import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
+import {
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  type ResourceKey,
+  type ResourceState,
+} from "../../stores/navigation/types";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -204,6 +213,75 @@ async function openMenu(name: RegExp | string) {
   await user.click(screen.getByRole("button", { name }));
   return user;
 }
+
+function normalizedRailResource(
+  key: Extract<ResourceKey, { kind: "project_page" | "pin_section" }>,
+): NormalizedResource {
+  const parentKey = `${navigationViewScope(key)}/entity/${"1".repeat(64)}`;
+  const childKey = `${navigationViewScope(key)}/entity/${"2".repeat(64)}`;
+  return {
+    key,
+    graph: normalizedGraphFromSnapshot({
+      metadata: {},
+      entities: [
+        { key: parentKey, kind: "session", value: apiNode({ ref: "parent", title: "Parent", children: [] }) },
+        { key: childKey, kind: "session", value: apiNode({ ref: "child", title: "Child", children: [] }) },
+      ],
+      containers: [
+        {
+          key: navigationRootContainerKey(key, "sessions"),
+          owner: { kind: "resource_root", slot: "sessions" },
+          children: [parentKey],
+        },
+        {
+          key: navigationOwnedContainerKey(parentKey, "children"),
+          owner: { kind: "entity", entityKey: parentKey, slot: "children" },
+          children: [childKey],
+        },
+        {
+          key: navigationOwnedContainerKey(childKey, "children"),
+          owner: { kind: "entity", entityKey: childKey, slot: "children" },
+          children: [],
+        },
+      ],
+    }),
+    version: { generationId: generation, revision: 1, etag: "v2" },
+    presence: "present",
+  };
+}
+
+test.each([
+  [
+    "archived project page",
+    { kind: "project_page", projectKey: "project", tier: "archived", offset: 0, limit: 50 },
+    { tier: "archived", project_key: "project" },
+    "Unarchive",
+  ],
+  [
+    "pinned section",
+    { kind: "pin_section", sectionId: "research", offset: 0, limit: 50 },
+    { pin_section_id: "research" },
+    "Unpin",
+  ],
+] as const)(
+  "normalized V2 %s preserves context through recursive rail projection and actions",
+  async (_name, key, context, action) => {
+    const resource = normalizedRailResource(key);
+    const model = selectRailModel(resource);
+    const parent = [...model.sessions.values()].find((session) => session.ref === "parent");
+    const child = [...model.sessions.values()].find((session) => session.ref === "child");
+    expect(parent).toMatchObject(context);
+    expect(child).toMatchObject(context);
+    if (!parent) throw new Error("expected projected parent session");
+
+    const acts = actions();
+    render(<RailRow node={sessionRailNode(parent)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: action }));
+    if (action === "Unarchive") expect(acts.onToggleArchiveSession).toHaveBeenCalledWith(parent);
+    else expect(acts.onUnpinRequest).toHaveBeenCalledWith(parent);
+  },
+);
 
 describe("cadenceStateFor", () => {
   test.each([

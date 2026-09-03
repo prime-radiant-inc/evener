@@ -1118,6 +1118,131 @@ test("same-generation equal-sequence reconnect updates capability without broad 
   expect(state.protocolError).toBeNull();
 });
 
+test("same-generation V1-to-V2 equal reconnect keeps V1 entries until invalidation, then snapshots without a base", async () => {
+  const initialCapability = { ...capability(), sequence: 2 };
+  const reconnectCapability = { ...initialCapability, readVersions: [1, 2] };
+  const calls: NavigationReadParams[] = [];
+  let sectionV2Reads = 0;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource !== "section") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.representationVersion !== 2)
+      return wire({ sessions: [{ ref: "v1-section", children: [] }], remaining: 0, truncated: false });
+    sectionV2Reads++;
+    if (sectionV2Reads === 1) {
+      expect(params.base).toBeUndefined();
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 3,
+        etag: "section-v2-snapshot",
+        data: reconnectSessionSnapshot(
+          reconnectSectionKey,
+          { generation_id: generation, revision: 3, offset: 0, limit: 50, remaining: 0, truncated: false },
+          "sessions",
+        ),
+      };
+    }
+    expect(params.base).toEqual({ generationId: generation, revision: 3, etag: "section-v2-snapshot" });
+    return {
+      status: "ok",
+      representation: "delta",
+      generationId: generation,
+      revision: 4,
+      etag: "section-v2-delta",
+      base: params.base,
+      data: {
+        metadata: { generation_id: generation, revision: 4, offset: 0, limit: 50, remaining: 0, truncated: false },
+        upsertedEntities: [],
+        removedEntityKeys: [],
+        upsertedContainers: [],
+        removedContainerKeys: [],
+      },
+    };
+  });
+  initNavigation(client, initialCapability);
+  await flush();
+  await navigationStore.getState().loadSection("live");
+  const callsBeforeReconnect = calls.length;
+
+  client.emitStateChange("reconnecting");
+  client.emitReady(initialize(reconnectCapability));
+  await flush();
+  expect(calls).toHaveLength(callsBeforeReconnect);
+  expect(navigationStore.getState().mode).toBe("v2");
+
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 3,
+      targets: [{ kind: "section", section: "live", revision: 3 }],
+    }),
+  );
+  await navigationStore.getState().loadSection("live");
+  const firstV2 = calls.filter((params) => params.resource === "section").at(-1);
+  expect(firstV2).toEqual({
+    resource: "section",
+    section: "live",
+    offset: 0,
+    limit: 50,
+    representationVersion: 2,
+  });
+  const afterSnapshot = navigationStore.getState().resources.get(keyID(reconnectSectionKey));
+  expect(afterSnapshot?.normalized?.version).toEqual({
+    generationId: generation,
+    revision: 3,
+    etag: "section-v2-snapshot",
+  });
+
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 4,
+      targets: [{ kind: "section", section: "live", revision: 4 }],
+    }),
+  );
+  await navigationStore.getState().loadSection("live");
+  expect(navigationStore.getState().resources.get(keyID(reconnectSectionKey))?.normalized?.version).toEqual({
+    generationId: generation,
+    revision: 4,
+    etag: "section-v2-delta",
+  });
+  expect(navigationStore.getState().protocolError).toBeNull();
+});
+
+test("same-generation higher-sequence V1-to-V2 reconnect forces loaded entries without unusable bases", async () => {
+  const initialCapability = { ...capability(), sequence: 2 };
+  const reconnectCapability = { ...initialCapability, readVersions: [1, 2], sequence: 5 };
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.representationVersion === 2) {
+      expect(params.base).toBeUndefined();
+      return reconnectV2Response(params);
+    }
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "section")
+      return wire({ sessions: [{ ref: "v1-section", children: [] }], remaining: 0, truncated: false });
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  initNavigation(client, initialCapability);
+  await flush();
+  await navigationStore.getState().loadSection("live");
+  const callsBeforeReconnect = client.calls.length;
+
+  client.emitStateChange("reconnecting");
+  client.emitReady(initialize(reconnectCapability));
+  await flush();
+
+  expect(client.calls.slice(callsBeforeReconnect).map((call) => call.params)).toEqual([
+    { resource: "manifest", representationVersion: 2 },
+    { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+  ]);
+  expect(navigationStore.getState().protocolError).toBeNull();
+});
+
 test("pending read stays bound to the representation sent across a same-generation mode switch", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, readVersions: [1, 2] };

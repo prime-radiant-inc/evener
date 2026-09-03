@@ -15,7 +15,7 @@ func TestNavigationHistoryExactTupleMissesWrongETag(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"}
-	if err := history.Remember(view, base, &snapshot, false); err != nil {
+	if err := history.Remember(view, base, &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := history.Lookup(view, appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "wrong"}); ok {
@@ -42,7 +42,7 @@ func TestNavigationHistoryKeysByCompleteViewWithoutVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := appwire.NavigationReadBase{GenerationID: "generation-a", Revision: 9, ETag: "tag-9"}
-	if err := history.Remember(versioned, base, &snapshot, false); err != nil {
+	if err := history.Remember(versioned, base, &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := history.Lookup(versioned.View(), base); !ok {
@@ -52,5 +52,14 @@ func TestNavigationHistoryKeysByCompleteViewWithoutVersion(t *testing.T) {
 	otherPage.Offset++
 	if _, ok := history.Lookup(otherPage, base); ok {
 		t.Fatal("different page selector matched retained complete view")
+	}
+}
+
+func TestNavigationHistoryRejectsNilSnapshot(t *testing.T) {
+	history := newNavigationHistory(4, 1<<20)
+	view := navigationResourceKey{Kind: navigationResourceLive, Limit: 50}
+	base := appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"}
+	if err := history.Remember(view, base, nil); err == nil {
+		t.Fatal("nil snapshot was accepted")
 	}
 }

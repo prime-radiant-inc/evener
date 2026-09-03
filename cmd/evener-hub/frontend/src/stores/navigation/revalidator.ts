@@ -257,7 +257,7 @@ export class NavigationRevalidator {
     this.emit(e.state);
     let run!: Promise<ResourceState>;
     run = e
-      .request(controller.signal, e.state.etag, e.state.version)
+      .request(controller.signal, e.state.etag, usableNavigationBase(e.state))
       .then((response) => {
         if (this.disposed || epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch)
           return e.state;
@@ -381,6 +381,19 @@ export class NavigationRevalidator {
       ),
     );
   }
+}
+function usableNavigationBase(state: ResourceState): NonNullable<ResourceState["version"]> | undefined {
+  const base = state.version;
+  const normalized = state.normalized;
+  if (
+    !base ||
+    !normalized ||
+    normalized.version.generationId !== base.generationId ||
+    normalized.version.revision !== base.revision ||
+    normalized.version.etag !== base.etag
+  )
+    return undefined;
+  return base;
 }
 function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
   if (key.kind !== base.kind) {

@@ -169,14 +169,3 @@ func cloneNavigationSnapshot(snapshot hubapi.NavigationSnapshot) hubapi.Navigati
 	}
 	return clone
 }
-func navEqualStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}

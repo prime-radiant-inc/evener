@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 
 	"primeradiant.com/evener/appwire"
@@ -46,7 +47,7 @@ func diffNavigationSnapshots(key navigationResourceKey, baseVersion, currentVers
 	}
 	for key, container := range newContainers {
 		old, ok := oldContainers[key]
-		if !ok || old.Owner != container.Owner || !navEqualStrings(old.Children, container.Children) {
+		if !ok || old.Owner != container.Owner || !slices.Equal(old.Children, container.Children) {
 			delta.UpsertedContainers = append(delta.UpsertedContainers, container)
 		}
 	}

@@ -252,13 +252,6 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 	if err := decoder.Decode(&decoded); err != nil {
 		return err
 	}
-	if version, ok := fields["representationVersion"]; ok {
-		var v uint8
-		if err := json.Unmarshal(version, &v); err != nil {
-			return fmt.Errorf("invalid representationVersion: %w", err)
-		}
-		decoded.RepresentationVersion = v
-	}
 	if base, present := fields["base"]; present {
 		var baseFields map[string]json.RawMessage
 		if err := json.Unmarshal(base, &baseFields); err != nil || baseFields == nil || decoded.Base == nil {
