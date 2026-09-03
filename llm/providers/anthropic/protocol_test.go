@@ -334,6 +334,38 @@ func TestProtocolBuildBody_BudgetEffortClampedToOutputCeiling(t *testing.T) {
 	}
 }
 
+// TestProtocolBuildBody_BudgetEffortClampedUnderProviderOptionMaxTokens pins
+// the overlay interaction roborev flagged on d96adbe: the effort-derived
+// budget is fitted before the ProviderOptions overlay runs, and the overlay
+// can lower max_tokens afterwards, so a caller's explicit
+// anthropic.max_tokens override must be part of the ceiling the budget fits
+// under — the completion contract still requires max_tokens to strictly
+// exceed budget_tokens. An override too small to fit the thinking minimum
+// keeps the explicit error rather than silently sending a sub-minimum
+// budget.
+func TestProtocolBuildBody_BudgetEffortClampedUnderProviderOptionMaxTokens(t *testing.T) {
+	res := protoRes(func(c *registry.Caps) {
+		c.ThinkingShape = new("budget+effort")
+		c.MaxOutputTokens = new(131072)
+	})
+	req := protoReq("max")
+	req.MaxTokens = new(131072)
+	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{"max_tokens": 8192}}
+	body := protoBuild(t, req, res)
+	if got := intFromAny(body["thinking"].(map[string]any)["budget_tokens"]); got != 8191 {
+		t.Fatalf("budget_tokens = %d, want 8191 under the caller's 8192 override", got)
+	}
+	if got := intFromAny(body["max_tokens"]); got != 8192 {
+		t.Fatalf("max_tokens = %d, want the caller's 8192 override", got)
+	}
+
+	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{"max_tokens": 800}}
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if _, ok := errors.AsType[*llm.ContextBudgetError](err); !ok {
+		t.Fatalf("error = %v, want *llm.ContextBudgetError for an override below the thinking minimum", err)
+	}
+}
+
 func TestProtocolBuildBody_FinalThinkingOverlayStateControlsReconciliation(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
