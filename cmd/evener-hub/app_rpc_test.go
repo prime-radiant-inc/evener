@@ -156,6 +156,64 @@ func TestHubRPCItemReadAndListUseFinalPacker(t *testing.T) {
 	}
 }
 
+func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:small-limit", Incarnation: "small-limit", ProjectionVersion: 1}
+	candidates := testItemCandidates(45)
+	turns, err := appitempaging.RegroupTurnFragments(candidates)
+	if err != nil {
+		t.Fatalf("group fixture: %v", err)
+	}
+	sourceCursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode source cursor: %v", err)
+	}
+	source := &itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "small-limit", SessionID: "small-limit", Source: "codex", Evener: appwire.EvenerThread{Ref: identity.ThreadRef}, Turns: turns,
+		}, PageUnit: appwire.TranscriptPageUnitItem, OlderCursor: sourceCursor},
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: identity, Exhausted: true,
+		},
+		listCandidates: func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			return appsource.ItemCandidateResult{Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates}, Identity: identity, Exhausted: true}, nil
+		},
+		rejectLegacyItemList: true,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustJSON(t, appwire.ThreadReadParams{Ref: identity.ThreadRef, IncludeTurns: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3}),
+	})
+	if err != nil {
+		t.Fatalf("small-limit thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("small-limit thread/read response = %T", readValue)
+	}
+	if got := len(flattenTestItems(read.Thread.Turns)); got != 3 {
+		t.Fatalf("small-limit thread/read items = %d, want 3", got)
+	}
+
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(2), Method: appwire.MethodThreadTurnsList,
+		Params: mustJSON(t, appwire.ThreadTurnsListParams{Ref: identity.ThreadRef, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3}),
+	})
+	if err != nil {
+		t.Fatalf("small-limit thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("small-limit thread/turns/list response = %T", listValue)
+	}
+	if got := len(flattenTestItems(list.Data)); got != 3 {
+		t.Fatalf("small-limit thread/turns/list items = %d, want 3", got)
+	}
+}
+
 type itemPackingRPCSource struct {
 	relayLifecycleSource
 	read                 appwire.ThreadReadResponse

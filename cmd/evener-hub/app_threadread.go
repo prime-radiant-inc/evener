@@ -102,11 +102,15 @@ func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params a
 func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
 	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
 	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
 		entry, ok := pastEntryForRead(cfg, readParams)
 		if !ok {
 			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
-		page, err := pastEntryPageItems(entry, params.Cursor, params.ItemLimit)
+		page, err := pastEntryPageItems(entry, params.Cursor, itemLimit)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -122,7 +126,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 			response.Data = thread.Turns
 			response.PageUnit = appwire.TranscriptPageUnitItem
 			return response, nil
-		})
+		}, itemLimit)
 		if packErr != nil {
 			return appwire.ThreadTurnsListResponse{}, true, packErr
 		}
@@ -165,7 +169,11 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if !params.IncludeTurns {
 		return appwire.ThreadReadResponse{Thread: stampDerivedTotals(cfg, entry, thread), PageUnit: appwire.TranscriptPageUnitItem}, true, nil
 	}
-	page, err := pastEntryLatestItems(entry, params.ItemLimit)
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	page, err := pastEntryLatestItems(entry, itemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -176,7 +184,7 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 		response.Thread = thread
 		response.PageUnit = appwire.TranscriptPageUnitItem
 		return response, nil
-	})
+	}, itemLimit)
 	if packErr != nil {
 		return appwire.ThreadReadResponse{}, true, packErr
 	}

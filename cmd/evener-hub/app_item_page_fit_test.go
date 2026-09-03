@@ -54,6 +54,23 @@ func TestPackTranscriptItemPageCountLimit(t *testing.T) {
 	}
 }
 
+func TestPackTranscriptItemPageHonorsSmallerRequestedLimit(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "requested-limit", ProjectionVersion: 1}
+	got, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(45)},
+		Identity:   identity,
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		return response, nil
+	}, 3)
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	if got := len(flattenTestItems(got.Thread.Turns)); got != 3 {
+		t.Fatalf("item count = %d, want requested limit 3", got)
+	}
+}
+
 func TestPackTranscriptItemPageSoftLimit(t *testing.T) {
 	t.Run("enrichment can trim an otherwise fitting page", func(t *testing.T) {
 		identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "incarnation-2", ProjectionVersion: 1}

@@ -1443,3 +1443,32 @@ func TestAppTurnSnapshotZeroItemTurnConsumesEntryOrdinal(t *testing.T) {
 		t.Fatalf("visible candidate=%+v, want entry 6 after zero-item entry", window.Candidates)
 	}
 }
+
+func TestAppTurnSnapshotUpsertMatchesStableKeyAcrossDisplayIDs(t *testing.T) {
+	position := appwire.ThreadItemPosition{Entry: 7, Item: 2}
+	key := appitempaging.TranscriptItemKey("turn_resume", position)
+	snapshot := &appTurnSnapshot{}
+	snapshot.Seed(appTurnSeed{
+		Turns: []appwire.Turn{{ID: "turn_resume", Status: appwire.TurnStatusCompleted, Items: []appwire.ThreadItem{{
+			ID: "historical-id", TurnID: "turn_resume", Type: "agentMessage", Text: "old", Status: appwire.TurnStatusInProgress,
+			TranscriptKey: key, Position: &position,
+		}}}},
+		ThreadRef: "local:resume", TranscriptIncarnation: "inc-resume", NextEntry: 8,
+	})
+	completed, err := json.Marshal(appwire.ItemLifecycleParams{TurnID: "turn_resume", Item: appwire.ThreadItem{
+		ID: "live-id", TurnID: "turn_resume", Type: "agentMessage", Text: "new", Status: appwire.TurnStatusCompleted,
+		TranscriptKey: key, Position: &position,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Apply([]appserver.SequencedNotification{{Seq: 1, Notification: appwire.Notification{Method: appwire.NotifyItemCompleted, Params: completed}}})
+	turns := snapshot.Snapshot()
+	if len(turns) != 1 || len(turns[0].Items) != 1 {
+		t.Fatalf("resumed item upsert produced turns=%+v, want one persisted item", turns)
+	}
+	got := turns[0].Items[0]
+	if got.ID != "live-id" || got.Text != "new" || got.TranscriptKey != key || got.Position == nil || *got.Position != position {
+		t.Fatalf("resumed item = %+v, want updated display fields with stable identity", got)
+	}
+}

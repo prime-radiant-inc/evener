@@ -954,3 +954,95 @@ func TestPrepareAppIdentityWithPreludeReservesLiveEntryCoordinate(t *testing.T) 
 		t.Fatalf("live position=%+v, want entry 2 after one persisted entry and reserved prelude", got)
 	}
 }
+
+func TestDescendantRestorePreservesAbsoluteEntryAuthorityAcrossSkippedEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "child", SystemPrompt: "system"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	// These checkpoint/summary entries are decoded transcript entries but emit no
+	// browser items. The visible entry must still consume its absolute ordinal.
+	for _, entry := range []schema.Turn{
+		{Kind: schema.TurnCheckpoint},
+		schema.NewTurn(schema.TurnUserInput, llm.User("persisted")),
+		{Kind: schema.TurnSummary},
+	} {
+		if err := tw.Append(entry); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+		if threadID == "child" {
+			return path
+		}
+		return ""
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "child",
+		Data:      events.UserInputData{Text: "live"},
+	})
+
+	projection := srv.appDescendants["child"]
+	if projection == nil {
+		t.Fatal("descendant projection was not created")
+	}
+	window, _, err := projection.turns.LatestItemCandidates(40)
+	if err != nil {
+		t.Fatalf("LatestItemCandidates: %v", err)
+	}
+	var live *appwire.ThreadItem
+	for i := range window.Candidates {
+		if window.Candidates[i].Item.Text == "live" {
+			live = &window.Candidates[i].Item
+			break
+		}
+	}
+	if live == nil || live.Position == nil {
+		t.Fatalf("live descendant item = %+v, want positioned item", live)
+	}
+	wantPosition := appwire.ThreadItemPosition{Entry: 4, Item: 0}
+	if *live.Position != wantPosition {
+		t.Fatalf("live descendant position=%+v, want %+v after 3 decoded entries and prelude", *live.Position, wantPosition)
+	}
+	if got, want := live.TranscriptKey, appitempaging.TranscriptItemKey(live.TurnID, wantPosition); got != want {
+		t.Fatalf("live descendant transcript key=%q, want %q", got, want)
+	}
+}
+
+func TestRecordAppEventLifecycleNotificationCarriesAllocatedIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_identity")
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_identity",
+		Data:      events.UserInputData{Text: "identity"},
+	})
+
+	var found appwire.ItemLifecycleParams
+	foundItem := false
+	for _, record := range srv.AppNotificationsAfter(cursor, "th_identity") {
+		if record.Notification.Method != appwire.NotifyItemCompleted {
+			continue
+		}
+		if err := json.Unmarshal(record.Notification.Params, &found); err != nil {
+			t.Fatalf("unmarshal lifecycle notification: %v", err)
+		}
+		foundItem = true
+		break
+	}
+	if !foundItem {
+		t.Fatal("event produced no item/completed notification")
+	}
+	if found.Item.TranscriptKey == "" || found.Item.Position == nil {
+		t.Fatalf("lifecycle item identity = %+v, want transcriptKey and position", found.Item)
+	}
+}

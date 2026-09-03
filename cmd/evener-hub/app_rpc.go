@@ -109,9 +109,12 @@ func listItemTurns(
 	source appsource.Source,
 	params appwire.ThreadTurnsListParams,
 ) (appwire.ThreadTurnsListResponse, bool, error) {
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, true, err
+	}
 	var live appwire.ThreadTurnsListResponse
 	var candidates transcriptItemCandidateResult
-	var err error
 	if _, native := source.(appsource.ItemCandidateSource); native {
 		candidates, err = sourceItemCandidateResultForList(ctx, source, params, live)
 		if err != nil {
@@ -142,7 +145,7 @@ func listItemTurns(
 		}
 		response.PageUnit = appwire.TranscriptPageUnitItem
 		return response, nil
-	})
+	}, itemLimit)
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
@@ -290,6 +293,10 @@ func registerThreadHandlers(
 		if err := appwire.ValidateThreadReadParams(params); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
+		itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {
@@ -359,7 +366,7 @@ func registerThreadHandlers(
 					response.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(response.Thread))
 					annotateThreadProjects([]appwire.Thread{response.Thread})
 					return response, nil
-				})
+				}, itemLimit)
 				if packErr != nil {
 					read.finish(false)
 					return appwire.ThreadReadResponse{}, packErr

@@ -532,7 +532,7 @@ const statusRank: Record<string, number> = {
 };
 
 function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
-  return {
+  return mergeItemIdentityMetadata(older, {
     ...older,
     ...newer,
     argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
@@ -544,15 +544,14 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
       newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
         ? older.status
         : newer.status,
-  };
+  });
 }
 
 function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): ItemModel {
+  const transcriptKey = incoming.transcriptKey || existing.transcriptKey;
   return {
     ...incoming,
-    ...(incoming.transcriptKey !== undefined || existing.transcriptKey !== undefined
-      ? { transcriptKey: incoming.transcriptKey ?? existing.transcriptKey }
-      : {}),
+    ...(transcriptKey ? { transcriptKey } : {}),
     ...(incoming.position !== undefined || existing.position !== undefined
       ? { position: incoming.position ?? existing.position }
       : {}),
@@ -560,7 +559,7 @@ function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): It
 }
 
 function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
-  if (left.transcriptKey !== undefined && right.transcriptKey !== undefined) {
+  if (left.transcriptKey && right.transcriptKey) {
     return left.transcriptKey === right.transcriptKey;
   }
   return left.id === right.id;
@@ -758,12 +757,21 @@ function mapItem(items: ItemModel[], itemId: string, fn: (item: ItemModel) => It
   return items.map((it) => (it.id === itemId ? fn(it) : it));
 }
 
+function mapItemByIdentity(items: ItemModel[], incoming: ItemModel, fn: (item: ItemModel) => ItemModel): ItemModel[] {
+  return items.map((it) => (itemIdentityMatches(it, incoming) ? fn(it) : it));
+}
+
 // Finds which turn currently holds itemId, preferring the notification's own
 // turnId hint, then the model's active turn, then a full scan (defensive —
 // in practice the hint and activeTurnId always agree, since only one turn is
 // ever in flight at a time).
-function findItemTurnId(model: ThreadModel, turnIdHint: string | undefined, itemId: string): string | undefined {
-  const turnHasItem = (turn: TurnModel) => turn.items.some((it) => it.id === itemId);
+function findItemTurnId(
+  model: ThreadModel,
+  turnIdHint: string | undefined,
+  identity: string | ItemModel,
+): string | undefined {
+  const turnHasItem = (turn: TurnModel) =>
+    turn.items.some((it) => (typeof identity === "string" ? it.id === identity : itemIdentityMatches(it, identity)));
   if (turnIdHint) {
     const turn = model.turns.find((t) => t.id === turnIdHint);
     if (turn && turnHasItem(turn)) return turnIdHint;
@@ -1057,6 +1065,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
+      const incoming = wireItemToModel(item);
       // A live watcher on a long turn sees nothing move on thread/status/
       // changed until the turn ends, however many tool calls fail inside it
       // (kata 895d) — item/completed is the finer-grained carrier, stamped
@@ -1064,15 +1073,15 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       // count. Applied exactly like thread/status/changed's: absent means
       // "no change", never "nobody counted".
       const failedToolCalls = n.params.failedToolCalls ?? model.failedToolCalls;
-      const existingTurnId = findItemTurnId(model, turnId, item.id);
+      const existingTurnId = findItemTurnId(model, turnId, incoming);
       if (existingTurnId) {
         return {
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) =>
+            items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
-                mergeArguments(mergeReasoning(mergeItemIdentityMetadata(old, wireItemToModel(item)), old), old),
+                mergeArguments(mergeReasoning(mergeItemIdentityMetadata(old, incoming), old), old),
                 old,
                 now,
               ),
@@ -1094,7 +1103,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, insertTurnId, (turn) => ({
           ...turn,
-          items: [...turn.items, wireItemToModel(item)],
+          items: [...turn.items, incoming],
         })),
         failedToolCalls,
         lastFrameAt: now,

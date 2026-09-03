@@ -484,8 +484,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			if item.threadID == threadID {
 				notificationTarget = rootNotificationTarget
 			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
-			item.snapshot.Apply([]appserver.SequencedNotification{record})
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
 			committed = append(committed, record)
 		}
 		return committed
@@ -536,7 +542,11 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			if s.appDescendantTranscriptPathFunc != nil {
 				if path := strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID)); path != "" {
 					if turns, entries, err := appTurnsFromTranscriptFile(path); err == nil {
-						projection.turns.Seed(turns)
+						nextEntry := uint64(entries)
+						if len(turns) > 0 && turns[0].ID == appwire.SystemPreludeTurnID {
+							nextEntry++
+						}
+						projection.turns.Seed(appTurnSeed{Turns: turns, NextEntry: nextEntry})
 						projection.projector.SeedPersistedTurns(entries)
 					}
 				}
@@ -610,8 +620,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			if item.threadID == ownerThreadID {
 				notificationTarget = rootNotificationTarget
 			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
-			item.snapshot.Apply([]appserver.SequencedNotification{record})
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
 			committed = append(committed, record)
 		}
 		return committed

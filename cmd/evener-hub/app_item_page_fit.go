@@ -78,6 +78,7 @@ func threadWithPackedTurns(base appwire.Thread, turns []appwire.Turn) appwire.Th
 func packThreadReadItemCandidates(
 	candidates transcriptItemCandidateResult,
 	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
+	requestedLimit ...int,
 ) (appwire.ThreadReadResponse, error) {
 	return packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadReadResponse {
 		return appwire.ThreadReadResponse{
@@ -85,12 +86,13 @@ func packThreadReadItemCandidates(
 			PageUnit:    appwire.TranscriptPageUnitItem,
 			OlderCursor: olderCursor,
 		}
-	})
+	}, requestedLimit...)
 }
 
 func packThreadTurnsItemCandidates(
 	candidates transcriptItemCandidateResult,
 	enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
+	requestedLimit ...int,
 ) (appwire.ThreadTurnsListResponse, error) {
 	return packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadTurnsListResponse {
 		return appwire.ThreadTurnsListResponse{
@@ -98,13 +100,14 @@ func packThreadTurnsItemCandidates(
 			PageUnit:   appwire.TranscriptPageUnitItem,
 			NextCursor: olderCursor,
 		}
-	})
+	}, requestedLimit...)
 }
 
 func packItemCandidates[T any](
 	result transcriptItemCandidateResult,
 	enrich func(T) (T, error),
 	build func([]appwire.Turn, string) T,
+	requestedLimit ...int,
 ) (T, error) {
 	var zero T
 	candidates := append([]appitempaging.TranscriptItemCandidate(nil), result.Candidates.Candidates...)
@@ -115,7 +118,15 @@ func packItemCandidates[T any](
 		return zero, err
 	}
 
-	selected, hasOlder, err := appitempaging.SelectCandidates(candidates, nil, appwire.TranscriptItemPageLimit)
+	itemLimit := appwire.TranscriptItemPageLimit
+	if len(requestedLimit) > 0 {
+		itemLimit = requestedLimit[0]
+	}
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(itemLimit)
+	if err != nil {
+		return zero, err
+	}
+	selected, hasOlder, err := appitempaging.SelectCandidates(candidates, nil, itemLimit)
 	if err != nil {
 		return zero, fmt.Errorf("select transcript item candidates: %w", err)
 	}
