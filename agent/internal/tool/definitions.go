@@ -322,12 +322,16 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Create, inspect, list, or clear standing triggers on a source you can observe. " +
+	desc := "Wake yourself later: `after_seconds` fires once, `repeat_seconds` fires every interval, and `note` is delivered with the wake so you know why you set it. " +
+		"Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. " +
+		"To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. " +
+		"Each `create` is a new timer; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
+		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
 		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
 		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
 		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
-		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress uses `progress_interval_ms`. " +
+		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress on a concrete job uses `progress_interval_ms`. " +
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
@@ -343,9 +347,12 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
-				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
+				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
 				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
-				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
+				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete job source only: periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
+				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "Fire once this many seconds from now (60 to 86400); source self only."},
+				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Fire every this many seconds until cleared (60 to 3600); source self only."},
+				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of a timer; use it to say why and, for a loop, where you are."},
 				"events": map[string]any{
 					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
