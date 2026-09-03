@@ -155,8 +155,10 @@ func TestNameSession_SendsTemperatureForGoogleRows(t *testing.T) {
 	}
 }
 
-// TestNameSession_OmitsTemperatureForFalseCapability: moonshotai's catalog rows
-// carry fields.temperature=false; the namer must omit the parameter.
+// TestNameSession_OmitsTemperatureForFalseCapability: models.dev marks
+// moonshotai/kimi-k3 temperature=false; the registry's derivation maps that
+// to Caps.Sampling=false (modelsdev.go), and TemperatureSupported gates on it.
+// The namer must omit the parameter.
 func TestNameSession_OmitsTemperatureForFalseCapability(t *testing.T) {
 	t.Parallel()
 	adapter := &temperatureSpyAdapter{

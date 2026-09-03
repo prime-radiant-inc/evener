@@ -108,14 +108,21 @@ func TemperatureSupported(res Resolved) bool {
 	return res.Caps.Fields[path]
 }
 
-// catalogBacked reports whether any resolved fact is attributed to a curated
-// layer (the models.dev snapshot or the curated overlay), distinguishing a
-// catalog row from a user-configured custom one whose every fact — if any —
-// is config-attributed.
+// catalogBacked reports whether any resolved fact is attributed to a
+// model-specific catalog row: a curated snapshot, overlay, or cache layer
+// setting a row's facts ("<layer>/row"). Provider- and glob-level curated facts
+// ("<layer>/provider", "<layer>/…<glob>") do not count — a user-defined model
+// on a curated base inherits a dozen overlay/provider facts (StrictTools,
+// MaxTokensField, most Fields.*), and those inherited facts must not mistake
+// the custom row for a catalog one (the round-5 probe on a work/my-model
+// row showed exactly this).
 func catalogBacked(provenance map[string]string) bool {
 	for _, source := range provenance {
-		if strings.HasPrefix(source, LayerSnapshot+"/") || strings.HasPrefix(source, LayerOverlay+"/") {
-			return true
+		if strings.HasSuffix(source, "/row") {
+			switch layer := strings.TrimSuffix(source, "/row"); layer {
+			case LayerSnapshot, LayerOverlay, LayerCache:
+				return true
+			}
 		}
 	}
 	return false

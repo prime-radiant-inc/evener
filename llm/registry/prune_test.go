@@ -285,6 +285,34 @@ func TestTemperatureSupported(t *testing.T) {
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
+		{
+			// A user-defined model on a curated base inherits provider-level
+			// overlay facts (StrictTools, MaxTokensField, most Fields.*) — those
+			// inherited facts must not mistake the custom row for a catalog one
+			// (round-5 probe on a work/my-model row showed exactly this).
+			name: "user-configured row inheriting overlay provider facts",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["StrictTools"] = LayerOverlay + "/provider"
+					prov["MaxTokensField"] = LayerOverlay + "/provider"
+					prov["Fields.store"] = LayerOverlay + "/provider"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true, "store": false}}},
+		},
+		{
+			// A cached catalog row fact vouches the same way a snapshot one does.
+			name: "cache-backed catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := catalogRow("row", "gpt-x")
+					prov["ContextWindow"] = LayerCache + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
 	}
 	for _, tc := range cases {
 		if got := TemperatureSupported(tc.res); got != tc.want {
