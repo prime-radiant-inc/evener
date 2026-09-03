@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Both time fields are `self`-only; any other source is `invalid_request: timers apply to source self; delegates and jobs wake you when they finish`.
-- Bounds: `after_seconds` 60 to 86,400; `repeat_seconds` 60 to 3,600. Reject, never clamp. A present `0` is rejected; null reads as absent.
+- Bounds: `after_seconds` 60 to 86,400; `repeat_seconds` 60 to 3,600. Reject, never clamp; the bounds apply to non-zero values only. A present `0` reads as absent, exactly like `progress_interval_ms: 0`, and so does null.
 - `note` is accepted only with a time field; truncated to `watchMessageMaxChars` (2,048) via `limitWatchText`; stored raw; body-escaped at render.
 - At most 8 live timers per job manager, enforced under `jm.mu`.
 - A time trigger is refused when `s.cfg.TurnEndsProcess` is set.
@@ -193,11 +193,22 @@ func TestNormalizeWatchArgs_TimerBoundsRejectNotClamp(t *testing.T) {
 	}
 }
 
-func TestWatchIntArg_PresentZeroOnCreateIsRejectedByBounds(t *testing.T) {
+func TestWatchIntArg_MaterializedZeroOnCreateReadsAsAbsent(t *testing.T) {
 	t.Parallel()
-	_, err := watchArgsFromToolArgs(map[string]any{"operation": "create", "after_seconds": float64(0)})
-	if err == nil || !strings.Contains(err.Error(), "after_seconds must be between") {
-		t.Fatalf("after_seconds:0 on create: err = %v, want bounds rejection", err)
+	a, err := watchArgsFromToolArgs(map[string]any{
+		"operation": "create", "source": "self", "events": []any{"assistant.tool"},
+		"after_seconds": float64(0), "repeat_seconds": nil, "note": "",
+	})
+	if err != nil {
+		t.Fatalf("materialized neutral timer fields on create: %v", err)
+	}
+	if a.AfterSeconds != 0 || a.RepeatSeconds != 0 || watchArgsIsTimer(a) {
+		t.Fatalf("args = %+v, want both time fields zero and not a timer", a)
+	}
+	// A zero time field arms nothing, so it cannot stand in for the source.
+	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "after_seconds": float64(0)})
+	if err == nil || !strings.Contains(err.Error(), "source is required") {
+		t.Fatalf("after_seconds:0 with no source: err = %v, want source is required", err)
 	}
 }
 ```
@@ -366,21 +377,12 @@ In `normalizeWatchArgs`, add before the `every` handling:
 	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
 ```
 
-A present `0` reaches `normalizeWatchArgs` as `0`, which the bounds check treats as unset; the tool layer therefore rejects it explicitly: in `watchArgsFromToolArgs`, right after the integer loop, add:
-
-```go
-	if a.Operation == "create" {
-		for _, f := range []struct {
-			key  string
-			hi   int
-			lo   int
-		}{{"after_seconds", 86400, 60}, {"repeat_seconds", 3600, 60}} {
-			if raw, present := args[f.key]; present && raw != nil && watchIntegerValue(raw) == 0 {
-				return watchArgs{}, fmt.Errorf("invalid_request: %s must be between %d and %d", f.key, f.lo, f.hi)
-			}
-		}
-	}
-```
+A present `0` reaches `normalizeWatchArgs` as `0`, which the bounds check treats as
+unset — the reading `progress_interval_ms: 0` already gets, and the one a provider
+that materializes every optional property needs. A zero time field therefore arms
+nothing: `watchTriggerArgumentIsNeutral` accepts it on a non-create operation, and a
+create carrying only `after_seconds: 0` fails on its missing source rather than on
+the bounds.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
