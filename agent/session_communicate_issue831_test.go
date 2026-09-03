@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
@@ -241,6 +242,58 @@ func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t
 		if strings.Contains(change, "sensitive message") || !strings.Contains(change, "output") {
 			t.Fatalf("telemetry leaked a value or lacks path: %q", change)
 		}
+	}
+}
+
+func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairIssue831(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	observed := make(chan struct {
+		repaired []events.ToolCallRepairedData
+		end      *events.ToolCallEndData
+	}, 1)
+	go func() {
+		var got struct {
+			repaired []events.ToolCallRepairedData
+			end      *events.ToolCallEndData
+		}
+		for event := range sess.Events() {
+			switch data := event.Data.(type) {
+			case events.ToolCallRepairedData:
+				if data.CallID == "issue831-unapplied" {
+					got.repaired = append(got.repaired, data)
+				}
+			case events.ToolCallEndData:
+				if data.CallID == "issue831-unapplied" {
+					data := data
+					got.end = &data
+				}
+			}
+		}
+		observed <- got
+	}()
+
+	// The broken outer escape is repairable, but the promoted nested output has
+	// trailing text and must be rejected. No repaired bytes reach dispatch.
+	arguments := json.RawMessage(`{"end_turn":true,"message":"\uX","output":"{\"message\":\"nested\",\"data\":{},\"artifacts\":[]} trailing"}`)
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-unapplied", Name: "communicate", Arguments: arguments}, "")
+	if !res.IsError || !strings.Contains(res.FullOutput, "passed as an object") {
+		t.Fatalf("result = %+v, want nested output promotion failure", res)
+	}
+
+	sess.Close()
+	got := <-observed
+	if len(got.repaired) != 0 {
+		t.Fatalf("unapplied JSON repair emitted ToolCallRepaired: %+v", got.repaired)
+	}
+	if got.end == nil {
+		t.Fatal("missing ToolCallEnd event")
+	}
+	if !got.end.PrevalOnly || got.end.Error != res.FullOutput {
+		t.Fatalf("end = %+v, want prevalidation failure %q", got.end, res.FullOutput)
+	}
+	if got.end.ArgumentsJSON != string(arguments) {
+		t.Fatalf("end arguments = %q, want original unapplied bytes %q", got.end.ArgumentsJSON, arguments)
 	}
 }
 

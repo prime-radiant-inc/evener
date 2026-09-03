@@ -52,6 +52,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 
 	args := map[string]any{}
+	var pendingJSONChanges []repair.Change
 	if len(res.Call.Arguments) > 0 { // raw len, mirroring ExecuteCall (no TrimSpace)
 		if err := json.Unmarshal(res.Call.Arguments, &args); err != nil {
 			// A length-stopped turn cut the argument stream mid-JSON. Never
@@ -63,7 +64,6 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				return res
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
-			res.Changes = append(res.Changes, c...)
 			args = map[string]any{}
 			if err2 := json.Unmarshal(repaired, &args); err2 != nil {
 				// Show the model's own bytes and the original parse error
@@ -71,6 +71,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)
 				return res
 			}
+			// Keep repair changes pending until their repaired arguments are
+			// committed below. Every early return through preparation otherwise
+			// retains the model's raw bytes and must not claim a repair event.
+			pendingJSONChanges = c
 		}
 	}
 	if errText := unsupportedDelegateWaitOption(call.Name, args); errText != "" {
@@ -159,6 +163,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			// remains invalid; failed generic repairs and envelope fills remain
 			// deliberately unrecorded.
 			if len(retainedReadChanges) > 0 {
+				// finalErrorArgs is committed for retained-read normalization even
+				// though another field failed. It includes any successful outer
+				// JSON repair, so record both applied repair sets together.
+				res.Changes = append(res.Changes, pendingJSONChanges...)
 				res.Changes = append(res.Changes, retainedReadChanges...)
 				if b, marshalErr := json.Marshal(finalErrorArgs); marshalErr == nil {
 					res.Call.Arguments = b
@@ -172,12 +180,16 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		args = healed
+		res.Changes = append(res.Changes, pendingJSONChanges...)
 		// The healed form carries the fill (it was validated above), so the
 		// fill's changes belong in the record alongside the healing changes.
 		res.Changes = append(res.Changes, fillChanges...)
 		res.Changes = append(res.Changes, c...)
-	} else if len(fillChanges) > 0 {
-		res.Changes = append(res.Changes, fillChanges...)
+	} else {
+		res.Changes = append(res.Changes, pendingJSONChanges...)
+		if len(fillChanges) > 0 {
+			res.Changes = append(res.Changes, fillChanges...)
+		}
 	}
 	res.Changes = append(res.Changes, retainedReadChanges...)
 
