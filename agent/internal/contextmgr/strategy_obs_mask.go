@@ -93,7 +93,7 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
 		before := estimateTokens(*history)
-		*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
+		*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 		after := estimateTokens(*history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
@@ -136,8 +136,11 @@ func aggressiveMaskObservations(history []schema.Turn, preserveRecent int) {
 		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
 			continue
 		}
+		// Copy-on-write over the shared *ToolResultData payloads, for the
+		// same losing-fold leak maskObservations documents.
+		var rebuilt []llm.ContentPart
 		for j := range t.Message.Content {
-			p := &t.Message.Content[j]
+			p := t.Message.Content[j]
 			if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 				continue
 			}
@@ -158,8 +161,16 @@ func aggressiveMaskObservations(history []schema.Turn, preserveRecent int) {
 				continue
 			}
 
+			if rebuilt == nil {
+				rebuilt = append([]llm.ContentPart(nil), t.Message.Content...)
+			}
 			// Minimal mask: just tool name and status.
-			tr.Content = fmt.Sprintf("[%s: OK]", tr.Name)
+			masked := *tr
+			masked.Content = fmt.Sprintf("[%s: OK]", tr.Name)
+			rebuilt[j].ToolResult = &masked
+		}
+		if rebuilt != nil {
+			t.Message.Content = rebuilt
 		}
 	}
 }

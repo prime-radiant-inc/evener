@@ -34,6 +34,14 @@ const transcriptToolMaxChars = 600_000
 // serialized response.
 const retainedOutputMatchMaxChars = 64 << 10
 
+// retainedReadDiagnosticValueMaxRunes bounds each caller-supplied value echoed
+// in a retained-read validation error. Longer values become a valid JSON string
+// suffixed with retainedReadDiagnosticTruncationMarker, so diagnostics stay
+// readable without allowing an incompatible free-form option to dominate them.
+const retainedReadDiagnosticValueMaxRunes = 256
+
+const retainedReadDiagnosticTruncationMarker = "…[truncated]"
+
 const artifactUnavailableReadError = "artifact_unavailable: retained artifact could not be read"
 
 // transcriptTools returns the read-only transcript inspection tools. read_transcript
@@ -225,6 +233,7 @@ type readSessionTranscriptArgs struct {
 func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Definition: tool.DefReadTranscript(), ReadOnly: true,
+		NormalizeArgs: normalizeRetainedReadArgsForValidation,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			return execReadTranscript(deps, args)
@@ -284,6 +293,11 @@ type retainedSearchResult struct {
 }
 
 func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
+	// Preparation normally removes materialized retained defaults before hooks,
+	// but direct registry calls and PreToolUse updatedInput enter here afterward.
+	// This idempotent execution-boundary pass deliberately has no repair
+	// telemetry: it only selects the documented default operation.
+	args, _ = normalizeRetainedReadArgs(args)
 	for _, name := range readTranscriptPublicRejectedParams {
 		if _, present := args[name]; present {
 			if name == "source" || name == "attempt_id" || name == "body" {
@@ -292,13 +306,14 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 			return nil, errors.New("invalid_request: max_bytes is not supported by read_transcript; expansion pages are fixed at 16 KiB and continue with offset_bytes")
 		}
 	}
-	parsed, operation, err := parseRetainedReadArgs(args)
-	if err != nil {
-		return nil, err
-	}
+	parsed, operation, parseIssues := parseRetainedReadArgsWithIssues(args)
 	if strings.HasPrefix(parsed.Ref, "artifact:") {
-		if err := validateArtifactReadArgs(args, operation); err != nil {
-			return nil, err
+		incompatible := retainedReadIncompatibleFields("artifact", args)
+		if len(parseIssues) > 0 || len(incompatible) > 0 {
+			if len(incompatible) == 0 {
+				return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
+			}
+			return nil, retainedReadArgsValidationError("artifact", args, incompatible, parseIssues, operation)
 		}
 		if operation == retainedReadSearch {
 			return searchArtifactTranscript(deps, parsed)
@@ -306,8 +321,12 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 		return pageArtifactTranscript(deps, parsed)
 	}
 	if strings.HasPrefix(parsed.Ref, "job:") {
-		if err := validateJobReadArgs(args, operation); err != nil {
-			return nil, err
+		incompatible := retainedReadIncompatibleFields("job", args)
+		if len(parseIssues) > 0 || len(incompatible) > 0 {
+			if len(incompatible) == 0 {
+				return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
+			}
+			return nil, retainedReadArgsValidationError("job", args, incompatible, parseIssues, operation)
 		}
 		if operation == retainedReadPage {
 			return pageJobTranscript(deps, parsed)
@@ -317,6 +336,9 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 		}
 		return readJobTranscript(deps, parsed.Ref, strings.TrimSpace(stringArg(args, "range")), strings.TrimSpace(stringArg(args, "format")))
 	}
+	if len(parseIssues) > 0 {
+		return nil, errors.New("invalid_request: " + parseIssues[0].Reason)
+	}
 	if operation == retainedReadSearch {
 		return nil, errors.New("invalid_request: output_match applies only to job: and artifact: refs")
 	}
@@ -324,72 +346,139 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 }
 
 func parseRetainedReadArgs(args map[string]any) (retainedReadArgs, retainedReadOperation, error) {
+	parsed, operation, issues := parseRetainedReadArgsWithIssues(args)
+	if len(issues) > 0 {
+		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: " + issues[0].Reason)
+	}
+	return parsed, operation, nil
+}
+
+type retainedReadParseIssue struct {
+	Field  string
+	Reason string
+}
+
+func parseRetainedReadArgsWithIssues(args map[string]any) (retainedReadArgs, retainedReadOperation, []retainedReadParseIssue) {
 	parsed := retainedReadArgs{
 		Ref:         strings.TrimSpace(stringArg(args, "transcript_ref")),
 		OutputMatch: stringArg(args, "output_match"),
 	}
 	_, outputMatchSet := args["output_match"]
 	_, contextSet := args["context_lines"]
+	issues := make([]retainedReadParseIssue, 0, 3)
 	if contextSet && !outputMatchSet {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines requires output_match")
+		issues = append(issues, retainedReadParseIssue{Field: "context_lines", Reason: "context_lines requires output_match"})
 	}
 	if value := optionalIntArg(args, "context_lines"); value != nil {
 		parsed.ContextLines = *value
 	}
 	if parsed.ContextLines < 0 || parsed.ContextLines > 10 {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: context_lines must be between 0 and 10")
+		issues = append(issues, retainedReadParseIssue{Field: "context_lines", Reason: "context_lines must be between 0 and 10"})
 	}
 	if utf8.RuneCountInString(parsed.OutputMatch) > retainedOutputMatchMaxChars {
-		return retainedReadArgs{}, retainedReadDefault, fmt.Errorf("invalid_request: output_match must be at most %d characters", retainedOutputMatchMaxChars)
+		issues = append(issues, retainedReadParseIssue{Field: "output_match", Reason: fmt.Sprintf("output_match must be at most %d characters", retainedOutputMatchMaxChars)})
 	}
 	if value := optionalIntArg(args, "offset_bytes"); value != nil {
 		parsed.OffsetSet = true
 		parsed.OffsetBytes = int64(*value)
 	}
 	if parsed.OffsetSet && parsed.OffsetBytes < 0 {
-		return retainedReadArgs{}, retainedReadDefault, errors.New("invalid_request: offset_bytes must be non-negative")
+		issues = append(issues, retainedReadParseIssue{Field: "offset_bytes", Reason: "offset_bytes must be non-negative"})
 	}
 	if outputMatchSet {
-		return parsed, retainedReadSearch, nil
+		return parsed, retainedReadSearch, issues
 	}
 	if parsed.OffsetSet {
-		return parsed, retainedReadPage, nil
+		return parsed, retainedReadPage, issues
 	}
-	return parsed, retainedReadDefault, nil
+	return parsed, retainedReadDefault, issues
 }
 
-func validateArtifactReadArgs(args map[string]any, operation retainedReadOperation) error {
-	_ = operation
-	for _, name := range []string{"range", "expand_turn"} {
-		if _, present := args[name]; present {
-			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+func retainedReadIncompatibleFields(refKind string, args map[string]any) []string {
+	incompatible := make([]string, 0, 3)
+	for _, name := range []string{"range", "expand_turn", "format"} {
+		value, present := args[name]
+		if !present || (name == "format" && refKind == "job" && isNeutralJobFormat(value)) {
+			continue
 		}
+		incompatible = append(incompatible, name)
 	}
-	if _, present := args["format"]; present {
-		return errors.New("invalid_request: format is not supported for artifact: refs")
-	}
-	return nil
+	return incompatible
 }
 
-func validateJobReadArgs(args map[string]any, operation retainedReadOperation) error {
-	for _, name := range []string{"range", "expand_turn"} {
-		if _, present := args[name]; present {
-			return fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+// retainedReadArgsValidationError is deliberately diagnostic: tool results are
+// retained as repair telemetry, so include bounded, possibly truncated forms of
+// every parse and mode incompatibility and a smallest valid call instead of
+// naming only one key.
+func retainedReadArgsValidationError(refKind string, args map[string]any, names []string, parseIssues []retainedReadParseIssue, operation retainedReadOperation) error {
+	received := make([]string, 0, len(names)+len(parseIssues))
+	reasons := make([]string, 0, len(names)+len(parseIssues))
+	receivedFields := make(map[string]bool, len(names)+len(parseIssues))
+	appendReceived := func(name string) {
+		if receivedFields[name] {
+			return
+		}
+		receivedFields[name] = true
+		received = append(received, name+"="+boundedRetainedReadDiagnosticValue(args[name]))
+	}
+	for _, issue := range parseIssues {
+		reasons = append(reasons, issue.Reason)
+		appendReceived(issue.Field)
+	}
+	for _, name := range names {
+		appendReceived(name)
+		switch name {
+		case "range", "expand_turn":
+			reasons = append(reasons, name+" applies only to session transcript refs")
+		case "format":
+			if refKind == "artifact" {
+				reasons = append(reasons, "format is not supported for artifact: refs")
+			} else if operation != retainedReadDefault {
+				reasons = append(reasons, "format cannot be combined with offset_bytes or output_match on job: refs")
+			} else {
+				reasons = append(reasons, "job: refs support only format=markdown")
+			}
 		}
 	}
-	format, formatSet := args["format"]
-	if !formatSet {
-		return nil
+	if refKind == "artifact" {
+		return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"artifact:<id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
 	}
-	if strings.TrimSpace(fmt.Sprint(format)) == formatMarkdown {
-		// markdown is the default view; it is always compatible with offset_bytes
-		// and output_match on job: refs, so accept it as a no-op format hint.
-		return nil
+	return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"job:<job_id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
+}
+
+func boundedRetainedReadDiagnosticValue(value any) string {
+	if text, ok := value.(string); ok {
+		return boundedRetainedReadDiagnosticString(text)
 	}
-	if operation != retainedReadDefault {
-		return errors.New("invalid_request: format cannot be combined with offset_bytes or output_match on job: refs")
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return boundedRetainedReadDiagnosticString(fmt.Sprintf("%#v", value))
 	}
-	return errors.New("invalid_request: job: refs support only format=markdown")
+	if utf8.RuneCountInString(string(encoded)) <= retainedReadDiagnosticValueMaxRunes {
+		return string(encoded)
+	}
+	return boundedRetainedReadDiagnosticString(string(encoded))
+}
+
+func boundedRetainedReadDiagnosticString(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `"` + retainedReadDiagnosticTruncationMarker + `"`
+	}
+	if utf8.RuneCountInString(string(encoded)) <= retainedReadDiagnosticValueMaxRunes {
+		return string(encoded)
+	}
+	var prefix strings.Builder
+	for _, r := range value {
+		candidate := prefix.String() + string(r) + retainedReadDiagnosticTruncationMarker
+		encoded, err = json.Marshal(candidate)
+		if err != nil || utf8.RuneCountInString(string(encoded)) > retainedReadDiagnosticValueMaxRunes {
+			break
+		}
+		prefix.WriteRune(r)
+	}
+	encoded, _ = json.Marshal(prefix.String() + retainedReadDiagnosticTruncationMarker)
+	return string(encoded)
 }
 
 func compileOutputMatch(expression string) (*regexp.Regexp, error) {

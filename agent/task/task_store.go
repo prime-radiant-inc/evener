@@ -556,8 +556,33 @@ func (s *TaskStore) currentInProgressLocked() (Task, bool) {
 	return Task{}, false
 }
 
+// ExpandParentTasks merges a parent's task list into a role's task templates:
+// the items replace the role's parent_tasks placeholder when it has one and
+// follow the role's own tasks otherwise. With no parent tasks the templates
+// come back unchanged, so a placeholder that carries its own prompt stays a
+// task.
+func ExpandParentTasks(templates, parentTasks []TaskTemplate) []TaskTemplate {
+	if len(parentTasks) == 0 {
+		return append([]TaskTemplate(nil), templates...)
+	}
+	var out []TaskTemplate
+	replaced := false
+	for _, tt := range templates {
+		if tt.Insert == "parent_tasks" {
+			out = append(out, parentTasks...)
+			replaced = true
+		} else {
+			out = append(out, tt)
+		}
+	}
+	if !replaced {
+		out = append(out, parentTasks...)
+	}
+	return out
+}
+
 // PopulateFromTemplates initializes the task store from agent definition templates.
-// If parentTasks is non-nil and non-empty, they replace the template with Insert=="parent_tasks".
+// Parent tasks are merged in by ExpandParentTasks.
 // The first task is auto-started (set to in_progress).
 // No-op if the store already has tasks.
 func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks []TaskTemplate) error {
@@ -568,15 +593,7 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 		return nil // already populated
 	}
 
-	// Build the effective template list by expanding the insert placeholder.
-	var effective []TaskTemplate
-	for _, tt := range templates {
-		if tt.Insert == "parent_tasks" && len(parentTasks) > 0 {
-			effective = append(effective, parentTasks...)
-		} else {
-			effective = append(effective, tt)
-		}
-	}
+	effective := ExpandParentTasks(templates, parentTasks)
 
 	// Convert templates to tasks.
 	for _, tt := range effective {

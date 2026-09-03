@@ -165,6 +165,12 @@ func sanitizeGeminiSchema(v any) any {
 					continue
 				}
 			}
+			if k == "enum" {
+				if _, nullable, ok := geminiNullableType(x["type"]); ok && nullable {
+					out[k] = geminiEnumWithoutNull(vv)
+					continue
+				}
+			}
 			out[k] = sanitizeGeminiSchema(vv)
 		}
 		return out
@@ -177,6 +183,20 @@ func sanitizeGeminiSchema(v any) any {
 	default:
 		return v
 	}
+}
+
+func geminiEnumWithoutNull(v any) any {
+	values, ok := v.([]any)
+	if !ok {
+		return sanitizeGeminiSchema(v)
+	}
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		if value != nil {
+			out = append(out, sanitizeGeminiSchema(value))
+		}
+	}
+	return out
 }
 
 func geminiNullableType(v any) (string, bool, bool) {

@@ -14,11 +14,12 @@ import (
 type ChangeKind string
 
 const (
-	ChangeAlias         ChangeKind = "alias"
-	ChangeCoerceType    ChangeKind = "coerce_type"
-	ChangeDropUnknown   ChangeKind = "drop_unknown"
-	ChangeUnicodeRepair ChangeKind = "unicode_repair"
-	ChangeFillRequired  ChangeKind = "fill_required"
+	ChangeAlias            ChangeKind = "alias"
+	ChangeCoerceType       ChangeKind = "coerce_type"
+	ChangeDropUnknown      ChangeKind = "drop_unknown"
+	ChangeUnicodeRepair    ChangeKind = "unicode_repair"
+	ChangeFillRequired     ChangeKind = "fill_required"
+	ChangeNormalizeDefault ChangeKind = "normalize_default"
 )
 
 // Change records one repair for telemetry. Field is the affected key ("" for a
@@ -106,7 +107,7 @@ func applyCoercions(params, args map[string]any) []Change {
 		if !ok {
 			continue
 		}
-		typ, _ := p["type"].(string)
+		typ := coercibleScalarType(p["type"])
 		switch typ {
 		case "boolean":
 			s, ok := raw.(string)
@@ -141,6 +142,55 @@ func applyCoercions(params, args map[string]any) []Change {
 		}
 	}
 	return changes
+}
+
+func coercibleScalarType(v any) string {
+	if typ, ok := v.(string); ok {
+		return typ
+	}
+	typ := nullableUnionNonNullType(v)
+	switch typ {
+	case "boolean", "integer", "number":
+		return typ
+	default:
+		return ""
+	}
+}
+
+// nullableUnionNonNullType returns the non-null type in an exact two-member
+// nullable union. It deliberately makes no judgment about which schema types a
+// caller supports; callers retain their own scalar allowlists.
+func nullableUnionNonNullType(v any) string {
+	var first, second string
+	switch values := v.(type) {
+	case []any:
+		if len(values) != 2 {
+			return ""
+		}
+		var ok bool
+		first, ok = values[0].(string)
+		if !ok {
+			return ""
+		}
+		second, ok = values[1].(string)
+		if !ok {
+			return ""
+		}
+	case []string:
+		if len(values) != 2 {
+			return ""
+		}
+		first, second = values[0], values[1]
+	default:
+		return ""
+	}
+	if first == "null" && second != "null" {
+		return second
+	}
+	if second == "null" && first != "null" {
+		return first
+	}
+	return ""
 }
 
 // dropUnknown removes keys matching no declared property, but only when the

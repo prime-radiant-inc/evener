@@ -1129,13 +1129,14 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			})
 		}
 	}
-	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
+	if err := s.appendTurnAfterTranscriptWrite(
+		persistedTurn,
+		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() { s.history = append(s.history, liveTurn) },
+	); err != nil {
 		abortDelegateToolCallDeliveryCommits(commits)
 		return err
 	}
-	s.mu.Lock()
-	s.history = append(s.history, liveTurn)
-	s.mu.Unlock()
 	var completionErrs []error
 	requeue := false
 	for _, binding := range commits {

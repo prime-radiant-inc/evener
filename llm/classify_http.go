@@ -24,15 +24,17 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	var raw map[string]any
 	_ = json.Unmarshal(body, &raw) // a non-JSON body classifies by status alone
 	now := time.Now()
+	message := ProviderFailureMessage(operation, body)
 	base := httpBaseError{
 		provider:    res.Instance,
 		protocol:    res.Protocol,
 		statusCode:  status,
-		message:     ProviderFailureMessage(operation, body),
+		message:     message,
 		errorCode:   extractErrorCode(raw),
 		retryAfter:  retryDelayFromHeaders(headers, now),
 		rawResponse: raw,
 	}
+	base.rejectedParam = rejectedParameter(raw, message, base.errorCode)
 	code := base.errorCode
 	switch {
 	case status == 413, code == "context_length_exceeded", code == "request_too_large":
@@ -40,7 +42,7 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		return &contextLengthError{base}
 	case code == "unknown_parameter", code == "unsupported_parameter":
 		base.retryable = false
-		base.hint = fieldHint(paramFromError(raw), res)
+		base.hint = fieldHint(base.rejectedParam, res)
 		return &invalidRequestError{base}
 	}
 	if usageLimitCodes[code] {
@@ -59,7 +61,7 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	if err := classifyByMessage(base); err != nil {
 		return err
 	}
-	base.hint = fieldHint(parameterNameFromMessage(base.message), res)
+	base.hint = fieldHint(base.rejectedParam, res)
 	return &invalidRequestError{base}
 }
 
@@ -83,16 +85,29 @@ func ErrorProtocol(err error) string {
 	return ""
 }
 
-// paramFromError reads error.param from a decoded provider body, or "" when
-// the body has no error object or the param is absent or non-string
-// (including JSON null, which OpenAI sends when no parameter is implicated).
-func paramFromError(raw map[string]any) string {
-	errObj, ok := raw["error"].(map[string]any)
-	if !ok {
-		return ""
+// rejectedParameter extracts the parameter a provider *rejection* named: the
+// structured error.param, honored only when the error is actually a
+// parameter-rejection — its code is unknown_parameter/unsupported_parameter or
+// its message matches a spec §12 rejection pattern — with the message patterns
+// as fallback and confirmation. raw is the decoded provider body (any shape;
+// non-maps yield ""), message the failure message, errorCode the code the
+// classifier extracted. error.param alone must not read as rejection: it is a
+// general field, and providers also use it to point at the offending
+// parameter in invalid-value errors ("Invalid value for 'temperature': must
+// be between 0 and 2"), where dropping the parameter would be wrong. One
+// extraction shared by every error construction path, so a rejection
+// identified either way carries the name.
+func rejectedParameter(raw any, message, errorCode string) string {
+	if m, ok := raw.(map[string]any); ok {
+		if errObj, ok := m["error"].(map[string]any); ok {
+			param, _ := errObj["param"].(string)
+			if param != "" && (errorCode == "unknown_parameter" || errorCode == "unsupported_parameter" ||
+				parameterNameFromMessage(message) != "") {
+				return param
+			}
+		}
 	}
-	param, _ := errObj["param"].(string)
-	return param
+	return parameterNameFromMessage(message)
 }
 
 // retryDelayFromHeaders honors Retry-After first, then the

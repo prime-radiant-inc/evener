@@ -62,7 +62,7 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 1.
+	// sub-agents (root session is depth 0). Zero defaults to 2.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
@@ -355,6 +355,32 @@ type testConfig struct {
 	// appendCompactionTurn injects transcript append failures. Nil preserves the
 	// session transcript writer.
 	appendCompactionTurn func(schema.Turn) error
+
+	// beforeHistoryRepairPublish observes the boundary immediately before an
+	// orphaned-tool-result repair publishes to s.history. Tests use it only to
+	// place deterministic concurrent history mutations in that window. Nil in
+	// production.
+	beforeHistoryRepairPublish func()
+
+	// beforeFoldSideEffectsFlush observes the boundary between a winning
+	// fold's publication (history swap, baseline correction, note claim,
+	// transcript commit) and the deferred flush of its remaining side effects
+	// (events, session naming, hook user messages). Tests use it only to
+	// place deterministic concurrent folds in that window. Nil in production.
+	beforeFoldSideEffectsFlush func()
+
+	// beforeFoldTranscriptCommit observes the boundary inside a winning
+	// fold's publication after the history swap (and its baseline/note
+	// bookkeeping) and immediately before the fold's transcript entries are
+	// committed. Tests use it only to place deterministic concurrent turn
+	// recordings in that window. Nil in production.
+	beforeFoldTranscriptCommit func()
+
+	// afterFoldSupersessionCheck observes a fold flush immediately after it
+	// has evaluated whether a newer publication supersedes it and before it
+	// runs its last-write-wins side effects. Tests use it only to place a
+	// deterministic newer publication in that window. Nil in production.
+	afterFoldSupersessionCheck func()
 
 	// worktreeGitRunner replaces only the Git subprocess boundary used by the
 	// native worktree lifecycle. Package-agent tests use it to replay the real

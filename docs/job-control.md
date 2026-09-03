@@ -49,7 +49,9 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Shell commands run in `mode="foreground"` by default and return inline output for quick commands. Set `mode="background"` to launch-and-return as a session-owned job; foreground commands that exceed the session-default wait are promoted to durable background jobs and return a `job_id`. Set `mode="detached"` only to immediately disown a process that does not need Evener job visibility, output, notification, or stop control; it returns only a PID.
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
-- Use `delegate` to start a new delegate conversation. It returns `dlg_...`,
+- Use `delegate` to start a new delegate conversation: `prompt` is the brief
+  (the only input the delegate receives) and `task_list` seeds its task list,
+  one item per step. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
@@ -154,7 +156,7 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 6. **No model-facing ack.** Retention is automatic and policy-based.
 7. **No model-facing kill.** `job_stop` is the single model-facing stop primitive; forceful cleanup is an implementation detail when needed.
 8. **Provider-free restart.** Shell runtime loss is reconciled from shell evidence; stable delegates are folded/rearmed without constructing a Session or calling a provider.
-9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only when it was granted a non-zero `delegation_allowance`; a leaf delegate (allowance 0, the default) cannot delegate, so an observer sidecar started without an allowance still must not delegate. See the delegation-allowance amendment below.
+9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only while its `delegation_allowance` is non-zero. By default a delegate is granted one level below its creator, so it can delegate in turn until the chain reaches a leaf; a creator that passes `delegation_allowance: 0` makes a leaf, and an observer sidecar created that way must not delegate. See the delegation-allowance amendment below.
 10. **Delegate creation and follow-up are separate.** `delegate` starts a new delegate conversation; `delegate_send` follows up on an existing `delegate_id`.
 11. **Watches are watcher-owned.** `job_watch` defines conditions over a source's output/events/progress; when a condition is met it delivers a bounded notification/frame to the watcher that created the watch.
 12. **Observers are composed, not special.** An observer is a delegate granted `watch_parent:true`, a child-created `job_watch(source="parent")`, and an observer result through `communicate(end_turn=true)`.
@@ -162,13 +164,13 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 
 ### Delegation allowance (recursive delegation)
 
-`delegate` accepts an optional `delegation_allowance` integer (default 0). The value follows the strict-zero rule used across the job-control surface — absent or 0 means a leaf delegate that cannot itself delegate, exactly today's behavior; there is no `minimum`/`maximum`/`default` keyword on the schema property.
+`delegate` accepts an optional `delegation_allowance` integer. Absent means the default grant: one level below the creator's own allowance (`max(0, own-1)`), so a delegate can delegate in turn until the chain reaches a leaf. An explicit `0` means a leaf delegate that cannot itself delegate; absent and `0` are therefore distinct, unlike the strict-zero rule used elsewhere on the job-control surface. There is no `minimum`/`maximum`/`default` keyword on the schema property.
 
 **The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance is persisted in the delegate restore descriptor, so it survives restore. The current allowance is also reported on every `job_list` result (see `job_list`), so an agent can read its budget without re-reading its system prompt.
 
 **Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`, agent-type listings that require delegation are filtered out of its prompt, and its system prompt shows the leaf limits block. `job_watch` is present at every allowance — a session that can run jobs can always watch its own jobs — with each cross-session source authorizing itself (`parent` requires the `watch_parent:true` grant; a concrete job id must be owned by the watching session). At allowance > 0 the child receives `delegate` (added to the default surface for an untyped child; a typed agent gets it only if its tool list names it), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
 
-**Double opt-in (dark by default).** A root session's allowance equals `MaxSubagentDepth` (default 1). Under defaults the root's allowance is 1, so the root may grant only 0 — every delegate is a leaf and recursion never happens. Enabling recursion requires **both** raising `MaxSubagentDepth` in config **and** passing a non-zero `delegation_allowance` per create. Neither alone unlocks it; recursion stays dark until an operator deliberately does both.
+**Depth is the operator's knob.** A root session's allowance equals `MaxSubagentDepth` (default 2). Under defaults the root's allowance is 2, so its delegates receive allowance 1 by default and may delegate once more; their delegates are leaves. An operator caps the whole tree by lowering `MaxSubagentDepth` (1 makes every delegate a leaf), and a creator caps one branch by passing a smaller `delegation_allowance` or `0`.
 
 ## Job identity and visibility
 
@@ -360,7 +362,7 @@ Canonical background shape:
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high"
@@ -371,7 +373,11 @@ Full target shape (no `max_wait_ms`):
 
 ```json
 {
-  "task": "Investigate the failing parser test and report findings.",
+  "prompt": "Investigate the failing parser test and report findings.",
+  "task_list": [
+    {"title": "Reproduce", "prompt": "Run the parser test suite and capture the failing case verbatim."},
+    {"title": "Report", "prompt": "Report the failing input, the stack, and the smallest change that would fix it.", "type": "research"}
+  ],
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high",
@@ -845,8 +851,9 @@ Canonical behavior:
   `offset_bytes` selects a fixed 16 KiB raw page in lifetime coordinates, and
   `output_match` plus optional `context_lines` performs a bounded RE2 search of
   retained complete lines. Returned continuations advance either operation.
-- An explicit `format` cannot be combined with paging or search. `range` and
-  `expand_turn` are session-only. Search is retrospective evidence; use
+- An explicit job `format` other than `markdown` is rejected. Explicit
+  `format:"markdown"` is a neutral no-op in the default, paging, and search
+  views. `range` and `expand_turn` are session-only. Search is retrospective evidence; use
   `job_watch(output_match=...)` when a future match should wake the owner.
 - Reads are non-consuming and non-acknowledging.
 - The markdown envelope carries `transcript_ref`, `format`, `content_type`, the
@@ -1412,9 +1419,10 @@ a released goroutine as proof of terminal persistence.
 
 ## Nested jobs
 
-Delegates may start shell jobs. They may also create stable child delegates when
-granted a non-zero `delegation_allowance`; allowance zero remains the default,
-so observer sidecars are leaves unless explicitly granted otherwise. Stable
+Delegates may start shell jobs. They may also create stable child delegates while
+their `delegation_allowance` is non-zero, which is the default one level below the
+creator; a creator passes `delegation_allowance: 0` to make a leaf, such as an
+observer sidecar that must not delegate. Stable
 delegate lineage stays in the delegate controller. Shell lineage is typed:
 `parent_job_id` links shell-to-shell work and `parent_delegate_id` names the
 stable delegate that launched a shell.
@@ -1565,9 +1573,9 @@ Tool descriptions and prompts should warn against:
 
 V1 does not define multi-job barriers, any-of/all-of watches, or named job groups. Agents coordinate multiple background jobs through individual terminal notifications and `job_list` recovery. Fan-in/barrier coordination is the likely first future coordination extension if heavy parallel workflows need less manual state tracking, but it remains out of v1 until that surface is deliberately designed.
 
-Nested delegation is allowance-gated: a delegate may create a child only with a
-granted non-zero `delegation_allowance`, and recursion requires both a raised
-`MaxSubagentDepth` and a per-create allowance. Shell jobs are not messageable;
+Nested delegation is allowance-gated: a delegate may create a child only while
+its `delegation_allowance` is non-zero. The default grant is one level below the
+creator, and `MaxSubagentDepth` bounds the whole tree. Shell jobs are not messageable;
 long-running REPL stdin is outside this contract.
 
 ## Capacity and discovery requirements
@@ -1618,9 +1626,9 @@ background unload protocol.
 ## Shipped recursion and owner attention
 
 The tree counter, `include_descendants`, owner-scoped attention, and recursive
-stable stop are shipped. Recursion beyond direct delegates remains behind the
-double opt-in: raise `MaxSubagentDepth` and grant a non-zero
-`delegation_allowance` on the parent delegate. Neither setting alone unlocks it.
+stable stop are shipped. Recursion beyond direct delegates is on by default
+within `MaxSubagentDepth`: each delegate is granted one level below its creator
+unless the creator passes a smaller `delegation_allowance` or `0`.
 
 A session renders only attention for work it owns. Parent-driven child turns
 preserve that rule while retaining ancestor inspection through

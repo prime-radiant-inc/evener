@@ -546,7 +546,7 @@ func TestReadTranscriptJobPageAndSearchValidation(t *testing.T) {
 		{name: "outline format plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "outline", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
 		{name: "jsonl format plus search", args: map[string]any{"transcript_ref": "job:" + jobID, "format": "jsonl", "output_match": "line"}, want: []string{"invalid_request", "format", "output_match"}},
 		{name: "range", args: map[string]any{"transcript_ref": "job:" + jobID, "range": "1-2"}, want: []string{"invalid_request", "range", "session"}},
-		{name: "expand turn", args: map[string]any{"transcript_ref": "job:" + jobID, "expand_turn": float64(0)}, want: []string{"invalid_request", "expand_turn", "session"}},
+		{name: "expand turn", args: map[string]any{"transcript_ref": "job:" + jobID, "expand_turn": float64(1)}, want: []string{"invalid_request", "expand_turn", "session"}},
 		{name: "invalid re2", args: map[string]any{"transcript_ref": "job:" + jobID, "output_match": "["}, want: []string{"invalid_request", "output_match"}},
 		{name: "beyond eof", args: map[string]any{"transcript_ref": "job:" + jobID, "offset_bytes": float64(6)}, want: []string{"invalid_request", "valid byte interval is [0,5]", "job_status=running"}},
 		{name: "empty job ref", args: map[string]any{"transcript_ref": "job:"}, want: []string{"invalid_request", "job:<job_id>"}},

@@ -1032,7 +1032,7 @@ test("delegate tool rows keep the human description as intent and suppress the t
       item={item({
         toolName: "delegate",
         description: "Testing delegation",
-        argumentsJSON: JSON.stringify({ task: "Run the linter" }),
+        argumentsJSON: JSON.stringify({ prompt: "Run the linter" }),
       })}
       turn={turn}
       live={false}
@@ -1051,7 +1051,7 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
         item={item({
           id: "unicode_delegate",
           toolName: "delegate",
-          argumentsJSON: JSON.stringify({ task: emojiTask }),
+          argumentsJSON: JSON.stringify({ prompt: emojiTask }),
           output: JSON.stringify({ status: "completed" }),
         })}
         turn={turn}
@@ -1061,7 +1061,7 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
         item={item({
           id: "ascii_boundary_delegate",
           toolName: "delegate",
-          argumentsJSON: JSON.stringify({ task: exactAsciiTask }),
+          argumentsJSON: JSON.stringify({ prompt: exactAsciiTask }),
           output: JSON.stringify({ status: "completed" }),
         })}
         turn={turn}
@@ -1083,7 +1083,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
           id: "stable_delegate",
           callId: "call_stable_delegate",
           toolName: "delegate",
-          argumentsJSON: JSON.stringify({ task: "stable" }),
+          argumentsJSON: JSON.stringify({ prompt: "stable" }),
           output: JSON.stringify({
             delegate_id: "dlg_stable",
             status: "running",
@@ -1098,7 +1098,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
           id: "activation_only_delegate",
           callId: "call_activation_only_delegate",
           toolName: "delegate",
-          argumentsJSON: JSON.stringify({ task: "legacy activation" }),
+          argumentsJSON: JSON.stringify({ prompt: "legacy activation" }),
           output: JSON.stringify({ job_id: "job_legacy", status: "running", transcript_ref: "job:job_legacy" }),
         })}
         turn={turn}
@@ -1140,13 +1140,13 @@ test("blank and non-string delegate tasks keep status without inventing an inten
   const blank = item({
     id: "blank_delegate",
     toolName: "delegate",
-    argumentsJSON: JSON.stringify({ task: " \n\t " }),
+    argumentsJSON: JSON.stringify({ prompt: " \n\t " }),
     output: JSON.stringify({ status: "completed" }),
   });
   const nonString = item({
     id: "non_string_delegate",
     toolName: "delegate",
-    argumentsJSON: JSON.stringify({ task: ["not", "text"] }),
+    argumentsJSON: JSON.stringify({ prompt: ["not", "text"] }),
     output: JSON.stringify({ status: "completed" }),
   });
   render(
@@ -1167,7 +1167,7 @@ test("delegate tool rows use a single top-level disclosure trigger owned by Tool
       item={item({
         toolName: "delegate",
         description: "Testing disclosure boundaries",
-        argumentsJSON: JSON.stringify({ task: "Run tests" }),
+        argumentsJSON: JSON.stringify({ prompt: "Run tests" }),
       })}
       turn={turn}
       live={false}
@@ -1185,7 +1185,7 @@ test("a live, unsettled delegate call renders a running/working status dot (neve
       item={item({
         toolName: "delegate",
         description: "Delegated task is still live",
-        argumentsJSON: JSON.stringify({ task: "Keep going" }),
+        argumentsJSON: JSON.stringify({ prompt: "Keep going" }),
       })}
       turn={turn}
       live={true}
@@ -1322,4 +1322,19 @@ test("defaults apply at each level; an explicit summary choice persists across l
     </TranscriptRenderProvider>,
   );
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+});
+
+test("delegate rows from transcripts recorded before the prompt rename still show the brief", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        id: "legacy_delegate",
+        toolName: "delegate",
+        argumentsJSON: JSON.stringify({ task: "Legacy brief from an older transcript" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-intent").textContent).toContain("Legacy brief");
 });

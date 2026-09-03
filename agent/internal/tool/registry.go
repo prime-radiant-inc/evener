@@ -359,6 +359,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// NormalizeArgs optionally canonicalizes arguments immediately before schema
+	// validation. It must preserve all non-normalized caller values.
+	NormalizeArgs func(map[string]any) (map[string]any, error)
 	// PreValidate optionally rejects a tool-specific argument shape before the
 	// generic JSON schema validator renders its diagnostic.
 	PreValidate func(args map[string]any) error
@@ -684,6 +687,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	// before schema validation, so both forms are validated against the same schema.
 	if name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
+		if err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+		args = normalized
+	}
+	if t.NormalizeArgs != nil {
+		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
 			return truncateResult(name, callID, err.Error(), true, t.Limit)
 		}

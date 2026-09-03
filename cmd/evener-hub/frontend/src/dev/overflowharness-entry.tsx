@@ -153,7 +153,7 @@ const snapshot: ThreadReadResponse = {
             callId: "call_1",
             status: "completed",
             durationMs: 1500,
-            argumentsJson: JSON.stringify({ task: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
+            argumentsJson: JSON.stringify({ prompt: TASK, mode: "foreground_timeout", delegateId: "dlg_1" }),
             output: JSON.stringify({ delegate_id: "dlg_1", status: "running", reason: CARD_LONG_TOKEN }),
           },
           {

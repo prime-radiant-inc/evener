@@ -174,7 +174,10 @@ func SummarizeToolInDir(toolName, argsJSON, cwd string) (desc, detail string) {
 		return desc, detail
 
 	case "delegate":
-		task := str("task")
+		task := str("prompt")
+		if task == "" {
+			task = str("task") // brief key in transcripts recorded before the rename
+		}
 		firstLine := task
 		if before, _, ok := strings.Cut(task, "\n"); ok {
 			firstLine = before

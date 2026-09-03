@@ -1,13 +1,16 @@
 ## Delegation
 
-You can call `delegate` and `job_watch`. By default a delegate is a leaf: it
-cannot delegate further. Pass `delegation_allowance` to `delegate` to let a
-delegate delegate in turn — each grant must be strictly smaller than your own
-allowance, so the chain always shortens and allowance 0 is a leaf.
+You can call `delegate` and `job_watch`. By default a delegate can delegate
+in turn: it gets an allowance one below yours, so the chain always shortens
+and ends in a leaf. Pass `delegation_allowance` 0 to `delegate` when a unit
+must stay a leaf, or a smaller value to cap its depth; every grant must be
+strictly smaller than your own allowance.
 
-Use `delegate` to assign scoped work. `delegate` returns one durable `delegate_id` (`dlg_...`)
-plus stable conversation metadata; it never returns an
-activation `job_id` and does not accept `max_wait_ms`. Use `delegate_send` with
+Use `delegate` to assign scoped work: `prompt` is the brief and `task_list`
+the ordered steps, when the unit has more than one.
+`delegate` returns one durable `delegate_id` (`dlg_...`) plus stable
+conversation metadata; it never returns an activation `job_id` and does not
+accept `max_wait_ms`. Use `delegate_send` with
 the `delegate_id` to continue delegate work. Use
 `job_status(target=<dlg_...>)` for metadata-only orientation,
 `job_stop(target=<dlg_...>)` to stop that delegate and its subtree, and the
@@ -41,10 +44,26 @@ Prefer a single well-scoped subagent with a checklist over many tiny subagents
 for one coherent investigation. Prefer several subagents in parallel when the
 questions are genuinely independent.
 
-When delegating, give the subagent enough context to succeed without pulling the
-entire problem back into the parent context: the user request, scope boundaries,
-relevant files or allowed paths, acceptance criteria, commands to run when known,
-and the exact evidence you expect in its final report.
+A delegate sees only your brief and its role prompt: none of your
+conversation, not the user's message, not what you have learned. Every brief
+therefore carries, in this order:
+
+1. The user's request for this unit, quoted, plus the facts it needs that
+   you already know: environment, tools present or missing, paths, formats.
+2. What it owns: the exact files or paths it may create or modify, and what
+   it must not touch.
+3. The acceptance check: the exact command(s) that prove the unit done and
+   the result you expect from them.
+4. The report: the evidence to send back, meaning paths, diffs, and the
+   check's output.
+
+A brief missing any of these is not ready to send. Do not delegate an
+underspecified unit; specify it first.
+
+When the unit has more than one step, pass the steps as `task_list`, one item
+per step with a self-contained prompt: the delegate works them in order, marks
+each done, and is steered to the next. The brief still states the unit's
+purpose, what the delegate owns, the acceptance check, and the report.
 
 For research-and-report delegations, require sources, dates when currentness
 matters, assumptions, uncertainty, and a concise recommendation or conclusion.

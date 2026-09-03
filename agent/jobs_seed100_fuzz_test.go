@@ -246,7 +246,7 @@ func seed100JobTools(t *testing.T, text string) {
 	_, _, _ = (&Session{}).clearDescendantReceiverWatchByID("x")
 	_ = (&Session{}).liveDescendantSessions()
 
-	for _, args := range []map[string]any{{}, {"task": "x", "tasks": []any{"y"}}, {"tasks": "bad"}, {"tasks": []any{1}}} {
+	for _, args := range []map[string]any{{}, {"prompt": "x", "tasks": []any{"y"}}, {"tasks": "bad"}, {"tasks": []any{1}}} {
 		_, _ = decodeDelegateArgs(args)
 	}
 

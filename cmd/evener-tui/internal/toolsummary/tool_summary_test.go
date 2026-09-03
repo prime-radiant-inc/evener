@@ -175,7 +175,10 @@ func TestSummarizeTool_WebSearch(t *testing.T) {
 }
 
 func TestSummarizeTool_Delegate(t *testing.T) {
-	desc, _ := SummarizeTool("delegate", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+	if legacy, _ := SummarizeTool("delegate", `{"task":"Legacy brief from an older transcript"}`); !strings.Contains(legacy, "Legacy brief") {
+		t.Errorf("legacy task key not rendered: %q", legacy)
+	}
+	desc, _ := SummarizeTool("delegate", `{"prompt":"Explore the codebase and find all usages of the Foo interface"}`)
 	if !strings.Contains(desc, "Explore") {
 		t.Errorf("got %q", desc)
 	}

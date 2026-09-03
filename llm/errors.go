@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -105,16 +106,20 @@ func (e *ConfigurationError) Raw() any { return nil }
 func (e *ConfigurationError) Unwrap() error { return e.Cause }
 
 type httpBaseError struct {
-	provider    string
-	protocol    string
-	hint        string
-	statusCode  int
-	message     string
-	errorCode   string
-	retryable   bool
-	retryAfter  *time.Duration
-	rawResponse any
-	cause       error
+	provider string
+	protocol string
+	hint     string
+	// rejectedParam is the request parameter a provider rejection named, from
+	// the structured error.param or a spec §12 message pattern: "temperature"
+	// for a rejected temperature, "" when the rejection named nothing.
+	rejectedParam string
+	statusCode    int
+	message       string
+	errorCode     string
+	retryable     bool
+	retryAfter    *time.Duration
+	rawResponse   any
+	cause         error
 }
 
 // Error returns the error message in the form "<provider> error (status=<code>): <message>",
@@ -158,6 +163,28 @@ func (e *httpBaseError) StatusCode() int { return e.statusCode }
 // ErrorCode returns the provider-specific error code extracted from the response
 // body, or the empty string if none was found.
 func (e *httpBaseError) ErrorCode() string { return e.errorCode }
+
+// RejectedParameter returns the request parameter a rejected-request error
+// named, in the provider's own spelling ("temperature",
+// "max_completion_tokens", …), or "" when the error named no parameter or is
+// not a typed provider rejection. It reads the structured error.param and the
+// message shapes ClassifyHTTPError recognizes, so callers never re-match
+// provider prose.
+func (e *httpBaseError) RejectedParameter() string { return e.rejectedParam }
+
+// RejectedParameter returns the request parameter a rejected-request error
+// named, in the provider's own spelling, or "" when the error named no
+// parameter or is not a typed provider rejection. It reads the structured
+// error.param and the message shapes ClassifyHTTPError and
+// ErrorFromHTTPStatus recognize, so callers never re-match provider prose
+// (the namer's temperature retry is the motivating caller).
+func RejectedParameter(err error) string {
+	var p interface{ RejectedParameter() string }
+	if errors.As(err, &p) {
+		return p.RejectedParameter()
+	}
+	return ""
+}
 
 // Retryable reports whether retrying the request might succeed.
 func (e *httpBaseError) Retryable() bool { return e.retryable }
@@ -358,13 +385,15 @@ func RewriteErrorProvider(err error, provider string) error {
 // responses are further refined by message via classifyByMessage. Unrecognized
 // status codes yield a retryable UnknownHTTPError.
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {
+	code := extractErrorCode(raw)
 	base := httpBaseError{
-		provider:    strings.TrimSpace(provider),
-		statusCode:  statusCode,
-		message:     message,
-		errorCode:   extractErrorCode(raw),
-		retryAfter:  retryAfter,
-		rawResponse: raw,
+		provider:      strings.TrimSpace(provider),
+		statusCode:    statusCode,
+		message:       message,
+		rejectedParam: rejectedParameter(raw, message, code),
+		errorCode:     code,
+		retryAfter:    retryAfter,
+		rawResponse:   raw,
 	}
 	return errorFromHTTPStatus(base)
 }

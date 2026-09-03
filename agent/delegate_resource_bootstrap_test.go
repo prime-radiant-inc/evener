@@ -37,7 +37,7 @@ func TestDelegateResourceBootstrap_ChildInheritsControllerAndStableOwnerID(t *te
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:                "report the result",
-		DelegationAllowance: 0,
+		DelegationAllowance: new(0),
 	})
 	if result.Err != nil {
 		t.Fatalf("createDelegate: %v", result.Err)

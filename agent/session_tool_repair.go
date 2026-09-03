@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -86,6 +87,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = normalized
 	}
+	var retainedReadChanges []repair.Change
+	if t.Definition.Name == "read_transcript" {
+		args, retainedReadChanges = normalizeRetainedReadArgs(args)
+	}
 
 	// The default communicate envelope documents message/data/artifacts as
 	// always-present with empty defaults (issue #627), but the schema demands
@@ -121,7 +126,36 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
+		finalErrorArgs := args
+		// Scalar repair can turn provider-materialized strings such as
+		// expand_turn="0" into their neutral numeric forms. Normalize those
+		// newly typed defaults before the final schema gate and dispatch.
+		if t.Definition.Name == "read_transcript" {
+			var normalizedChanges []repair.Change
+			healed, normalizedChanges = normalizeRetainedReadArgs(healed)
+			retainedReadChanges = append(retainedReadChanges, normalizedChanges...)
+			if len(normalizedChanges) > 0 {
+				// finalErrorArgs starts from the first-pass normalized form, so
+				// only carry over fields deleted by second-pass retained-read
+				// normalization. Generic repair coercions stay unapplied.
+				finalErrorArgs = make(map[string]any, len(args))
+				maps.Copy(finalErrorArgs, args)
+				for _, change := range normalizedChanges {
+					delete(finalErrorArgs, change.Field)
+				}
+			}
+		}
 		if err2 := t.Schema.Validate(healed); err2 != nil {
+			// Retained-read normalization was already applied to args. Preserve
+			// that real, applied change in telemetry even when another field
+			// remains invalid; failed generic repairs and envelope fills remain
+			// deliberately unrecorded.
+			if len(retainedReadChanges) > 0 {
+				res.Changes = append(res.Changes, retainedReadChanges...)
+				if b, marshalErr := json.Marshal(finalErrorArgs); marshalErr == nil {
+					res.Call.Arguments = b
+				}
+			}
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
 			return res
 		}
@@ -133,6 +167,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	} else if len(fillChanges) > 0 {
 		res.Changes = append(res.Changes, fillChanges...)
 	}
+	res.Changes = append(res.Changes, retainedReadChanges...)
 
 	if len(res.Changes) > 0 {
 		if b, err := json.Marshal(args); err == nil {
@@ -140,6 +175,139 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 	return res
+}
+
+// normalizeRetainedReadArgs removes only the semantically empty retained-output
+// options that providers commonly materialize. It runs before the registry
+// schema gate for repair telemetry and again at the execution boundary so
+// direct registry calls and post-hook updatedInput use the default view too.
+// Artifact format is deliberately never removed: every explicit artifact
+// format must remain available for the handler to reject.
+func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Change) {
+	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	jobRef := strings.HasPrefix(ref, "job:")
+	artifactRef := strings.HasPrefix(ref, "artifact:")
+	if !jobRef && !artifactRef {
+		return args, nil
+	}
+	normalized := make(map[string]any, len(args))
+	maps.Copy(normalized, args)
+	changes := make([]repair.Change, 0, 5)
+	remove := func(field string) {
+		delete(normalized, field)
+		changes = append(changes, repair.Change{Kind: repair.ChangeNormalizeDefault, Field: field, Detail: "removed neutral default"})
+	}
+	if value, present := normalized["range"]; present && (value == nil || value == "") {
+		remove("range")
+	}
+	if value, present := normalized["expand_turn"]; present && isNeutralRetainedInteger(value) {
+		remove("expand_turn")
+	}
+	if value, present := normalized["output_match"]; present && (value == nil || value == "") {
+		remove("output_match")
+	}
+	if value, present := normalized["context_lines"]; present && (value == nil || (isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "")) {
+		remove("context_lines")
+	}
+	if jobRef {
+		if value, present := normalized["format"]; present && isNeutralJobFormat(value) {
+			remove("format")
+		}
+	}
+	return normalized, changes
+}
+
+// normalizeRetainedReadArgsForValidation extends the typed retained-default
+// normalization just enough for provider stringified zero defaults to pass the
+// registry schema gate. It is used only by read_transcript's registered-tool
+// pre-validation hook; preparation retains scalar coercion and its telemetry.
+func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any, error) {
+	normalized, _ := normalizeRetainedReadArgs(args)
+	ref := strings.TrimSpace(stringArg(normalized, "transcript_ref"))
+	if !strings.HasPrefix(ref, "job:") && !strings.HasPrefix(ref, "artifact:") {
+		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+			if value, present := normalized[field]; present && value == nil {
+				return nil, fmt.Errorf("invalid_request: %s cannot be null for session transcript refs", field)
+			}
+		}
+		return normalized, nil
+	}
+	copyNeeded := true
+	copyForWrite := func() {
+		if !copyNeeded {
+			return
+		}
+		copyNeeded = false
+		copyArgs := make(map[string]any, len(normalized))
+		maps.Copy(copyArgs, normalized)
+		normalized = copyArgs
+	}
+	remove := func(field string) {
+		copyForWrite()
+		delete(normalized, field)
+	}
+	if value, present := normalized["expand_turn"]; present && isNeutralRetainedStringInteger(value) {
+		remove("expand_turn")
+	}
+	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) {
+		if stringArg(normalized, "output_match") == "" {
+			remove("context_lines")
+		} else {
+			copyForWrite()
+			normalized["context_lines"] = float64(0)
+		}
+	}
+	return normalized, nil
+}
+
+func isNeutralRetainedStringInteger(value any) bool {
+	s, ok := value.(string)
+	if !ok {
+		return false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return err == nil && n == 0
+}
+
+func isNeutralRetainedInteger(value any) bool {
+	switch value := value.(type) {
+	case nil:
+		return true
+	case float64:
+		return value == 0
+	case float32:
+		return value == 0
+	case int:
+		return value == 0
+	case int8:
+		return value == 0
+	case int16:
+		return value == 0
+	case int32:
+		return value == 0
+	case int64:
+		return value == 0
+	case uint:
+		return value == 0
+	case uint8:
+		return value == 0
+	case uint16:
+		return value == 0
+	case uint32:
+		return value == 0
+	case uint64:
+		return value == 0
+	default:
+		return false
+	}
+}
+
+func isNeutralJobFormat(value any) bool {
+	if value == nil {
+		return true
+	}
+	format, ok := value.(string)
+	return ok && (format == "" || strings.TrimSpace(format) == formatMarkdown)
 }
 
 // unsupportedDelegateWaitOption prevents argument repair from turning an

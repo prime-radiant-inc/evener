@@ -207,3 +207,89 @@ func TestClassifyHTTPErrorKeepsProviderMessageVerbatim(t *testing.T) {
 		t.Fatal("plain errors carry no protocol or hint")
 	}
 }
+
+// TestRejectedParameter pins the exported accessor callers use instead of
+// re-matching provider prose: the structured error.param code path, every
+// message pattern the classifier recognizes, and the no-parameter cases.
+func TestRejectedParameter(t *testing.T) {
+	structured := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter","type":"invalid_request_error","param":"temperature","code":"unknown_parameter"}}`),
+		responsesRes)
+	if got := RejectedParameter(structured); got != "temperature" {
+		t.Errorf("structured param: RejectedParameter = %q, want temperature", got)
+	}
+
+	msgs := []struct {
+		msg  string
+		want string
+	}{
+		{"Unrecognized request argument supplied: temperature", "temperature"},
+		{"Unknown parameter: 'temperature'", "temperature"},
+		{"Unsupported parameter: 'temperature' is not supported with this model.", "temperature"},
+		{"Invalid value: unknown field temperature", "temperature"},
+		{"Unsupported parameter: 'top_p' is not supported with this model.", "top_p"},
+		{"temperature value out of range", ""},
+		{"model not found", ""},
+	}
+	for _, tc := range msgs {
+		err := ErrorFromHTTPStatus("openai", 400, tc.msg, nil, nil)
+		if got := RejectedParameter(err); got != tc.want {
+			t.Errorf("RejectedParameter(%q) = %q, want %q", tc.msg, got, tc.want)
+		}
+	}
+
+	// Non-provider errors carry no parameter.
+	if got := RejectedParameter(errors.New("plain")); got != "" {
+		t.Errorf("plain error: RejectedParameter = %q, want \"\"", got)
+	}
+	// A rejection-shaped message on a non-400 status still names its
+	// parameter — the accessor reports the fact; callers gate on Kind.
+	quota := ErrorFromHTTPStatus("openai", 429, "Unsupported parameter: 'temperature'", nil, nil)
+	if got := RejectedParameter(quota); got != "temperature" {
+		t.Errorf("non-400 status: RejectedParameter = %q, want temperature (callers gate on Kind)", got)
+	}
+
+	// ErrorFromHTTPStatus reads a structured error.param from raw, not only
+	// message patterns — but only when the error is actually a rejection: here
+	// the code vouches (round-7: a param alone is not a rejection).
+	rawStructured := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature", "code": "unknown_parameter"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported", rawStructured, nil); RejectedParameter(err) != "temperature" {
+		t.Error("ErrorFromHTTPStatus must extract structured error.param from raw for a rejection code")
+	}
+	// A rejection-shaped message vouches for the structured param too.
+	rawMsgShaped := map[string]any{"error": map[string]any{"message": "Unsupported parameter: 'top_p'", "param": "temperature"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported parameter: 'top_p'", rawMsgShaped, nil); RejectedParameter(err) != "temperature" {
+		t.Error("structured error.param must take precedence over the message pattern when the message is a rejection")
+	}
+	// A param on a non-rejection error is a pointer at the offending value,
+	// not a rejection: "Invalid value for 'temperature': must be between 0
+	// and 2" with param=temperature must NOT read as rejected (round-7).
+	rawValue := map[string]any{"error": map[string]any{"message": "Invalid value for 'temperature': must be between 0 and 2.", "type": "invalid_request_error", "param": "temperature", "code": "invalid_value"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Invalid value for 'temperature': must be between 0 and 2.", rawValue, nil); RejectedParameter(err) != "" {
+		t.Error("an invalid-value error's error.param must not read as a rejection")
+	}
+	// The same shape through the classifier.
+	valueClassified := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Invalid value for 'temperature': must be between 0 and 2.","type":"invalid_request_error","param":"temperature","code":"invalid_value"}}`),
+		responsesRes)
+	if got := RejectedParameter(valueClassified); got != "" {
+		t.Errorf("classifier: an invalid-value error must not carry a rejected parameter: got %q", got)
+	}
+	// The classifier's structured code path falls back to the message when
+	// error.param is absent (JSON null, as OpenAI sends).
+	classified := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.","type":"invalid_request_error","param":null,"code":"unsupported_parameter"}}`),
+		responsesRes)
+	if got := RejectedParameter(classified); got != "temperature" {
+		t.Errorf("classifier structured path with null param must fall back to the message: got %q", got)
+	}
+
+	// Non-400/422 statuses classify early but keep the parameter: the accessor
+	// covers every construction path (round-6 Low on #835).
+	quotaClassified := ClassifyHTTPError("responses.create", 429, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.","type":"invalid_request_error","param":null,"code":"rate_limit_exceeded"}}`),
+		responsesRes)
+	if got := RejectedParameter(quotaClassified); got != "temperature" {
+		t.Errorf("429 through ClassifyHTTPError must keep the rejected parameter: got %q", got)
+	}
+}

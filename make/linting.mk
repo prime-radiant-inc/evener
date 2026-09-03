@@ -134,8 +134,12 @@ lint-cache-clean:
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain.
 ## fails-when: Any tracked .go file is not gofmt-clean.
+# Runs the active toolchain's own gofmt rather than whatever gofmt is on PATH:
+# go.mod's `go` directive (with GOTOOLCHAIN=auto) makes `go` switch to a newer
+# toolchain, but a distro gofmt binary never switches, so PATH's gofmt can lag
+# the compiler and disagree with it about formatting.
 lint-gofmt:
-	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
+	$(call run_quiet_lint,files="$$(git ls-files -z -- '*.go' | xargs -0 "$$(go env GOROOT)/bin/gofmt" -l)"; status=$$?; if [ "$$status" -ne 0 ]; then if [ -n "$$files" ]; then printf '%s\n' "$$files"; fi; exit "$$status"; fi; if [ -n "$$files" ]; then printf '%s\n' "$$files"; exit 1; fi)
 
 # lint-generated fails if any committed generated output is stale: the appwire
 # catalog or a make/*.mk annotation changed without the outputs being

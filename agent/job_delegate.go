@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 )
 
 const (
@@ -29,12 +30,13 @@ type delegateArgs struct {
 	AgentType           string
 	Model               string
 	ReasoningEffort     string
-	DelegationAllowance int
+	DelegationAllowance *int
 	WatchParent         bool
 	Isolation           string
 	Sandbox             string
 	SandboxNet          *bool
 	ResultSchema        map[string]any
+	TaskList            []taskpkg.TaskTemplate
 }
 
 type delegateWorktreeReport struct {
@@ -160,6 +162,24 @@ func validGrantRange(own int) string {
 func validateDelegateGrant(requested, own int) (bool, string) {
 	return requested < own, validGrantRange(own)
 }
+
+// defaultDelegateGrant is the allowance a delegate receives when its creator
+// names none: one level below the creator's own, so delegates delegate in
+// turn by default and the chain still shortens to a leaf.
+func defaultDelegateGrant(own int) int {
+	return max(0, own-1)
+}
+
+// grantedAllowance is the delegate's resolved allowance; createDelegate fills
+// in the default before anything reads it.
+func (a delegateArgs) grantedAllowance() int {
+	if a.DelegationAllowance == nil {
+		return 0
+	}
+	return *a.DelegationAllowance
+}
+
+func (a delegateArgs) grantsDelegation() bool { return a.grantedAllowance() > 0 }
 
 func delegateStartFailed(err error) delegateResult {
 	return delegateResult{

@@ -223,9 +223,12 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 		if got := s.PinnedNote(); got != instructions {
 			t.Fatalf("pinned note=%q, want %q", got, instructions)
 		}
-		s.clearPinnedNote()
+		_, gen := s.pinnedNoteSnapshot()
+		s.mu.Lock()
+		s.claimPinnedNoteLocked(gen)
+		s.mu.Unlock()
 		if got := s.PinnedNote(); got != "" {
-			t.Fatalf("clearPinnedNote left %q", got)
+			t.Fatalf("claimPinnedNoteLocked left %q", got)
 		}
 
 		if err := s.requestForceCompact(instructions); err != nil {

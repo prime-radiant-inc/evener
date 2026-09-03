@@ -249,7 +249,7 @@ func TestDelegateCallResponseReportsSelectedAgentCapabilities(t *testing.T) {
 		ID:   "delegate-capability-response",
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
-			"task":"TASK_SENTINEL",
+			"prompt":"TASK_SENTINEL",
 			"agent_type":"explorer"
 		}`),
 	})

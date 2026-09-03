@@ -101,6 +101,44 @@ func TestRepairArgs_Coerce_NumberIsFloat64(t *testing.T) {
 	}
 }
 
+func TestRepairArgs_Coerce_NullableIntegerFromString(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"expand_turn": map[string]any{"type": []any{"integer", "null"}},
+		},
+	}
+	out, changes := RepairArgs(params, map[string]any{"expand_turn": "1"})
+	if got, ok := out["expand_turn"].(float64); !ok || got != 1 {
+		t.Fatalf("expand_turn = %#v, want float64(1)", out["expand_turn"])
+	}
+	if len(changes) != 1 || changes[0].Kind != ChangeCoerceType || changes[0].Field != "expand_turn" {
+		t.Fatalf("changes = %+v, want coercion of expand_turn", changes)
+	}
+}
+
+func TestNullableUnionNonNullType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   any
+		want string
+	}{
+		{name: "any nullable integer", in: []any{"integer", "null"}, want: "integer"},
+		{name: "string nullable boolean", in: []string{"null", "boolean"}, want: "boolean"},
+		{name: "missing null", in: []any{"integer", "number"}},
+		{name: "multiple non-null members", in: []any{"integer", "number", "null"}},
+		{name: "duplicate null", in: []any{"integer", "null", "null"}},
+		{name: "malformed member", in: []any{"integer", 1}},
+		{name: "not a union", in: "integer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nullableUnionNonNullType(tc.in); got != tc.want {
+				t.Fatalf("nullableUnionNonNullType(%#v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRepairArgs_Coerce_ScalarToArray(t *testing.T) {
 	out, _ := RepairArgs(coerceParams(), map[string]any{"tags": "x"})
 	if !reflect.DeepEqual(out["tags"], []any{"x"}) {

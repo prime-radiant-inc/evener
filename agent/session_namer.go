@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 const (
@@ -63,24 +64,37 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 		return sessionNameResult{}, errors.New("session namer: model is empty")
 	}
 	maxTokens := 80
-	temp := 0.0
+	// #834: gate temperature on the resolved cheap-model row. A Bedrock-style
+	// wire id with no catalog row resolves synthesized; the protocol baseline
+	// marks temperature send-by-default, so nothing prunes it and the provider
+	// 400s — one dead request per session. Naming is deterministic decoration,
+	// so omitting the parameter on doubt costs nothing.
+	temp := sessionNamerTemperature(client, profile, model)
 	// Naming is best-effort decoration with its own short deadline. It opts out
 	// of the turn retry wall budget so a naming storm does not add load while a
 	// real turn waits on the same provider bucket.
 	namerPolicy := llm.DefaultRetryPolicy()
 	namerPolicy.RateLimitWallBudget = 0
-	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
+	opts := llm.GenerateObjectOptions{
 		Client:      client,
 		Provider:    profile.CheapProvider(),
 		Model:       model,
 		System:      new(sessionNamerSystemPrompt),
 		Prompt:      new(sessionNamerUserPrompt(source, text, currentTitle)),
-		Temperature: &temp,
+		Temperature: temp,
 		MaxTokens:   &maxTokens,
 		Sleep:       sleep,
 		RetryPolicy: &namerPolicy,
 		Schema:      sessionNameSchema(),
-	})
+	}
+	res, err := llm.GenerateObject(callCtx, opts)
+	if err != nil && temp != nil && isTemperatureUnsupported(err) {
+		// Defense in depth: a row that vouches for temperature can still be
+		// wrong (an id the catalog mis-knows). Retry exactly once with the
+		// parameter dropped rather than failing the whole naming attempt.
+		opts.Temperature = nil
+		res, err = llm.GenerateObject(callCtx, opts)
+	}
 	if err != nil {
 		return sessionNameResult{}, fmt.Errorf("session namer: %w", err)
 	}
@@ -126,6 +140,57 @@ func sessionNamerModel(profile *provider.Profile) string {
 		return model
 	}
 	return strings.TrimSpace(profile.Model())
+}
+
+// sessionNamerTemperature returns the naming call's temperature setting: a
+// pointer to 0.0 when the resolved cheap-model row vouches for the parameter,
+// nil when it does not or cannot vouch. Unknown capability must read as "do
+// not send" rather than "send": a wrong send is a provider 400 (issue #834),
+// while a wrong omit only loses a determinism hint the naming prompt's
+// low-stakes output barely uses. The voucher is registry.TemperatureSupported,
+// which requires a catalog row (a live-only or synthesized row inherits the
+// protocol's send-by-default baseline without any catalog fact) and reads the
+// protocol-keyed temperature path, so Google rows are judged on
+// generationConfig.temperature.
+func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
+	if client == nil || profile == nil || model == "" {
+		return nil
+	}
+	res, err := client.Resolve(profile.CheapProvider() + "/" + model)
+	if err != nil || !registry.TemperatureSupported(res) {
+		return nil
+	}
+	temp := 0.0
+	return &temp
+}
+
+// isTemperatureUnsupported reports whether err is a rejected-request error
+// naming the temperature parameter as the rejected one. It delegates to
+// llm.RejectedParameter, which reads the structured error.param and the
+// message shapes the classifier already recognizes — every provider phrasing
+// (Bedrock's "Unsupported parameter: 'temperature'", OpenAI's "Unrecognized
+// request argument supplied: temperature", the "unknown field temperature"
+// form, structured unknown_parameter/unsupported_parameter codes) — instead of
+// re-matching provider prose here. The comparison is against the rejected
+// protocol's own temperature path: a Google-protocol rejection names the
+// nested spelling ("generationConfig.temperature"), everything else the plain
+// one, and an error with no protocol attribution is compared against both.
+func isTemperatureUnsupported(err error) bool {
+	if llm.Kind(err) != llm.KindInvalidRequest {
+		return false
+	}
+	param := llm.RejectedParameter(err)
+	if param == "" {
+		return false
+	}
+	switch llm.ErrorProtocol(err) {
+	case registry.ProtocolGoogle:
+		return param == "generationConfig.temperature"
+	case "":
+		return param == "temperature" || param == "generationConfig.temperature"
+	default:
+		return param == "temperature"
+	}
 }
 
 func configuredSessionNamerModel(profile *provider.Profile) string {
@@ -300,7 +365,21 @@ func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 	}
 }
 
+// ungatedFoldRevision, as a publishedRevision, marks a naming attempt that
+// carries no fold-publication staleness gate: applySessionNameResult applies
+// it unconditionally. Real publication revisions are historyRevision values,
+// always positive.
+const ungatedFoldRevision = -1
+
 func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
+	s.launchCompactionNamerGated(ctx, turn, ungatedFoldRevision)
+}
+
+// launchCompactionNamerGated is launchCompactionNamer threading the
+// launching fold's publication revision into the async naming goroutine for
+// the completion-side staleness comparison inside applySessionNameResult's
+// locked apply. The ungated wrapper stays for callers outside a fold flush.
+func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Turn, publishedRevision int) {
 	if s.stateDir == "" {
 		return
 	}
@@ -322,11 +401,15 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 	s.mu.Unlock()
 	go func() {
 		defer s.sendersWG.Done()
-		_ = s.nameSessionFromCompactionTurn(ctx, turn)
+		_ = s.nameSessionFromCompactionTurnGated(ctx, turn, publishedRevision)
 	}()
 }
 
 func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
+	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
+}
+
+func (s *Session) nameSessionFromCompactionTurnGated(ctx context.Context, turn schema.Turn, publishedRevision int) error {
 	if !isSessionNameCompactionTurn(turn) {
 		return nil
 	}
@@ -337,7 +420,7 @@ func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema
 	if !s.shouldNameFromCompaction() {
 		return nil
 	}
-	return s.nameSessionFromText(ctx, sessionNameSourceCompaction, text)
+	return s.nameSessionFromTextGated(ctx, sessionNameSourceCompaction, text, publishedRevision)
 }
 
 func isSessionNameCompactionTurn(turn schema.Turn) bool {
@@ -345,7 +428,29 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 }
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
-	s.reportCompactionTranscriptAppend(s.writeTranscript(t))
+	s.mu.Lock()
+	publishedRevision := s.newestPublishedFoldRevision
+	s.mu.Unlock()
+	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false, publishedRevision)
+}
+
+// handleCompactionTurnEffects runs a compaction turn's post-write side
+// effects. writeErr is the outcome of the turn's transcript append — a fold
+// publisher performs that append inside its publication transaction's
+// transcript-commit phase (under attentionMu, where emitting is unsafe) and
+// hands the error here; the OnCompactionTurn fallback path above writes and
+// reports in one step. superseded reports that a NEWER fold publication has
+// already flushed its deferred effects: the last-write-wins pieces
+// (compaction naming, the task-list reminder) are skipped so a stale parked
+// flush cannot overwrite the newer fold's; the additive pieces (env-tracker
+// reset, the compaction-turn event) still run.
+// publishedRevision is the launching fold's publication sequence
+// (historyRevision at its publish; the fallback path passes the newest
+// published fold revision), re-checked at naming COMPLETION against
+// newestPublishedFoldRevision so an async namer launched before a newer
+// fold published cannot finish later and overwrite the newer fold's name.
+func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, superseded bool, publishedRevision int) {
+	s.reportCompactionTranscriptAppend(writeErr)
 	if isSessionNameCompactionTurn(t) {
 		// A CHECKPOINT/SUMMARY turn replaces history: any ENVIRONMENT turns
 		// folded away with it are gone from what the model sees, so the
@@ -358,11 +463,15 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 		s.resetEnvContextTrackerAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
-	s.launchCompactionNamer(s.sessionCtx, t)
-	// After compaction, inject full task list if tasks exist.
+	if superseded {
+		return
+	}
+	s.launchCompactionNamerGated(s.sessionCtx, t, publishedRevision)
+	// After compaction, inject full task list if tasks exist — refused at
+	// enqueue time if a newer fold has published since this flush's check.
 	if s.taskStore != nil {
 		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			s.SteerKind(reminder, events.SteeringKindTaskList)
+			s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision)
 		}
 	}
 }
@@ -394,6 +503,15 @@ func (s *Session) currentSessionName() string {
 }
 
 func (s *Session) nameSessionFromText(ctx context.Context, source, text string) error {
+	return s.nameSessionFromTextGated(ctx, source, text, ungatedFoldRevision)
+}
+
+// nameSessionFromTextGated is nameSessionFromText threading the launching
+// fold's publication revision through to the completion-side staleness
+// comparison in applySessionNameResult. The nameSessionFromTextFunc test
+// seam replaces the naming wholesale and bypasses the gate; gated
+// production callers exercise it on the real path.
+func (s *Session) nameSessionFromTextGated(ctx context.Context, source, text string, publishedRevision int) error {
 	source = normalizeSessionNameSource(source)
 	if !s.shouldApplySessionName(source) {
 		return nil
@@ -426,16 +544,30 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		})
 		return err
 	}
-	return s.applySessionNameResult(result)
+	return s.applySessionNameResult(result, publishedRevision)
 }
 
-func (s *Session) applySessionNameResult(result sessionNameResult) error {
+// applySessionNameResult applies a naming outcome, with a completion-side
+// staleness comparison for fold-derived names: a naming attempt launched for
+// publication revision publishedRevision is dropped when a newer fold has
+// published since, so an asynchronous naming goroutine that finishes late
+// cannot overwrite a name derived from a newer publication.
+// ungatedFoldRevision applies unconditionally. The
+// newestPublishedFoldRevision read happens HERE,
+// lexically inside the same s.mu hold that applies the name — a closure
+// evaluated under this hold could not lock s.mu itself without deadlocking,
+// and a read outside it would race the publish-time write.
+func (s *Session) applySessionNameResult(result sessionNameResult, publishedRevision int) error {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return context.Canceled
 	}
 	if !s.shouldApplySessionNameLocked(result.Source) {
+		s.mu.Unlock()
+		return nil
+	}
+	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
 		s.mu.Unlock()
 		return nil
 	}

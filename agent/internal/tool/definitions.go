@@ -167,19 +167,37 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable " +
 			"metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. " +
-			"`delegation_allowance` lets the delegate itself delegate, up to one " +
-			"level shallower than your own allowance. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
+			"A delegate may itself delegate: by default it gets an allowance one below yours; " +
+			"pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":                 map[string]any{"type": "string"},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "The brief: the delegate's only top-level input (task_list adds the ordered step prompts). None of your conversation, the user's message, or what you have learned reaches it. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). For a unit with more than one step, put the steps in task_list rather than here.",
+				},
+				"task_list": map[string]any{
+					"type":        "array",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must stand alone: the delegate sees no other context.",
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
+							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
+							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
+						},
+						"required": []string{"title", "prompt"},
+					},
+				},
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
+				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"isolation": map[string]any{
 					"type":        "string",
@@ -197,7 +215,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 					"additionalProperties": true,
 				},
 			},
-			"required": []string{"task"},
+			"required": []string{"prompt"},
 		},
 	}
 	props := def.Parameters["properties"].(map[string]any)
@@ -326,10 +344,10 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
 				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), a stable delegate ID (`dlg_...`), or a concrete shell job_id visible to this session."},
-				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
+				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex over the job's raw output bytes, scanned through a rolling 4096-byte window (not line by line), so output with no newlines still matches. A single match may be at most 4096 bytes, and each occurrence fires once. Case-sensitive unless (?i). ^ and $ are multiline by default and also anchor at the window edge, so $ matches at the end of the output produced so far. Prefer a narrow pattern (READY) over an open-ended one (.*READY.*). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
 				"events": map[string]any{
-					"type":        "array",
+					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
 					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Watch communicate for result/status messages.",
 				},
@@ -338,7 +356,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
 				},
 				"event_filter": map[string]any{
-					"type":                 "object",
+					"type":                 []string{"object", "null"},
 					"additionalProperties": false,
 					"description":          "Structured predicate for assistant.tool watches. With events [\"assistant.tool\"], match the emitted tool call by tool_name and/or status. Communicate content is delivered in event.message for the observer task to evaluate.",
 					"properties": map[string]any{
@@ -908,20 +926,20 @@ func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs, and any explicit format cannot accompany job paging/search. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:<job_id>` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs. format=markdown is a no-op for every job view, including paging/search; other explicit formats are invalid. An `artifact:<id>` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
-				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
-				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
+				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
-				"output_match":   map[string]any{"type": "string", "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
+				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
-					"type":        "integer",
+					"type":        []any{"integer", "null"},
 					"minimum":     0,
 					"maximum":     10,
 					"description": "Lines before and after each output_match; requires output_match. Default 0.",

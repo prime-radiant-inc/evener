@@ -148,3 +148,175 @@ func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
 		t.Fatal("developer_role must not touch the body")
 	}
 }
+
+func TestTemperaturePath(t *testing.T) {
+	cases := []struct {
+		protocol string
+		want     string
+	}{
+		{ProtocolOpenAIChat, "temperature"},
+		{ProtocolOpenAIResponses, "temperature"},
+		{ProtocolAnthropic, "temperature"},
+		{ProtocolGoogle, "generationConfig.temperature"},
+		{"unknown-protocol", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := TemperaturePath(tc.protocol); got != tc.want {
+			t.Errorf("TemperaturePath(%q) = %q, want %q", tc.protocol, got, tc.want)
+		}
+	}
+}
+
+func TestTemperatureSupported(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+	row := func(step, model string) map[string]string {
+		if model == "" {
+			return map[string]string{"model": step}
+		}
+		return map[string]string{"model": step + ":" + model}
+	}
+	// catalogRow is a row lookup that also carries a snapshot-attributed fact,
+	// as every real catalog row does (context window, family, …).
+	catalogRow := func(step, model string) map[string]string {
+		prov := row(step, model)
+		prov["ContextWindow"] = LayerSnapshot + "/row"
+		return prov
+	}
+	cases := []struct {
+		name string
+		res  Resolved
+		want bool
+	}{
+		{
+			name: "catalog row with fields true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "region-prefixed catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("region", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "dated-suffix catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("dated", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "catalog row with fields false",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": false}}},
+		},
+		{
+			name: "live-only row inherits send-by-default baseline",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("live", ""),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "synthesized row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("synthesized", ""),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "absent model provenance",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "sampling false overrides fields true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "o-x"),
+				Caps: Caps{Sampling: boolPtr(false), Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "sampling true keeps fields verdict",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: catalogRow("row", "gpt-x"),
+				Caps: Caps{Sampling: boolPtr(true), Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			name: "google row keys generationConfig.temperature",
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: catalogRow("row", "gemini-x"),
+				Caps: Caps{Fields: map[string]bool{"generationConfig.temperature": true}}},
+			want: true,
+		},
+		{
+			name: "google row with plain temperature key only reads as absent",
+			res: Resolved{Protocol: ProtocolGoogle, Provenance: catalogRow("row", "gemini-x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			name: "unknown protocol",
+			res: Resolved{Protocol: "unknown", Provenance: row("row", "x"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// A user-configured custom row with no catalog facts and no explicit
+			// temperature field: baseline true is silence, not support.
+			name: "user-configured row with no facts",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "my-model"),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// A user-configured row with facts but none catalog-attributed and no
+			// explicit temperature field: still silence.
+			name: "user-configured row with config-attributed facts only",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["ContextWindow"] = LayerConfig + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+		},
+		{
+			// An explicit fields.temperature = true from any layer is a deliberate
+			// choice and vouches without catalog backing.
+			name: "user-configured row with explicit fields temperature true",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["Fields.temperature"] = LayerConfig + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			// A user-defined model on a curated base inherits provider-level
+			// overlay facts (StrictTools, MaxTokensField, most Fields.*) — those
+			// inherited facts must not mistake the custom row for a catalog one
+			// (round-5 probe on a work/my-model row showed exactly this).
+			name: "user-configured row inheriting overlay provider facts",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["StrictTools"] = LayerOverlay + "/provider"
+					prov["MaxTokensField"] = LayerOverlay + "/provider"
+					prov["Fields.store"] = LayerOverlay + "/provider"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true, "store": false}}},
+		},
+		{
+			// A cached catalog row fact vouches the same way a snapshot one does.
+			name: "cache-backed catalog row",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := catalogRow("row", "gpt-x")
+					prov["ContextWindow"] = LayerCache + "/row"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		if got := TemperatureSupported(tc.res); got != tc.want {
+			t.Errorf("%s: TemperatureSupported = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

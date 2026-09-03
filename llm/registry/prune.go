@@ -58,6 +58,76 @@ func PrunablePaths(protocol string) []string {
 	return paths
 }
 
+// TemperaturePath returns the prunable path that controls the temperature
+// parameter for a protocol (e.g. "temperature" for the OpenAI and Anthropic
+// protocols, "generationConfig.temperature" for Google), or "" when the
+// protocol is unknown.
+func TemperaturePath(protocol string) string {
+	switch protocol {
+	case ProtocolGoogle:
+		return "generationConfig.temperature"
+	default:
+		if table, ok := prunable[protocol]; ok {
+			if _, has := table["temperature"]; has {
+				return "temperature"
+			}
+		}
+		return ""
+	}
+}
+
+// TemperatureSupported reports whether a resolved row vouches that its model
+// accepts the temperature parameter. The voucher must be a fact, not the
+// send-by-default baseline: (1) the row's Sampling cap must not be explicitly
+// false (models.dev rows with temperature=false map to Sampling=false while
+// their Fields flag stays at baseline — ShapeRequest drops the parameter for
+// exactly these rows); (2) the lookup must have found a row (model =
+// "row:…", including the region/dated spellings) — a live-only or synthesized
+// row inherits the baseline without any fact; (3) the row must be
+// catalog-backed — some fact attributed to the curated snapshot or overlay —
+// or the temperature Fields flag must be explicitly set by any layer
+// ("Fields.<path>" provenance): a user-configured custom model carries no
+// catalog facts, so its baseline true is silence, not support (issue #834:
+// such rows 400 on the parameter), while an explicit
+// fields.temperature = true is a deliberate choice and vouches.
+func TemperatureSupported(res Resolved) bool {
+	path := TemperaturePath(res.Protocol)
+	if path == "" {
+		return false
+	}
+	if res.Caps.Sampling != nil && !*res.Caps.Sampling {
+		return false
+	}
+	step, _, isRow := strings.Cut(res.Provenance["model"], ":")
+	if !isRow || (step != "row" && step != "region" && step != "dated") {
+		return false
+	}
+	if _, explicit := res.Provenance["Fields."+path]; !explicit && !catalogBacked(res.Provenance) {
+		return false
+	}
+	return res.Caps.Fields[path]
+}
+
+// catalogBacked reports whether any resolved fact is attributed to a
+// model-specific catalog row: a curated snapshot, overlay, or cache layer
+// setting a row's facts ("<layer>/row"). Provider- and glob-level curated facts
+// ("<layer>/provider", "<layer>/…<glob>") do not count — a user-defined model
+// on a curated base inherits a dozen overlay/provider facts (StrictTools,
+// MaxTokensField, most Fields.*), and those inherited facts must not mistake
+// the custom row for a catalog one (the round-5 probe on a work/my-model
+// row showed exactly this).
+func catalogBacked(provenance map[string]string) bool {
+	for _, source := range provenance {
+		if layer, ok := strings.CutSuffix(source, "/row"); ok {
+			switch layer {
+			case LayerSnapshot, LayerOverlay, LayerCache:
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Baseline returns a copy of the protocol's path → send-by-default table.
 func Baseline(protocol string) map[string]bool {
 	table, ok := prunable[protocol]

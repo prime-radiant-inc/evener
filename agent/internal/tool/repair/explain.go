@@ -534,10 +534,26 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 func exampleForField(containerSchema map[string]any, field string) string {
 	props := schemaProps(containerSchema)
 	if prop, ok := props[field].(map[string]any); ok {
-		typ, _ := prop["type"].(string)
+		typ := exampleSchemaType(prop["type"])
 		return fmt.Sprintf("{%q: %s}", field, exampleValue(prop, typ))
 	}
 	return exampleObject(containerSchema, true)
+}
+
+// exampleSchemaType preserves a direct schema type, or selects the only
+// non-null scalar from a two-member nullable union. Other union shapes retain
+// the existing string-placeholder fallback rather than guessing an example.
+func exampleSchemaType(v any) string {
+	if typ, ok := v.(string); ok {
+		return typ
+	}
+	typ := nullableUnionNonNullType(v)
+	switch typ {
+	case "string", "integer", "number", "boolean":
+		return typ
+	default:
+		return ""
+	}
 }
 
 // resolveInstanceValue walks a JSON-Pointer-style path (e.g.

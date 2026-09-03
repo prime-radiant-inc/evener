@@ -594,9 +594,12 @@ durable fold rejects any disagreement between them.
 TaskTemplates stores a copy of every template in the selected named agent's
 ordered workflow, including each title, prompt, reasoning effort, type, and
 insertion directive. Stable construction populates the child task store from
-that complete committed slice. Registered delegate creation supplies no parent
-task templates, preserving the existing child-workflow behavior without
-consulting the live agent registry after commit.
+that complete committed slice. A parent-supplied `task_list` is expanded into
+that slice at describe time (replacing the role's `parent_tasks` placeholder,
+or following the role's defaults when it has none), so launch and every
+resume seed the child from the same frozen list without consulting the live
+agent registry after commit. A delegate that shares its parent's task store
+refuses `task_list` at creation, since a shared store is never re-seeded.
 
 ToolNameCeiling stores the sorted, unique, pre-commit ceiling derived from the
 effective parent registry, named-agent policy, watch and delegation grants,

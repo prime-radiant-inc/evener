@@ -39,7 +39,7 @@ func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 	call := llm.ToolCallData{
 		ID:   "legacy-net",
 		Name: "delegate",
-		Arguments: json.RawMessage(`{"task":"ping","agent_type":"subagent","isolation":"worktree",` +
+		Arguments: json.RawMessage(`{"prompt":"ping","agent_type":"subagent","isolation":"worktree",` +
 			`"sandbox":"off","sandbox_net":true,"reasoning_effort":"low","delegation_allowance":0}`),
 	}
 	res := prepareToolCall(call, rt, []string{"delegate"}, "delegate", "communicate", "")
@@ -96,7 +96,7 @@ func TestExecTool_DelegateOffPlusNonetRejectedByHandler(t *testing.T) {
 	res := s.execTool(context.Background(), llm.ToolCallData{
 		ID:        "off-nonet",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"ping","sandbox":"off+nonet"}`),
+		Arguments: json.RawMessage(`{"prompt":"ping","sandbox":"off+nonet"}`),
 	}, "")
 	if !res.IsError {
 		t.Fatalf("expected error for off+nonet (off has no network confinement), got: %s", res.FullOutput)

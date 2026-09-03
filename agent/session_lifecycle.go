@@ -1604,7 +1604,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
 	s.replaceActiveProvenance(inputProvenance)
-	s.repairOrphanedToolResults("before accepting new input")
+	s.repairOrphanedToolResults(context.Background(), "before accepting new input")
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
@@ -1693,7 +1693,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 				return failure
 			}
 		}
-		if err := s.appendClientMutationTranscript(turn); err != nil {
+		if err := s.appendTurnAfterTranscriptWrite(
+			turn,
+			func() error { return s.appendClientMutationTranscriptLocked(turn) },
+			func() { s.history = append(s.history, turn) },
+		); err != nil {
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
@@ -1713,9 +1717,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.mu.Unlock()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
@@ -1769,7 +1770,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	// A goal continuation is a fresh top-level input: reset active provenance so
 	// the continuation turn's events do not inherit a prior watch origin.
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting goal continuation")
+	s.repairOrphanedToolResults(context.Background(), "before accepting goal continuation")
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
 	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
@@ -1788,7 +1789,7 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 
 func (s *Session) acceptDelegateAttentionInput() {
 	s.replaceActiveProvenance(nil)
-	s.repairOrphanedToolResults("before accepting delegate attention")
+	s.repairOrphanedToolResults(context.Background(), "before accepting delegate attention")
 }
 
 // acceptNotificationInput records a job-completion notification turn at the
@@ -1836,7 +1837,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		return false
 	}
 
-	s.repairOrphanedToolResults("before accepting notification")
+	s.repairOrphanedToolResults(context.Background(), "before accepting notification")
 
 	// A notification turn adopts the union of the provenance carried by the
 	// notifications it delivers, so events the turn emits (and any watch it
@@ -1920,7 +1921,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		s.finishNotificationNoop()
 		return false
 	}
-	s.repairOrphanedToolResults("before accepting steering carrier")
+	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
 	// The announce precedes every content event of the turn, the same as
 	// acceptNotificationInput's boundary: content emitted before it would be
 	// attributed to the turn before this one.

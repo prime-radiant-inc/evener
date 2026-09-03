@@ -18,9 +18,10 @@ import (
 //
 // It skips when a note is already set — the agent's own compact-tool note (or a
 // note elicited earlier this cycle) wins and is never overwritten; the slot reopens
-// when the compaction consumes the note (clearPinnedNote), so the next cycle
-// re-elicits fresh facts. That skip also serves as the per-compaction latch, so a
-// stuck-high pressure turn does not re-fire the side LLM call every round.
+// when a winning compaction claims the note at publication
+// (claimPinnedNoteLocked), so the next cycle re-elicits fresh facts. That skip
+// also serves as the per-compaction latch, so a stuck-high pressure turn does
+// not re-fire the side LLM call every round.
 func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
 	if s.contextMgr == nil {
 		return
@@ -60,15 +61,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 func (s *Session) setPinnedNote(note string) {
 	s.mu.Lock()
 	s.pinnedNote = note
-	s.mu.Unlock()
-}
-
-// clearPinnedNote drops the pending note after a compaction has handed it forward,
-// so it is a one-shot handoff (not re-injected at future compactions) and the slot
-// reopens for the next cycle's elicitation.
-func (s *Session) clearPinnedNote() {
-	s.mu.Lock()
-	s.pinnedNote = ""
+	s.pinnedNoteGen++
 	s.mu.Unlock()
 }
 
@@ -77,6 +70,29 @@ func (s *Session) PinnedNote() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pinnedNote
+}
+
+// pinnedNoteSnapshot returns the current note together with its generation,
+// so a fold capturing the note for handoff can later claim exactly what it
+// captured (claimPinnedNoteLocked) instead of blindly clearing whatever is
+// pinned by then.
+func (s *Session) pinnedNoteSnapshot() (note string, gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pinnedNote, s.pinnedNoteGen
+}
+
+// claimPinnedNoteLocked consumes the pinned note a fold captured at
+// generation gen — but only if that is still the live generation: a note set
+// (or cleared and re-set) since the capture belongs to the NEXT compaction
+// cycle and must survive this fold's claim. Runs inside the publication
+// transaction; callers hold s.mu.
+func (s *Session) claimPinnedNoteLocked(gen uint64) {
+	if s.pinnedNoteGen != gen {
+		return
+	}
+	s.pinnedNote = ""
+	s.pinnedNoteGen++
 }
 
 // selfCompactNudge is the low-headroom warning. The pressure is real either
@@ -152,19 +168,24 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 	if !ok || s.contextMgr == nil {
 		return
 	}
-	s.contextMgr.Meta = s.buildCompactionMeta()
 
-	s.mu.Lock()
-	histCopy := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
-
-	compactionCtx, emitFn, flush := s.compactionEmitFunc(ctx, &histCopy)
-	s.contextMgr.ForceCompact(compactionCtx, &histCopy, instructions, emitFn)
-	flush()
-
-	s.mu.Lock()
-	s.history = histCopy
-	s.mu.Unlock()
+	// compact_context runs mid-turn, at every round tail, so this can race
+	// another ForceCompact/ManageContext publisher (Compact(), the
+	// content-filter retry, or the round loop's own ManageContext).
+	// foldWithForceCompact retries once against the current history on
+	// conflict; on total failure this is a best-effort self-compaction, so
+	// the fold's own loss stays silent
+	// rather than retrying indefinitely or failing the round — a competing
+	// fold already relieved whatever pressure prompted this one. The
+	// caller's compaction_instructions are different: they are intent, not
+	// pressure, and the competitor did not honor them, so losing them
+	// without a trace hides real steering loss.
+	if !s.foldWithForceCompact(ctx, instructions) {
+		if strings.TrimSpace(instructions) != "" {
+			s.emit(events.EventWarning, events.WarningData{Message: "compact_context instructions were not applied — a concurrent compaction published first: " + instructions})
+		}
+		return
+	}
 
 	s.maybeAutoSave()
 }

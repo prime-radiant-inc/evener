@@ -133,89 +133,61 @@ func TestParseRetainedReadArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// validateArtifactReadArgs
+// retainedReadIncompatibleFields
 // ---------------------------------------------------------------------------
 
-func TestValidateArtifactReadArgs(t *testing.T) {
-	t.Run("range rejected", func(t *testing.T) {
-		err := validateArtifactReadArgs(map[string]any{"range": "1-5"}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "range applies only to session") {
-			t.Fatalf("expected range error, got %v", err)
-		}
+func TestRetainedReadIncompatibleFields(t *testing.T) {
+	t.Run("artifact range rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "artifact", map[string]any{"range": "1-5"}, retainedReadDefault, "range applies only to session")
 	})
-	t.Run("expand_turn rejected", func(t *testing.T) {
-		err := validateArtifactReadArgs(map[string]any{"expand_turn": float64(1)}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "expand_turn applies only to session") {
-			t.Fatalf("expected expand_turn error, got %v", err)
-		}
+	t.Run("artifact expand_turn rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "artifact", map[string]any{"expand_turn": float64(1)}, retainedReadDefault, "expand_turn applies only to session")
 	})
-	t.Run("format rejected", func(t *testing.T) {
-		err := validateArtifactReadArgs(map[string]any{"format": "markdown"}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "format is not supported for artifact") {
-			t.Fatalf("expected format error, got %v", err)
-		}
+	t.Run("artifact format rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "artifact", map[string]any{"format": "markdown"}, retainedReadDefault, "format is not supported for artifact")
 	})
-	t.Run("valid no special args", func(t *testing.T) {
-		err := validateArtifactReadArgs(map[string]any{"transcript_ref": "artifact:abc"}, retainedReadDefault)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	t.Run("artifact valid no special args", func(t *testing.T) {
+		assertRetainedReadModeError(t, "artifact", map[string]any{"transcript_ref": "artifact:abc"}, retainedReadDefault, "")
+	})
+	t.Run("job range rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"range": "1-5"}, retainedReadDefault, "range applies only to session")
+	})
+	t.Run("job expand_turn rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"expand_turn": float64(1)}, retainedReadDefault, "expand_turn applies only to session")
+	})
+	t.Run("job format with offset rejected", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"format": "jsonl", "offset_bytes": float64(1)}, retainedReadPage, "format cannot be combined")
+	})
+	t.Run("job format markdown with offset accepted", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown", "offset_bytes": float64(1)}, retainedReadPage, "")
+	})
+	t.Run("job format markdown with output_match accepted", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown", "output_match": "READY"}, retainedReadSearch, "")
+	})
+	t.Run("job format non-markdown", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"format": "jsonl"}, retainedReadDefault, "job: refs support only format=markdown")
+	})
+	t.Run("job format markdown ok", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown"}, retainedReadDefault, "")
+	})
+	t.Run("job no format ok", func(t *testing.T) {
+		assertRetainedReadModeError(t, "job", map[string]any{}, retainedReadDefault, "")
 	})
 }
 
-// ---------------------------------------------------------------------------
-// validateJobReadArgs
-// ---------------------------------------------------------------------------
-
-func TestValidateJobReadArgs(t *testing.T) {
-	t.Run("range rejected", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"range": "1-5"}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "range applies only to session") {
-			t.Fatalf("expected range error, got %v", err)
+func assertRetainedReadModeError(t *testing.T, refKind string, args map[string]any, operation retainedReadOperation, want string) {
+	t.Helper()
+	incompatible := retainedReadIncompatibleFields(refKind, args)
+	if len(incompatible) == 0 {
+		if want != "" {
+			t.Fatalf("incompatible fields = none, want error containing %q", want)
 		}
-	})
-	t.Run("expand_turn rejected", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"expand_turn": float64(1)}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "expand_turn applies only to session") {
-			t.Fatalf("expected expand_turn error, got %v", err)
-		}
-	})
-	t.Run("format with offset rejected", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "jsonl", "offset_bytes": float64(1)}, retainedReadPage)
-		if err == nil || !strings.Contains(err.Error(), "format cannot be combined") {
-			t.Fatalf("expected format+offset error, got %v", err)
-		}
-	})
-	t.Run("format markdown with offset accepted", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "markdown", "offset_bytes": float64(1)}, retainedReadPage)
-		if err != nil {
-			t.Fatalf("expected markdown+offset to be accepted, got %v", err)
-		}
-	})
-	t.Run("format markdown with output_match accepted", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "markdown", "output_match": "READY"}, retainedReadSearch)
-		if err != nil {
-			t.Fatalf("expected markdown+output_match to be accepted, got %v", err)
-		}
-	})
-	t.Run("format non-markdown", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "jsonl"}, retainedReadDefault)
-		if err == nil || !strings.Contains(err.Error(), "job: refs support only format=markdown") {
-			t.Fatalf("expected format error, got %v", err)
-		}
-	})
-	t.Run("format markdown ok", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{"format": "markdown"}, retainedReadDefault)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-	t.Run("no format ok", func(t *testing.T) {
-		err := validateJobReadArgs(map[string]any{}, retainedReadDefault)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		return
+	}
+	err := retainedReadArgsValidationError(refKind, args, incompatible, nil, operation)
+	if want == "" || !strings.Contains(err.Error(), want) {
+		t.Fatalf("mode validation error = %v, want substring %q", err, want)
+	}
 }
 
 // ---------------------------------------------------------------------------
