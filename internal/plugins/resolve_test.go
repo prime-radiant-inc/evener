@@ -1122,12 +1122,12 @@ func TestSetAsideBundledConflict_KeepsWhatItHoldsWhenThereIsNothingToMove(t *tes
 
 	// Nothing at the destination: the set-aside has no work to do and no
 	// business touching what the slot already holds.
-	moved, _, err := setAsideBundledConflict(dest)
+	warnings, err := setAsideBundledConflict(dest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if moved {
-		t.Error("reported a move with nothing at the destination")
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %v, want nothing to report with nothing at the destination", warnings)
 	}
 	content, err := os.ReadFile(filepath.Join(aside, "kept.md"))
 	if err != nil || string(content) != "the copy set aside earlier" {
@@ -1140,4 +1140,66 @@ func TestSetAsideBundledConflict_KeepsWhatItHoldsWhenThereIsNothingToMove(t *tes
 	if len(entries) != 1 || entries[0].Name() != filepath.Base(aside) {
 		t.Errorf("store holds %v, want only the slot it started with", entries)
 	}
+}
+
+// A set-aside interrupted between its two renames leaves the copy it was
+// preserving under the ".previous" name with the slot itself empty. That copy
+// is the only one there is, so the next set-aside has to put it back before it
+// does anything else — reading it as residue and deleting it is how the
+// preserved conflict gets lost for good.
+func TestSetAsideBundledConflict_RecoversAnInterruptedSetAside(t *testing.T) {
+	t.Run("with nothing at the destination the copy goes back", func(t *testing.T) {
+		store := t.TempDir()
+		dest := filepath.Join(store, "coordinator-workflow-0123456789abcdef")
+		aside := dest + conflictSuffix
+		writePlugin(t, aside+previousSuffix, "coordinator-workflow", map[string]string{"kept.md": "the copy set aside earlier"})
+
+		if _, err := setAsideBundledConflict(dest); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filepath.Join(aside, "kept.md"))
+		if err != nil || string(content) != "the copy set aside earlier" {
+			t.Errorf("copy at the slot = %q (err %v), want the interrupted set-aside put back", content, err)
+		}
+		entries, err := os.ReadDir(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != filepath.Base(aside) {
+			t.Errorf("store holds %v, want only the slot the copy was put back into", entries)
+		}
+	})
+
+	// Recovered and then replaced: one slot per plugin, so the copy from the
+	// interrupted set-aside is the older occupant, and the conflict this
+	// launch found takes its place. It is dropped after the newer one is
+	// safely in the slot, never before.
+	t.Run("a launch that finds a conflict replaces the recovered copy", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		digest, err := bundledPluginDigest("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		writePlugin(t, dest, "coordinator-workflow", map[string]string{"newer.md": "the conflict this launch found"})
+		writePlugin(t, dest+conflictSuffix+previousSuffix, "coordinator-workflow", map[string]string{"older.md": "the copy set aside earlier"})
+
+		res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.ValidateSelection(); err != nil {
+			t.Fatalf("a recovered set-aside left the bundled plugin unselectable: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest+conflictSuffix, "newer.md")); err != nil {
+			t.Errorf("the slot does not hold the conflict this launch found: %v", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 {
+			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
+		}
+	})
 }

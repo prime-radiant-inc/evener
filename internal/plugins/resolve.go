@@ -406,12 +406,10 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 		if state != bundledDestinationConflict {
 			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
 		}
-		moved, warning, asideErr := setAsideBundledConflict(dest)
+		asideWarnings, asideErr := setAsideBundledConflict(dest)
+		warnings = append(warnings, asideWarnings...)
 		if asideErr != nil {
 			return "", warnings, asideErr
-		}
-		if moved {
-			warnings = append(warnings, warning)
 		}
 		if err := os.Rename(staging.payload, dest); err != nil {
 			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
@@ -509,13 +507,11 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	}
 	var warnings []string
 	if state == bundledDestinationConflict {
-		moved, warning, err := setAsideBundledConflict(dest)
+		asideWarnings, err := setAsideBundledConflict(dest)
+		warnings = append(warnings, asideWarnings...)
 		if err != nil {
 			release()
-			return "", nil, nil, err
-		}
-		if moved {
-			warnings = append(warnings, warning)
+			return "", nil, warnings, err
 		}
 	}
 	staging, err := newBundledStaging(store, filepath.Base(dest), digest, release)
@@ -584,33 +580,51 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 // reports whether anything moved, and what to say about it: nothing moves when
 // the destination is already gone, which under the lock means something
 // outside this package took it away.
-func setAsideBundledConflict(dest string) (bool, string, error) {
+func setAsideBundledConflict(dest string) ([]string, error) {
 	aside := dest + conflictSuffix
 	previous := aside + previousSuffix
+	// A set-aside interrupted between its two renames left the copy it was
+	// preserving under previous with the slot itself empty. That copy is the
+	// only one there is, so putting it back comes before anything else: to
+	// everything below, previous is an occupant already replaced, and this one
+	// never was.
+	if _, err := os.Lstat(aside); errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Lstat(previous); err == nil {
+			if err := os.Rename(previous, aside); err != nil {
+				return nil, fmt.Errorf("restore the bundled plugin path %s: %w", previous, err)
+			}
+		}
+	}
 	// Whatever the slot holds is moved out of the way rather than deleted, so
 	// a destination that turns out not to be movable leaves the copy already
 	// preserved still preserved. Callers hold the store lock, so this name is
 	// nobody else's; anything under it is residue from a publish that died
 	// between the two renames below, and is the occupant being replaced.
 	if err := os.RemoveAll(previous); err != nil {
-		return false, "", fmt.Errorf("clear the bundled plugin path %s: %w", previous, err)
+		return nil, fmt.Errorf("clear the bundled plugin path %s: %w", previous, err)
 	}
 	occupied := true
 	if err := os.Rename(aside, previous); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			return false, "", fmt.Errorf("set aside the bundled plugin path %s: %w", aside, err)
+			return nil, fmt.Errorf("set aside the bundled plugin path %s: %w", aside, err)
 		}
 		occupied = false
 	}
 	if err := os.Rename(dest, aside); err != nil {
-		// Nothing took the slot, so the copy that was in it goes back.
+		var warnings []string
 		if occupied {
-			_ = os.Rename(previous, aside)
+			// Nothing took the slot, so the copy that was in it goes back. If
+			// it cannot go back, it is still on disk under a name only the
+			// next set-aside looks at, and whoever is reading diagnostics is
+			// the one who can do something about it.
+			if restoreErr := os.Rename(previous, aside); restoreErr != nil {
+				warnings = append(warnings, fmt.Sprintf("the bundled plugin copy set aside at %s could not be put back and is now at %s: %v", aside, previous, restoreErr))
+			}
 		}
 		if errors.Is(err, fs.ErrNotExist) {
-			return false, "", nil
+			return warnings, nil
 		}
-		return false, "", fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
+		return warnings, fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
 	}
 	if occupied {
 		// Only now, with the slot filled again, is what it held replaceable.
@@ -618,7 +632,7 @@ func setAsideBundledConflict(dest string) (bool, string, error) {
 		// outside the staging namespace, so no sweep will take it for staging.
 		_ = os.RemoveAll(previous)
 	}
-	return true, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
+	return []string{fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside)}, nil
 }
 
 // abandonedStaging names the staging directories in dir a publish left behind
