@@ -26,7 +26,10 @@ func registerSemanticReviewTool(t *testing.T, r *Registry, name string, params m
 }
 
 func TestSemanticBreaker_RegisteredDefaultsAndLongTargets(t *testing.T) {
-	if omitted, explicit := semanticCallSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp"}), semanticCallSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp", "mode": "foreground"}); omitted != explicit {
+	r := NewRegistry()
+	registerSemanticReviewTool(t, r, "exec_command", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
+	r.MarkRegisteredToolsPresentationDescriptions()
+	if omitted, explicit := r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp"}, DefShell().Parameters), r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp", "mode": "foreground"}, DefShell().Parameters); omitted != explicit {
 		t.Fatalf("runtime foreground default differs: %q != %q", omitted, explicit)
 	}
 	long := strings.Repeat("a", 257)
@@ -222,6 +225,7 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 			calls++
 			return nil, errors.New("invalid_request: target unavailable")
 		})
+		r.MarkRegisteredToolsPresentationDescriptions()
 		variants := []string{
 			`{"target":"job_same","intent":"first"}`,
 			`{"target":"job_same","max_wait_ms":0,"intent":"second"}`,
@@ -242,6 +246,7 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 			calls++
 			return nil, errors.New("invalid_request: user channel unavailable")
 		})
+		r.MarkRegisteredToolsPresentationDescriptions()
 		question := func(multi string, i int) string {
 			return fmt.Sprintf(`{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]%s}],"intent":"variant %d"}`, multi, i)
 		}
@@ -252,6 +257,37 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 			}
 		}
 	})
+}
+
+func TestSemanticBreaker_CustomReplacementDoesNotInheritBuiltInDefaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		params map[string]any
+		args   []string
+	}{
+		{"shell", DefShell().Parameters, []string{`{"command":"false"}`, `{"command":"false","mode":"foreground"}`, `{"command":"false","intent":"retry"}`}},
+		{"job_stop", DefJobStop().Parameters, []string{`{"target":"same"}`, `{"target":"same","max_wait_ms":0}`, `{"target":"same","intent":"retry"}`}},
+		{"ask_user", DefAskUser().Parameters, []string{`{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]}],"intent":"first"}`, `{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}],"multi_select":false}],"intent":"second"}`, `{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]}],"intent":"third"}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry()
+			calls := 0
+			registerSemanticReviewTool(t, r, tc.name, tc.params, func(map[string]any) (any, error) {
+				calls++
+				return nil, errors.New("custom failure")
+			})
+			for i, args := range tc.args {
+				res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("custom-%s-%d", tc.name, i), tc.name, args))
+				if strings.Contains(res.Output, "semantic failure loop") {
+					t.Fatalf("custom %s inherited built-in default grouping: %#v", tc.name, res)
+				}
+			}
+			if calls != 3 {
+				t.Fatalf("custom %s calls=%d, want 3", tc.name, calls)
+			}
+		})
+	}
 }
 
 type reviewCodedError struct {

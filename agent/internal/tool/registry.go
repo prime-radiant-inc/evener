@@ -372,6 +372,9 @@ type RegisteredTool struct {
 	// OmitDescriptionFromSemanticIdentity is set only for built-in registrations
 	// whose top-level description is presentation metadata, never by name alone.
 	OmitDescriptionFromSemanticIdentity bool
+	// ApplyBuiltInSemanticDefaults is set only for core registrations whose
+	// handlers own the documented shell/job_stop/ask_user neutral defaults.
+	ApplyBuiltInSemanticDefaults bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
@@ -421,7 +424,8 @@ func (r *Registry) semanticSignature(name string, args map[string]any, parameter
 	registered, ok := r.tools[name]
 	r.mu.RUnlock()
 	omitDescription := ok && registered.OmitDescriptionFromSemanticIdentity
-	encoded, err := semanticCanonicalBytes(name, args, parameters, omitDescription)
+	applyDefaults := ok && registered.ApplyBuiltInSemanticDefaults
+	encoded, err := semanticCanonicalBytes(name, args, parameters, omitDescription, applyDefaults)
 	if err != nil {
 		encoded = []byte("unencodable")
 	}
@@ -438,6 +442,7 @@ func (r *Registry) MarkRegisteredToolsPresentationDescriptions() {
 	defer r.mu.Unlock()
 	for name, registered := range r.tools {
 		registered.OmitDescriptionFromSemanticIdentity = true
+		registered.ApplyBuiltInSemanticDefaults = true
 		r.tools[name] = registered
 	}
 }

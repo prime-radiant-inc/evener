@@ -89,7 +89,7 @@ func semanticCallSignature(name string, args map[string]any) string {
 }
 
 func semanticCallSignatureWithDefaults(name string, args map[string]any, parameters map[string]any) string {
-	encoded, err := semanticCanonicalBytes(name, args, parameters, false)
+	encoded, err := semanticCanonicalBytes(name, args, parameters, false, false)
 	if err != nil {
 		// Args have passed JSON parsing and schema validation, so this is a
 		// defensive fallback rather than a normal path. It remains bounded and
@@ -99,17 +99,20 @@ func semanticCallSignatureWithDefaults(name string, args map[string]any, paramet
 	return name + ":" + shortHash(encoded)
 }
 
-func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any, omitDescription bool) ([]byte, error) {
-	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file", omitDescription))
+func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any, omitDescription, applyBuiltInDefaults bool) ([]byte, error) {
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters, applyBuiltInDefaults), "", name == "read_file", omitDescription))
 }
 
 // canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
 // handlers. JSON Schema annotations are descriptive contracts, not proof that a
 // custom or MCP executor treats omission like an explicit value.
-func canonicalSemanticArgs(name string, args map[string]any, parameters map[string]any) map[string]any {
+func canonicalSemanticArgs(name string, args map[string]any, parameters map[string]any, applyBuiltInDefaults bool) map[string]any {
 	out := make(map[string]any, len(args)+1)
 	maps.Copy(out, args)
 	_ = parameters
+	if !applyBuiltInDefaults {
+		return out
+	}
 	// These aliases share shell's runtime default, which intentionally lives in
 	// the handler rather than the wire schema.
 	switch name {
