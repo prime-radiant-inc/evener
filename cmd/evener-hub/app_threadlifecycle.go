@@ -142,7 +142,14 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	pluginResolution, pluginErr := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(ctx, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
 	if pluginErr != nil {
-		if spawnResolved.Effective.EnabledPlugins != nil {
+		// A resolver failure is fatal when a selection has to be honoured, and
+		// always when the failure IS the caller leaving: the next thing this
+		// handler does is detach from the request context and spawn, so a
+		// cancellation walked past here becomes a session started for a client
+		// that has gone. Everything else falls through to a launch with
+		// whatever the resolver could list.
+		if spawnResolved.Effective.EnabledPlugins != nil ||
+			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
 			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
 		}
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
