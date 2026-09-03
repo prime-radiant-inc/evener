@@ -178,6 +178,28 @@ test("outcome aggregates show terminal progress instead of done/total", async ()
   ).toBe("6");
 });
 
+test("outcome aggregates infer an omitted zero outcome for labels and terminal meters", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  const cancelledOnly = testModel({ tasks: { total: 7, done: 1, cancelled: 5 } });
+  const { unmount } = render(<TasksPanelBody sessionRef="ref_cancelled" model={cancelledOnly} />);
+
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  const cancelledMeter = screen.getByRole("meter", {
+    name: "Task progress: 1 done, 5 cancelled, 0 remaining (7 total)",
+  });
+  expect(cancelledMeter.getAttribute("aria-valuenow")).toBe("6");
+  unmount();
+
+  const remainingOnly = testModel({ tasks: { total: 7, done: 1, remaining: 5 } });
+  render(<TasksPanelBody sessionRef="ref_remaining" model={remainingOnly} />);
+  await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
+  const remainingMeter = screen.getByRole("meter", {
+    name: "Task progress: 1 done, 0 cancelled, 5 remaining (7 total)",
+  });
+  expect(remainingMeter.getAttribute("aria-valuenow")).toBe("1");
+});
+
 // --- STATUS_TONE: pinning test (review finding) --------------------------
 // The mapping shipped entirely untested, which is how `cancelled: "danger"`
 // slipped through: the legacy comment cited for that choice

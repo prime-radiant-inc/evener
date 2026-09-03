@@ -318,6 +318,26 @@ test("SessionChrome shows task outcome aggregates in its actions menu", async ()
   expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
 });
 
+test("SessionChrome infers a missing zero outcome in its task label", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_remaining", {
+      evener: {
+        ref: "ref_remaining",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 7, done: 1, remaining: 5 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_remaining");
+
+  render(<SessionChrome ref="ref_remaining" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
+});
+
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

@@ -77,6 +77,26 @@ test("current add and update arguments render task mutation rows", () => {
   expect(row.textContent).toContain("no longer needed");
 });
 
+test("a current mixed add and update batch keeps both touches and the authoritative auto-start", () => {
+  renderItem(
+    taskItem(
+      {
+        add: [{ type: "implement", description: "newly planned work" }],
+        update: [{ id: 4, status: "done" }],
+      },
+      "Added 1 task(s). Updated 4→done. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => [row.getAttribute("data-touch"), row.textContent])).toEqual([
+    ["added", expect.stringContaining("newly planned work")],
+    ["done", expect.stringContaining("fourth")],
+    ["started", expect.stringContaining("fifth")],
+  ]);
+});
+
 test("the collapsed append summary includes the added marker and task title as plain text", () => {
   renderItem(
     taskItem(

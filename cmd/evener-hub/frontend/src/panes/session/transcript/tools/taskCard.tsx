@@ -99,55 +99,67 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
 function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
-  if (action === "append" || (action === "" && asObjectArray(args.add).length > 0)) {
-    const tasks = action === "append" ? asObjectArray(args.tasks) : asObjectArray(args.add);
+  if (action === "append") {
+    const tasks = asObjectArray(args.tasks);
     if (tasks.length === 0) return undefined;
-    return tasks.map((task, i) => ({
-      key: `append_${i}`,
-      touch: "added",
-      label: str(task, "description") ?? (action === "append" ? str(task, "prompt") : undefined) ?? "(untitled task)",
-    }));
+    return appendRows(tasks, true);
   }
-  if (action === "update" || action === "") {
-    const updates = finalUpdates(action === "update" ? asObjectArray(args.updates) : asObjectArray(args.update));
-    if (updates.length === 0) return undefined;
-    // Only a real status change earns a row - matching the legacy card, which
-    // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
-    // renders a note-only or reopened update as no per-row change at all.
-    const state = parseTaskState(item.raw);
-    const rows: TouchedRow[] = [];
-    const touchedIds = new Set<number>();
-    let completedAny = false;
-    for (const [i, update] of updates.entries()) {
-      const status = str(update, "status");
-      const touch = TOUCH_BY_STATUS[status ?? ""];
-      if (!touch) continue;
-      const id = typeof update.id === "number" ? update.id : undefined;
-      const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
-      // The Go task tool marks explicit in_progress updates from its pre-state.
-      // A false marker is a status reassertion carrying notes, not a fresh
-      // start. Unmarked historical state keeps the existing argument-only
-      // rendering for transcripts written before this marker existed.
-      if (touch === "started" && stateTask?.started === false) continue;
-      if (id !== undefined) touchedIds.add(id);
-      if (touch === "done" || touch === "cancelled") completedAny = true;
-      rows.push({
-        key: `update_${i}`,
-        touch,
-        label: taskLabel(state, id),
-        note: str(update, "notes") || undefined,
-      });
-    }
-    // The daemon may advance a DIFFERENT task to in_progress as a side
-    // effect of this same call (session_tools_task.go's auto-advance); that
-    // task never appears in the caller's own `updates` above.
-    const started = autoStartedTask(state, touchedIds, completedAny);
-    if (started) {
-      rows.push({ key: `auto_started_${started.id}`, touch: "started", label: taskLabel(state, started.id) });
-    }
-    return rows;
+  if (action === "update") {
+    const updates = finalUpdates(asObjectArray(args.updates));
+    return updates.length > 0 ? updateRows(item, updates) : undefined;
   }
-  return undefined;
+  if (action !== "") return undefined;
+
+  const adds = asObjectArray(args.add);
+  const updates = finalUpdates(asObjectArray(args.update));
+  if (adds.length === 0 && updates.length === 0) return undefined;
+  return [...appendRows(adds, false), ...updateRows(item, updates)];
+}
+
+function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedRow[] {
+  return tasks.map((task, i) => ({
+    key: `append_${i}`,
+    touch: "added",
+    label: str(task, "description") ?? (legacy ? str(task, "prompt") : undefined) ?? "(untitled task)",
+  }));
+}
+
+function updateRows(item: ItemModel, updates: Record<string, unknown>[]): TouchedRow[] {
+  // Only a real status change earns a row - matching the legacy card, which
+  // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
+  // renders a note-only or reopened update as no per-row change at all.
+  const state = parseTaskState(item.raw);
+  const rows: TouchedRow[] = [];
+  const touchedIds = new Set<number>();
+  let completedAny = false;
+  for (const [i, update] of updates.entries()) {
+    const status = str(update, "status");
+    const touch = TOUCH_BY_STATUS[status ?? ""];
+    if (!touch) continue;
+    const id = typeof update.id === "number" ? update.id : undefined;
+    const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
+    // The Go task tool marks explicit in_progress updates from its pre-state.
+    // A false marker is a status reassertion carrying notes, not a fresh
+    // start. Unmarked historical state keeps the existing argument-only
+    // rendering for transcripts written before this marker existed.
+    if (touch === "started" && stateTask?.started === false) continue;
+    if (id !== undefined) touchedIds.add(id);
+    if (touch === "done" || touch === "cancelled") completedAny = true;
+    rows.push({
+      key: `update_${i}`,
+      touch,
+      label: taskLabel(state, id),
+      note: str(update, "notes") || undefined,
+    });
+  }
+  // The daemon may advance a DIFFERENT task to in_progress as a side effect
+  // of this same call (session_tools_task.go's auto-advance); that task never
+  // appears in the caller's own `updates` above.
+  const started = autoStartedTask(state, touchedIds, completedAny);
+  if (started) {
+    rows.push({ key: `auto_started_${started.id}`, touch: "started", label: taskLabel(state, started.id) });
+  }
+  return rows;
 }
 
 // touchKind's status-to-flag mapping for the three statuses the card renders as

@@ -177,16 +177,16 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
 };
 
 function hasTaskOutcomes(tasks: NonNullable<ThreadModel["tasks"]>): boolean {
-  return tasks.cancelled !== undefined && tasks.remaining !== undefined;
+  return tasks.cancelled !== undefined || tasks.remaining !== undefined;
 }
 
 function taskMeterValue(tasks: NonNullable<ThreadModel["tasks"]>): number {
-  return tasks.cancelled !== undefined && tasks.remaining !== undefined ? tasks.done + tasks.cancelled : tasks.done;
+  return hasTaskOutcomes(tasks) ? tasks.done + (tasks.cancelled ?? 0) : tasks.done;
 }
 
 export function taskAggregateLabel(tasks: NonNullable<ThreadModel["tasks"]>): string {
   if (hasTaskOutcomes(tasks)) {
-    return `${tasks.done} done, ${tasks.cancelled} cancelled, ${tasks.remaining} remaining (${tasks.total} total)`;
+    return `${tasks.done} done, ${tasks.cancelled ?? 0} cancelled, ${tasks.remaining ?? 0} remaining (${tasks.total} total)`;
   }
   return `${tasks.done}/${tasks.total}`;
 }
