@@ -152,6 +152,54 @@ func TestWatchDeliveryCounterAndBudget(t *testing.T) {
 	}
 }
 
+// TestSendWatchBudgetTripsWhenFramesNeverSettle pins the condition-fire breaker
+// on the send rail's observation side. A send watch counts its fire when it
+// SNAPSHOTS a frame and only reaches the settle path when that frame is
+// delivered, so a receiver that never takes its frames left the breaker
+// unconsulted and the watch matching without bound. The 50th match latches the
+// breaker where the match is counted, and the watch auto-clears over budget.
+func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	// The caller-send watch's frames stay pending: nothing in a bare job
+	// manager drains and accepts them, so no fire ever settles.
+	cfg := installCallerSendWatchWithPending(t, jm)
+	key := watchKey{
+		VisibleSessionID: jm.sessionID,
+		Target:           runtimeMessageAliasCaller,
+		SendTo:           runtimeMessageAliasCaller,
+	}
+	for range watchDeliveryBudget - 1 {
+		onSessionEventKD(jm, events.EventCommunicate, nil)
+	}
+
+	jm.mu.Lock()
+	fires, live, count := cfg.conditionFires, jm.watches[key] != nil, len(jm.watches)
+	jm.mu.Unlock()
+	if fires != watchDeliveryBudget || live || count != 0 {
+		t.Fatalf("send watch at the budget = conditionFires:%d live:%t count:%d, want %d fires and an auto-cleared watch",
+			fires, live, count, watchDeliveryBudget)
+	}
+	if jm.hasPendingWatchSends() {
+		t.Fatal("the over-budget teardown left pending frames behind")
+	}
+	cleared := 0
+	for _, notification := range notified {
+		if notification.Reason == watchBudgetClearedMessage(runtimeMessageAliasCaller) {
+			cleared++
+		}
+	}
+	if cleared != 1 {
+		t.Fatalf("budget-cleared notifications = %d, want 1: %+v", cleared, notified)
+	}
+	history := jm.recentWatchSummaries()
+	if len(history) == 0 || history[0].EndReason != "budget_exhausted" {
+		t.Fatalf("watch history = %+v, want a budget_exhausted row", history)
+	}
+}
+
 func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

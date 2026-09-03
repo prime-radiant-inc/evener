@@ -498,7 +498,10 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // The caller is responsible for any error-notification behavior. This is the
 // model-facing completion for both watch-send rails (delegate sidecar sends and
 // caller frames), so it is where the send half of the delivery budget is counted;
-// observation/coalescing does not count (spec §4 F1).
+// observation/coalescing does not count (spec §4 F1). It is not, however, the
+// only place the condition-fire breaker can trip — the match site latches it
+// too, so frames that never settle stay bounded — and the latch keeps the two
+// to one teardown.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
@@ -1685,32 +1688,44 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 	}, nil
 }
 
+// tripConditionFireBudgetLocked latches the condition-fire circuit breaker for
+// cfg and reports whether THIS call tripped it. The test is "at or past the
+// budget", latched by budgetTripped to exactly one true per cfg lifetime.
+// Equality would be wrong for the send rail: a send watch counts its fire when
+// it SNAPSHOTS a frame and counts its delivery when that frame SETTLES, so two
+// fires snapshotted before either settles walk conditionFires from 49 to 51 and
+// every later call would compare a counter that already stepped over the
+// budget.
+//
+// Both ends of the send rail consult it: the observation side, where the match
+// is counted, so a watch whose frames never settle still trips; and the settle
+// side, which keeps its delivery accounting. The latch is what makes the second
+// of those a no-op rather than a second teardown.
+//
+// The caller must hold jm.mu. A true result means the caller should schedule
+// autoClearWatchOverBudget(cfg) AFTER releasing jm.mu (the auto-clear does
+// durable I/O and re-takes jm.mu; it must never run from inside an
+// observation's critical section, spec §3).
+func tripConditionFireBudgetLocked(cfg *watchConfig) (crossedBudget bool) {
+	if cfg == nil || cfg.conditionFires < watchDeliveryBudget || cfg.budgetTripped {
+		return false
+	}
+	cfg.budgetTripped = true
+	return true
+}
+
 // recordWatchDeliveryLocked increments the model-facing delivery count for cfg
 // and reports whether this delivery crossed the delivery budget. The budget
 // bounds CONDITION fires, not deliveries: every caller is a condition-fire site
 // that has counted its match into conditionFires, while a periodic progress
 // tick counts only a delivery and never arrives here, so a watch that merely
-// ticks can never trip the breaker.
-//
-// The test is "at or past the budget", latched by budgetTripped to exactly one
-// true per cfg lifetime. Equality would be wrong for the send rail: a send
-// watch counts its fire when it SNAPSHOTS a frame and lands here when that
-// frame SETTLES, so two fires snapshotted before either settles walk
-// conditionFires from 49 to 51 and every later settle would compare a counter
-// that already stepped over the budget. The caller must hold jm.mu. A true
-// result means the caller should schedule autoClearWatchOverBudget(cfg) AFTER
-// releasing jm.mu (the auto-clear does durable I/O and re-takes jm.mu; it must
-// never run from inside an observation's critical section, spec §3).
+// ticks can never trip the breaker. The caller must hold jm.mu.
 func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
 	if cfg == nil {
 		return false
 	}
 	cfg.deliveries++
-	if cfg.conditionFires >= watchDeliveryBudget && !cfg.budgetTripped {
-		cfg.budgetTripped = true
-		return true
-	}
-	return false
+	return tripConditionFireBudgetLocked(cfg)
 }
 
 // watchKeyForConfigLocked finds the live map key holding cfg. ok=false means cfg
@@ -2414,6 +2429,12 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		}
 		cfg.conditionFires++
 		if dec.send {
+			// The send rail counts its delivery at settle, which a frame the
+			// receiver never takes never reaches; the breaker is latched here,
+			// at the match, so an unsettled watch is still bounded.
+			if tripConditionFireBudgetLocked(cfg) {
+				overBudget = append(overBudget, cfg)
+			}
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
 			n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance)
@@ -2760,6 +2781,9 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
+				if tripConditionFireBudgetLocked(cfg) {
+					overBudget = append(overBudget, cfg)
+				}
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
