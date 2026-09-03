@@ -47,6 +47,33 @@ func TestWatchArgsFromToolArgs_IntegerArgumentsAreStrict(t *testing.T) {
 	}
 }
 
+// TestWatchArgsFromToolArgs_SourceMustBeAString pins the one string argument
+// whose empty value MEANS something: an unnamed source on a timer create becomes
+// self. Coercing a present non-string to "" therefore does not fail closed — it
+// silently creates a self timer out of a request that named something else.
+func TestWatchArgsFromToolArgs_SourceMustBeAString(t *testing.T) {
+	t.Parallel()
+	for _, value := range []any{float64(123), 123, true, []any{"self"}, map[string]any{}} {
+		_, err := watchArgsFromToolArgs(map[string]any{"operation": "create", "source": value, "after_seconds": float64(600)})
+		if err == nil || !strings.Contains(err.Error(), "invalid_request: source must be a string") {
+			t.Errorf("source=%v: err = %v, want source must be a string", value, err)
+		}
+	}
+	// Absent, null, and blank all keep saying "no source named", so a timer
+	// create still defaults to self.
+	for _, args := range []map[string]any{
+		{"operation": "create", "after_seconds": float64(600)},
+		{"operation": "create", "source": nil, "after_seconds": float64(600)},
+		{"operation": "create", "source": "", "after_seconds": float64(600)},
+		{"operation": "create", "source": "  ", "after_seconds": float64(600)},
+	} {
+		a, err := watchArgsFromToolArgs(args)
+		if err != nil || a.Source != "self" {
+			t.Errorf("%v: args = %+v err = %v, want the self default", args, a, err)
+		}
+	}
+}
+
 func TestWatchArgsFromToolArgs_TimerFieldsAreCreateOnlyAndNullIsNeutral(t *testing.T) {
 	t.Parallel()
 	if _, err := watchArgsFromToolArgs(map[string]any{"operation": "list", "after_seconds": nil, "repeat_seconds": float64(0), "note": ""}); err != nil {

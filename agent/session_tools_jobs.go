@@ -2067,6 +2067,24 @@ func watchIntArg(args map[string]any, key string) (int, bool, error) {
 	}
 }
 
+// watchStringArg reads an optional string job_watch argument. Absent and null
+// both mean "not named" and read as empty. A present value of another type is
+// rejected rather than coerced: for source, empty is not a neutral value — a
+// create that names no source and asks for a timer becomes a self timer — so
+// coercion would silently build a watch on something other than what was asked
+// for.
+func watchStringArg(args map[string]any, key string) (string, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return "", nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_request: %s must be a string", key)
+	}
+	return text, nil
+}
+
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	operation := strings.TrimSpace(stringArg(args, "operation"))
 	if operation == "" {
@@ -2084,10 +2102,14 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if _, ok := args["receiver_delegate_id"]; ok {
 		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
 	}
+	source, err := watchStringArg(args, "source")
+	if err != nil {
+		return watchArgs{}, err
+	}
 	a := watchArgs{
 		Operation:   operation,
 		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
-		Source:      strings.TrimSpace(stringArg(args, "source")),
+		Source:      strings.TrimSpace(source),
 		OutputMatch: stringArg(args, "output_match"),
 	}
 	for _, field := range []struct {
