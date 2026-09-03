@@ -215,29 +215,43 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 // normalization just enough for provider stringified zero defaults to pass the
 // registry schema gate. It is used only by read_transcript's registered-tool
 // pre-validation hook; preparation retains scalar coercion and its telemetry.
-func normalizeRetainedReadArgsForValidation(args map[string]any) map[string]any {
+func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any, error) {
 	normalized, _ := normalizeRetainedReadArgs(args)
 	ref := strings.TrimSpace(stringArg(normalized, "transcript_ref"))
 	if !strings.HasPrefix(ref, "job:") && !strings.HasPrefix(ref, "artifact:") {
-		return normalized
+		for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+			if value, present := normalized[field]; present && value == nil {
+				return nil, fmt.Errorf("invalid_request: %s cannot be null for session transcript refs", field)
+			}
+		}
+		return normalized, nil
 	}
 	copyNeeded := true
-	remove := func(field string) {
-		if copyNeeded {
-			copyNeeded = false
-			copyArgs := make(map[string]any, len(normalized))
-			maps.Copy(copyArgs, normalized)
-			normalized = copyArgs
+	copyForWrite := func() {
+		if !copyNeeded {
+			return
 		}
+		copyNeeded = false
+		copyArgs := make(map[string]any, len(normalized))
+		maps.Copy(copyArgs, normalized)
+		normalized = copyArgs
+	}
+	remove := func(field string) {
+		copyForWrite()
 		delete(normalized, field)
 	}
 	if value, present := normalized["expand_turn"]; present && isNeutralRetainedStringInteger(value) {
 		remove("expand_turn")
 	}
-	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) && stringArg(normalized, "output_match") == "" {
-		remove("context_lines")
+	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) {
+		if stringArg(normalized, "output_match") == "" {
+			remove("context_lines")
+		} else {
+			copyForWrite()
+			normalized["context_lines"] = float64(0)
+		}
 	}
-	return normalized
+	return normalized, nil
 }
 
 func isNeutralRetainedStringInteger(value any) bool {

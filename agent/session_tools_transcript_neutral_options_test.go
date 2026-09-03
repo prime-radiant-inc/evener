@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -101,6 +102,82 @@ func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T)
 			t.Fatalf("artifact empty format succeeded: %#v", formatResult)
 		}
 	})
+}
+
+func TestRegistryExecuteCallNormalizesStringifiedSearchContextZero(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	reg := tool.NewRegistry()
+	if err := reg.Register(readTranscriptTool(&toolDeps{stateDir: stateDir, sessionID: owner})); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	ref := "job:" + jobID
+	numeric := executeReadTranscriptFromRegistry(t, reg, "numeric-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": float64(0)})
+	if numeric.IsError {
+		t.Fatalf("numeric zero search failed: %s", numeric.Output)
+	}
+	stringified := executeReadTranscriptFromRegistry(t, reg, "string-context", map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": "0"})
+	if stringified.IsError {
+		t.Fatalf("stringified zero search failed: %s", stringified.Output)
+	}
+	if !sameReadResult(numeric.FullOutput, stringified.FullOutput) {
+		t.Fatalf("stringified zero changed search result:\nnumeric=%s\nstringified=%s", numeric.FullOutput, stringified.FullOutput)
+	}
+	for _, value := range []string{"1", "11"} {
+		result := executeReadTranscriptFromRegistry(t, reg, "nonzero-context-"+value, map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": value})
+		if !result.IsError {
+			t.Fatalf("nonzero string context_lines=%q succeeded: %#v", value, result)
+		}
+	}
+}
+
+func TestRegistryRejectsExplicitSessionNullRetainedOptions(t *testing.T) {
+	reg := tool.NewRegistry()
+	registered := readTranscriptTool(nil)
+	executed := false
+	registered.Exec = func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		executed = true
+		return "unexpected execution", nil
+	}
+	if err := reg.Register(registered); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	for _, field := range []string{"format", "range", "expand_turn", "output_match", "context_lines"} {
+		t.Run(field, func(t *testing.T) {
+			executed = false
+			result := executeReadTranscriptFromRegistry(t, reg, "session-null-"+field, map[string]any{"transcript_ref": "current", field: nil})
+			if !result.IsError {
+				t.Fatalf("session %s=null succeeded: %#v", field, result)
+			}
+			if executed {
+				t.Fatalf("session %s=null reached executor", field)
+			}
+		})
+	}
+}
+
+func TestRegistryPreservesSessionRetainedOptionRejections(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(readTranscriptTool(nil)); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{name: "empty output match", args: map[string]any{"transcript_ref": "current", "output_match": ""}, want: "output_match applies only"},
+		{name: "context without output match", args: map[string]any{"transcript_ref": "current", "context_lines": float64(0)}, want: "context_lines requires output_match"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := executeReadTranscriptFromRegistry(t, reg, "session-"+tc.name, tc.args)
+			if !result.IsError || !strings.Contains(result.Output, tc.want) {
+				t.Fatalf("session args %#v = %#v, want error containing %q", tc.args, result, tc.want)
+			}
+		})
+	}
 }
 
 func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *testing.T) {
