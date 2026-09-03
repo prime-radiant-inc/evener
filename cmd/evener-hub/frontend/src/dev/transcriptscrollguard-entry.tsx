@@ -267,7 +267,13 @@ function nextFrame(): Promise<void> {
 // mystery downstream (docs/developing-evener/testing.md's
 // unfalsifiable-fixture trap).
 const SETTLE_QUIESCENT_FRAMES = 20;
-const settledTranscript = (async (): Promise<TranscriptScrollMetrics> => {
+// Callable, not a module-load one-shot: the runner awaits webfonts FIRST
+// (waitForFonts over CDP) and only then calls this, because a late-arriving
+// font changes row geometry after load - settling must measure the
+// post-font geometry, or a font-driven shift could surface the pill before
+// the scroll-away phase and make the runner's pill assertions pass for the
+// wrong reason.
+async function waitForTranscriptSettled(): Promise<TranscriptScrollMetrics> {
   const deadline = performance.now() + 15_000;
   let quiescentFrames = 0;
   let lastScrollHeight = -1;
@@ -296,7 +302,7 @@ const settledTranscript = (async (): Promise<TranscriptScrollMetrics> => {
       );
     }
   }
-})();
+}
 
 // Scrolls away from the bottom by a REAL scroll - assigning scrollTop lets
 // the browser dispatch the native scroll event itself, which is the event
@@ -400,7 +406,7 @@ async function clickPillAndSettle(): Promise<
 
 declare global {
   interface Window {
-    settledTranscript: Promise<TranscriptScrollMetrics>;
+    waitForTranscriptSettled: typeof waitForTranscriptSettled;
     transcriptScrollMetrics: typeof metrics;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
     appendLargeTurns: typeof appendLargeTurns;
@@ -408,7 +414,7 @@ declare global {
   }
 }
 
-window.settledTranscript = settledTranscript;
+window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;
