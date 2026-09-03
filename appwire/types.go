@@ -2825,7 +2825,9 @@ type PluginCheckNowResponse struct {
 // directory and optional per-launch overrides. Preview starts no session and
 // runs no plugin code; for a requested bundled plugin it readies the same store
 // a launch publishes into, staging and removing a marked copy, so it fails
-// wherever the launch it describes would.
+// wherever the launch it describes would. Readying that store creates the
+// bundled directory under the plugin root when it is missing, and the
+// directory stays behind once the staged copy is removed.
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
