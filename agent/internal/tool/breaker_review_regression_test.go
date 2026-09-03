@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -410,7 +411,7 @@ func TestSemanticBreaker_AskUserDefaultsDoNotMutateArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(before) != string(after) {
+	if !bytes.Equal(before, after) {
 		t.Fatalf("signature mutated args: before=%s after=%s", before, after)
 	}
 	r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall("ask-no-mutate", "ask_user", string(before)))
@@ -451,7 +452,7 @@ func TestSemanticBreaker_DispatchUsesOneRegistrationSnapshot(t *testing.T) {
 	release := make(chan struct{})
 	oldCalls, newCalls := 0, 0
 	old := RegisteredTool{
-		Tool:                                llm.Tool{Definition: llm.ToolDefinition{Name: "snapshot", Parameters: map[string]any{"type": "object"}}},
+		Definition:                          llm.ToolDefinition{Name: "snapshot", Parameters: map[string]any{"type": "object"}},
 		OmitDescriptionFromSemanticIdentity: true,
 		ApplyBuiltInSemanticDefaults:        true,
 		NormalizeArgs: func(args map[string]any) (map[string]any, error) {

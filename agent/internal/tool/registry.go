@@ -450,9 +450,15 @@ func (r *Registry) MarkRegisteredToolsCoreSemanticMetadata() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for name, registered := range r.tools {
+		// This changes the semantic identity policy. Treat it like a replacement so
+		// failures classified under the old policy cannot affect the new one.
+		r.nextGeneration++
+		registered.generation = r.nextGeneration
 		registered.OmitDescriptionFromSemanticIdentity = true
 		registered.ApplyBuiltInSemanticDefaults = true
 		r.tools[name] = registered
+		r.breaker.clearTool(name)
+		r.semanticBreaker.clearTool(name)
 	}
 }
 
@@ -483,8 +489,16 @@ func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters 
 	return r.semanticSignatureFromRawFor(name, raw, parameters, nil)
 }
 
-func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, lim schema.ToolOutputLimit, judged bool) (ExecResult, bool) {
+func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, lim schema.ToolOutputLimit, generation uint64, judged bool) (ExecResult, bool) {
 	if !judged {
+		return ExecResult{}, false
+	}
+	// Registry lifetime changes take r.mu before either ledger. Keep this
+	// read lock through the ledger check so a replacement cannot install and
+	// clear a new lifetime between the generation check and this judgement.
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.isCurrentOrAbsentLocked(name, generation) {
 		return ExecResult{}, false
 	}
 	if count, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); count >= breakerThreshold {
@@ -496,10 +510,19 @@ func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature 
 	return ExecResult{}, false
 }
 
-func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, exactSignature, semanticSignature string, judged, humanBypassed bool, boundaryOverride string) ExecResult {
+func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, exactSignature, semanticSignature string, generation uint64, judged, humanBypassed bool, boundaryOverride string) ExecResult {
 	res.BreakerExactSignature = exactSignature
 	res.BreakerSemanticSignature = semanticSignature
 	res.BreakerBypassed = humanBypassed
+	// All ledger mutation is ordered under r.mu after the current-generation
+	// validation. Register/Remove take the write lock and clear both ledgers, so
+	// an in-flight result from an older registration cannot be recorded into its
+	// successor's fresh lifetime.
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.isCurrentOrAbsentLocked(name, generation) {
+		return res
+	}
 	if humanBypassed {
 		r.semanticBreaker.clear(semanticSignature)
 		return res
@@ -562,6 +585,7 @@ func (r *Registry) Clone() *Registry {
 		maps.Copy(out.tools, r.tools)
 	}
 	out.middleware = append([]toolMiddleware(nil), r.middleware...)
+	out.nextGeneration = r.nextGeneration
 	return out
 }
 
@@ -667,6 +691,8 @@ func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultTool
 	for name := range r.tools {
 		if !allowed[name] {
 			delete(r.tools, name)
+			r.breaker.clearTool(name)
+			r.semanticBreaker.clearTool(name)
 		}
 	}
 }
@@ -798,6 +824,9 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	protocolExempt := name == "model_list"
 	judged := !humanBypassed && !protocolExempt
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	currentGeneration := t.generation
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			fingerprint, boundary := r.breaker.semanticMetadata(name, call.Arguments)
@@ -808,6 +837,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			res := truncateResult(name, callID, message, true, defaultToolLimit(name))
 			res.BreakerSemanticSignature = fingerprint
 			res.BreakerExactSignature = exactSignature
+			r.mu.RUnlock()
 			return res
 		}
 	} else if humanBypassed {
@@ -819,11 +849,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		// dispatch — with no typed error left to raise another approval card.
 		r.breaker.clearFailures(name, call.Arguments)
 	}
-
-	r.mu.RLock()
-	t, ok := r.tools[name]
 	r.mu.RUnlock()
-	currentGeneration := t.generation
 	var semanticRegistered *RegisteredTool
 	if ok {
 		semanticRegistered = &t
@@ -831,13 +857,10 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, nil, semanticRegistered)
 	preNormalizationSignature := semanticSignature
 	finish := func(res ExecResult) ExecResult {
-		if ok && !r.isCurrentGeneration(name, currentGeneration) {
-			return res
-		}
-		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed, "")
+		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, "")
 	}
 	park := func(lim schema.ToolOutputLimit) (ExecResult, bool) {
-		return r.semanticPark(name, callID, semanticSignature, exactSignature, lim, judged)
+		return r.semanticPark(name, callID, semanticSignature, exactSignature, lim, currentGeneration, judged)
 	}
 	if !ok {
 		if res, blocked := park(defaultToolLimit(name)); blocked {
@@ -934,16 +957,33 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if !res.IsError && semanticSignature != preNormalizationSignature {
 		// A successful normalized execution retires prior repair/normalization
 		// failures recorded against the raw pre-normalization identity too.
-		r.semanticBreaker.clear(preNormalizationSignature)
+		r.clearSemanticIfCurrent(name, currentGeneration, preNormalizationSignature)
 	}
 	return res
 }
 
-func (r *Registry) isCurrentGeneration(name string, generation uint64) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *Registry) isCurrentGenerationLocked(name string, generation uint64) bool {
 	registered, ok := r.tools[name]
 	return ok && registered.generation == generation
+}
+
+// Generation zero is the unknown-tool lifetime. It remains eligible only while
+// the name is absent: Register takes the write lock and clears its ledgers, so
+// an unknown call that finalizes after registration cannot repopulate them.
+func (r *Registry) isCurrentOrAbsentLocked(name string, generation uint64) bool {
+	if generation == 0 {
+		_, registered := r.tools[name]
+		return !registered
+	}
+	return r.isCurrentGenerationLocked(name, generation)
+}
+
+func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signature string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.isCurrentGenerationLocked(name, generation) {
+		r.semanticBreaker.clear(signature)
+	}
 }
 
 // FinalizePrevalidationFailure records a session-level validation failure in the
@@ -959,7 +999,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 
 	r.mu.RLock()
 	t, found := r.tools[name]
-	r.mu.RUnlock()
+	generation := t.generation
 	parameters := map[string]any(nil)
 	lim := defaultToolLimit(name)
 	if found {
@@ -989,20 +1029,24 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 			res.BreakerExactSignature = exactSignature
 			res.BreakerSemanticSignature = fingerprint
 			res.PrevalOnly = true
-			return res
-		}
-		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, lim, judged); blocked {
-			res.PrevalOnly = true
+			r.mu.RUnlock()
 			return res
 		}
 	} else if humanBypassed {
 		r.breaker.clearFailures(name, call.Arguments)
 	}
+	r.mu.RUnlock()
+	if judged {
+		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, lim, generation, judged); blocked {
+			res.PrevalOnly = true
+			return res
+		}
+	}
 
 	res := truncateResult(name, callID, message, true, lim)
 	res.PrevalOnly = true
 	res.Err = err
-	return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed, boundary)
+	return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, generation, judged, humanBypassed, boundary)
 }
 
 func prevalidationBoundary(name string, rawArgs []byte, registered bool) string {
