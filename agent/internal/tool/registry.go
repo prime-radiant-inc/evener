@@ -375,6 +375,7 @@ type RegisteredTool struct {
 	// ApplyBuiltInSemanticDefaults is set only for core registrations whose
 	// handlers own the documented shell/job_stop/ask_user neutral defaults.
 	ApplyBuiltInSemanticDefaults bool
+	generation                   uint64
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
@@ -401,6 +402,7 @@ type Registry struct {
 	// the exact raw-argument fast path above.
 	semanticBreaker *semanticFailureLedger
 	telemetryKey    [32]byte
+	nextGeneration  uint64
 }
 
 // NewRegistry returns an empty Registry ready for tool registration.
@@ -627,7 +629,11 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if r.tools == nil {
 		r.tools = map[string]RegisteredTool{}
 	}
+	r.nextGeneration++
+	t.generation = r.nextGeneration
 	r.tools[t.Definition.Name] = t
+	r.breaker.clearTool(t.Definition.Name)
+	r.semanticBreaker.clearTool(t.Definition.Name)
 	return nil
 }
 
@@ -670,6 +676,8 @@ func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
+	r.breaker.clearTool(name)
+	r.semanticBreaker.clearTool(name)
 }
 
 // RegisteredNames returns a set of all currently registered tool names.
@@ -710,6 +718,8 @@ func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
+	r.breaker.clearTool(name)
+	r.semanticBreaker.clearTool(name)
 }
 
 // Get returns the named registered tool, or nil if it is not registered.
@@ -813,6 +823,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
+	currentGeneration := t.generation
 	var semanticRegistered *RegisteredTool
 	if ok {
 		semanticRegistered = &t
@@ -820,6 +831,9 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, nil, semanticRegistered)
 	preNormalizationSignature := semanticSignature
 	finish := func(res ExecResult) ExecResult {
+		if ok && !r.isCurrentGeneration(name, currentGeneration) {
+			return res
+		}
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed, "")
 	}
 	park := func(lim schema.ToolOutputLimit) (ExecResult, bool) {
@@ -923,6 +937,13 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		r.semanticBreaker.clear(preNormalizationSignature)
 	}
 	return res
+}
+
+func (r *Registry) isCurrentGeneration(name string, generation uint64) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	registered, ok := r.tools[name]
+	return ok && registered.generation == generation
 }
 
 // FinalizePrevalidationFailure records a session-level validation failure in the

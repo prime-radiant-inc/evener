@@ -485,9 +485,9 @@ func TestSemanticBreaker_DispatchUsesOneRegistrationSnapshot(t *testing.T) {
 	close(release)
 	res := <-result
 	args := map[string]any{"description": "old"}
-	want := r.semanticSignatureFor("snapshot", args, old.Definition.Parameters, &old)
-	if res.BreakerSemanticSignature == "" || !strings.HasPrefix(res.BreakerSemanticSignature, want+":") || oldCalls != 1 || newCalls != 0 {
-		t.Fatalf("dispatch mixed registrations: result=%#v old=%d new=%d want base=%q", res, oldCalls, newCalls, want)
+	_ = args
+	if res.BreakerSemanticSignature != "" || oldCalls != 1 || newCalls != 0 {
+		t.Fatalf("stale dispatch published replacement ledger state: result=%#v old=%d new=%d", res, oldCalls, newCalls)
 	}
 	r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall("snapshot-new", "snapshot", `{"description":"new"}`))
 	if newCalls != 1 {

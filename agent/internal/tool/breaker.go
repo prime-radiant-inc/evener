@@ -260,6 +260,26 @@ func (l *semanticFailureLedger) clear(base string) {
 	}
 }
 
+func (l *semanticFailureLedger) clearTool(name string) {
+	if l == nil {
+		return
+	}
+	prefix := name + ":"
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if strings.HasPrefix(entry.base, prefix) {
+			delete(l.entries, key)
+			for i, ordered := range l.order {
+				if ordered == key {
+					l.order = append(l.order[:i], l.order[i+1:]...)
+					break
+				}
+			}
+		}
+	}
+}
+
 func (l *semanticFailureLedger) touch(key string) {
 	for i, ordered := range l.order {
 		if ordered == key {
@@ -485,6 +505,26 @@ func (l *failureLedger) clearFailures(name string, args []byte) {
 	e.count = 0
 	e.snippets = nil
 	l.touch(key)
+}
+
+func (l *failureLedger) clearTool(name string) {
+	if l == nil {
+		return
+	}
+	prefix := name + ":"
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key := range l.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(l.entries, key)
+			for i, ordered := range l.order {
+				if ordered == key {
+					l.order = append(l.order[:i], l.order[i+1:]...)
+					break
+				}
+			}
+		}
+	}
 }
 
 // touch moves key to the most-recently-used end of the order and evicts the
