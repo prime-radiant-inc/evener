@@ -146,6 +146,32 @@ func TestRepairChangePhraseAliasWithDetail(t *testing.T) {
 	}
 }
 
+func TestRepairChangePhraseDefaultCommunicateEnvelopeRepairs(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{
+			raw:  "synthesize:output:synthesized default envelope",
+			want: "created the required output object",
+		},
+		{
+			raw:  "copy:message:copied output.message",
+			want: "copied nested output.message to the required message",
+		},
+		{
+			raw:  "promote_json_object:output:promoted JSON object string",
+			want: "converted the output JSON string to an object",
+		},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			if got := repairChangePhrase(tc.raw); got != tc.want {
+				t.Fatalf("repairChangePhrase(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFieldDetailShortParts covers the len < 3 return of "".
 func TestFieldDetailShortParts(t *testing.T) {
 	if got := fieldDetail([]string{"a", "b"}); got != "" {
