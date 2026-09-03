@@ -451,7 +451,7 @@ func registerThreadHandlers(
 			if params.PageUnit == appwire.TranscriptPageUnitItem {
 				var handled bool
 				live, handled, liveErr = listItemTurns(ctx, source, params, logf)
-				if handled && liveErr == nil && len(live.Data) > 0 {
+				if handled && liveErr == nil {
 					return live, nil
 				}
 			} else {

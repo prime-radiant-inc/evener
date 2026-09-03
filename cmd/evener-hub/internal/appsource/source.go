@@ -314,7 +314,7 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 	if err != nil {
 		return localDaemonItemSnapshot{}, err
 	}
-	candidates, err := localDaemonItemCandidates(turns)
+	candidates, err := localDaemonMaterializedItemCandidates(turns)
 	if err != nil {
 		return localDaemonItemSnapshot{}, err
 	}
@@ -392,6 +392,36 @@ func localDaemonItemCandidates(turns []appwire.Turn) ([]appitempaging.Transcript
 		}
 	}
 	return candidates, nil
+}
+
+// localDaemonMaterializedItemCandidates supports same-v3 daemons that return
+// legacy turns after the caller has assembled their complete chronological
+// transcript. Any item metadata makes the whole response use strict item-mode
+// validation so mixed or partially upgraded responses are never rewritten.
+func localDaemonMaterializedItemCandidates(turns []appwire.Turn) ([]appitempaging.TranscriptItemCandidate, error) {
+	legacy := true
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Position != nil || item.TranscriptKey != "" {
+				legacy = false
+				break
+			}
+		}
+		if !legacy {
+			break
+		}
+	}
+	if legacy {
+		for turnIndex := range turns {
+			for itemIndex := range turns[turnIndex].Items {
+				position := appwire.ThreadItemPosition{Entry: uint64(turnIndex), Item: uint32(itemIndex)}
+				item := &turns[turnIndex].Items[itemIndex]
+				item.Position = &position
+				item.TranscriptKey = appitempaging.TranscriptItemKey(turns[turnIndex].ID, position)
+			}
+		}
+	}
+	return localDaemonItemCandidates(turns)
 }
 
 // RelaySessionSource is implemented by sources that can preserve one ordered

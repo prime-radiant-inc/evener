@@ -593,7 +593,7 @@ func (s *localEmptyItemRPCSource) ReadItemCandidates(context.Context, appwire.Th
 }
 
 func (*localEmptyItemRPCSource) ListItemCandidates(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
-	return appsource.ItemCandidateResult{Exhausted: true}, nil
+	return appsource.ItemCandidateResult{}, errors.New("cursor is not owned by live source")
 }
 
 type rpcAtomicPagingFixture struct {

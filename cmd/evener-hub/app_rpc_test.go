@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -214,6 +215,93 @@ func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
 		t.Fatalf("small-limit thread/turns/list items = %d, want 3", got)
 	}
 }
+
+func TestHubRPCItemListPreservesTerminalSourcePageAndSavedCursorFallback(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	sessionID := entry.Meta.ID
+	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	savedFirst, found, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	})
+	if err != nil || !found || len(savedFirst.Thread.Turns) == 0 || savedFirst.OlderCursor == "" {
+		t.Fatalf("saved item fixture = (%+v, found=%v, err=%v), want non-empty page with continuation", savedFirst, found, err)
+	}
+	savedSecond, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: savedFirst.OlderCursor,
+	})
+	if err != nil || !found || len(savedSecond.Data) == 0 {
+		t.Fatalf("saved continuation fixture = (%+v, found=%v, err=%v), want non-empty page", savedSecond, found, err)
+	}
+
+	identity := appitempaging.CursorIdentity{ThreadRef: ref, Incarnation: "live-terminal", ProjectionVersion: 1}
+	liveCursor, err := appitempaging.EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 100, Item: 0})
+	if err != nil {
+		t.Fatalf("encode live terminal cursor: %v", err)
+	}
+	var candidateCursors []string
+	source := &localItemPackingRPCSource{itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: ref},
+		}},
+		listCandidates: func(_ context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			candidateCursors = append(candidateCursors, params.Cursor)
+			switch params.Cursor {
+			case liveCursor:
+				return appsource.ItemCandidateResult{Identity: identity, Exhausted: true}, nil
+			case savedFirst.OlderCursor:
+				return appsource.ItemCandidateResult{}, errors.New("cursor is not owned by live source")
+			default:
+				return appsource.ItemCandidateResult{}, fmt.Errorf("unexpected candidate cursor %q", params.Cursor)
+			}
+		},
+		rejectLegacyItemList: true,
+	}}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+
+	dispatch := func(cursor string) (appwire.ThreadTurnsListResponse, error) {
+		value, dispatchErr := server.Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList,
+			Params: mustJSON(t, appwire.ThreadTurnsListParams{
+				Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: cursor,
+			}),
+		})
+		if dispatchErr != nil {
+			return appwire.ThreadTurnsListResponse{}, dispatchErr
+		}
+		response, ok := value.(appwire.ThreadTurnsListResponse)
+		if !ok {
+			t.Fatalf("thread/turns/list response = %T", value)
+		}
+		return response, nil
+	}
+
+	terminal, err := dispatch(liveCursor)
+	if err != nil {
+		t.Fatalf("source-accepted terminal cursor: %v", err)
+	}
+	if terminal.PageUnit != appwire.TranscriptPageUnitItem || len(terminal.Data) != 0 || terminal.NextCursor != "" {
+		t.Fatalf("source terminal page = %+v, want empty exhausted item page", terminal)
+	}
+
+	fallback, err := dispatch(savedFirst.OlderCursor)
+	if err != nil {
+		t.Fatalf("saved-owned cursor fallback: %v", err)
+	}
+	if !reflect.DeepEqual(fallback, savedSecond) {
+		t.Fatalf("saved-owned cursor fallback = %+v, want %+v", fallback, savedSecond)
+	}
+	if !slices.Equal(candidateCursors, []string{liveCursor, savedFirst.OlderCursor}) {
+		t.Fatalf("candidate cursors = %v, want live then saved", candidateCursors)
+	}
+}
+
+type localItemPackingRPCSource struct {
+	itemPackingRPCSource
+}
+
+func (*localItemPackingRPCSource) ID() string { return "local" }
 
 type itemPackingRPCSource struct {
 	relayLifecycleSource

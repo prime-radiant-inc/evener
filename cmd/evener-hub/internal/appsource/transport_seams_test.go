@@ -785,6 +785,172 @@ func TestLocalDaemonItemCandidatesMaterializeNativePagesChronologically(t *testi
 	}
 }
 
+func TestLocalDaemonItemCandidatesSynthesizeLegacyV3MaterializedMetadata(t *testing.T) {
+	turns := []appwire.Turn{
+		{ID: "turn-0", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-0-0", Text: "oldest"},
+			{Type: "agentMessage", ID: "item-0-1", Text: "older"},
+		}},
+		{ID: "turn-1", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-1-0", Text: "middle"},
+		}},
+		{ID: "turn-2", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-2-0", Text: "newer"},
+			{Type: "agentMessage", ID: "item-2-1", Text: "newest"},
+		}},
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "legacy-v3-daemon", SourceID: "local"})
+	var (
+		requests    []appwire.ThreadTurnsListParams
+		authHeaders []string
+	)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		requests = append(requests, params)
+		switch params.Cursor {
+		case "":
+			return appwire.ThreadTurnsListResponse{Data: turns[1:], NextCursor: "legacy-older"}, nil
+		case "legacy-older":
+			return appwire.ThreadTurnsListResponse{Data: turns[:1]}, nil
+		default:
+			return appwire.ThreadTurnsListResponse{}, fmt.Errorf("unexpected native cursor %q", params.Cursor)
+		}
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		server.ServeWebSocket(w, r)
+	}))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local", ThreadID: "legacy-thread", SessionID: "legacy-thread",
+		WorkspaceRef: "local:legacy-thread", InstanceID: "legacy-v3-instance", HubToken: "authenticated-token",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+
+	assertCandidates := func(label string, candidates []appitempaging.TranscriptItemCandidate, wantIDs []string, wantPositions []appwire.ThreadItemPosition) {
+		t.Helper()
+		if len(candidates) != len(wantIDs) || len(wantIDs) != len(wantPositions) {
+			t.Fatalf("%s candidate count = %d, want %d", label, len(candidates), len(wantIDs))
+		}
+		for i, candidate := range candidates {
+			if candidate.Item.ID != wantIDs[i] || candidate.Position != wantPositions[i] || candidate.Item.Position == nil || *candidate.Item.Position != wantPositions[i] {
+				t.Fatalf("%s candidate %d = %+v, want id %q position %+v", label, i, candidate, wantIDs[i], wantPositions[i])
+			}
+			wantKey := appitempaging.TranscriptItemKey(candidate.TurnID, wantPositions[i])
+			if candidate.Item.TranscriptKey != wantKey || candidate.Item.TurnID != candidate.TurnID {
+				t.Fatalf("%s candidate %d identity = key %q item turn %q, want key %q turn %q", label, i, candidate.Item.TranscriptKey, candidate.Item.TurnID, wantKey, candidate.TurnID)
+			}
+		}
+	}
+
+	latest, err := source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:legacy-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3,
+	})
+	if err != nil {
+		t.Fatalf("legacy-v3 latest item page: %v", err)
+	}
+	assertCandidates("latest", latest.Candidates.Candidates,
+		[]string{"item-1-0", "item-2-0", "item-2-1"},
+		[]appwire.ThreadItemPosition{{Entry: 1, Item: 0}, {Entry: 2, Item: 0}, {Entry: 2, Item: 1}})
+	if latest.Candidates.OlderCursor == "" {
+		t.Fatal("legacy-v3 latest page has no hub-owned continuation")
+	}
+	older, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:legacy-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3, Cursor: latest.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("legacy-v3 older item page: %v", err)
+	}
+	assertCandidates("older", older.Candidates.Candidates,
+		[]string{"item-0-0", "item-0-1"},
+		[]appwire.ThreadItemPosition{{Entry: 0, Item: 0}, {Entry: 0, Item: 1}})
+	if !older.Exhausted || older.Candidates.OlderCursor != "" {
+		t.Fatalf("legacy-v3 older page = %+v, want exhausted terminal page", older)
+	}
+
+	wantNativeCursors := []string{"", "legacy-older", "", "legacy-older"}
+	if len(requests) != len(wantNativeCursors) {
+		t.Fatalf("legacy-v3 daemon calls = %d, want %d: %+v", len(requests), len(wantNativeCursors), requests)
+	}
+	if len(authHeaders) != len(requests) {
+		t.Fatalf("legacy-v3 authenticated WebSockets = %d, want %d", len(authHeaders), len(requests))
+	}
+	for i, request := range requests {
+		if request.Ref != "local:legacy-thread" || request.ThreadID != "legacy-thread" || request.PageUnit != appwire.TranscriptPageUnitTurn || request.ItemsView != string(appwire.TurnItemsViewFull) || request.Cursor != wantNativeCursors[i] {
+			t.Fatalf("legacy-v3 daemon call %d = %+v, want shared route, resolved thread, full turn materialization, cursor %q", i, request, wantNativeCursors[i])
+		}
+		if authHeaders[i] != "Bearer authenticated-token" {
+			t.Fatalf("legacy-v3 daemon call %d authorization = %q, want bearer token", i, authHeaders[i])
+		}
+	}
+}
+
+func TestLocalDaemonMaterializedCompatibilityPreservesStrictMetadataBoundary(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "metadata-v3-daemon", SourceID: "local"})
+	var turns []appwire.Turn
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		return appwire.ThreadTurnsListResponse{Data: turns}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local", ThreadID: "metadata-thread", SessionID: "metadata-thread",
+		WorkspaceRef: "local:metadata-thread", InstanceID: "metadata-v3-instance", HubToken: "authenticated-token",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+	read := func() (ItemCandidateResult, error) {
+		return source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{
+			Ref: "local:metadata-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 10,
+		})
+	}
+
+	originalPosition := appwire.ThreadItemPosition{Entry: 12, Item: 34}
+	turns = []appwire.Turn{{ID: "modern-turn", Items: []appwire.ThreadItem{{
+		Type: "agentMessage", ID: "modern-item", TurnID: "modern-item-turn", TranscriptKey: "modern-original-key", Position: &originalPosition,
+	}}}}
+	modern, err := read()
+	if err != nil {
+		t.Fatalf("complete modern metadata: %v", err)
+	}
+	if len(modern.Candidates.Candidates) != 1 {
+		t.Fatalf("modern candidates = %+v, want one", modern.Candidates.Candidates)
+	}
+	modernItem := modern.Candidates.Candidates[0].Item
+	if modernItem.TranscriptKey != "modern-original-key" || modernItem.Position == nil || *modernItem.Position != originalPosition || modernItem.TurnID != "modern-item-turn" {
+		t.Fatalf("modern metadata changed = %+v", modernItem)
+	}
+
+	for _, test := range []struct {
+		name  string
+		items []appwire.ThreadItem
+	}{
+		{name: "mixed legacy and modern", items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "legacy-item"},
+			{Type: "agentMessage", ID: "modern-item", TranscriptKey: "modern-key", Position: &appwire.ThreadItemPosition{Entry: 0, Item: 1}},
+		}},
+		{name: "position only", items: []appwire.ThreadItem{{
+			Type: "agentMessage", ID: "position-only", Position: &appwire.ThreadItemPosition{Entry: 0, Item: 0},
+		}}},
+		{name: "transcript key only", items: []appwire.ThreadItem{{
+			Type: "agentMessage", ID: "key-only", TranscriptKey: "existing-key",
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			turns = []appwire.Turn{{ID: "malformed-turn", Items: test.items}}
+			if result, readErr := read(); readErr == nil {
+				t.Fatalf("malformed materialized metadata returned %+v", result)
+			}
+		})
+	}
+
+	if result, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:metadata-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1,
+	}, appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "native-item-turn", Items: []appwire.ThreadItem{{
+		Type: "agentMessage", ID: "native-unpositioned",
+	}}}}}}); err == nil {
+		t.Fatalf("native item-mode response without metadata returned %+v", result)
+	}
+}
+
 func TestLocalDaemonItemPagingCycleErrorDoesNotLeakNativeCursor(t *testing.T) {
 	const secret = "local-secret-cursor"
 	respond := func(method string) (any, error) {
