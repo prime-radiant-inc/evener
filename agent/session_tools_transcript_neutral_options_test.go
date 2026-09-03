@@ -69,6 +69,62 @@ func TestReadTranscriptSemanticFailureBreakerReplay(t *testing.T) {
 	}
 }
 
+func TestSessionReadTranscriptSemanticBreakerTelemetry(t *testing.T) {
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
+	endsCh := make(chan []events.ToolCallEndData, 1)
+	go func() {
+		var ends []events.ToolCallEndData
+		for event := range sess.Events() {
+			if end, ok := event.Data.(events.ToolCallEndData); ok && strings.HasPrefix(end.CallID, "semantic-event-") {
+				ends = append(ends, end)
+			}
+		}
+		endsCh <- ends
+	}()
+
+	for i := range 3 {
+		result := execReadTranscriptThroughSession(t, sess, fmt.Sprintf("semantic-event-%d", i), map[string]any{
+			"transcript_ref": "job:semantic_event_replay",
+			"range":          "1-2",
+			"intent":         fmt.Sprintf("presentation only %d", i),
+		})
+		if i == 2 && !strings.Contains(result.Output, "semantic failure loop") {
+			t.Fatalf("third semantic replay call was not parked: %#v", result)
+		}
+	}
+	sess.Close()
+	ends := <-endsCh
+	if len(ends) != 3 {
+		t.Fatalf("TOOL_CALL_END count = %d, want 3", len(ends))
+	}
+	for i, end := range ends {
+		if end.BreakerExactSignature == "" || end.BreakerSemanticSignature == "" {
+			t.Fatalf("TOOL_CALL_END %d missing breaker signatures: %#v", i+1, end)
+		}
+		if end.BreakerBypassed {
+			t.Fatalf("ordinary semantic replay was recorded as bypassed: %#v", end)
+		}
+		if strings.Contains(end.BreakerExactSignature, "presentation only") || strings.Contains(end.BreakerSemanticSignature, "presentation only") {
+			t.Fatalf("TOOL_CALL_END %d exposes presentation text: %#v", i+1, end)
+		}
+	}
+	if ends[0].BreakerExactSignature == ends[1].BreakerExactSignature {
+		t.Fatalf("intent variants unexpectedly share exact telemetry: %q", ends[0].BreakerExactSignature)
+	}
+	if ends[0].BreakerSemanticSignature != ends[1].BreakerSemanticSignature {
+		t.Fatalf("intent variants have different semantic telemetry: %q != %q", ends[0].BreakerSemanticSignature, ends[1].BreakerSemanticSignature)
+	}
+}
+
 // TestReadTranscriptNeutralMaterializedRetainedOptions covers the provider shape
 // observed in 034HvTCI5LrwbM2ZZpBMqN. The semantically empty options must select
 // the same retained-read mode and return the same result as their omission.

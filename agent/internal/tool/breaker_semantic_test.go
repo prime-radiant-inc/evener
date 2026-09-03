@@ -15,7 +15,6 @@ import (
 func registerSemanticBreakerFake(t *testing.T, r *Registry, fn func(args map[string]any, calls int) (any, error)) *breakerFake {
 	t.Helper()
 	fake := &breakerFake{}
-	fake.fn = func(calls int) (any, error) { return nil, nil }
 	if err := r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "semantic_fake",
@@ -159,8 +158,8 @@ func TestSemanticFailureBreaker_SignaturesAreBoundedAndRedacted(t *testing.T) {
 	}
 	bodyA := semanticCallSignature("write_file", map[string]any{"file_path": "a", "content": strings.Repeat("a", 4096)})
 	bodyB := semanticCallSignature("write_file", map[string]any{"file_path": "a", "content": strings.Repeat("b", 4096)})
-	if bodyA != bodyB {
-		t.Fatalf("unbounded bodies must be omitted from semantic signatures: %q != %q", bodyA, bodyB)
+	if bodyA == bodyB {
+		t.Fatalf("behavior-driving bodies must remain distinct in the private semantic identity: %q", bodyA)
 	}
 	meaningful := map[string]any{"transcript_ref": "job:one", "offset_bytes": float64(0), "watch_id": "watch-a", "task_id": float64(1), "operation": "create"}
 	baseline := semanticCallSignature("job_watch", meaningful)

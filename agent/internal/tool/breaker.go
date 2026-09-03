@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"unicode"
@@ -25,11 +26,6 @@ const maxFailureSnippets = 2
 // maxFailureSnippetRunes truncates each retained failure output, in runes.
 const maxFailureSnippetRunes = 500
 
-// maxSemanticArgumentRunes bounds a single value participating in a semantic
-// signature. The signature itself is a short hash, but omitting unbounded
-// bodies before hashing prevents arbitrary prose from creating fresh retries.
-const maxSemanticArgumentRunes = 256
-
 // failureEntry tracks, for one dispatch signature (tool name + argument
 // hash), two independent streaks: consecutive failures sharing an error
 // class, and consecutive calls returning a byte-identical result body.
@@ -40,6 +36,9 @@ type failureEntry struct {
 
 	bodyHash  string
 	bodyCount int
+
+	semanticFingerprint string
+	semanticBoundary    string
 }
 
 // failureLedger records consecutive identical-failure streaks per dispatch
@@ -58,6 +57,31 @@ func newFailureLedger() *failureLedger {
 	}
 }
 
+func (l *failureLedger) annotateSemantic(name string, args []byte, fingerprint, boundary string) {
+	if l == nil || fingerprint == "" {
+		return
+	}
+	key := signature(name, args)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[key]; ok {
+		entry.semanticFingerprint = fingerprint
+		entry.semanticBoundary = boundary
+	}
+}
+
+func (l *failureLedger) semanticMetadata(name string, args []byte) (fingerprint, boundary string) {
+	if l == nil {
+		return "", ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[signature(name, args)]; ok {
+		return entry.semanticFingerprint, entry.semanticBoundary
+	}
+	return "", ""
+}
+
 // signature returns the ledger key for a dispatch: the tool name plus a
 // hash of its raw argument bytes. Two calls with byte-identical arguments
 // share a signature; differing JSON formatting (key order, whitespace) does
@@ -72,7 +96,11 @@ func signature(name string, args []byte) string {
 // explicit retained-output offset while inheriting a tool's own omission rules
 // (notably read_transcript's #827 neutral-default normalization).
 func semanticCallSignature(name string, args map[string]any) string {
-	encoded, err := json.Marshal(semanticArgumentValue(args, ""))
+	return semanticCallSignatureWithDefaults(name, args, nil)
+}
+
+func semanticCallSignatureWithDefaults(name string, args map[string]any, parameters map[string]any) string {
+	encoded, err := semanticCanonicalBytes(name, args, parameters)
 	if err != nil {
 		// Args have passed JSON parsing and schema validation, so this is a
 		// defensive fallback rather than a normal path. It remains bounded and
@@ -82,23 +110,49 @@ func semanticCallSignature(name string, args map[string]any) string {
 	return name + ":" + shortHash(encoded)
 }
 
-// semanticArgumentValue removes presentation-only and sensitive fields from
-// a signature and replaces unbounded bodies with fixed markers. Values are
-// hashed only after this pass, so telemetry cannot recover a secret or a body.
+func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any) ([]byte, error) {
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), ""))
+}
+
+// canonicalSemanticArgs applies only documented handler defaults. It never
+// drops an explicit zero: absent and explicit values become equivalent only
+// when the schema or handler declares that exact default.
+func canonicalSemanticArgs(name string, args map[string]any, parameters map[string]any) map[string]any {
+	out := make(map[string]any, len(args)+1)
+	maps.Copy(out, args)
+	if properties, ok := parameters["properties"].(map[string]any); ok {
+		for field, schemaValue := range properties {
+			if _, present := out[field]; present {
+				continue
+			}
+			if schema, ok := schemaValue.(map[string]any); ok {
+				if value, hasDefault := schema["default"]; hasDefault {
+					out[field] = value
+				}
+			}
+		}
+	}
+	// These aliases share shell's runtime default, which intentionally lives in
+	// the handler rather than the wire schema.
+	switch name {
+	case "shell", "exec_command", "run_shell_command":
+		if _, present := out["mode"]; !present {
+			out["mode"] = "foreground"
+		}
+	}
+	return out
+}
+
+// semanticArgumentValue removes only top-level built-in presentation metadata.
+// Every behavior-driving value, including nested custom/MCP fields and bodies,
+// stays in the canonical identity. The registry HMACs those bytes before any
+// signature leaves process memory, so retaining identity does not expose text.
 func semanticArgumentValue(value any, field string) any {
 	switch value := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(value))
 		for key, item := range value {
-			keyLower := strings.ToLower(key)
-			switch keyLower {
-			case "intent", "description":
-				continue
-			case "secret", "token", "password", "authorization", "api_key", "access_token":
-				out[key] = "<redacted>"
-				continue
-			case "body", "content", "patch":
-				out[key] = "<omitted-body>"
+			if field == "" && (key == "intent" || key == "description") {
 				continue
 			}
 			out[key] = semanticArgumentValue(item, key)
@@ -111,15 +165,6 @@ func semanticArgumentValue(value any, field string) any {
 		}
 		return out
 	case string:
-		if len([]rune(value)) > maxSemanticArgumentRunes {
-			switch strings.ToLower(field) {
-			case "output_match", "regex", "pattern":
-				// Regex text can legitimately be large but is a meaningful
-				// selector, not a presentation body. Keep only a bounded digest.
-				return "<hash:" + shortHash([]byte(value)) + ">"
-			}
-			return "<omitted-unbounded>"
-		}
 		return value
 	default:
 		return value
@@ -285,10 +330,7 @@ func semanticFailureNudgeText(boundary string) string {
 func semanticFailureParkText(name, semanticSignature, boundary string, attempts int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, semanticSignature, attempts, boundary)
-	b.WriteString("\n\nPrior attempts:")
-	for attempt := 1; attempt <= attempts; attempt++ {
-		fmt.Fprintf(&b, "\n%d. %s", attempt, boundary)
-	}
+	fmt.Fprintf(&b, "\n\nPrior attempts: %d semantically equivalent failures at %s.", attempts, boundary)
 	b.WriteString("\n\nTake a materially different valid action: ")
 	if name == "read_transcript" {
 		b.WriteString("use a transcript_ref compatible with the selected mode; for job: and artifact: refs, omit session-only range and expand_turn fields.")
@@ -454,6 +496,18 @@ func errorClass(output string) string {
 
 	sum := sha256.Sum256([]byte(line))
 	return hex.EncodeToString(sum[:4])
+}
+
+// semanticErrorClass uses stable machine-facing failure boundaries whenever a
+// handler supplies one. Generic executor errors retain the existing normalized
+// error class, preserving the exact breaker's distinction between genuinely
+// different failures that lack a typed boundary.
+func semanticErrorClass(output string) string {
+	boundary := failureBoundary(output)
+	if boundary != "tool_execution" {
+		return boundary
+	}
+	return errorClass(output)
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the

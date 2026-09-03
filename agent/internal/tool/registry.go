@@ -3,6 +3,8 @@ package tool
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -392,11 +394,94 @@ type Registry struct {
 	// semanticBreaker retains failed normalized call signatures separately from
 	// the exact raw-argument fast path above.
 	semanticBreaker *semanticFailureLedger
+	telemetryKey    [32]byte
 }
 
 // NewRegistry returns an empty Registry ready for tool registration.
 func NewRegistry() *Registry {
-	return &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger(), semanticBreaker: newSemanticFailureLedger()}
+	r := &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger(), semanticBreaker: newSemanticFailureLedger()}
+	if _, err := rand.Read(r.telemetryKey[:]); err != nil {
+		panic("tool telemetry key: " + err.Error())
+	}
+	return r
+}
+
+func (r *Registry) telemetryExactSignature(name string, args []byte) string {
+	h := hmac.New(sha256.New, r.telemetryKey[:])
+	_, _ = h.Write(args)
+	sum := h.Sum(nil)
+	return name + ":" + hex.EncodeToString(sum[:8])
+}
+
+func (r *Registry) semanticSignature(name string, args map[string]any, parameters map[string]any) string {
+	encoded, err := semanticCanonicalBytes(name, args, parameters)
+	if err != nil {
+		encoded = []byte("unencodable")
+	}
+	h := hmac.New(sha256.New, r.telemetryKey[:])
+	_, _ = h.Write(encoded)
+	return name + ":" + hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters map[string]any) string {
+	if len(raw) > maxToolArgumentBytes {
+		return name + ":oversize"
+	}
+	args := map[string]any{}
+	if len(raw) > 0 && json.Unmarshal(raw, &args) != nil {
+		return name + ":invalid-json"
+	}
+	return r.semanticSignature(name, args, parameters)
+}
+
+func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, lim schema.ToolOutputLimit, judged bool) (ExecResult, bool) {
+	if !judged {
+		return ExecResult{}, false
+	}
+	if count, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); count >= breakerThreshold {
+		res := truncateResult(name, callID, semanticFailureParkText(name, fingerprint, boundary, count), true, lim)
+		res.BreakerExactSignature = exactSignature
+		res.BreakerSemanticSignature = fingerprint
+		return res, true
+	}
+	return ExecResult{}, false
+}
+
+func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, exactSignature, semanticSignature string, judged, humanBypassed bool) ExecResult {
+	res.BreakerExactSignature = exactSignature
+	res.BreakerSemanticSignature = semanticSignature
+	res.BreakerBypassed = humanBypassed
+	if humanBypassed {
+		r.semanticBreaker.clear(semanticSignature)
+		return res
+	}
+	if !judged {
+		return res
+	}
+	body := res.FullOutput
+	if body == "" {
+		body = res.Output
+	}
+	failStreak, repeatStreak := r.breaker.record(name, rawArgs, res.IsError, body)
+	semanticFailStreak := 0
+	if res.IsError {
+		boundary := failureBoundary(body)
+		fingerprint, count := r.semanticBreaker.record(semanticSignature, semanticErrorClass(body), boundary)
+		r.breaker.annotateSemantic(name, rawArgs, fingerprint, boundary)
+		res.BreakerSemanticSignature = fingerprint
+		semanticFailStreak = count
+	} else {
+		r.semanticBreaker.clear(semanticSignature)
+	}
+	switch {
+	case failStreak >= breakerThreshold:
+		appendIntervention(&res, failureNudgeText)
+	case semanticFailStreak >= breakerThreshold:
+		appendIntervention(&res, semanticFailureNudgeText(failureBoundary(body)))
+	case repeatStreak >= breakerThreshold:
+		appendIntervention(&res, repetitionNudgeText(repeatStreak))
+	}
+	return res
 }
 
 // Clone returns an independent registry with the same registered tools and
@@ -641,15 +726,22 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	// change, and refusing it would strand a session repeating its result tool.
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
-	judged := !breakerBypassed(ctx) && name != "model_list"
-	exactSignature := signature(name, call.Arguments)
+	humanBypassed := breakerBypassed(ctx)
+	protocolExempt := name == "model_list"
+	judged := !humanBypassed && !protocolExempt
+	exactSignature := r.telemetryExactSignature(name, call.Arguments)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
+			fingerprint, boundary := r.breaker.semanticMetadata(name, call.Arguments)
 			res := truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			if fingerprint != "" {
+				appendIntervention(&res, semanticFailureParkText(name, fingerprint, boundary, failStreak))
+				res.BreakerSemanticSignature = fingerprint
+			}
 			res.BreakerExactSignature = exactSignature
 			return res
 		}
-	} else {
+	} else if humanBypassed {
 		// A human authorized this dispatch, which retires the refusals that
 		// led here as evidence. Clearing rather than merely skipping judgement
 		// is what keeps a repeatedly-approved call approvable: the grant is
@@ -662,27 +754,37 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
+	semanticSignature := r.semanticSignatureFromRaw(name, call.Arguments, nil)
+	finish := func(res ExecResult) ExecResult {
+		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed)
+	}
+	park := func(lim schema.ToolOutputLimit) (ExecResult, bool) {
+		return r.semanticPark(name, callID, semanticSignature, exactSignature, lim, judged)
+	}
 	if !ok {
+		if res, blocked := park(defaultToolLimit(name)); blocked {
+			return res
+		}
 		msg := "unknown tool: " + name
-		res := truncateResult(name, callID, msg, true, defaultToolLimit(name))
-		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-		return res
+		return finish(truncateResult(name, callID, msg, true, defaultToolLimit(name)))
 	}
 
 	if len(call.Arguments) > maxToolArgumentBytes {
+		if res, blocked := park(t.Limit); blocked {
+			return res
+		}
 		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
-		res := truncateResult(name, callID, msg, true, defaultToolLimit(name))
-		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-		return res
+		return finish(truncateResult(name, callID, msg, true, defaultToolLimit(name)))
 	}
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			if res, blocked := park(t.Limit); blocked {
+				return res
+			}
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
-			res := truncateResult(name, callID, msg, true, t.Limit)
-			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-			return res
+			return finish(truncateResult(name, callID, msg, true, t.Limit))
 		}
 	}
 	if args == nil {
@@ -694,38 +796,38 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
 		if err != nil {
-			res := truncateResult(name, callID, err.Error(), true, t.Limit)
-			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-			return res
+			if res, blocked := park(t.Limit); blocked {
+				return res
+			}
+			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
 		}
 		args = normalized
+		semanticSignature = r.semanticSignature(name, args, t.Definition.Parameters)
 	}
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
-			res := truncateResult(name, callID, err.Error(), true, t.Limit)
-			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-			return res
+			if res, blocked := park(t.Limit); blocked {
+				return res
+			}
+			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
 		}
 		args = normalized
 	}
+	semanticSignature = r.semanticSignature(name, args, t.Definition.Parameters)
 
 	if err := t.Schema.Validate(args); err != nil {
-		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
-		res := truncateResult(name, callID, msg, true, t.Limit)
-		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
-		return res
-	}
-
-	semanticSignature := semanticCallSignature(name, args)
-	if judged {
-		if failStreak, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); failStreak >= breakerThreshold {
-			res := truncateResult(name, callID, semanticFailureParkText(name, fingerprint, boundary, failStreak), true, t.Limit)
-			res.BreakerExactSignature = exactSignature
-			res.BreakerSemanticSignature = fingerprint
+		if res, blocked := park(t.Limit); blocked {
 			return res
 		}
-	} else {
+		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
+		return finish(truncateResult(name, callID, msg, true, t.Limit))
+	}
+
+	if res, blocked := park(t.Limit); blocked {
+		return res
+	}
+	if humanBypassed {
 		// Keep the human-approved bypass auditable and make it reset the same
 		// normalized run it was authorizing, not merely its raw JSON variant.
 		r.semanticBreaker.clear(semanticSignature)
@@ -736,9 +838,10 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	for _, mw := range mws {
 		if err := mw(ctx, name, args); err != nil {
-			res := truncateResult(name, callID, err.Error(), true, t.Limit)
-			res.BreakerExactSignature, res.BreakerSemanticSignature, res.BreakerBypassed = exactSignature, semanticSignature, !judged
-			return res
+			if res, blocked := park(t.Limit); blocked {
+				return res
+			}
+			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
 		}
 	}
 
@@ -755,40 +858,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
-	res.BreakerExactSignature, res.BreakerSemanticSignature, res.BreakerBypassed = exactSignature, semanticSignature, !judged
-	if judged {
-		// Recorded on the untruncated body, before any nudge is appended, so
-		// the nudge cannot poison the body hash. FullOutput rather than
-		// Output: a TruncTail tool renders every over-limit error behind the
-		// same truncation banner, and classing on that banner would read two
-		// unrelated failures as one and park a call that never repeated
-		// itself. Nudging after truncation is deliberate: the text must
-		// survive the limiter.
-		judgedBody := res.FullOutput
-		if judgedBody == "" {
-			judgedBody = res.Output
-		}
-		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, judgedBody)
-		semanticFailStreak := 0
-		if res.IsError {
-			semanticFailureSignature, count := r.semanticBreaker.record(semanticSignature, errorClass(judgedBody), failureBoundary(judgedBody))
-			res.BreakerSemanticSignature = semanticFailureSignature
-			semanticFailStreak = count
-		} else {
-			r.semanticBreaker.clear(semanticSignature)
-		}
-		switch {
-		case failStreak >= breakerThreshold:
-			appendIntervention(&res, failureNudgeText)
-		case semanticFailStreak >= breakerThreshold:
-			appendIntervention(&res, semanticFailureNudgeText(failureBoundary(judgedBody)))
-		case repeatStreak >= breakerThreshold:
-			// Repeats on every subsequent identical result: nothing else
-			// applies pressure once repetition is never parked.
-			appendIntervention(&res, repetitionNudgeText(repeatStreak))
-		}
-	}
-	return res
+	return finish(res)
 }
 
 // dispatchedResult turns an executor's return into an ExecResult, unpacking
