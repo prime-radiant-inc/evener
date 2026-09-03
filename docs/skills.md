@@ -12,10 +12,10 @@ A markdown template that can run shell commands is code. Evener's rule:
 - **Templates you explicitly installed** (plugins) may execute shell at
   expansion time. Installing a plugin is a trust decision, like installing
   software.
-- **Templates evener discovers automatically** (project `skills/` and
-  `.evener/commands/` directories, your user-global commands directory) never
-  execute shell and never read files at expansion time. Anything in a repo
-  you merely cloned is inert text.
+- **Templates evener discovers automatically** (project and user-global
+  `skills/` directories, project `.evener/commands/`, and your user-global
+  commands directory) never execute shell and never read files at expansion
+  time. Anything in a repo you merely cloned is inert text.
 
 This mirrors codex's posture: in codex, skills and custom prompts are always
 inert, and skill bodies reach the model only through the model's own
@@ -28,8 +28,8 @@ own.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
-| Skill | skills bundled with evener; `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
-| Evener-wide command | `.evener/commands/` (git root→cwd), `~/.config/evener/commands/` | yes, inert text | never — stays literal | never — stays literal |
+| Skill | skills bundled with evener; user-global `skills/`; project `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
+| Evener-wide command | `.evener/commands/` (git root→cwd), `$XDG_CONFIG_HOME/evener/commands/` (`~/.config` fallback) | yes, inert text | never — stays literal | never — stays literal |
 | Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines files at cwd-relative paths (symlinks followed) |
 
 Argument substitution is safe in every row: `$ARGUMENTS` and `$1..$9` are
