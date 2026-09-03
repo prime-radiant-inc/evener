@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"slices"
 	"sort"
 	"strconv"
@@ -812,13 +811,17 @@ func watchArgsIsTimer(a watchArgs) bool {
 // output_match condition and NO other trigger source — the only shape eligible
 // for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
 // terminal target can never fire, so they still fail target_terminal. Clear
-// requests are never catch-up.
+// requests are never catch-up. A time field or a note is excluded too: catch-up
+// runs before validateWatchTriggerShape, so admitting those shapes would serve a
+// scan instead of the timer rules' correction.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 	return !a.Clear &&
 		a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
-		a.ProgressIntervalMS == 0
+		a.ProgressIntervalMS == 0 &&
+		!watchArgsIsTimer(a) &&
+		a.Note == ""
 }
 
 func validateWatchEventArgs(a watchArgs) error {
@@ -2337,8 +2340,11 @@ func watchConditionSummary(cfg *watchConfig) string {
 	case cfg.progressIntervalMS > 0:
 		parts = append(parts, fmt.Sprintf("progress_interval_ms: %d", cfg.progressIntervalMS))
 	}
+	// The note is bounded where it is stored, not at the tighter output_match
+	// bound: job_list, formatJobWatch, and the tool description's verbatim claim
+	// must agree on what the model gets back.
 	if cfg.timer && cfg.note != "" {
-		parts = append(parts, "note: "+limitWatchText(cfg.note, watchTriggerMaxChars))
+		parts = append(parts, "note: "+limitWatchText(cfg.note, watchMessageMaxChars))
 	}
 	if cfg.wildcardEvents {
 		parts = append(parts, "events: [*]")
@@ -3307,8 +3313,10 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 // reason "fired" so history distinguishes it from a clear. Called with jm.mu
 // released; the fire's notification is enqueued by the caller afterwards.
 func (jm *jobManager) endFiredOneShot(cfg *watchConfig) {
-	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil {
-		log.Printf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err)
+	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil && jm.emit != nil {
+		jm.emit(events.EventWarning, events.WarningData{
+			Message: fmt.Sprintf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err),
+		}, nil)
 	}
 }
 

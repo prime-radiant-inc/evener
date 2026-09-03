@@ -39,6 +39,13 @@ func TestWatchConditionSummary_Timers(t *testing.T) {
 	if got := watchConditionSummary(&watchConfig{progressIntervalMS: 1000}); got != "progress_interval_ms: 1000" {
 		t.Fatalf("job progress summary changed: %q", got)
 	}
+	// The note is bounded where it is stored (watchMessageMaxChars), not at the
+	// tighter output_match bound, so job_list agrees with formatJobWatch and with
+	// the tool description's verbatim claim.
+	long := strings.Repeat("n", watchMessageMaxChars-8)
+	if got := watchConditionSummary(&watchConfig{timer: true, timerSeconds: 300, note: long}); got != "repeat_seconds: 300; note: "+long {
+		t.Fatalf("a %d-char note was truncated in the summary: len=%d", len(long), len(got))
+	}
 }
 
 // TestMarshalWatchResult_TimerFieldsSurviveConfigToToolResult crosses both hops a

@@ -1,10 +1,16 @@
 package agent
 
 import (
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 func newTimerTestJM(t *testing.T) (*jobManager, *agenttest.FakeClock, chan jobNotification) {
@@ -260,5 +266,56 @@ func TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires(t *testing.
 	jm.mu.Unlock()
 	if !jm.hasLiveUnfiredWatchOnTarget(jobID) {
 		t.Fatal("a watch at the condition-fire budget must hold the announcement while its teardown lands")
+	}
+}
+
+// TestOneShotTimer_FailedTeardownWarnsThroughTheSession pins where a one-shot's
+// failed durable teardown is reported. The job manager's warning convention is
+// jm.emit, which reaches the session and the hub; stderr reaches neither. The
+// fire itself is still delivered — the teardown failure does not swallow it.
+func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
+	jm, clk, got := newTimerTestJM(t)
+	var mu sync.Mutex
+	var warnings []events.WarningData
+	jm.emit = func(kind events.EventKind, data events.EventData, _ *provenance.Causal) {
+		if kind != events.EventWarning {
+			return
+		}
+		w, ok := data.(events.WarningData)
+		if !ok {
+			return
+		}
+		mu.Lock()
+		warnings = append(warnings, w)
+		mu.Unlock()
+	}
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realAppendEvents := jm.appendEvents
+	teardownErr := errors.New("one-shot teardown append failed")
+	jm.appendEvents = func(evs []jobstore.Event) error {
+		for _, ev := range evs {
+			if ev.Kind == jobstore.EventWatchCleared {
+				return teardownErr
+			}
+		}
+		return realAppendEvents(evs)
+	}
+
+	clk.BlockUntil(1)
+	clk.Advance(60 * time.Second)
+	if n := recvNotification(t, got); n.Reason != "after" {
+		t.Fatalf("one-shot fire = %+v, want the fire delivered despite the failed teardown", n)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %+v, want exactly one", warnings)
+	}
+	if !strings.Contains(warnings[0].Message, res.WatchID) || !strings.Contains(warnings[0].Message, teardownErr.Error()) {
+		t.Fatalf("warning message = %q, want the watch id and the store error", warnings[0].Message)
 	}
 }
