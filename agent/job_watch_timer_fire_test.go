@@ -193,3 +193,31 @@ func TestConditionFireBudget_TicksDoNotDisarmTheBreaker(t *testing.T) {
 		}
 	}
 }
+
+// TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget pins the
+// breaker's once-latch against the send rail's snapshot/settle skew. A send
+// watch counts a condition fire when it snapshots a frame and lands in
+// recordWatchDeliveryLocked when that frame settles, so two fires snapshotted
+// before either settles walk conditionFires straight from 49 to 51. An equality
+// test would step over the budget and disarm the breaker forever; "at or past
+// the budget", latched once per config, reports the crossing exactly once.
+func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{conditionFires: watchDeliveryBudget - 1}
+
+	if jm.recordWatchDeliveryLocked(cfg) {
+		t.Fatalf("settle at %d condition fires crossed the budget early", cfg.conditionFires)
+	}
+	// Two more fires snapshot before the next settle, skipping the budget itself.
+	cfg.conditionFires = watchDeliveryBudget + 1
+	if !jm.recordWatchDeliveryLocked(cfg) {
+		t.Fatalf("settle at %d condition fires did not cross the budget", cfg.conditionFires)
+	}
+	cfg.conditionFires = watchDeliveryBudget + 2
+	if jm.recordWatchDeliveryLocked(cfg) {
+		t.Fatalf("settle at %d condition fires crossed the budget a second time", cfg.conditionFires)
+	}
+	if cfg.deliveries != 3 || !cfg.budgetTripped {
+		t.Fatalf("deliveries = %d, budgetTripped = %v; want 3 and a latched breaker", cfg.deliveries, cfg.budgetTripped)
+	}
+}
