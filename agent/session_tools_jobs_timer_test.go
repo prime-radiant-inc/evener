@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 func TestFormatJobWatch_TimerCreateTextShowsIntervalAndNote(t *testing.T) {
@@ -96,5 +99,24 @@ func TestMarshalWatchResult_TimerFieldsSurviveConfigToToolResult(t *testing.T) {
 				t.Errorf("progress_interval_ms = %d, want %d", out.ProgressIntervalMS, tc.progressIntervalMS)
 			}
 		})
+	}
+}
+
+func TestJobWatchTool_TimerRefusedWhenTurnEndsProcess(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.cfg.TurnEndsProcess = true
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID: "c1", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","repeat_seconds":300}`),
+	})
+	if !res.IsError || !strings.Contains(res.Output, "timers need a session that outlives the turn") {
+		t.Fatalf("run-mode timer create: %+v", res)
+	}
+	s.cfg.TurnEndsProcess = false
+	ok := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID: "c2", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","repeat_seconds":300,"note":"x"}`),
+	})
+	if ok.IsError || !strings.Contains(ok.Output, "every 300s") {
+		t.Fatalf("served timer create: %+v", ok)
 	}
 }
