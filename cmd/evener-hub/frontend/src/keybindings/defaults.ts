@@ -166,3 +166,19 @@ export function registerDefaultBindings(registry: KeybindingsRegistry): Binding[
   }
   return registered;
 }
+
+/** Registers only the given action's default entries (plus the $mod twin),
+ * the per-action equivalent of registerDefaultBindings the overrides store
+ * uses to restore one action's defaults. Throws on an unknown action id. */
+export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, actionId: string): Binding[] {
+  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
+  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
+  const registered: Binding[] = [];
+  for (const input of inputs) {
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      registered.push(registry.getState().registerBinding(entry));
+    }
+  }
+  return registered;
+}
