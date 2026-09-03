@@ -50,6 +50,7 @@ const CLASS = {
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
   concerns: requireClass(styles.concerns, "notificationcard.module.css", "concerns"),
   excerpt: requireClass(styles.excerpt, "notificationcard.module.css", "excerpt"),
+  prose: requireClass(styles.prose, "notificationcard.module.css", "prose"),
   raw: requireClass(styles.raw, "notificationcard.module.css", "raw"),
   summary: requireClass(styles.summary, "notificationcard.module.css", "summary"),
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
@@ -132,6 +133,9 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
     notification.jobId && (
       <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
     ),
+    notification.watchId && (
+      <Field key="watch-id" label="Watch id" value={notification.watchId} testId="notification-field-watch-id" />
+    ),
     notification.status && (
       <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />
     ),
@@ -197,6 +201,11 @@ export function NotificationCard({
         <Card>
           <div className={CLASS.root} data-testid="notification-card-root">
             <NotificationMetadata notification={notification} />
+            {notification.prose && (
+              <pre className={CLASS.prose} data-testid="notification-prose">
+                {decodeNotificationEntities(notification.prose)}
+              </pre>
+            )}
             {notification.message ? (
               <div className={CLASS.excerpt} data-testid="notification-field-excerpt">
                 <Markdown source={notification.message.slice(0, MESSAGE_MAX)} />

@@ -355,3 +355,20 @@ test("concerns surface as a quiet note", async () => {
   // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-card-root").textContent).toContain("edge case A; edge case B");
 });
+
+test("a timer's prose renders decoded and its watch id shows as a field", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: "Watch triggered",
+        tone: "warning",
+        prose: "Timer fired (every 300s).\nNote: hello &lt;x&gt;",
+        watchId: "w1",
+      })}
+    />,
+  );
+  // At activity level the card auto-expands (expandByDefault=true).
+  expect(screen.getByTestId("notification-prose").textContent).toContain("Note: hello <x>");
+  expect(screen.getByTestId("notification-field-watch-id").textContent).toContain("w1");
+});
