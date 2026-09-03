@@ -95,13 +95,6 @@ func fitNavigationV2Snapshot(
 	}
 
 	switch value := object.(type) {
-	case hubapi.NavigationManifest:
-		original := append(hubapi.NavigationArray[hubapi.Source](nil), value.Sources...)
-		return fitCandidates(len(original), func(budget int) any {
-			candidate := value
-			candidate.Sources = append(hubapi.NavigationArray[hubapi.Source](nil), original[:budget]...)
-			return candidate
-		})
 	case hubapi.NavigationSectionResource:
 		original := cloneNavigationSummaries(value.Sessions)
 		baseRemaining := value.Remaining

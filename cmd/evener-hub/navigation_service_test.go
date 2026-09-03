@@ -403,7 +403,6 @@ func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
 	source := navigationBudgetTestSource(now)
 	service := newTestNavigationService(t, source)
 	keys := map[string]navigationResourceKey{
-		"manifest":    {Kind: navigationResourceManifest},
 		"section":     {Kind: navigationResourceLive, Limit: maxNavigationSectionRows},
 		"pin catalog": {Kind: navigationResourcePinCatalog, Limit: maxNavigationCatalogRows},
 		"catalog":     {Kind: navigationResourceProjects, Limit: maxNavigationCatalogRows},
@@ -420,56 +419,105 @@ func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertNavigationV2ResponseBudget(t, key, result.Response)
-			if name == "manifest" {
-				legacy, err := service.Representation(t.Context(), key)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(legacy.JSON) > maxNavigationManifestBytes {
-					t.Fatalf("legacy manifest bytes=%d, want <= %d", len(legacy.JSON), maxNavigationManifestBytes)
-				}
-				var complete hubapi.NavigationManifest
-				if err := json.Unmarshal(legacy.JSON, &complete); err != nil {
-					t.Fatal(err)
-				}
-				if len(complete.Sources) != 64 {
-					t.Fatalf("legacy manifest sources=%d, want all 64", len(complete.Sources))
-				}
-				unbounded, err := normalizeNavigationResource(key, complete)
-				if err != nil {
-					t.Fatal(err)
-				}
-				unboundedData, err := json.Marshal(unbounded)
-				if err != nil {
-					t.Fatal(err)
-				}
-				unboundedResponse := result.Response
-				unboundedResponse.Data = unboundedData
-				unboundedEncoded, err := json.Marshal(unboundedResponse)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(unboundedEncoded) <= maxNavigationManifestBytes {
-					t.Fatalf("complete normalized manifest response bytes=%d, want > %d to prove fitting", len(unboundedEncoded), maxNavigationManifestBytes)
-				}
-				var fitted hubapi.NavigationSnapshot
-				if err := json.Unmarshal(result.Response.Data, &fitted); err != nil {
-					t.Fatal(err)
-				}
-				var manifest hubapi.NavigationManifest
-				if err := json.Unmarshal(fitted.Metadata, &manifest); err != nil {
-					t.Fatal(err)
-				}
-				if len(manifest.Sources) != 63 {
-					t.Fatalf("fitted manifest sources=%d, want deterministic 63-source prefix", len(manifest.Sources))
-				}
-				for index := range manifest.Sources {
-					if manifest.Sources[index] != complete.Sources[index] {
-						t.Fatalf("fitted manifest source %d is not the authoritative prefix", index)
-					}
-				}
-			}
 		})
+	}
+}
+
+func TestNavigationReadV2OversizeManifestIsInternalInvariantWithoutPartialResponse(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service := newTestNavigationService(t, navigationBudgetTestSource(now))
+	key := navigationResourceKey{Kind: navigationResourceManifest}
+	legacy, err := service.Representation(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.JSON) > maxNavigationManifestBytes {
+		t.Fatalf("legacy manifest bytes=%d, want <= %d", len(legacy.JSON), maxNavigationManifestBytes)
+	}
+	var complete hubapi.NavigationManifest
+	if err := json.Unmarshal(legacy.JSON, &complete); err != nil {
+		t.Fatal(err)
+	}
+	if len(complete.Sources) != 64 {
+		t.Fatalf("legacy manifest sources=%d, want all 64", len(complete.Sources))
+	}
+	unbounded, err := normalizeNavigationResource(key, complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundedData, err := json.Marshal(unbounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundedResponse := appwire.NavigationReadResponse{
+		Status:         "ok",
+		GenerationID:   complete.GenerationID,
+		Revision:       complete.Revision,
+		ETag:           navigationETag(key, complete.GenerationID, complete.Revision),
+		Representation: appwire.NavigationRepresentationSnapshot,
+		Data:           unboundedData,
+	}
+	unboundedEncoded, err := json.Marshal(unboundedResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unboundedEncoded) <= maxNavigationManifestBytes {
+		t.Fatalf("complete normalized manifest response bytes=%d, want > %d to prove invariant", len(unboundedEncoded), maxNavigationManifestBytes)
+	}
+
+	result, err := service.readV2(t.Context(), key, nil)
+	if err == nil {
+		t.Fatalf("oversize complete manifest returned partial response with %d data bytes", len(result.Response.Data))
+	}
+	if !reflect.DeepEqual(result, navigationReadResult{}) {
+		t.Fatalf("oversize complete manifest returned partial result: %+v", result)
+	}
+	invariant, ok := errors.AsType[navigationV2ResponseInvariantError](err)
+	if !ok || invariant.kind != navigationResourceManifest || invariant.maxBytes != maxNavigationManifestBytes {
+		t.Fatalf("oversize manifest error = %T %v, want manifest response invariant", err, err)
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	wireErr := navigationReadError(server, err)
+	assertNavigationWireError(t, wireErr, appwire.CodeInternalError, appwire.ErrorInternal)
+}
+
+func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := navigationBudgetTestSource(now)
+	source.mu.Lock()
+	source.inputs.Sources = source.inputs.Sources[:2]
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceManifest}
+
+	legacy, err := service.Representation(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var complete hubapi.NavigationManifest
+	if err := json.Unmarshal(legacy.JSON, &complete); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNavigationV2ResponseBudget(t, key, result.Response)
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var manifest hubapi.NavigationManifest
+	if err := json.Unmarshal(snapshot.Metadata, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(complete.Sources) != 2 || len(manifest.Sources) != len(complete.Sources) {
+		t.Fatalf("under-cap manifest sources: legacy=%d v2=%d, want complete two-source authority", len(complete.Sources), len(manifest.Sources))
+	}
+	for index := range complete.Sources {
+		if manifest.Sources[index] != complete.Sources[index] {
+			t.Fatalf("under-cap manifest source %d changed from authoritative value", index)
+		}
 	}
 }
 
