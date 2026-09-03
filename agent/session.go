@@ -476,8 +476,9 @@ type Session struct {
 	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a
 	// nil kick is a no-op.
 	//
-	// Guarded by its own mutex; never taken while holding sub.mu or the manager
-	// mutex.
+	// Guarded by its own mutex; never taken while holding sub.mu. Where it is
+	// held together with the job manager mutex, jm.mu is taken FIRST and this
+	// one second (captureTerminalNotificationCut).
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
 	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
@@ -800,14 +801,31 @@ const (
 func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
+	s.appendOrFoldJobNotificationLocked(n)
+}
+
+// appendOrFoldJobNotificationLocked appends n to the pending queue, or, for a
+// timer tick whose watch already has a pending non-terminal entry, adds its
+// fires to that entry instead. Non-timer notifications take the fast path.
+// The caller holds pendingJobNotifsMu; this must never take jm.mu, because
+// the established order is jm.mu then pendingJobNotifsMu.
+func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
+	if n.WatchID != "" && !n.Terminal {
+		for i := range s.pendingJobNotifs {
+			p := &s.pendingJobNotifs[i]
+			if p.WatchID == n.WatchID && !p.Terminal {
+				p.Fires += n.Fires
+				return
+			}
+		}
+	}
 	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
-	s.assignJobNotificationSeqLocked(&n)
-	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
+	s.appendOrFoldJobNotificationLocked(n)
 	held := s.notifyWakeHolds > 0
 	if held {
 		s.notifyWakeDeferred = true
@@ -866,10 +884,14 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
+	rest := s.pendingJobNotifs
+	s.pendingJobNotifs = nil
 	for i := range notifs {
-		s.assignJobNotificationSeqLocked(&notifs[i])
+		s.appendOrFoldJobNotificationLocked(notifs[i])
 	}
-	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
+	for i := range rest {
+		s.appendOrFoldJobNotificationLocked(rest[i])
+	}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
 }
