@@ -76,8 +76,8 @@ var runLoadClient = cmdutil.LoadClient
 var (
 	runGetwd                = os.Getwd
 	runEnsureUserConfigDirs = cmdutil.EnsureUserConfigDirs
-	runSeedMarketplaces     = func() error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces(context.Background())
+	runSeedMarketplaces     = func(ctx context.Context) error {
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
 		return err
 	}
 	runAttachAPILogger  = cmdutil.AttachSessionAPILogger
@@ -128,8 +128,8 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
-	if err != nil && cfg.enabledPlugins != nil {
-		return fmt.Errorf("resolve plugins: %w", err)
+	if fatal := fatalLaunchPluginError(err, cfg.enabledPlugins); fatal != nil {
+		return fatal
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
@@ -141,7 +141,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// --no-default-marketplaces opts out of seeding on this bare-evener path only;
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
-		if err := runSeedMarketplaces(); err != nil {
+		if err := runSeedMarketplaces(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
 	}

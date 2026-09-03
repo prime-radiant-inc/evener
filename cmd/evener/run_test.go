@@ -48,7 +48,7 @@ func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 		order = append(order, "ensure-config")
 		return nil
 	}
-	runSeedMarketplaces = func() error {
+	runSeedMarketplaces = func(context.Context) error {
 		order = append(order, "seed-marketplaces")
 		return nil
 	}
@@ -1275,6 +1275,71 @@ func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing
 			err := run(context.Background(), cfg)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("run error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A launch the caller has already given up on stops at the resolver, whatever
+// it selected. The inventory failing is fail-soft when nothing had to be
+// honoured — a launch still runs with whatever could be listed — but a
+// cancellation is not that kind of failure: everything after it, seeding
+// marketplaces first of all, takes the plugin store lock and writes config for
+// nobody.
+func TestLaunchRefusesACancelledLaunchWithNoPluginSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T, seeded *bool) error
+	}{
+		{
+			name: "run",
+			start: func(t *testing.T, seeded *bool) error {
+				oldResolve, oldSeed, oldEnsure := runResolvePlugins, runSeedMarketplaces, runEnsureUserConfigDirs
+				t.Cleanup(func() {
+					runResolvePlugins, runSeedMarketplaces, runEnsureUserConfigDirs = oldResolve, oldSeed, oldEnsure
+				})
+				runEnsureUserConfigDirs = func() error { return nil }
+				runResolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+					return plugins.LaunchPluginResolution{}, ctx.Err()
+				}
+				runSeedMarketplaces = func(context.Context) error { *seeded = true; return nil }
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return run(ctx, runConfig{
+					prompt: "hello", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(),
+					stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+				})
+			},
+		},
+		{
+			name: "serve",
+			start: func(t *testing.T, seeded *bool) error {
+				deps := defaultServeDeps()
+				deps.ensureConfigDirs = func() error { return nil }
+				deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+					next, stop := context.WithCancel(ctx)
+					stop()
+					return next, stop
+				}
+				deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+					return plugins.LaunchPluginResolution{}, ctx.Err()
+				}
+				deps.seedMarketplaces = func(context.Context) error { *seeded = true; return nil }
+				return runServeWithDeps([]string{
+					"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+				}, deps)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			seeded := false
+			err := test.start(t, &seeded)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want the cancellation that ended the launch", err)
+			}
+			if seeded {
+				t.Error("seeded marketplaces for a launch that had already been given up on")
 			}
 		})
 	}

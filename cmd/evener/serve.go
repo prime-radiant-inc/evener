@@ -354,8 +354,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 	}
 	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
-	if resolveErr != nil && enabledPlugins.Value() != nil {
-		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	if fatal := fatalLaunchPluginError(resolveErr, enabledPlugins.Value()); fatal != nil {
+		return fatal
 	}
 	if resolveErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
