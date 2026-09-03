@@ -20,7 +20,7 @@ import (
 // selects a deterministic scenario; the seeds keep every edge in the default
 // fuzz corpus.
 func FuzzJobWatchEventsOutput(f *testing.F) {
-	for scenario := uint8(0); scenario < 23; scenario++ {
+	for scenario := uint8(0); scenario < 24; scenario++ {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {
@@ -30,7 +30,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			_ = jm.close()
 		})
 
-		switch scenario % 23 {
+		switch scenario % 24 {
 		case 0:
 			dec := evaluateWatchEvent(watchEventSnapshot{
 				target: runtimeMessageAliasCaller, targetActive: true,
@@ -252,6 +252,44 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal("inactive progress watch stayed alive")
 			}
 			close(stop)
+		case 23:
+			// The send twin of case 8. The attach scan's send rail counts its
+			// fire at the match and its delivery only when the frame settles,
+			// which nothing here drains, so the breaker has to latch at the
+			// match or the watch matches without bound.
+			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
+			jm.watches[key] = cfg
+			cleared := 0
+			jm.enqueue = func(n jobNotification) {
+				if n.Reason != watchBudgetClearedMessage("job_x") {
+					return
+				}
+				cleared++
+				// The auto-clear does durable I/O and re-takes jm.mu, so it must
+				// be scheduled after the observation releases it (spec §3).
+				if !jm.mu.TryLock() {
+					t.Error("budget auto-clear notification delivered under jm.mu")
+					return
+				}
+				jm.mu.Unlock()
+			}
+			if !jm.fireAttachScan(cfg, "job_x", []byte("hit\n")) {
+				t.Fatal("attach scan did not fire")
+			}
+			if !cfg.budgetTripped {
+				t.Fatal("attach-scan send at the budget did not latch the breaker")
+			}
+			if cleared != 1 {
+				t.Fatalf("budget-cleared notifications = %d, want exactly 1", cleared)
+			}
+			if jm.watches[key] != nil {
+				t.Fatal("attach-scan send over budget left its watch live")
+			}
 		}
 	})
 }
