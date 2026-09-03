@@ -375,18 +375,17 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 			defer timer.Stop()
 			start := time.Now()
 			res, err := test.resolve(ctx, m)
-			if err != nil {
-				t.Fatal(err)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want the cancellation", err)
 			}
 			if waited := time.Since(start); waited > 5*time.Second {
 				t.Errorf("returned after %v, want it to stop waiting when the context did", waited)
 			}
-			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
-				!strings.Contains(res.Diagnostics[0].Message, context.Canceled.Error()) {
-				t.Fatalf("Diagnostics = %+v, want one bundled diagnostic reporting the cancellation", res.Diagnostics)
-			}
-			if err := res.ValidateSelection(); err == nil {
-				t.Error("selected a bundled plugin that was never staged")
+			// The caller left; the plugin did nothing wrong. Reported the same
+			// way as a cancellation seen before any of this started: the error
+			// carries it, and no diagnostic blames the plugin for it.
+			if len(res.Diagnostics) != 0 || len(res.SelectionErrors) != 0 {
+				t.Fatalf("resolved %+v for a caller that had given up", res)
 			}
 		})
 	}
@@ -401,19 +400,28 @@ func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
 	// Both ways a launch meets the store: publishing a copy, and adopting one
 	// that is already there. The second reaches the sweep only because it
 	// found something to sweep, and it is still not allowed to sweep unlocked.
-	tests := map[string]func(t *testing.T, m *Manager){
-		"publishing": func(*testing.T, *Manager) {},
-		"adopting a published copy": func(t *testing.T, m *Manager) {
+	tests := map[string]struct {
+		publish func(t *testing.T, m *Manager)
+		// wantErr is what the launch reports when it cannot have the lock. A
+		// publish waits the whole publish budget for it, far longer than this
+		// test is willing to wait, so what ends that launch is the caller's
+		// own deadline and that is what it hears back. Adopting a copy already
+		// published wants the lock only for the sweep, which gives up quietly
+		// and leaves the launch to finish.
+		wantErr error
+	}{
+		"publishing": {publish: func(*testing.T, *Manager) {}, wantErr: context.DeadlineExceeded},
+		"adopting a published copy": {publish: func(t *testing.T, m *Manager) {
 			t.Helper()
 			if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 				t.Fatal(err)
 			}
-		},
+		}},
 	}
-	for name, publish := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			publish(t, m)
+			test.publish(t, m)
 			staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
 			if err := os.MkdirAll(staging, 0o755); err != nil {
 				t.Fatal(err)
@@ -434,8 +442,8 @@ func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
-			if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); err != nil {
-				t.Fatal(err)
+			if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); !errors.Is(err, test.wantErr) {
+				t.Fatalf("ResolveForLaunch error = %v, want %v", err, test.wantErr)
 			}
 			if _, err := os.Stat(staging); err != nil {
 				t.Fatalf("staging was swept without holding the store lock: %v", err)

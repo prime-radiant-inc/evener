@@ -292,6 +292,13 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 				switch {
 				case err == nil:
 					add(candidate.loadPath, candidate.path, LaunchPluginSourceBundled, "", "", name)
+				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+					// The caller left while the store was being readied. That
+					// is the same answer as a caller who had already left when
+					// this started, so it is given the same way: carried as
+					// the error, with no diagnostic and no missing-candidate
+					// blaming the plugin for the caller leaving.
+					return resolution, err
 				case !errors.Is(err, fs.ErrNotExist):
 					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
