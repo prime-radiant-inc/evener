@@ -148,46 +148,49 @@ func coercibleScalarType(v any) string {
 	if typ, ok := v.(string); ok {
 		return typ
 	}
-	var types []string
-	switch v := v.(type) {
-	case []any:
-		types = make([]string, 0, len(v))
-		for _, item := range v {
-			typ, ok := item.(string)
-			if !ok {
-				return ""
-			}
-			types = append(types, typ)
-		}
-	case []string:
-		types = v
+	typ := nullableUnionNonNullType(v)
+	switch typ {
+	case "boolean", "integer", "number":
+		return typ
 	default:
 		return ""
 	}
-	if len(types) != 2 {
-		return ""
-	}
-	var scalar string
-	nullable := false
-	for _, typ := range types {
-		if typ == "null" {
-			nullable = true
-			continue
-		}
-		if scalar != "" {
+}
+
+// nullableUnionNonNullType returns the non-null type in an exact two-member
+// nullable union. It deliberately makes no judgment about which schema types a
+// caller supports; callers retain their own scalar allowlists.
+func nullableUnionNonNullType(v any) string {
+	var first, second string
+	switch values := v.(type) {
+	case []any:
+		if len(values) != 2 {
 			return ""
 		}
-		scalar = typ
-	}
-	if !nullable {
-		return ""
-	}
-	switch scalar {
-	case "boolean", "integer", "number":
-		return scalar
+		var ok bool
+		first, ok = values[0].(string)
+		if !ok {
+			return ""
+		}
+		second, ok = values[1].(string)
+		if !ok {
+			return ""
+		}
+	case []string:
+		if len(values) != 2 {
+			return ""
+		}
+		first, second = values[0], values[1]
 	default:
 		return ""
 	}
+	if first == "null" && second != "null" {
+		return second
+	}
+	if second == "null" && first != "null" {
+		return first
+	}
+	return ""
 }
 
 // dropUnknown removes keys matching no declared property, but only when the

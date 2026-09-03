@@ -10,7 +10,10 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -39,7 +42,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			"output_match":   "",
 			"context_lines":  float64(0),
 		}
-		normalized, _ := normalizeRetainedReadArgsForRepair(materializedArgs)
+		normalized, _ := normalizeRetainedReadArgs(materializedArgs)
 		materialized, err := execReadTranscript(deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
@@ -62,7 +65,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			"output_match":   "",
 			"context_lines":  float64(0),
 		}
-		normalized, _ := normalizeRetainedReadArgsForRepair(materializedArgs)
+		normalized, _ := normalizeRetainedReadArgs(materializedArgs)
 		materialized, err := execReadTranscript(deps, normalized)
 		if err != nil {
 			t.Fatalf("materialized defaults: %v", err)
@@ -71,6 +74,145 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 			t.Fatalf("materialized artifact defaults changed result:\nomitted=%#v\nmaterialized=%#v", omitted, materialized)
 		}
 	})
+}
+
+func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T) {
+	t.Run("job", func(t *testing.T) {
+		stateDir := t.TempDir()
+		owner := identifier.MustNewSessionID()
+		jobID := identifier.MustNewJobID(owner)
+		seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+		assertRegistryRetainedDefaultView(t, &toolDeps{stateDir: stateDir, sessionID: owner}, "job:"+jobID, map[string]any{
+			"range": "", "expand_turn": nil, "format": "markdown", "output_match": "", "context_lines": nil,
+		})
+	})
+
+	t.Run("artifact", func(t *testing.T) {
+		deps, ref := artifactTranscriptFixture(t, "ready\n")
+		assertRegistryRetainedDefaultView(t, deps, ref, map[string]any{
+			"range": nil, "expand_turn": nil, "output_match": "", "context_lines": float64(0),
+		})
+	})
+}
+
+func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	jobID := identifier.MustNewJobID(sess.ID())
+	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	hookClient := llm.NewClient()
+	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"range":"","expand_turn":null,"format":"markdown","output_match":"","context_lines":0}}}`)}
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "read_transcript", Type: "prompt", Prompt: "supply defaults"})
+	sess.hookRunner = runner
+	repairedCh := drainRepairedEvents(sess)
+
+	result := execReadTranscriptThroughSession(t, sess, "hook-updated-defaults", map[string]any{"transcript_ref": "job:" + jobID})
+	if result.IsError {
+		t.Fatalf("hook-updated default read failed: %s", result.Output)
+	}
+	if strings.Contains(result.FullOutput, `"output_match"`) || strings.Contains(result.FullOutput, `"search_complete"`) {
+		t.Fatalf("hook-updated defaults selected search instead of default view: %s", result.FullOutput)
+	}
+	if repaired := closeAndDrainRepairedEvents(sess, repairedCh); len(repaired) != 0 {
+		t.Fatalf("execution-boundary normalization emitted repair telemetry: %+v", repaired)
+	}
+}
+
+func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	jobID := identifier.MustNewJobID(sess.ID())
+	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	eventsCh := make(chan retainedReadEventCapture, 1)
+	go func() {
+		var captured retainedReadEventCapture
+		for event := range sess.Events() {
+			switch data := event.Data.(type) {
+			case events.ToolCallRepairedData:
+				captured.repaired = append(captured.repaired, data)
+			case events.ToolCallStartData:
+				if data.CallID == "normalized-then-invalid" {
+					captured.startArgs = data.ArgumentsJSON
+				}
+			}
+		}
+		eventsCh <- captured
+	}()
+
+	result := execReadTranscriptThroughSession(t, sess, "normalized-then-invalid", map[string]any{
+		"transcript_ref": "job:" + jobID,
+		"output_match":   "",
+		"context_lines":  float64(0),
+		"offset_bytes":   float64(-1),
+	})
+	if !result.IsError {
+		t.Fatalf("invalid offset read succeeded: %#v", result)
+	}
+	sess.Close()
+	captured := <-eventsCh
+	assertReadRepairTelemetry(t, captured.repaired, "normalized-then-invalid", "output_match", "context_lines")
+	var startArgs map[string]any
+	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
+		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
+	}
+	for _, field := range []string{"output_match", "context_lines"} {
+		if _, present := startArgs[field]; present {
+			t.Fatalf("normalized start arguments retain %q: %#v", field, startArgs)
+		}
+	}
+	if got := startArgs["offset_bytes"]; got != float64(-1) {
+		t.Fatalf("normalized start arguments offset_bytes = %#v, want -1", got)
+	}
+}
+
+type retainedReadEventCapture struct {
+	repaired  []events.ToolCallRepairedData
+	startArgs string
+}
+
+func assertRegistryRetainedDefaultView(t *testing.T, deps *toolDeps, ref string, materialized map[string]any) {
+	t.Helper()
+	reg := tool.NewRegistry()
+	if err := reg.Register(readTranscriptTool(deps)); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	omitted := executeReadTranscriptFromRegistry(t, reg, "omitted", map[string]any{"transcript_ref": ref})
+	if omitted.IsError {
+		t.Fatalf("omitted defaults failed: %s", omitted.Output)
+	}
+	materialized["transcript_ref"] = ref
+	got := executeReadTranscriptFromRegistry(t, reg, "materialized", materialized)
+	if got.IsError {
+		t.Fatalf("materialized defaults failed: %s", got.Output)
+	}
+	if !sameReadResult(omitted.FullOutput, got.FullOutput) {
+		t.Fatalf("direct registry materialized defaults changed view:\nomitted=%s\nmaterialized=%s", omitted.FullOutput, got.FullOutput)
+	}
+	if strings.Contains(got.FullOutput, `"output_match"`) || strings.Contains(got.FullOutput, `"search_complete"`) {
+		t.Fatalf("direct registry materialized defaults selected search: %s", got.FullOutput)
+	}
+}
+
+func executeReadTranscriptFromRegistry(t *testing.T, reg *tool.Registry, id string, args map[string]any) tool.ExecResult {
+	t.Helper()
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: id, Name: "read_transcript", Arguments: encoded})
 }
 
 func TestSessionExecToolRepairsMaterializedRetainedReadDefaults(t *testing.T) {
@@ -329,7 +471,7 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			normalized, _ := normalizeRetainedReadArgsForRepair(mapWithTranscriptRef(tc.args, tc.ref))
+			normalized, _ := normalizeRetainedReadArgs(mapWithTranscriptRef(tc.args, tc.ref))
 			want := make(map[string]bool, len(tc.wantPresent))
 			for _, name := range tc.wantPresent {
 				want[name] = true
@@ -347,7 +489,7 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 func TestNormalizeRetainedReadArgsPreservesExplicitZeroOffset(t *testing.T) {
 	for _, ref := range []string{"job:abc", "artifact:abc"} {
 		t.Run(ref, func(t *testing.T) {
-			normalized, _ := normalizeRetainedReadArgsForRepair(map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
+			normalized, _ := normalizeRetainedReadArgs(map[string]any{"transcript_ref": ref, "offset_bytes": float64(0)})
 			if _, present := normalized["offset_bytes"]; !present {
 				t.Fatal("normalization removed explicit offset_bytes=0")
 			}

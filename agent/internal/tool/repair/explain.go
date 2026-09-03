@@ -547,43 +547,10 @@ func exampleSchemaType(v any) string {
 	if typ, ok := v.(string); ok {
 		return typ
 	}
-	var types []string
-	switch values := v.(type) {
-	case []any:
-		types = make([]string, 0, len(values))
-		for _, value := range values {
-			typ, ok := value.(string)
-			if !ok {
-				return ""
-			}
-			types = append(types, typ)
-		}
-	case []string:
-		types = values
-	default:
-		return ""
-	}
-	if len(types) != 2 {
-		return ""
-	}
-	var scalar string
-	nullable := false
-	for _, typ := range types {
-		if typ == "null" {
-			nullable = true
-			continue
-		}
-		if scalar != "" {
-			return ""
-		}
-		scalar = typ
-	}
-	if !nullable {
-		return ""
-	}
-	switch scalar {
+	typ := nullableUnionNonNullType(v)
+	switch typ {
 	case "string", "integer", "number", "boolean":
-		return scalar
+		return typ
 	default:
 		return ""
 	}
