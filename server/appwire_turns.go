@@ -185,9 +185,6 @@ type appTurnSeed struct {
 // nested item is deep-cloned, so later mutation of the argument cannot reach
 // installed state.
 func (s *appTurnSnapshot) Seed(value any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.itemProjection = nil
 	seed := appTurnSeed{}
 	switch typed := value.(type) {
 	case appTurnSeed:
@@ -196,8 +193,11 @@ func (s *appTurnSnapshot) Seed(value any) {
 		seed.Turns = typed
 		seed.NextEntry = uint64(len(typed))
 	default:
-		return
+		panic(fmt.Sprintf("unsupported app turn seed type %T", value))
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.itemProjection = nil
 	if seed.ThreadRef != "" {
 		s.threadRef = seed.ThreadRef
 	}

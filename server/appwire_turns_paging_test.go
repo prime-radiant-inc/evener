@@ -971,6 +971,22 @@ func TestPreparedAppIdentitySeedsEmptyStateWithoutATranscript(t *testing.T) {
 	}
 }
 
+func TestAppTurnSnapshotSeedPanicsBeforeMutatingOnUnsupportedType(t *testing.T) {
+	projection := &appItemProjection{}
+	snapshot := &appTurnSnapshot{itemProjection: projection}
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("Seed did not panic for unsupported input")
+		}
+		if snapshot.itemProjection != projection {
+			t.Fatal("Seed mutated item projection before rejecting unsupported input")
+		}
+	}()
+
+	snapshot.Seed(struct{ unsupported bool }{unsupported: true})
+}
+
 // TestPreparedAppIdentityRequiresAThreadID also covers SetAppIdentity, which
 // installs through the same validation. An identity with no thread cannot be
 // published half-way: it would blank status.SessionID while leaving the caller

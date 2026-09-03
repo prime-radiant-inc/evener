@@ -251,6 +251,63 @@ func (s *itemPackingRPCSource) ListItemCandidates(ctx context.Context, params ap
 	return s.readCandidates, nil
 }
 
+type metadataErrorItemTurnsSource struct {
+	itemPackingRPCSource
+	metadataErr error
+}
+
+func (s *metadataErrorItemTurnsSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, s.metadataErr
+}
+
+func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) {
+	sentinel := errors.New("metadata sentinel")
+	source := &metadataErrorItemTurnsSource{
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(1)},
+			Identity:   appitempaging.CursorIdentity{ThreadRef: "codex:metadata-error", Incarnation: "metadata-error", ProjectionVersion: 1},
+			Exhausted:  true,
+		},
+		metadataErr: sentinel,
+	}
+	var logs []struct {
+		format string
+		args   []any
+	}
+	logf := func(format string, args ...any) {
+		logs = append(logs, struct {
+			format string
+			args   []any
+		}{format: format, args: args})
+	}
+
+	response, handled, err := listItemTurns(context.Background(), source, appwire.ThreadTurnsListParams{
+		Ref:      "codex:metadata-error",
+		PageUnit: appwire.TranscriptPageUnitItem,
+	}, logf)
+	if err != nil {
+		t.Fatalf("listItemTurns: %v", err)
+	}
+	if !handled {
+		t.Fatal("listItemTurns handled = false, want true")
+	}
+	items := flattenTestItems(response.Data)
+	if len(items) != 1 || items[0].ID != "item-00" {
+		t.Fatalf("packed items = %+v, want the valid source item", items)
+	}
+	if response.PageUnit != appwire.TranscriptPageUnitItem {
+		t.Fatalf("page unit = %q, want item", response.PageUnit)
+	}
+	for _, entry := range logs {
+		for _, arg := range entry.args {
+			if loggedErr, ok := arg.(error); ok && errors.Is(loggedErr, sentinel) {
+				return
+			}
+		}
+	}
+	t.Fatalf("logger did not receive sentinel error as an argument: %+v", logs)
+}
+
 func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
 	identity := appitempaging.CursorIdentity{ThreadRef: "codex:byte-packing", Incarnation: "rpc-byte-packing", ProjectionVersion: 1}
 	candidates := testItemCandidates(2)

@@ -108,6 +108,7 @@ func listItemTurns(
 	ctx context.Context,
 	source appsource.Source,
 	params appwire.ThreadTurnsListParams,
+	logf func(format string, args ...any),
 ) (appwire.ThreadTurnsListResponse, bool, error) {
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
@@ -132,6 +133,9 @@ func listItemTurns(
 	}
 
 	meta, metaErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false})
+	if metaErr != nil && logf != nil {
+		logf("thread turns metadata enrichment unavailable: %v", metaErr)
+	}
 	packed, packErr := packThreadTurnsItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		if metaErr == nil {
 			thread := appwire.Thread{
@@ -205,6 +209,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return navigation.Capability()
 		}
 	}
+	hubLogf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	}
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName:           "evener-hub",
 		Version:              Version,
@@ -212,9 +219,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		WebSocketTrace:       appwireTrace,
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
-		Logf: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
-		},
+		Logf:                 hubLogf,
 		Features: appwire.FeatureSet{
 			ThreadList:                true,
 			ThreadTurnsList:           true,
@@ -254,7 +259,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
 	}
-	registerThreadHandlers(server, cfg, sources, relayFunctions)
+	registerThreadHandlers(server, cfg, sources, relayFunctions, hubLogf)
 	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
@@ -285,6 +290,7 @@ func registerThreadHandlers(
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	relays hubRelayFunctions,
+	logf func(format string, args ...any),
 ) {
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
@@ -444,7 +450,7 @@ func registerThreadHandlers(
 		if srcErr == nil {
 			if params.PageUnit == appwire.TranscriptPageUnitItem {
 				var handled bool
-				live, handled, liveErr = listItemTurns(ctx, source, params)
+				live, handled, liveErr = listItemTurns(ctx, source, params, logf)
 				if handled {
 					if liveErr != nil {
 						return appwire.ThreadTurnsListResponse{}, liveErr
