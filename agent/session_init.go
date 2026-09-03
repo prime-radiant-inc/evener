@@ -38,8 +38,8 @@ import (
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/userdirs"
 	"primeradiant.com/evener/llm"
 )
 

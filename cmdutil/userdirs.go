@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/evener/internal/userdirs"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // DefaultConfigRoot returns the user config root for evener:
