@@ -210,7 +210,7 @@ test("a valid local child ref opens the shared transcript action beside the focu
   const user = userEvent.setup();
   render(<NotificationCard notification={notif({ transcriptRef: "local:child" })} />);
   const button = screen.getByRole("button", { name: "Open subagent" });
-  expect(button.textContent).toContain("open");
+  expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   await user.click(button);
   const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
   expect(opened?.params).toEqual({ ref: "local:child" });

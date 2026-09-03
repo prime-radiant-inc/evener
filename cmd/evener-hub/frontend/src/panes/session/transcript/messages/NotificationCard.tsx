@@ -44,7 +44,6 @@ const CLASS = {
   head: requireClass(styles.head, "notificationcard.module.css", "head"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
   secondary: requireClass(styles.secondary, "notificationcard.module.css", "secondary"),
-  action: requireClass(styles.action, "notificationcard.module.css", "action"),
   metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
   field: requireClass(styles.field, "notificationcard.module.css", "field"),
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
@@ -192,9 +191,7 @@ export function NotificationCard({
         <span className={CLASS.title}>{notification.title}</span>
         {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
         {transcriptRef && (
-          <span className={CLASS.action}>
-            <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
-          </span>
+          <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
         )}
       </summary>
       {open && (

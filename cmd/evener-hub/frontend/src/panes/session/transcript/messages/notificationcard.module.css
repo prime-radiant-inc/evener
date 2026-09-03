@@ -36,11 +36,6 @@
   color: var(--ink-mid);
 }
 
-.action {
-  margin-left: auto;
-  display: inline-flex;
-}
-
 .metadata {
   display: flex;
   flex-wrap: wrap;

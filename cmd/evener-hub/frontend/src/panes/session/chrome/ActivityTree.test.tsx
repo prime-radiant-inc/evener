@@ -18,14 +18,13 @@ import type { ActivityTree as ActivityTreeData } from "./activityData";
 // order. OpenTranscriptButton is stubbed: it lives in the SAME module as
 // openTranscript, so its internal call uses the module-local binding and the
 // spy above would never observe it. The stub records the props the tree
-// passes (iconOnly included) and routes its click to the spied openTranscript;
+// passes and routes its click to the spied openTranscript;
 // the real button's icon-only rendering and click behavior are covered in
 // openTranscript.test.tsx, where the workspace harness exists.
 let openTranscript: typeof openTranscriptModule.openTranscript;
 let openButtonProps: Array<{
   transcriptRef: string;
   parentRef?: string;
-  iconOnly?: boolean;
 }>;
 beforeEach(() => {
   openTranscript = vi.spyOn(openTranscriptModule, "openTranscript").mockImplementation(() => {});
@@ -223,7 +222,6 @@ describe("ActivityTree", () => {
       expect.objectContaining({
         transcriptRef: "local:sess_child",
         parentRef: "ref_root",
-        iconOnly: true,
       }),
     );
 
@@ -381,9 +379,8 @@ describe("ActivityTree", () => {
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     const openButton = within(shellRow).getByRole("button", { name: "Open transcript" });
-    // The tree asks for the icon-only form; the real component's glyph-only
-    // rendering is covered in openTranscript.test.tsx.
-    expect(openButtonProps.every((props) => props.iconOnly === true)).toBe(true);
+    // The one form is icon-only; the real component's glyph-only rendering is
+    // covered in openTranscript.test.tsx.
     // The button ends the title: after the name text, before the meta cluster.
     const nameText = within(shellRow).getByText("run tests");
     const metaText = within(shellRow).getByText("12s");
