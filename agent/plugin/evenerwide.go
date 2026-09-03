@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/userdirs"
 )
 
 var evenerwideUserHomeDir = os.UserHomeDir
@@ -23,15 +24,7 @@ var execSpanPattern = regexp.MustCompile("!`[^`]*`")
 // $XDG_CONFIG_HOME/evener/commands, or ~/.config/evener/commands. Mirrors
 // promptpath.globalPromptsDir. Returns "" when no home is resolvable.
 func globalCommandsDir() string {
-	dir := envvars.XDGConfigHome.Getenv()
-	if dir == "" {
-		home, err := evenerwideUserHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "evener", "commands")
+	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), evenerwideUserHomeDir), "commands")
 }
 
 // DiscoverEvenerWideCommands scans the user-global commands dir, then walks

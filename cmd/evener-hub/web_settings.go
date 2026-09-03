@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/userdirs"
 )
 
 // builtinAgentNames are the agents compiled into the binary (defaultPersona.txt
@@ -88,13 +88,5 @@ func fileSizeHuman(path string) string {
 // defaultMCPConfigPath is the conventional XDG location for the global
 // MCP config (~/.config/evener/mcp.json), matching agent.globalMCPConfigPath.
 func defaultMCPConfigPath() string {
-	dir := envvars.XDGConfigHome.Getenv()
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "evener", "mcp.json")
+	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), configUserHomeDir), "mcp.json")
 }

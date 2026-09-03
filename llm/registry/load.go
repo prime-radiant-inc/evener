@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/userdirs"
 )
 
 // CredentialSource is the credentials-store view the registry needs: the
@@ -174,17 +176,18 @@ func defaultOptions() *options {
 	return &options{env: os.LookupEnv, logf: log.Printf}
 }
 
-// defaultConfigRoot mirrors cmdutil.DefaultConfigRoot, which the llm module
-// cannot import: $XDG_CONFIG_HOME/evener, else ~/.config/evener.
+// defaultConfigRoot resolves the registry's config root from its injected
+// environment function so tests do not depend on the process environment.
 func defaultConfigRoot(env func(string) (string, bool)) string {
-	if base, ok := env("XDG_CONFIG_HOME"); ok && base != "" {
-		return filepath.Join(base, "evener")
+	xdg, ok := env("XDG_CONFIG_HOME")
+	if !ok {
+		xdg = ""
 	}
 	home, _ := env("HOME")
 	if home == "" {
 		home = "."
 	}
-	return filepath.Join(home, ".config", "evener")
+	return userdirs.ConfigRoot(xdg, func() (string, error) { return home, nil })
 }
 
 // defaultStateRoot mirrors cmdutil.DefaultStateRoot: $XDG_STATE_HOME/evener,
