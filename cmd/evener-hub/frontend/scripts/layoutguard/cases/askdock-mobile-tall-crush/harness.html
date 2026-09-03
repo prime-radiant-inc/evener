@@ -19,12 +19,15 @@
      - .host: StackHost's full-bleed phone pane (PaneScaffold .pane:
        height 100%, flex column, overflow hidden) at iPhone width. The
        fixed height deliberately models a pane shorter than the viewport.
-     - .transcript: PaneScaffold .body (flex 1 1 0, min-height 0, own
-       scroll). The dock is the transcript's trailing row now, so THIS is
-       the one scroll region a tall batch grows.
+     - .transcriptScroll: the VirtualList root (virtuallist.module.css's
+       .root: height 100%, overflow-y auto) - the production transcript's
+       actual scroll owner, nested inside PaneScaffold's .body (flex 1 1 0,
+       min-height 0), which never scrolls in the session pane. The dock is
+       the transcript's trailing row now, so THIS root is the one scroll
+       region a tall batch grows.
      - .paneFooter: PaneScaffold .footer (flex: none) - back to the plain
        fixed slot every pane has, with no ask-dock special case.
-     Local mirror classes, not the real .body/.footer: the module CSS loads
+     Local mirror classes, not the real .body/.root: the module CSS loads
      de-scoped here, and askdock.module.css's own .footer (the batch's
      footer bar) would collide with panescaffold.module.css's .footer. */
   .host {
@@ -35,9 +38,10 @@
     overflow: hidden;
     background: var(--surface-1);
   }
-  .transcript {
+  .transcriptScroll {
     flex: 1 1 0;
     min-height: 0;
+    height: 100%;
     overflow-y: auto;
     padding: var(--space-4);
   }
@@ -65,7 +69,7 @@
 </head>
 <body>
 <div class="host">
-  <div class="transcript" id="transcript">
+  <div class="transcriptScroll" id="transcript">
     <p>transcript line the reader may still need to see while answering</p>
     <p>transcript line</p>
     <p>transcript line</p>
