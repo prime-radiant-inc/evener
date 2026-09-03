@@ -835,6 +835,12 @@ export function initNavigation(
           lastSequence: cap.sequence,
         });
         if (cap.sequence > previousSequence) revalidator?.force(revalidator.loadedKeys());
+        else {
+          const retryable = [...(revalidator?.states().values() ?? [])]
+            .filter((state) => !state.loading && (state.stale || state.error !== null))
+            .map((state) => state.key);
+          revalidator?.force(retryable);
+        }
       } else start(initialize);
     }),
   );

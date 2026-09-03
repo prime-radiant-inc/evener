@@ -1678,6 +1678,85 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
   ]);
 });
 
+test("same-generation equal-sequence reconnect retries one settled error with its installed v2 base", async () => {
+  const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
+  const reconnectCapability = { ...initialCapability, sequence: 3 };
+  const sectionBases: unknown[] = [];
+  let refreshing = false;
+  let sectionRefreshes = 0;
+  let authorityDuringRetry: unknown;
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => initialize(initialCapability));
+  client.on("evener/navigation/read", (params) => {
+    if (!refreshing) return reconnectV2Response(params);
+    if (params.resource === "section") {
+      sectionBases.push(params.base);
+      sectionRefreshes++;
+      if (sectionRefreshes === 1) throw new Error("offline");
+      authorityDuringRetry = navigationStore.getState().resources.get(keyID(reconnectSectionKey))?.normalized?.version;
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 23,
+        etag: '"section-v2-23"',
+        data: reconnectSessionSnapshot(
+          reconnectSectionKey,
+          { generation_id: generation, revision: 23, offset: 0, limit: 50, remaining: 0, truncated: false },
+          "sessions",
+        ),
+      } as NavigationReadResponse;
+    }
+    throw new Error(`unexpected reconnect resource ${params.resource}`);
+  });
+  initNavigation(client);
+  await flush();
+  await navigationStore.getState().loadSection("live");
+  const initial = navigationStore.getState();
+  const initialSection = initial.resources.get(keyID(reconnectSectionKey));
+  if (!initialSection?.normalized) throw new Error("expected installed v2 section");
+
+  refreshing = true;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 3,
+      targets: [{ kind: "section", section: "live", revision: 23 }],
+    }),
+  );
+  await flush();
+  expect(navigationStore.getState().resources.get(keyID(reconnectSectionKey))).toMatchObject({
+    loading: false,
+    stale: true,
+    error: new Error("offline"),
+  });
+  const callsBeforeReconnect = client.calls.length;
+
+  client.emitStateChange("reconnecting");
+  client.emitReady(initialize(reconnectCapability));
+  await flush();
+
+  expect(client.calls.slice(callsBeforeReconnect)).toEqual([
+    {
+      method: "evener/navigation/read",
+      params: {
+        resource: "section",
+        section: "live",
+        offset: 0,
+        limit: 50,
+        representationVersion: 2,
+        base: { generationId: generation, revision: 22, etag: '"section-v2"' },
+      },
+    },
+  ]);
+  expect(sectionBases).toEqual([
+    { generationId: generation, revision: 22, etag: '"section-v2"' },
+    { generationId: generation, revision: 22, etag: '"section-v2"' },
+  ]);
+  expect(authorityDuringRetry).toBe(initialSection.normalized.version);
+  expect(navigationStore.getState().manifest).toBe(initial.manifest);
+});
+
 test("same-generation lower-sequence reconnect preserves installed v2 authority and identities without a read", async () => {
   const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
   const reconnectCapability = { ...capability(), sequence: 1 };
