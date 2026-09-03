@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
@@ -765,4 +765,25 @@ test("a fresh pending set after a fully resolved one re-activates auto-focus", a
 
   const dock = document.querySelector("[data-ask-response-dock]");
   await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+});
+
+// The dock is a virtual row now: it can mount in the list's overscan while
+// the reader is scrolled away, and a plain focus() would scroll the
+// transcript to the focused control - yanking the reader and defeating the
+// new-content pill that is supposed to be their way down (roborev PR #854).
+test("activation auto-focus never scrolls the transcript to the control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  try {
+    render(<AskDock ref="ref_a" />);
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(focusSpy).toHaveBeenCalled();
+    for (const call of focusSpy.mock.calls) {
+      expect(call[0]).toEqual({ preventScroll: true });
+    }
+  } finally {
+    focusSpy.mockRestore();
+  }
 });

@@ -323,7 +323,13 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     const first = dockRef.current?.querySelector<HTMLElement>(
       '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
     );
-    first?.focus();
+    // preventScroll: as a virtual row this dock can mount in the list's
+    // overscan while the reader is scrolled away, and a default focus()
+    // would scroll the transcript to the control - yanking the reader and
+    // defeating the new-content pill that is supposed to be their way down
+    // (useTranscriptScroll's askDockPending edge). The pill jump lands on
+    // the dock with focus already in its first control.
+    first?.focus({ preventScroll: true });
   }, [batches.length, pendingGreeted, sessionRef]);
 
   if (batches.length === 0) return null;
