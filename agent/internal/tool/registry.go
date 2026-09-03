@@ -369,6 +369,9 @@ type RegisteredTool struct {
 	Schema     *jsonschema.Schema
 	Limit      schema.ToolOutputLimit
 	OmitIntent bool
+	// OmitDescriptionFromSemanticIdentity is set only for built-in registrations
+	// whose top-level description is presentation metadata, never by name alone.
+	OmitDescriptionFromSemanticIdentity bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
@@ -414,13 +417,29 @@ func (r *Registry) telemetryExactSignature(name string, args []byte) string {
 }
 
 func (r *Registry) semanticSignature(name string, args map[string]any, parameters map[string]any) string {
-	encoded, err := semanticCanonicalBytes(name, args, parameters)
+	r.mu.RLock()
+	registered, ok := r.tools[name]
+	r.mu.RUnlock()
+	omitDescription := ok && registered.OmitDescriptionFromSemanticIdentity
+	encoded, err := semanticCanonicalBytes(name, args, parameters, omitDescription)
 	if err != nil {
 		encoded = []byte("unencodable")
 	}
 	h := hmac.New(sha256.New, r.telemetryKey[:])
 	_, _ = h.Write(encoded)
 	return name + ":" + hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// MarkRegisteredToolsPresentationDescriptions records that the tools currently
+// registered by the core bootstrap use top-level descriptions as narration.
+// Later replacement registrations retain their own (false by default) policy.
+func (r *Registry) MarkRegisteredToolsPresentationDescriptions() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, registered := range r.tools {
+		registered.OmitDescriptionFromSemanticIdentity = true
+		r.tools[name] = registered
+	}
 }
 
 // telemetryComponent returns an opaque, session-scoped token for a semantic

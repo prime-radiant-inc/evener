@@ -53,7 +53,10 @@ func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
 	if first, second := semanticCallSignature("custom_description", map[string]any{"description": "analyze totals"}), semanticCallSignature("custom_description", map[string]any{"description": "find signatures"}); first == second {
 		t.Fatalf("custom behavior-driving descriptions were removed from semantic identity: %q", first)
 	}
-	if first, second := semanticCallSignature("shell", map[string]any{"command": "false", "description": "first narration"}), semanticCallSignature("shell", map[string]any{"command": "false", "description": "second narration"}); first != second {
+	r := NewRegistry()
+	registerSemanticReviewTool(t, r, "shell", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
+	r.MarkRegisteredToolsPresentationDescriptions()
+	if first, second := r.semanticSignature("shell", map[string]any{"command": "false", "description": "first narration"}, DefShell().Parameters), r.semanticSignature("shell", map[string]any{"command": "false", "description": "second narration"}, DefShell().Parameters); first != second {
 		t.Fatalf("built-in presentation descriptions changed semantic identity: %q != %q", first, second)
 	}
 }

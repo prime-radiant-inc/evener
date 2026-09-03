@@ -364,6 +364,7 @@ func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
 	}
 	registerWorktreeTool(reg, deps)
 	registerCommunicateTool(reg, deps)
+	reg.MarkRegisteredToolsPresentationDescriptions()
 	return nil
 }
 
@@ -416,5 +417,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 			return err
 		}
 	}
+	reg.MarkRegisteredToolsPresentationDescriptions()
 	return nil
 }

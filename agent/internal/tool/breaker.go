@@ -89,7 +89,7 @@ func semanticCallSignature(name string, args map[string]any) string {
 }
 
 func semanticCallSignatureWithDefaults(name string, args map[string]any, parameters map[string]any) string {
-	encoded, err := semanticCanonicalBytes(name, args, parameters)
+	encoded, err := semanticCanonicalBytes(name, args, parameters, false)
 	if err != nil {
 		// Args have passed JSON parsing and schema validation, so this is a
 		// defensive fallback rather than a normal path. It remains bounded and
@@ -99,21 +99,8 @@ func semanticCallSignatureWithDefaults(name string, args map[string]any, paramet
 	return name + ":" + shortHash(encoded)
 }
 
-func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any) ([]byte, error) {
-	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file", builtInPresentationDescription(name)))
-}
-
-// builtInPresentationDescription identifies the built-in tools whose top-level
-// description is operator-facing narration rather than execution input. Custom
-// and MCP tools keep description in semantic identity because their schemas may
-// assign it behavior-driving meaning.
-func builtInPresentationDescription(name string) bool {
-	switch name {
-	case "read_file", "write_file", "list_dir", "edit_file", "shell", "exec_command", "run_shell_command", "delegate", "delegate_send", "model_list", "job_watch", "job_status", "job_list", "job_stop", "grep", "glob", "apply_patch", "web_fetch", "web_search", "communicate", "task_list", "use_skill", "find_session_transcripts", "doctor_evener", "manage_worktree", "read_transcript", "ask_user", "update_goal":
-		return true
-	default:
-		return false
-	}
+func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any, omitDescription bool) ([]byte, error) {
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file", omitDescription))
 }
 
 // canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
