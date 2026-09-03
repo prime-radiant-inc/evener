@@ -1,6 +1,10 @@
 import type { ComponentType } from "react";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { ACTIONS } from "../../keybindings/actions";
+import { SETTINGS_SCOPE } from "../../keybindings/defaults";
+import { keybindingsRegistry } from "../../keybindings/registry";
 import { chromeStore } from "../../shell/chromeStore";
+import { installKeybindings } from "../../shell/installKeybindings";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
@@ -168,29 +172,34 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // in a real browser: Escape/close did nothing). Routing through
   // paneToURL/navigate keeps the URL and the workspace in agreement, so
   // there is nothing left for reconciliation to "fix".
-  function handleClose() {
+  const handleClose = useCallback(() => {
     const url = paneToURL("welcome", {});
     if (url !== null) navigate(url);
     workspaceStore.getState().closePane(paneId);
-  }
+  }, [paneId]);
 
-  // Escape closes the pane. A React onKeyDown on the pane's own div only
-  // fires when focus is INSIDE it — and the common open path (clicking the
-  // rail's gear) leaves focus on the gear button, so in a real browser the
-  // pane-scoped handler never saw the key (live-verified regression). A
-  // document-level bubble-phase listener sees Escape regardless of where
-  // focus sits, and still yields to anything inside settings that claimed
-  // the key first: a Dialog/Menu preventDefaults its own Escape (see
-  // OverlayPanel/Menu), which this checks before closing.
+  // Escape closes the pane, via the keybindings dispatcher: the pane pushes
+  // the settings scope while it is open and registers the settings.close
+  // action (Escape, scope-gated - keybindings/defaults.ts), so the chord is
+  // live exactly while this pane exists. A React onKeyDown on the pane's own
+  // div only fires when focus is INSIDE it — and the common open path
+  // (clicking the rail's gear) leaves focus on the gear button, so in a real
+  // browser the pane-scoped handler never saw the key (live-verified
+  // regression). The dispatcher's window-level listener sees Escape
+  // regardless of where focus sits, and still yields to anything inside
+  // settings that claimed the key first: a Dialog/Menu preventDefaults its
+  // own Escape (see OverlayPanel/Menu), which the binding's
+  // ignoreIfDefaultPrevented gate (default true) checks before closing.
   useEffect(() => {
-    function onDocumentKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      if (event.defaultPrevented) return;
-      handleClose();
-    }
-    document.addEventListener("keydown", onDocumentKeyDown);
-    return () => document.removeEventListener("keydown", onDocumentKeyDown);
-  });
+    installKeybindings();
+    const registry = keybindingsRegistry.getState();
+    const popScope = registry.pushScope(SETTINGS_SCOPE);
+    const unregister = registry.registerAction(ACTIONS.settingsClose, () => handleClose());
+    return () => {
+      unregister();
+      popScope();
+    };
+  }, [handleClose]);
 
   return (
     <PaneScaffold
