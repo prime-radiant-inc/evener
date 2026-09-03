@@ -83,7 +83,7 @@ func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T)
 		jobID := identifier.MustNewJobID(owner)
 		seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
 		assertRegistryRetainedDefaultView(t, &toolDeps{stateDir: stateDir, sessionID: owner}, "job:"+jobID, map[string]any{
-			"range": "", "expand_turn": nil, "format": "markdown", "output_match": "", "context_lines": nil,
+			"range": "", "expand_turn": "0", "format": "", "output_match": "", "context_lines": "0",
 		})
 	})
 
@@ -92,6 +92,14 @@ func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T)
 		assertRegistryRetainedDefaultView(t, deps, ref, map[string]any{
 			"range": nil, "expand_turn": nil, "output_match": "", "context_lines": float64(0),
 		})
+		reg := tool.NewRegistry()
+		if err := reg.Register(readTranscriptTool(deps)); err != nil {
+			t.Fatalf("register read_transcript: %v", err)
+		}
+		formatResult := executeReadTranscriptFromRegistry(t, reg, "artifact-empty-format", map[string]any{"transcript_ref": ref, "format": ""})
+		if !formatResult.IsError {
+			t.Fatalf("artifact empty format succeeded: %#v", formatResult)
+		}
 	})
 }
 
@@ -107,7 +115,7 @@ func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *t
 	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
 	hookClient := llm.NewClient()
 	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"range":"","expand_turn":null,"format":"markdown","output_match":"","context_lines":0}}}`)}
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"range":"","expand_turn":"0","format":"","output_match":"","context_lines":"0"}}}`)}
 	}})
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "read_transcript", Type: "prompt", Prompt: "supply defaults"})
@@ -161,6 +169,9 @@ func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *
 	if !result.IsError {
 		t.Fatalf("invalid offset read succeeded: %#v", result)
 	}
+	if !strings.Contains(result.Output, "offset_bytes") {
+		t.Fatalf("final schema failure = %q, want remaining offset_bytes error", result.Output)
+	}
 	sess.Close()
 	captured := <-eventsCh
 	assertReadRepairTelemetry(t, captured.repaired, "normalized-then-invalid", "output_match", "context_lines")
@@ -175,6 +186,58 @@ func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *
 	}
 	if got := startArgs["offset_bytes"]; got != float64(-1) {
 		t.Fatalf("normalized start arguments offset_bytes = %#v, want -1", got)
+	}
+}
+
+func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	jobID := identifier.MustNewJobID(sess.ID())
+	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	eventsCh := make(chan retainedReadEventCapture, 1)
+	go func() {
+		var captured retainedReadEventCapture
+		for event := range sess.Events() {
+			switch data := event.Data.(type) {
+			case events.ToolCallRepairedData:
+				captured.repaired = append(captured.repaired, data)
+			case events.ToolCallStartData:
+				if data.CallID == "second-pass-normalized-then-invalid" {
+					captured.startArgs = data.ArgumentsJSON
+				}
+			}
+		}
+		eventsCh <- captured
+	}()
+
+	result := execReadTranscriptThroughSession(t, sess, "second-pass-normalized-then-invalid", map[string]any{
+		"transcript_ref": "job:" + jobID,
+		"expand_turn":    "0",
+		"offset_bytes":   float64(-1),
+	})
+	if !result.IsError {
+		t.Fatalf("invalid offset read succeeded: %#v", result)
+	}
+	if !strings.Contains(result.Output, "offset_bytes") {
+		t.Fatalf("final schema failure = %q, want remaining offset_bytes error", result.Output)
+	}
+	sess.Close()
+	captured := <-eventsCh
+	assertReadRepairTelemetry(t, captured.repaired, "second-pass-normalized-then-invalid", "expand_turn")
+	var startArgs map[string]any
+	if err := json.Unmarshal([]byte(captured.startArgs), &startArgs); err != nil {
+		t.Fatalf("unmarshal normalized start args %q: %v", captured.startArgs, err)
+	}
+	if _, present := startArgs["expand_turn"]; present {
+		t.Fatalf("second-pass normalized start arguments retain expand_turn: %#v", startArgs)
+	}
+	if got := startArgs["offset_bytes"]; got != float64(-1) {
+		t.Fatalf("second-pass normalized start arguments offset_bytes = %#v, want -1", got)
 	}
 }
 
