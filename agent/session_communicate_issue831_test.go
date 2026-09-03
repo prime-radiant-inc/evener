@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/llm"
 )
 
@@ -294,6 +296,79 @@ func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairI
 	}
 	if got.end.ArgumentsJSON != string(arguments) {
 		t.Fatalf("end arguments = %q, want original unapplied bytes %q", got.end.ArgumentsJSON, arguments)
+	}
+}
+
+func TestPrepareToolCall_RepairsCommitArgumentsAndChangesAtomicallyIssue831(t *testing.T) {
+	def := issue831NumericRepairDefinition()
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(def)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	raw := json.RawMessage(`{"s":"\uX","n":"NaN"}`)
+	res := prepareToolCall(llm.ToolCallData{ID: "issue831-nan", Name: def.Name, Arguments: raw}, reg.Get(def.Name), []string{def.Name}, def.Name, "communicate", "")
+	if res.PrevalErr == "" {
+		t.Fatal("non-finite numeric repair was accepted")
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("uncommitted repair changes = %+v", res.Changes)
+	}
+	if string(res.Call.Arguments) != string(raw) {
+		t.Fatalf("arguments = %q, want original raw bytes %q", res.Call.Arguments, raw)
+	}
+}
+
+func TestCommitPreparedRepairs_MarshalFailureDoesNotPartiallyCommitIssue831(t *testing.T) {
+	raw := json.RawMessage(`{"s":"raw"}`)
+	res := prepareResult{Call: llm.ToolCallData{Arguments: raw}}
+	changes := []repair.Change{{Kind: repair.ChangeCoerceType, Field: "n", Detail: `"NaN"→NaN`}}
+	if err := commitPreparedRepairs(&res, map[string]any{"n": math.NaN()}, changes); err == nil {
+		t.Fatal("non-finite arguments unexpectedly marshaled")
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("marshal failure committed changes: %+v", res.Changes)
+	}
+	if string(res.Call.Arguments) != string(raw) {
+		t.Fatalf("marshal failure changed arguments to %q, want %q", res.Call.Arguments, raw)
+	}
+}
+
+func TestSession_NonFiniteNumericRepairDoesNotEmitUnappliedChangesIssue831(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	def := issue831NumericRepairDefinition()
+	if err := sess.reg.Register(regTool(def)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	repairedCh := drainRepairedEvents(sess)
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "issue831-nan-session",
+		Name:      def.Name,
+		Arguments: json.RawMessage(`{"s":"\uX","n":"NaN"}`),
+	}, "")
+	if !res.IsError || !res.PrevalOnly || !strings.Contains(res.FullOutput, `"n"`) {
+		t.Fatalf("result = %+v, want prevalidation type failure for n", res)
+	}
+
+	sess.Close()
+	if repaired := <-repairedCh; len(repaired) != 0 {
+		t.Fatalf("unapplied non-finite repair emitted ToolCallRepaired: %+v", repaired)
+	}
+}
+
+func issue831NumericRepairDefinition() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "issue831_numeric_repair",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"s": map[string]any{"type": "string"},
+				"n": map[string]any{"type": "number"},
+			},
+			"required": []string{"s", "n"},
+		},
 	}
 }
 

@@ -166,10 +166,11 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				// finalErrorArgs is committed for retained-read normalization even
 				// though another field failed. It includes any successful outer
 				// JSON repair, so record both applied repair sets together.
-				res.Changes = append(res.Changes, pendingJSONChanges...)
-				res.Changes = append(res.Changes, retainedReadChanges...)
-				if b, marshalErr := json.Marshal(finalErrorArgs); marshalErr == nil {
-					res.Call.Arguments = b
+				committedChanges := append([]repair.Change(nil), pendingJSONChanges...)
+				committedChanges = append(committedChanges, retainedReadChanges...)
+				if err := commitPreparedRepairs(&res, finalErrorArgs, committedChanges); err != nil {
+					res.PrevalErr = repairCommitError()
+					return res
 				}
 			}
 			offendingPath := offendingField(err2)
@@ -180,25 +181,45 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		args = healed
-		res.Changes = append(res.Changes, pendingJSONChanges...)
+		committedChanges := append([]repair.Change(nil), pendingJSONChanges...)
 		// The healed form carries the fill (it was validated above), so the
 		// fill's changes belong in the record alongside the healing changes.
-		res.Changes = append(res.Changes, fillChanges...)
-		res.Changes = append(res.Changes, c...)
-	} else {
-		res.Changes = append(res.Changes, pendingJSONChanges...)
-		if len(fillChanges) > 0 {
-			res.Changes = append(res.Changes, fillChanges...)
+		committedChanges = append(committedChanges, fillChanges...)
+		committedChanges = append(committedChanges, c...)
+		committedChanges = append(committedChanges, retainedReadChanges...)
+		if err := commitPreparedRepairs(&res, args, committedChanges); err != nil {
+			res.PrevalErr = repairCommitError()
+			return res
 		}
-	}
-	res.Changes = append(res.Changes, retainedReadChanges...)
-
-	if len(res.Changes) > 0 {
-		if b, err := json.Marshal(args); err == nil {
-			res.Call.Arguments = b
+	} else {
+		committedChanges := append([]repair.Change(nil), pendingJSONChanges...)
+		committedChanges = append(committedChanges, fillChanges...)
+		committedChanges = append(committedChanges, retainedReadChanges...)
+		if err := commitPreparedRepairs(&res, args, committedChanges); err != nil {
+			res.PrevalErr = repairCommitError()
+			return res
 		}
 	}
 	return res
+}
+
+// commitPreparedRepairs is the only repair commit point: changes and their
+// encoded arguments become observable together, or neither does.
+func commitPreparedRepairs(res *prepareResult, args map[string]any, changes []repair.Change) error {
+	if len(changes) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	res.Call.Arguments = encoded
+	res.Changes = append([]repair.Change(nil), changes...)
+	return nil
+}
+
+func repairCommitError() string {
+	return "invalid_request: repaired tool arguments could not be encoded as JSON; the call was not applied."
 }
 
 // repairDefaultCommunicateEnvelope applies the documented defaults for the one
