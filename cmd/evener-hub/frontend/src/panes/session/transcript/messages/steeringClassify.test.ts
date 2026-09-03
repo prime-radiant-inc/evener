@@ -421,3 +421,19 @@ Note: PR #123: newer than id 456 &lt;x&gt;
   expect(n.prose).toContain("Timer fired (every 300s), 3 times since your last turn.");
   expect(n.prose).toContain("Note: PR #123: newer than id 456 &lt;x&gt;");
 });
+
+// A timer's body is note prose, never a job-output excerpt, so the note is
+// free to contain the line the excerpt marker looks for.
+test("a timer note line reading excerpt: stays in the prose", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" description="" status="watch" reason="repeat" output_bytes="0" watch_id="w2">
+Timer fired (every 300s).
+Note: when you write the report, quote the failing run like this:
+excerpt:
+the section that keeps regressing
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.prose).toContain("excerpt:");
+  expect(n.prose).toContain("the section that keeps regressing");
+  expect(n.excerpt).toBe("");
+});

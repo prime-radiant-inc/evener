@@ -320,7 +320,15 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if (!m) return null;
   const attrs = parseQuotedAttrs(m[1] ?? "");
   const bodyText = (m[2] ?? "").trim();
-  const { prose, excerpt } = splitNotificationExcerpt(bodyText);
+  let type = "job";
+  if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
+  if (attrs.event === "watch_send") type = "watch-send";
+  // A watch notification's body is all prose (the fired sentence plus the
+  // watch's own note); only a job report carries an excerpt of job output. The
+  // tag attributes already say which this is, so decide before splitting -
+  // otherwise a note line reading "excerpt:" would hand the rest of the note
+  // to the excerpt preview.
+  const { prose, excerpt } = type === "watch" ? { prose: bodyText, excerpt: "" } : splitNotificationExcerpt(bodyText);
   // A communicate envelope can only ride a delegate's report (the delegate
   // calls communicate to produce it - agent/session_tools_communicate.go).
   // Gate on the actual job type, not on whether the excerpt happens to parse
@@ -332,9 +340,6 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // separately, only when there is no communicate message to show instead.
   const communicate =
     attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
-  let type = "job";
-  if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
-  if (attrs.event === "watch_send") type = "watch-send";
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const analysis = analyzeJobNotification(attrs, communicate);
