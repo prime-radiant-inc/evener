@@ -1732,19 +1732,29 @@ func tripConditionFireBudgetLocked(cfg *watchConfig) (crossedBudget bool) {
 	return true
 }
 
-// noteConditionFireLocked counts one condition match for cfg and reports whether
-// it crossed the condition-fire budget. It is the ONLY place conditionFires
-// moves: every match site — the event rail, the live output rail, and both
-// attach-scan rails — goes through it, so no path can count a fire without
-// consulting the breaker. A true result means the caller must schedule
-// autoClearWatchOverBudget(cfg) after releasing jm.mu, on
-// tripConditionFireBudgetLocked's terms. The caller must hold jm.mu.
-func noteConditionFireLocked(cfg *watchConfig) (crossedBudget bool) {
-	if cfg == nil {
-		return false
+// noteConditionFireLocked offers one condition match to cfg's breaker. It is the
+// ONLY place conditionFires moves: every match site — the event rail, the live
+// output rail, and both attach-scan rails — goes through it, so no path can
+// count a fire without consulting the breaker.
+//
+// accepted=false means the breaker has already latched and the caller must build
+// NOTHING from this match. The window it closes is the teardown's own durable
+// append: the config is not detached until that append returns, so it is still
+// in jm.watches and still matching. rejectingDelivery stops the send rail at the
+// delivery gate, but a no-send watch's notification has no such gate, so the
+// refusal has to happen where the match is counted. The match that crosses the
+// budget is itself accepted — the budget is a count of allowed fires, and that
+// one is the last of them.
+//
+// crossedBudget=true means the caller must schedule autoClearWatchOverBudget(cfg)
+// after releasing jm.mu, on tripConditionFireBudgetLocked's terms. The caller
+// must hold jm.mu.
+func noteConditionFireLocked(cfg *watchConfig) (accepted, crossedBudget bool) {
+	if cfg == nil || cfg.budgetTripped {
+		return false, false
 	}
 	cfg.conditionFires++
-	return tripConditionFireBudgetLocked(cfg)
+	return true, tripConditionFireBudgetLocked(cfg)
 }
 
 // countWatchDeliveryLocked increments the model-facing delivery count for cfg.
@@ -2520,11 +2530,15 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
-		// The match is counted and the breaker consulted before the rails
-		// split: the send rail counts its delivery only when the frame settles,
-		// which a frame the receiver never takes never reaches, so latching at
-		// the match is what bounds an unsettled watch.
-		crossedBudget := noteConditionFireLocked(cfg)
+		// The match is offered to the breaker before the rails split: the send
+		// rail counts its delivery only when the frame settles, which a frame the
+		// receiver never takes never reaches, so latching at the match is what
+		// bounds an unsettled watch. A refused match is a match this watch is no
+		// longer entitled to, so nothing is built from it.
+		accepted, crossedBudget := noteConditionFireLocked(cfg)
+		if !accepted {
+			continue
+		}
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
@@ -2877,7 +2891,10 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
-			crossedBudget := noteConditionFireLocked(cfg)
+			accepted, crossedBudget := noteConditionFireLocked(cfg)
+			if !accepted {
+				break
+			}
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
@@ -2985,7 +3002,11 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		crossedBudget := noteConditionFireLocked(cfg)
+		accepted, crossedBudget := noteConditionFireLocked(cfg)
+		if !accepted {
+			jm.mu.Unlock()
+			return false
+		}
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
@@ -2995,9 +3016,14 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 		return true
 	}
 	jm.mu.Lock()
-	crossedBudget := noteConditionFireLocked(cfg)
-	countWatchDeliveryLocked(cfg)
+	accepted, crossedBudget := noteConditionFireLocked(cfg)
+	if accepted {
+		countWatchDeliveryLocked(cfg)
+	}
 	jm.mu.Unlock()
+	if !accepted {
+		return false
+	}
 	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
 	if crossedBudget {
 		jm.autoClearWatchOverBudget(cfg)
