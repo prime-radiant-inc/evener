@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
@@ -41,6 +44,19 @@ beforeEach(() => {
     });
   });
 });
+
+// Captured before beforeEach's spy: the DOM-placement test below needs the
+// real OpenTranscriptButton because the stub renders a bare button without
+// the OpenButton .inline wrapper span the tree's JSX relies on.
+const RealOpenTranscriptButton = openTranscriptModule.OpenTranscriptButton;
+
+// The repo's CSS-source pin idiom (difftable.test.tsx, select.test.tsx):
+// jsdom has no layout, so placement contracts are pinned against the
+// stylesheet's own source.
+const activityPanelCss = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "activitypanel.module.css"),
+  "utf8",
+);
 
 // Pinned clock: every quiet-time assertion below measures against this instant.
 const NOW = new Date("2026-08-05T15:00:12.000Z");
@@ -395,6 +411,27 @@ describe("ActivityTree", () => {
     // A row with no transcript ref (broken lint) gets no open button at all.
     const failedRow = screen.getByRole("treeitem", { name: "broken lint" });
     expect(within(failedRow).queryByRole("button", { name: "Open transcript" })).toBeNull();
+  });
+
+  test("the open control's previous sibling is the row's name span - nothing springs it away", () => {
+    // Render through the REAL OpenTranscriptButton (the file's stub renders a
+    // bare button): the button's parentElement is OpenButton's .inline
+    // wrapper span, so the wrapper's previous element sibling must be the
+    // name span itself - no growing flex element may sit between them.
+    vi.mocked(openTranscriptModule.OpenTranscriptButton).mockImplementation(RealOpenTranscriptButton);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    const button = within(shellRow).getByRole("button", { name: "Open transcript" });
+    const nameSpan = button.parentElement?.previousElementSibling;
+    expect(nameSpan?.textContent).toBe("run tests");
+  });
+
+  test("dense rows never grow the name over the open control: meta owns the right edge", () => {
+    expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
+    expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
   });
 
   test("clicking a row's title toggles its disclosure, never opens the transcript", async () => {
