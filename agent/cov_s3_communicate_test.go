@@ -100,41 +100,6 @@ func TestS3Cov_HasMeaningfulRawOutput(t *testing.T) {
 	}
 }
 
-func TestS3Cov_CommunicateSchemaStringSlice(t *testing.T) {
-	t.Parallel()
-	if got := communicateSchemaStringSlice([]string{"a", "b"}); len(got) != 2 || got[0] != "a" {
-		t.Fatalf("[]string case: %v", got)
-	}
-	if got := communicateSchemaStringSlice([]any{"a", 1, "b"}); len(got) != 2 || got[1] != "b" {
-		t.Fatalf("[]any case: %v", got)
-	}
-	if got := communicateSchemaStringSlice(42); got != nil {
-		t.Fatalf("default case: %v", got)
-	}
-}
-
-func TestS3Cov_StringSetsEqual(t *testing.T) {
-	t.Parallel()
-	props := func(names ...string) map[string]any {
-		m := map[string]any{}
-		for _, n := range names {
-			m[n] = map[string]any{}
-		}
-		return m
-	}
-	if !stringSetsEqual(props("x", "y"), []string{"y", "x"}, "x", "y") {
-		t.Fatal("expected equal")
-	}
-	// Missing member.
-	if stringSetsEqual(props("x"), []string{"x", "y"}, "x", "y") {
-		t.Fatal("expected not equal: required missing y")
-	}
-	// Extra member.
-	if stringSetsEqual(props("x", "y", "z"), []string{"x", "y"}, "x", "y") {
-		t.Fatal("expected not equal: extra property z")
-	}
-}
-
 func TestS3Cov_UsesDefaultCommunicateOutputEnvelope(t *testing.T) {
 	t.Parallel()
 

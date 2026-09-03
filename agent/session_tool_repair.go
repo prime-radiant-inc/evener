@@ -50,6 +50,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		res.PrevalErr = repair.UnknownToolMessage(requestedVisible, visibleNames)
 		return res
 	}
+	if err := tool.ValidateRawArguments(res.Call.Arguments); err != nil {
+		res.PrevalErr = err.Error()
+		return res
+	}
 
 	args := map[string]any{}
 	var pendingJSONChanges []repair.Change
@@ -248,7 +252,7 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArgument
 	changes = append(changes, fillCommunicateEnvelope(envelope, args)...)
 	if _, present := args["message"]; !present {
 		if output, ok := args["output"].(map[string]any); ok {
-			if message, ok := output["message"].(string); ok {
+			if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
 				args["message"] = message
 				changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
 			}
@@ -263,10 +267,13 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArgument
 }
 
 func decodeDefaultCommunicateOutputString(encoded string, rawArguments []byte) (map[string]any, error) {
-	if len(rawArguments) > tool.MaxToolArgumentBytes || len(encoded) > tool.MaxToolArgumentBytes {
+	if err := tool.ValidateRawArguments(rawArguments); err != nil {
+		return nil, err
+	}
+	if len(encoded) > tool.MaxToolArgumentBytes {
 		return nil, fmt.Errorf("exceeds the %d byte argument limit", tool.MaxToolArgumentBytes)
 	}
-	if !utf8.Valid(rawArguments) || !utf8.ValidString(encoded) {
+	if !utf8.ValidString(encoded) {
 		return nil, errors.New("is not valid UTF-8")
 	}
 	if err := withinJSONDepth(encoded, maxCommunicateOutputJSONDepth); err != nil {

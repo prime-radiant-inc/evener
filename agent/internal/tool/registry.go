@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
@@ -37,8 +38,18 @@ const toolIntentDescription = "Describe what you expect to learn or accomplish f
 // keep the two values in sync by comment.)
 const MaxToolArgumentBytes = 2 * 1024 * 1024
 
-// Keep the unexported spelling for package-local callers and tests.
-const maxToolArgumentBytes = MaxToolArgumentBytes
+// ValidateRawArguments rejects raw tool argument bytes that must never reach a
+// lossy JSON decode or an allocation-heavy schema path. Callers return this
+// bounded diagnostic directly to keep all prevalidation paths consistent.
+func ValidateRawArguments(arguments []byte) error {
+	if len(arguments) > MaxToolArgumentBytes {
+		return fmt.Errorf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
+	}
+	if !utf8.Valid(arguments) {
+		return errors.New("invalid tool arguments JSON: input is not valid UTF-8")
+	}
+	return nil
+}
 
 // ctxIntentKey is the context key carrying a tool call's `intent` argument
 // past the registry's strip point (see ExecuteCall): handlers that want it —
@@ -656,9 +667,8 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
 	}
 
-	if len(call.Arguments) > maxToolArgumentBytes {
-		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+	if err := ValidateRawArguments(call.Arguments); err != nil {
+		return truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
 	}
 
 	var args map[string]any

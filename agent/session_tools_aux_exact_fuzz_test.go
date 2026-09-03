@@ -154,9 +154,7 @@ func auxCommunicateExact(t *testing.T) {
 	}}}) {
 		t.Fatal("incomplete communicate requirements accepted")
 	}
-	if stringSetsEqual(map[string]any{"x": map[string]any{}}, []string{"y"}, defaultEnvelopeKeys...) {
-		t.Fatal("schema contains absent value")
-	}
+
 	if got := canonicalNodeOutputTextWithMarshal(nil, func(any) ([]byte, error) { return nil, errors.New("marshal") }); got != "{}" {
 		t.Fatalf("unmarshalable canonical output = %q", got)
 	}

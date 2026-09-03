@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -115,19 +116,20 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 	tooDeep := strings.Repeat(`{"nested":`, depthBeyondLimit) + `{}` + strings.Repeat(`}`, depthBeyondLimit)
 
 	for _, tc := range []struct {
-		name      string
-		output    string
-		arguments []byte
+		name          string
+		output        string
+		arguments     []byte
+		wantSubstring string
 	}{
-		{name: "malformed", output: `{"message":`},
-		{name: "trailing", output: `{"message":"x","data":{},"artifacts":[]} trailing`},
-		{name: "scalar", output: `true`},
-		{name: "array", output: `[]`},
-		{name: "unknown nested field", output: `{"message":"x","data":{},"artifacts":[],"secret":"do not log"}`},
-		{name: "wrong nested type", output: `{"message":"x","data":[],"artifacts":[]}`},
-		{name: "oversized", output: strings.Repeat(" ", 2*1024*1024+1)},
-		{name: "over depth", output: tooDeep},
-		{name: "invalid UTF-8", arguments: []byte("{\"end_turn\":true,\"message\":\"top-level\",\"output\":\"{\xff}\"}")},
+		{name: "malformed", output: `{"message":`, wantSubstring: "passed as an object"},
+		{name: "trailing", output: `{"message":"x","data":{},"artifacts":[]} trailing`, wantSubstring: "passed as an object"},
+		{name: "scalar", output: `true`, wantSubstring: "passed as an object"},
+		{name: "array", output: `[]`, wantSubstring: "passed as an object"},
+		{name: "unknown nested field", output: `{"message":"x","data":{},"artifacts":[],"secret":"do not log"}`, wantSubstring: "passed as an object"},
+		{name: "wrong nested type", output: `{"message":"x","data":[],"artifacts":[]}`, wantSubstring: "passed as an object"},
+		{name: "oversized", output: strings.Repeat(" ", 2*1024*1024+1), wantSubstring: "tool arguments too large"},
+		{name: "over depth", output: tooDeep, wantSubstring: "passed as an object"},
+		{name: "invalid UTF-8", arguments: []byte("{\"end_turn\":true,\"message\":\"top-level\",\"output\":\"{\xff}\"}"), wantSubstring: "not valid UTF-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			arguments := tc.arguments
@@ -138,8 +140,8 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 			if res.PrevalErr == "" {
 				t.Fatalf("invalid output string was accepted: arguments %q changes %+v", arguments, res.Changes)
 			}
-			if !strings.Contains(res.PrevalErr, "passed as an object") {
-				t.Fatalf("error lacks JSON-string object guidance: %q", res.PrevalErr)
+			if !strings.Contains(res.PrevalErr, tc.wantSubstring) {
+				t.Fatalf("error lacks %q guidance: %q", tc.wantSubstring, res.PrevalErr)
 			}
 			if len(res.Changes) != 0 {
 				t.Fatalf("failed repair recorded changes %+v", res.Changes)
@@ -354,6 +356,154 @@ func TestSession_NonFiniteNumericRepairDoesNotEmitUnappliedChangesIssue831(t *te
 	sess.Close()
 	if repaired := <-repairedCh; len(repaired) != 0 {
 		t.Fatalf("unapplied non-finite repair emitted ToolCallRepaired: %+v", repaired)
+	}
+}
+
+func TestPrepareToolCall_RejectsInvalidRawCommunicateArgumentsBeforeHealingIssue831(t *testing.T) {
+	_, rt := registerCommunicateForIssue627(t)
+	for _, output := range []struct {
+		name string
+		tail string
+	}{
+		{name: "absent output", tail: `}`},
+		{name: "null output", tail: `,"output":null}`},
+	} {
+		for _, tc := range []struct {
+			name string
+			args func(string) []byte
+			want func([]byte) string
+		}{
+			{
+				name: "over limit",
+				args: func(tail string) []byte {
+					base := `{"end_turn":true,"message":"top-level"` + tail
+					return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
+				},
+				want: func(args []byte) string {
+					return fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(args), tool.MaxToolArgumentBytes)
+				},
+			},
+			{
+				name: "invalid UTF-8",
+				args: func(tail string) []byte {
+					args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+					return append(args, []byte(`"`+tail)...)
+				},
+				want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
+			},
+		} {
+			t.Run(output.name+"/"+tc.name, func(t *testing.T) {
+				args := tc.args(output.tail)
+				res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
+				if res.PrevalErr != tc.want(args) {
+					t.Fatalf("prevalidation error = %q, want %q", res.PrevalErr, tc.want(args))
+				}
+				if len(res.Changes) != 0 {
+					t.Fatalf("invalid raw arguments recorded repairs: %+v", res.Changes)
+				}
+				if string(res.Call.Arguments) != string(args) {
+					t.Fatalf("arguments = %q, want original bytes %q", res.Call.Arguments, args)
+				}
+			})
+		}
+	}
+}
+
+func TestPrepareToolCall_ValidRawCommunicateArgumentsAtLimitAndUTF8StillHealIssue831(t *testing.T) {
+	_, rt := registerCommunicateForIssue627(t)
+	base := `{"end_turn":true,"message":"top-level"}`
+	for _, args := range [][]byte{
+		[]byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes-len(base))),
+		[]byte(`{"end_turn":true,"message":"✓"}`),
+	} {
+		res := prepareToolCall(llm.ToolCallData{ID: "issue831-raw-valid", Name: "communicate", Arguments: args}, rt, []string{"communicate"}, "communicate", "communicate", "")
+		if res.PrevalErr != "" {
+			t.Fatalf("valid arguments rejected: %q", res.PrevalErr)
+		}
+		if len(res.Changes) == 0 {
+			t.Fatalf("valid default envelope was not healed: %q", args)
+		}
+	}
+}
+
+func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(t *testing.T) {
+	for _, output := range []struct {
+		name string
+		tail string
+	}{
+		{name: "absent output", tail: `}`},
+		{name: "null output", tail: `,"output":null}`},
+	} {
+		for _, tc := range []struct {
+			name string
+			args func(string) []byte
+			want func([]byte) string
+		}{
+			{
+				name: "over limit",
+				args: func(tail string) []byte {
+					base := `{"end_turn":true,"message":"top-level"` + tail
+					return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
+				},
+				want: func(args []byte) string {
+					return fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(args), tool.MaxToolArgumentBytes)
+				},
+			},
+			{
+				name: "invalid UTF-8",
+				args: func(tail string) []byte {
+					args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+					return append(args, []byte(`"`+tail)...)
+				},
+				want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
+			},
+		} {
+			t.Run(output.name+"/"+tc.name, func(t *testing.T) {
+				sess := newSession(t, withoutGitSnapshot())
+				sess.stateDir = t.TempDir()
+				repairedCh := drainRepairedEvents(sess)
+				args := tc.args(output.tail)
+				res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-raw-session", Name: "communicate", Arguments: args}, "")
+				if !res.IsError || !res.PrevalOnly || res.FullOutput != tc.want(args) {
+					t.Fatalf("result = %+v, want bounded prevalidation error %q", res, tc.want(args))
+				}
+				if len(res.FullOutput) > 256 {
+					t.Fatalf("error was not bounded: %d bytes", len(res.FullOutput))
+				}
+
+				sess.Close()
+				if repaired := <-repairedCh; len(repaired) != 0 {
+					t.Fatalf("invalid raw arguments emitted repairs: %+v", repaired)
+				}
+			})
+		}
+	}
+}
+
+func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssue831(t *testing.T) {
+	_, rt := registerCommunicateForIssue627(t)
+	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
+	res := prepareToolCall(llm.ToolCallData{ID: "issue831-whitespace", Name: "communicate", Arguments: raw}, rt, []string{"communicate"}, "communicate", "communicate", "")
+	if res.PrevalErr == "" || !strings.Contains(res.PrevalErr, `"message"`) {
+		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+	}
+	if len(res.Changes) != 0 || string(res.Call.Arguments) != string(raw) {
+		t.Fatalf("uncommitted whitespace repair = %+v, arguments = %q", res.Changes, res.Call.Arguments)
+	}
+}
+
+func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	repairedCh := drainRepairedEvents(sess)
+	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-whitespace-session", Name: "communicate", Arguments: raw}, "")
+	if !res.IsError || !res.PrevalOnly || !strings.Contains(res.FullOutput, `"message"`) {
+		t.Fatalf("result = %+v, want missing top-level message prevalidation error", res)
+	}
+	sess.Close()
+	if repaired := <-repairedCh; len(repaired) != 0 {
+		t.Fatalf("uncommitted whitespace repair emitted telemetry: %+v", repaired)
 	}
 }
 
