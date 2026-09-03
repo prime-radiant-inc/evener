@@ -718,6 +718,11 @@ export function useTranscriptScroll({
     setErrorAnchorIndex(null);
     errorAnchorIndexRef.current = null;
     errorAnchorTurnIdRef.current = undefined;
+    // With the anchor gone the pill's next jump heads for the bottom, never
+    // up - and because the pill now STAYS VISIBLE after an anchor click, a
+    // stale "up" arrow would otherwise render on the plain "latest" pill
+    // until the next scroll event recomputes it.
+    setPillArrowDirection("down");
   }, []);
 
   const jumpToBottom = useCallback(() => {
@@ -774,7 +779,15 @@ export function useTranscriptScroll({
         // unconfirmed jump, and a landing that later corrections leave short
         // keeps the pill on offer.
         if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-        if (el && m) el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+        if (el) {
+          // Pin from LIVE geometry, re-measured after scrollToIndex: the
+          // pre-jump measurement m is only for the at-bottom classification
+          // above - engaging the virtualizer may already have corrected the
+          // DOM maximum, and a pin computed from the stale value could land
+          // short.
+          const live = measure(el);
+          el.scrollTop = Math.max(0, live.scrollHeight - live.clientHeight);
+        }
       }
     }
     clearPill();

@@ -936,6 +936,40 @@ describe("the error anchor (failed turn)", () => {
     expect(result.current.pillArrowDirection).toBe("up"); // Anchor (index 1) is above visible range
   });
 
+  test("clicking the pill clears the error anchor and resets the arrow to down (the next jump heads for the bottom)", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // Scroll so the anchor (index 1) is above the visible range: arrow up.
+    act(() => {
+      setVisibleRange({ startIndex: 5, endIndex: 9 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillArrowDirection).toBe("up");
+
+    // The click jumps to the anchor and clears it; the pill stays visible
+    // (still scrolled away) as a plain jump-to-latest pill, whose next jump
+    // goes DOWN to the bottom - the arrow must not stay stale at "up".
+    act(() => result.current.jumpToBottom());
+    expect(result.current.pillError).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+    expect(result.current.pillArrowDirection).toBe("down");
+  });
+
   test("the pill's arrow points down when the error anchor is within or below the visible range", () => {
     const { ref, el, setVisibleRange } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
