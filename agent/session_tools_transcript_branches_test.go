@@ -1138,7 +1138,7 @@ func TestProjectToolResultsForTranscriptWithProjection(t *testing.T) {
 	}
 }
 
-func TestProjectToolResultsForTranscriptRawRejectedUnknownCallPreservesDiagnostic(t *testing.T) {
+func TestProjectToolResultsForTranscriptInvalidUnknownCallPreservesDiagnostic(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args func() []byte
@@ -1157,6 +1157,12 @@ func TestProjectToolResultsForTranscriptRawRejectedUnknownCallPreservesDiagnosti
 				return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
 			},
 		},
+		{
+			name: "numeric overflow",
+			args: func() []byte {
+				return []byte(`{"source":"api_log","overflow":1e1000}`)
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const diagnostic = "invalid_request: unknown tool read_session_transcript"
@@ -1170,6 +1176,19 @@ func TestProjectToolResultsForTranscriptRawRejectedUnknownCallPreservesDiagnosti
 				t.Fatalf("projected raw-rejected diagnostic = %#v, want exact %q", out[0].ToolResult.Content, diagnostic)
 			}
 		})
+	}
+}
+
+func TestProjectToolResultsForTranscriptResultIdentitySurvivesCallDecodeError(t *testing.T) {
+	const resultJSON = `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
+	calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log","overflow":1e1000}`)}}
+	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: resultJSON, PrevalOnly: true}}
+	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
+
+	out := projectToolResultsForTranscript(calls, results, parts)
+	content, ok := out[0].ToolResult.Content.(string)
+	if !ok || content == "original" || !strings.Contains(content, `"att_1"`) {
+		t.Fatalf("independently identified API-log result = %#v, want projected result placeholder", out[0].ToolResult.Content)
 	}
 }
 
