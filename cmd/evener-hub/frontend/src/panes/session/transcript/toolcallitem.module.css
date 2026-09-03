@@ -100,6 +100,26 @@
   max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--space-2) - var(--space-2));
 }
 
+/* data-intent-trailing is also set when ONLY the two-level body chevron
+ * shares the intent line (ToolRow.tsx's bodyTriggerOnIntentLine; the intent
+ * row then renders the PLAIN trigger, not the overlay). That trigger must not
+ * keep the [data-intent] rule's flex: 1 1 100% - a full-width basis wraps the
+ * body chevron onto its own line. Same mechanism as the content rule above:
+ * constrained basis, and a max-width reserving the 14px chevron plus the gap.
+ * The overlay trigger is absolute (out of flow), so :not() excludes it from a
+ * rule it would otherwise match. */
+.row[data-intent-trailing="true"] > .trigger:not(.intentOverlayTrigger) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 14px - var(--space-2));
+}
+
+/* When the body chevron ALSO rides an intent line that carries Open, the
+ * reservation grows by its 14px and one more column gap. */
+.row[data-intent-trailing="true"][data-body-trigger-intent="true"] .intentTriggerContent {
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - 14px - var(--space-2) - var(--space-2) - var(--space-2));
+}
+
 .summaryLine {
   display: flex;
   flex: 1 1 0;

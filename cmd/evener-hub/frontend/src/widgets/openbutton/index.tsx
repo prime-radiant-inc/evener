@@ -81,6 +81,7 @@ export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: Op
         target="_blank"
         rel="noopener noreferrer"
         aria-label={label}
+        title="Open"
         tabIndex={tabIndex}
         onClick={(event) => event.stopPropagation()}
       >
