@@ -27,7 +27,7 @@ func wantRepetitionNudge(count int) string {
 const repetitionNudgeMarker = "and received the identical result"
 
 func wantFailurePark(toolName string) string {
-	return "evener did not execute this call: " + toolName + " with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
+	return "evener did not execute this call: " + toolName + " with these exact arguments has failed twice with the same error. The third attempt was not executed, and this call will remain parked; change the arguments or the approach."
 }
 
 // breakerFake is a registered tool whose executor is supplied by the test and

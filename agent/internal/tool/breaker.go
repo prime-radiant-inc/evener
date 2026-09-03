@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"strings"
 	"sync"
@@ -57,19 +59,6 @@ func newFailureLedger() *failureLedger {
 	}
 }
 
-func (l *failureLedger) annotateSemantic(name string, args []byte, fingerprint, boundary string) {
-	if l == nil || fingerprint == "" {
-		return
-	}
-	key := signature(name, args)
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if entry, ok := l.entries[key]; ok {
-		entry.semanticFingerprint = fingerprint
-		entry.semanticBoundary = boundary
-	}
-}
-
 func (l *failureLedger) semanticMetadata(name string, args []byte) (fingerprint, boundary string) {
 	if l == nil {
 		return "", ""
@@ -111,27 +100,16 @@ func semanticCallSignatureWithDefaults(name string, args map[string]any, paramet
 }
 
 func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any) ([]byte, error) {
-	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), ""))
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file"))
 }
 
-// canonicalSemanticArgs applies only documented handler defaults. It never
-// drops an explicit zero: absent and explicit values become equivalent only
-// when the schema or handler declares that exact default.
+// canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
+// handlers. JSON Schema annotations are descriptive contracts, not proof that a
+// custom or MCP executor treats omission like an explicit value.
 func canonicalSemanticArgs(name string, args map[string]any, parameters map[string]any) map[string]any {
 	out := make(map[string]any, len(args)+1)
 	maps.Copy(out, args)
-	if properties, ok := parameters["properties"].(map[string]any); ok {
-		for field, schemaValue := range properties {
-			if _, present := out[field]; present {
-				continue
-			}
-			if schema, ok := schemaValue.(map[string]any); ok {
-				if value, hasDefault := schema["default"]; hasDefault {
-					out[field] = value
-				}
-			}
-		}
-	}
+	_ = parameters
 	// These aliases share shell's runtime default, which intentionally lives in
 	// the handler rather than the wire schema.
 	switch name {
@@ -139,29 +117,52 @@ func canonicalSemanticArgs(name string, args map[string]any, parameters map[stri
 		if _, present := out["mode"]; !present {
 			out["mode"] = "foreground"
 		}
+	case "job_stop":
+		// job_stop's zero wait is a documented handler default. Its schema
+		// deliberately omits a JSON Schema default so protocol consumers do not
+		// mistake it for a server-side wait request.
+		if _, present := out["max_wait_ms"]; !present {
+			out["max_wait_ms"] = float64(0)
+		}
+	case "ask_user":
+		canonicalAskUserDefaults(out)
 	}
 	return out
+}
+
+// canonicalAskUserDefaults mirrors ask_user's handler behavior: omitted
+// multi_select means one choice, exactly as an explicit false does.
+func canonicalAskUserDefaults(args map[string]any) {
+	questions, _ := args["questions"].([]any)
+	for _, value := range questions {
+		question, _ := value.(map[string]any)
+		if question != nil {
+			if _, present := question["multi_select"]; !present {
+				question["multi_select"] = false
+			}
+		}
+	}
 }
 
 // semanticArgumentValue removes only top-level built-in presentation metadata.
 // Every behavior-driving value, including nested custom/MCP fields and bodies,
 // stays in the canonical identity. The registry HMACs those bytes before any
 // signature leaves process memory, so retaining identity does not expose text.
-func semanticArgumentValue(value any, field string) any {
+func semanticArgumentValue(value any, field string, preserveTopLevelIntent bool) any {
 	switch value := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(value))
 		for key, item := range value {
-			if field == "" && (key == "intent" || key == "description") {
+			if field == "" && (key == "description" || (key == "intent" && !preserveTopLevelIntent)) {
 				continue
 			}
-			out[key] = semanticArgumentValue(item, key)
+			out[key] = semanticArgumentValue(item, key, preserveTopLevelIntent)
 		}
 		return out
 	case []any:
 		out := make([]any, len(value))
 		for i, item := range value {
-			out[i] = semanticArgumentValue(item, field)
+			out[i] = semanticArgumentValue(item, field, preserveTopLevelIntent)
 		}
 		return out
 	case string:
@@ -309,7 +310,7 @@ func failureParkText(name string, snippets []string) string {
 	var b strings.Builder
 	b.WriteString(parkPrefix)
 	b.WriteString(name)
-	b.WriteString(" with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.")
+	b.WriteString(" with these exact arguments has failed twice with the same error. The third attempt was not executed, and this call will remain parked; change the arguments or the approach.")
 	if len(snippets) > 0 {
 		b.WriteString("\n\nThe failures so far:")
 		for i, snippet := range snippets {
@@ -317,6 +318,11 @@ func failureParkText(name string, snippets []string) string {
 		}
 	}
 	return b.String()
+}
+
+func failureParkWithSemanticText(name string, snippets []string, fingerprint, boundary string) string {
+	text := failureParkText(name, snippets)
+	return text + fmt.Sprintf("\n\nThis is a semantic failure loop: the two prior failures shared normalized boundary %s (signature %s). Take a materially different valid action: change the target, mode, or meaningful arguments, or use another tool.", boundary, fingerprint)
 }
 
 func semanticFailureNudgeText(boundary string) string {
@@ -327,9 +333,9 @@ func semanticFailureNudgeText(boundary string) string {
 // labels rather than raw arguments or error snippets. The result is retained in
 // session telemetry, so this must remain useful without repeating secrets or
 // arbitrary user-provided bodies.
-func semanticFailureParkText(name, semanticSignature, boundary string, attempts int) string {
+func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, semanticSignature, attempts, boundary)
+	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, fingerprint, attempts, boundary)
 	fmt.Fprintf(&b, "\n\nPrior attempts: %d semantically equivalent failures at %s.", attempts, boundary)
 	b.WriteString("\n\nTake a materially different valid action: ")
 	if name == "read_transcript" {
@@ -389,6 +395,13 @@ func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatS
 // longer deletes the entry — it zeroes the failure streak and clears the
 // class and snippets, but the entry survives so the body hash persists.
 func (l *failureLedger) record(name string, args []byte, isErr bool, output string) (failStreak int, repeatStreak int) {
+	return l.recordWithSemantic(name, args, isErr, output, "", "")
+}
+
+// recordWithSemantic updates exact failure state and its semantic annotation
+// under the same lock, so a concurrent pre-dispatch check never sees a
+// threshold exact entry without the metadata needed to explain it.
+func (l *failureLedger) recordWithSemantic(name string, args []byte, isErr bool, output, semanticFingerprint, semanticBoundary string) (failStreak int, repeatStreak int) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0
 	}
@@ -400,6 +413,10 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	if !ok {
 		e = &failureEntry{}
 		l.entries[key] = e
+	}
+	if semanticFingerprint != "" {
+		e.semanticFingerprint = semanticFingerprint
+		e.semanticBoundary = semanticBoundary
 	}
 	l.touch(key)
 
@@ -502,10 +519,30 @@ func errorClass(output string) string {
 // handler supplies one. Generic executor errors retain the existing normalized
 // error class, preserving the exact breaker's distinction between genuinely
 // different failures that lack a typed boundary.
-func semanticErrorClass(output string) string {
+// FailureClasser lets an executor expose a stable machine-facing failure class
+// without putting presentation text into semantic loop identity.
+type FailureClasser interface {
+	FailureClass() string
+}
+
+func semanticErrorClassFor(err error, output string) string {
 	boundary := failureBoundary(output)
 	if boundary != "tool_execution" {
 		return boundary
+	}
+	var classer FailureClasser
+	if errors.As(err, &classer) && strings.TrimSpace(classer.FailureClass()) != "" {
+		return "typed:" + strings.ToLower(strings.TrimSpace(classer.FailureClass()))
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline"
+	case errors.Is(err, fs.ErrNotExist):
+		return "not_found"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission_denied"
 	}
 	return errorClass(output)
 }

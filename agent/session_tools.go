@@ -777,15 +777,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	var res tool.ExecResult
 	if prep.PrevalErr != "" {
-		res = tool.ExecResult{
-			ToolName:   call.Name,
-			CallID:     call.ID,
-			Output:     prep.PrevalErr,
-			FullOutput: prep.PrevalErr,
-			IsError:    true,
-			PrevalOnly: true,
-			Err:        prep.Err,
-		}
+		res = s.reg.FinalizePrevalidationFailure(ctx, call, prep.PrevalErr, prep.Err)
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 	}

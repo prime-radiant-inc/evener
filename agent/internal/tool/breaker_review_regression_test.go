@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -31,6 +32,23 @@ func TestSemanticBreaker_RegisteredDefaultsAndLongTargets(t *testing.T) {
 	long := strings.Repeat("a", 257)
 	if first, second := semanticCallSignature("read_file", map[string]any{"file_path": long + "/one"}), semanticCallSignature("read_file", map[string]any{"file_path": long + "/two"}); first == second {
 		t.Fatalf("long meaningful targets collapsed: %q", first)
+	}
+}
+
+func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
+	custom := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string", "default": "safe"},
+		},
+	}
+	if omitted, explicit := semanticCallSignatureWithDefaults("custom", map[string]any{}, custom), semanticCallSignatureWithDefaults("custom", map[string]any{"mode": "safe"}, custom); omitted == explicit {
+		t.Fatalf("custom schema annotation collapsed omission with explicit behavior: %q", omitted)
+	}
+	image := map[string]any{"file_path": "scan.pdf", "intent": "extract invoice totals"}
+	pdf := map[string]any{"file_path": "scan.pdf", "intent": "locate signature blocks"}
+	if first, second := semanticCallSignature("read_file", image), semanticCallSignature("read_file", pdf); first == second {
+		t.Fatalf("read_file analysis intent was removed from semantic identity: %q", first)
 	}
 }
 
@@ -185,4 +203,135 @@ func TestSemanticBreaker_PreDispatchErrorPathsEnterLedger(t *testing.T) {
 		r.Use(func(context.Context, string, map[string]any) error { return errors.New("middleware detail changes") })
 		assertPark(t, r, "middleware_semantic_review", intentOnly)
 	})
+}
+
+func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) {
+	t.Run("job stop max wait", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "job_stop", DefJobStop().Parameters, func(map[string]any) (any, error) {
+			calls++
+			return nil, errors.New("invalid_request: target unavailable")
+		})
+		variants := []string{
+			`{"target":"job_same","intent":"first"}`,
+			`{"target":"job_same","max_wait_ms":0,"intent":"second"}`,
+			`{"target":"job_same","intent":"third"}`,
+		}
+		for i, args := range variants {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("job-stop-default-%d", i), "job_stop", args))
+			if i == 2 && (!strings.Contains(res.Output, "semantic failure loop") || calls != 2) {
+				t.Fatalf("neutral job_stop max_wait_ms evaded semantic breaker: calls=%d result=%#v", calls, res)
+			}
+		}
+	})
+
+	t.Run("nested ask user multi select", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "ask_user", DefAskUser().Parameters, func(map[string]any) (any, error) {
+			calls++
+			return nil, errors.New("invalid_request: user channel unavailable")
+		})
+		question := func(multi string, i int) string {
+			return fmt.Sprintf(`{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]%s}],"intent":"variant %d"}`, multi, i)
+		}
+		for i, args := range []string{question("", 1), question(`,"multi_select":false`, 2), question("", 3)} {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("ask-user-default-%d", i), "ask_user", args))
+			if i == 2 && (!strings.Contains(res.Output, "semantic failure loop") || calls != 2) {
+				t.Fatalf("nested multi_select default evaded semantic breaker: calls=%d result=%#v", calls, res)
+			}
+		}
+	})
+}
+
+type reviewCodedError struct {
+	code string
+	text string
+}
+
+func (e reviewCodedError) Error() string        { return e.text }
+func (e reviewCodedError) FailureClass() string { return e.code }
+
+func TestSemanticBreaker_TypedErrorsIgnorePresentationButUntypedRemainCompatible(t *testing.T) {
+	t.Run("typed class", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "typed_failure", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+			calls++
+			return nil, reviewCodedError{code: "upstream_unavailable", text: fmt.Sprintf("[trace %d] upstream unavailable", calls)}
+		})
+		for i := range 3 {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("typed-%d", i), "typed_failure", fmt.Sprintf(`{"intent":"%d"}`, i)))
+			if i == 2 && (!strings.Contains(res.Output, "semantic failure loop") || calls != 2) {
+				t.Fatalf("typed class did not survive presentation changes: calls=%d result=%#v", calls, res)
+			}
+		}
+	})
+	t.Run("untyped distinct messages", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "untyped_failure", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+			calls++
+			return nil, errors.New([]string{"untyped alpha", "untyped beta", "untyped gamma"}[calls-1])
+		})
+		for i := range 3 {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("untyped-%d", i), "untyped_failure", fmt.Sprintf(`{"intent":"%d"}`, i)))
+			if strings.Contains(res.Output, "semantic failure loop") {
+				t.Fatalf("untyped distinct failures were unsafely collapsed: %#v", res)
+			}
+		}
+		if calls != 3 {
+			t.Fatalf("calls=%d, want distinct untyped failures to execute", calls)
+		}
+	})
+}
+
+func TestSemanticBreaker_TelemetryComponentsAreSessionKeyed(t *testing.T) {
+	first, second := NewRegistry(), NewRegistry()
+	oversize := make([]byte, maxToolArgumentBytes+1)
+	for _, tc := range []struct {
+		name string
+		one  string
+		two  string
+	}{
+		{"oversize marker", first.semanticSignatureFromRaw("write_file", oversize, nil), second.semanticSignatureFromRaw("write_file", oversize, nil)},
+		{"invalid JSON marker", first.semanticSignatureFromRaw("write_file", []byte(`{"target":`), nil), second.semanticSignatureFromRaw("write_file", []byte(`{"target":`), nil)},
+		{"error class", first.telemetryComponent("semantic-error-class", "unavailable"), second.telemetryComponent("semantic-error-class", "unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.one == tc.two {
+				t.Fatalf("cross-session telemetry component is static: %q", tc.one)
+			}
+		})
+	}
+	if got, want := first.telemetryComponent("semantic-error-class", "unavailable"), first.telemetryComponent("semantic-error-class", "unavailable"); got != want {
+		t.Fatalf("session telemetry component is not stable: %q != %q", got, want)
+	}
+}
+
+func TestSemanticBreaker_ConcurrentExactFailurePublishesSemanticMetadata(t *testing.T) {
+	r := NewRegistry()
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	registerSemanticReviewTool(t, r, "concurrent_failure", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return nil, errors.New("invalid_request: concurrent failure")
+	})
+	call := breakerCall("same", "concurrent_failure", `{"target":"same"}`)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			r.ExecuteCall(context.Background(), breakerEnv(t), call)
+		})
+	}
+	<-entered
+	<-entered
+	close(release)
+	wg.Wait()
+	parked := r.ExecuteCall(context.Background(), breakerEnv(t), call)
+	if parked.BreakerSemanticSignature == "" || !strings.Contains(parked.Output, "normalized boundary") {
+		t.Fatalf("exact threshold published without semantic metadata: %#v", parked)
+	}
 }
