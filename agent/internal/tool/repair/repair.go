@@ -6,6 +6,7 @@ package repair
 
 import (
 	"maps"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -131,7 +132,7 @@ func applyCoercions(params, args map[string]any) []Change {
 				continue
 			}
 			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-			if err != nil {
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 				continue
 			}
 			args[key] = f

@@ -158,6 +158,22 @@ func TestRepairArgs_Coerce_NonNumericStringUntouched(t *testing.T) {
 	}
 }
 
+func TestRepairArgs_Coerce_NonFiniteNumberStringsUntouched(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			out, changes := RepairArgs(coerceParams(), map[string]any{"count": value})
+			if out["count"] != value {
+				t.Fatalf("count = %#v, want original %q", out["count"], value)
+			}
+			for _, change := range changes {
+				if change.Field == "count" {
+					t.Fatalf("non-finite number was coerced: %+v", change)
+				}
+			}
+		})
+	}
+}
+
 func openParams() map[string]any {
 	return map[string]any{
 		"type":                 "object",
