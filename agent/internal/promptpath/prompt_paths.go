@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/userdirs"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // GlobalPromptsDir returns the path to the global prompts directory.

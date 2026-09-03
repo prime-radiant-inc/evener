@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/userdirs"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 var pluginUserHomeDir = os.UserHomeDir

@@ -10,7 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/userdirs"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // ServerConfig describes a single MCP server connection.

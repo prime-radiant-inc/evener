@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/userdirs"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // CredentialSource is the credentials-store view the registry needs: the
