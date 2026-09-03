@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -2011,6 +2012,28 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	return statuses, nil
 }
 
+// watchIntArg reads an integer job_watch argument strictly: absent or null is
+// (0, false, nil); an int or an integral, finite float64 is its value; anything
+// else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
+// numbers over as float64, so silently truncating would hide a model error.
+func watchIntArg(args map[string]any, key string) (int, bool, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, false, nil
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v > math.MaxInt32 || v < math.MinInt32 {
+			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return int(v), true, nil
+	default:
+		return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+	}
+}
+
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	operation := strings.TrimSpace(stringArg(args, "operation"))
 	if operation == "" {
@@ -2034,23 +2057,49 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		Source:      strings.TrimSpace(stringArg(args, "source")),
 		OutputMatch: stringArg(args, "output_match"),
 	}
-	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
-		a.ProgressIntervalMS = n
+	for _, field := range []struct {
+		key string
+		dst *int
+	}{
+		{"progress_interval_ms", &a.ProgressIntervalMS},
+		{"every", &a.Every},
+		{"after_seconds", &a.AfterSeconds},
+		{"repeat_seconds", &a.RepeatSeconds},
+	} {
+		n, ok, err := watchIntArg(args, field.key)
+		if err != nil {
+			return watchArgs{}, err
+		}
+		if ok {
+			*field.dst = n
+		}
+	}
+	a.Note = stringArg(args, "note")
+	if a.Operation == "create" {
+		for _, f := range []struct {
+			key string
+			hi  int
+			lo  int
+		}{{"after_seconds", 86400, 60}, {"repeat_seconds", 3600, 60}} {
+			if raw, present := args[f.key]; present && raw != nil && watchIntegerValue(raw) == 0 {
+				return watchArgs{}, fmt.Errorf("invalid_request: %s must be between %d and %d", f.key, f.lo, f.hi)
+			}
+		}
 	}
 	events, err := stringArrayArg(args, "events")
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.Events = events
-	if n, ok := shellIntArg(args, "every"); ok {
-		a.Every = n
-	}
 	eventFilter, err := watchEventFilterArg(args)
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.EventFilter = eventFilter
 	normalizeWatchArgsForOperation(&a)
+	if a.Operation == "create" && a.Source == "" && watchArgsIsTimer(a) {
+		a.Source = "self"
+	}
 	missingWatchID := false
 	switch a.Operation {
 	case "create":
@@ -2099,7 +2148,7 @@ func normalizeWatchArgsForOperation(a *watchArgs) {
 // fires on, in the DefJobWatch property order. They are meaningful only for
 // operation="create"; list/inspect/clear take only watch_id, so a trigger field
 // beside them was previously parsed and then silently ignored.
-var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter"}
+var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter", "after_seconds", "repeat_seconds", "note"}
 
 // rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
 // trigger field the call actually supplied alongside a non-create operation.
@@ -2151,6 +2200,13 @@ func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
 		return a.ProgressIntervalMS == 0 && watchIntegerValue(value) == 0
 	case "every":
 		return (a.Every == 0 || a.Every == 1) && (watchIntegerValue(value) == 0 || watchIntegerValue(value) == 1)
+	case "after_seconds":
+		return a.AfterSeconds == 0 && watchIntegerValue(value) == 0
+	case "repeat_seconds":
+		return a.RepeatSeconds == 0 && watchIntegerValue(value) == 0
+	case "note":
+		s, ok := value.(string)
+		return ok && s == ""
 	default:
 		return false
 	}

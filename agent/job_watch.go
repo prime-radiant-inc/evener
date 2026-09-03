@@ -208,19 +208,24 @@ type watchConfig struct {
 }
 
 type watchArgs struct {
-	Operation            string
-	WatchID              string
-	Source               string
-	Target               string
-	ReceiverSessionID    string
-	ReceiverDelegateID   string
-	ReceiverNotify       func(jobNotification)
-	ReceiverHoldWake     func() func()
-	OutputMatch          string
-	ProgressIntervalMS   int
-	Events               []string
-	Every                int
-	EventFilter          *watchEventFilter
+	Operation          string
+	WatchID            string
+	Source             string
+	Target             string
+	ReceiverSessionID  string
+	ReceiverDelegateID string
+	ReceiverNotify     func(jobNotification)
+	ReceiverHoldWake   func() func()
+	OutputMatch        string
+	ProgressIntervalMS int
+	Events             []string
+	Every              int
+	EventFilter        *watchEventFilter
+	// AfterSeconds and RepeatSeconds are the timer triggers (self only);
+	// Note rides every timer fire. All three are create-only.
+	AfterSeconds         int
+	RepeatSeconds        int
+	Note                 string
 	Send                 *watchSendArgs
 	ReceiverSendInternal bool
 	SourceDelegateID     string
@@ -520,6 +525,13 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
+	if a.AfterSeconds != 0 && (a.AfterSeconds < 60 || a.AfterSeconds > 86400) {
+		return errors.New("invalid_request: after_seconds must be between 60 and 86400")
+	}
+	if a.RepeatSeconds != 0 && (a.RepeatSeconds < 60 || a.RepeatSeconds > 3600) {
+		return errors.New("invalid_request: repeat_seconds must be between 60 and 3600")
+	}
+	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
 	// every:1 is the semantic default (fire on each occurrence), so it reads as
 	// unset everywhere downstream; the single-concrete-kind requirement applies
 	// only to every>1, which actually throttles.
@@ -740,7 +752,14 @@ func watchArgsHasCondition(a watchArgs) bool {
 	if strings.TrimSpace(a.ReceiverSessionID) != "" && a.ReceiverSessionID != a.Target && isWatchSessionTarget(a.Target) {
 		return true
 	}
-	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0
+	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0 || watchArgsIsTimer(a)
+}
+
+// watchArgsIsTimer reports whether the request is a timer create: either time
+// field set. Timers are ordinary self watches whose progress interval is set
+// from seconds and which carry a note.
+func watchArgsIsTimer(a watchArgs) bool {
+	return a.AfterSeconds > 0 || a.RepeatSeconds > 0
 }
 
 // watchArgsIsOutputMatchOnly reports whether a watch request carries an
@@ -799,6 +818,37 @@ func validateWatchEventArgs(a watchArgs) error {
 }
 
 func validateWatchTriggerShape(a watchArgs) error {
+	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
+		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
+	}
+	if watchArgsIsTimer(a) {
+		if a.Source != "self" {
+			return errors.New("invalid_request: timers apply to source self; delegates and jobs wake you when they finish")
+		}
+		if a.AfterSeconds > 0 && a.RepeatSeconds > 0 {
+			return errors.New("invalid_request: after_seconds and repeat_seconds are mutually exclusive")
+		}
+		name := "after_seconds"
+		if a.RepeatSeconds > 0 {
+			name = "repeat_seconds"
+		}
+		for _, other := range []struct {
+			set  bool
+			name string
+		}{
+			{a.ProgressIntervalMS > 0, "progress_interval_ms"},
+			{a.OutputMatch != "", "output_match"},
+			{len(a.Events) > 0, "events"},
+			{a.Every > 0, "every"},
+			{a.EventFilter != nil, "event_filter"},
+		} {
+			if other.set {
+				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)
+			}
+		}
+	} else if a.Note != "" {
+		return errors.New("invalid_request: note applies to timers")
+	}
 	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: session event watches use events/event_filter/every; progress_interval_ms is for periodic progress watches")
 	}
