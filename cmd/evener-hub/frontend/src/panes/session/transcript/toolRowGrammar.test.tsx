@@ -1717,3 +1717,9 @@ test("the body-trigger-on-intent-line row marks itself, and the stylesheet const
   );
   expect(css).toMatch(/\[data-body-trigger-intent="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width/);
 });
+
+test("a body chevron sharing the intent line is raised above the overlay trigger", () => {
+  // Without its own layer the absolute overlay swallows the body trigger's
+  // clicks and toggles the wrong disclosure (roborev).
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s*>\s*\.bodyTrigger\s*\{[^}]*z-index:\s*var\(--z-raised\)/);
+});

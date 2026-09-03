@@ -481,6 +481,15 @@
   pointer-events: none;
 }
 
+/* The two-level body chevron can share the intent line with the absolute
+ * overlay trigger (bodyTriggerOnIntentLine). Without its own raised layer -
+ * the same one .intentTrailing gets - the overlay swallows its clicks and
+ * toggles the wrong disclosure (roborev). */
+.row[data-intent-trailing="true"] > .bodyTrigger {
+  position: relative;
+  z-index: var(--z-raised);
+}
+
 /* The expanded body: hairline-framed, --surface-1, no heavy fill. */
 .body {
   margin-top: var(--space-1);
