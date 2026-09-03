@@ -176,7 +176,10 @@ const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/g;
 const OUTCOME_PROGRESS_RE = /Progress:\s*(\d+)\s+done,\s*(\d+)\s+cancelled,\s*(\d+)\s+remaining\s*\((\d+)\s+total\)/g;
 
 function lastProgressMatch(output: string, pattern: RegExp): RegExpMatchArray | undefined {
-  const matches = [...output.matchAll(pattern)];
+  // matchAll's iterator starts at its pattern's lastIndex. Clone the global
+  // pattern for every parse so a later consumer cannot carry mutable state
+  // into this helper.
+  const matches = [...output.matchAll(new RegExp(pattern.source, pattern.flags))];
   return matches[matches.length - 1];
 }
 
