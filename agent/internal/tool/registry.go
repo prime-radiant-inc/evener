@@ -908,17 +908,18 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			message := failureParkText(name, snippets)
-			if fingerprint, recordedBoundary := r.breaker.semanticMetadata(name, call.Arguments); fingerprint != "" {
+			fingerprint, recordedBoundary := r.breaker.semanticMetadata(name, call.Arguments)
+			if fingerprint != "" {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, recordedBoundary)
 			}
 			res := truncateResult(name, callID, message, true, lim)
 			res.BreakerExactSignature = exactSignature
-			if fingerprint, _ := r.breaker.semanticMetadata(name, call.Arguments); fingerprint != "" {
-				res.BreakerSemanticSignature = fingerprint
-			}
+			res.BreakerSemanticSignature = fingerprint
+			res.PrevalOnly = true
 			return res
 		}
 		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, lim, judged); blocked {
+			res.PrevalOnly = true
 			return res
 		}
 	} else if humanBypassed {

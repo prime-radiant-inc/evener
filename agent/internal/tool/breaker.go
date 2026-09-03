@@ -544,7 +544,11 @@ func semanticErrorClassFor(err error, output string) string {
 	case errors.Is(err, fs.ErrPermission):
 		return "permission_denied"
 	}
-	return errorClass(output)
+	// Unstructured errors have no trustworthy machine-facing category. Keep
+	// their semantic identity deliberately coarse rather than deriving it from
+	// rendered presentation text; executors that need distinct categories must
+	// implement FailureClasser.
+	return "untyped"
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the

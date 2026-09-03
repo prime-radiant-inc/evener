@@ -268,21 +268,35 @@ func TestSemanticBreaker_TypedErrorsIgnorePresentationButUntypedRemainCompatible
 			}
 		}
 	})
-	t.Run("untyped distinct messages", func(t *testing.T) {
+	t.Run("untyped presentation", func(t *testing.T) {
 		r := NewRegistry()
 		calls := 0
 		registerSemanticReviewTool(t, r, "untyped_failure", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
 			calls++
-			return nil, errors.New([]string{"untyped alpha", "untyped beta", "untyped gamma"}[calls-1])
+			return nil, errors.New([]string{"backend temporarily unavailable [trace a]", "backend temporarily unavailable [trace b]", "backend temporarily unavailable [trace c]"}[calls-1])
 		})
 		for i := range 3 {
 			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("untyped-%d", i), "untyped_failure", fmt.Sprintf(`{"intent":"%d"}`, i)))
+			if i == 2 && (!strings.Contains(res.Output, "semantic failure loop") || calls != 2) {
+				t.Fatalf("untyped presentation changes evaded semantic breaker: calls=%d result=%#v", calls, res)
+			}
+		}
+	})
+	t.Run("typed classes remain distinct", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "typed_distinct", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+			calls++
+			return nil, reviewCodedError{code: []string{"backend_a", "backend_b", "backend_a"}[calls-1], text: "backend failure"}
+		})
+		for i := range 3 {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("typed-distinct-%d", i), "typed_distinct", fmt.Sprintf(`{"intent":"%d"}`, i)))
 			if strings.Contains(res.Output, "semantic failure loop") {
-				t.Fatalf("untyped distinct failures were unsafely collapsed: %#v", res)
+				t.Fatalf("different typed classes were collapsed: %#v", res)
 			}
 		}
 		if calls != 3 {
-			t.Fatalf("calls=%d, want distinct untyped failures to execute", calls)
+			t.Fatalf("calls=%d, want distinct typed classes to execute", calls)
 		}
 	})
 }

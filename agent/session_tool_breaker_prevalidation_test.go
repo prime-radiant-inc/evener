@@ -43,6 +43,9 @@ func TestSessionPrevalidationFailuresReachSemanticBreaker(t *testing.T) {
 					Name:      tc.tool,
 					Arguments: []byte(tc.args(i)),
 				}, "")
+				if !res.PrevalOnly {
+					t.Fatalf("prevalidation result %d lost its no-dispatch marker: %#v", i+1, res)
+				}
 				switch i {
 				case 0:
 					first = res.Output

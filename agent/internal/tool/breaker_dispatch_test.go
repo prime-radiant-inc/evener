@@ -26,6 +26,14 @@ func wantRepetitionNudge(count int) string {
 // tests that only need to assert the nudge is absent.
 const repetitionNudgeMarker = "and received the identical result"
 
+type breakerFailureError struct {
+	class string
+	text  string
+}
+
+func (e breakerFailureError) Error() string        { return e.text }
+func (e breakerFailureError) FailureClass() string { return e.class }
+
 func wantFailurePark(toolName string) string {
 	return "evener did not execute this call: " + toolName + " with these exact arguments has failed twice with the same error. The third attempt was not executed, and this call will remain parked; change the arguments or the approach."
 }
@@ -255,9 +263,9 @@ func TestBreakerDispatch_DifferentFailuresThenSuccessDoesNotPark(t *testing.T) {
 	fake := registerBreakerFake(t, r, "recovering", func(calls int) (any, error) {
 		switch calls {
 		case 1:
-			return nil, errors.New("alpha: no such host")
+			return nil, breakerFailureError{class: "host_unavailable", text: "alpha: no such host"}
 		case 2:
-			return nil, errors.New("beta: permission denied")
+			return nil, breakerFailureError{class: "permission_denied", text: "beta: permission denied"}
 		default:
 			return "finally worked", nil
 		}

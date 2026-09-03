@@ -1729,23 +1729,23 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	call := llm.ToolCallData{
-		ID:        "c1",
-		Name:      "definitely_not_a_registered_tool",
-		Arguments: json.RawMessage(`{}`),
-		Type:      "function",
+	toolResponse := func(id string) func(llm.Request) llm.Response {
+		return func(llm.Request) llm.Response {
+			call := llm.ToolCallData{
+				ID:        id,
+				Name:      "definitely_not_a_registered_tool",
+				Arguments: json.RawMessage(`{}`),
+				Type:      "function",
+			}
+			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+		}
 	}
 	f := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
-			},
+			toolResponse("c1"),
+			toolResponse("c2"),
+			toolResponse("c3"),
 			func(req llm.Request) llm.Response {
 				return finalResponse("done")
 			},
@@ -1777,7 +1777,7 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 
 	var found *events.SessionEvent
 	for i, ev := range evs {
-		if ev.Kind == events.EventToolCallEnd {
+		if ev.Kind == events.EventToolCallEnd && evs[i].Data.(events.ToolCallEndData).CallID == "c3" {
 			found = &evs[i]
 			break
 		}
@@ -1793,7 +1793,10 @@ func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
 		t.Fatal("expected non-empty error for an unknown tool call")
 	}
 	if !d.PrevalOnly {
-		t.Fatal("an unknown-tool bounce (never reached ExecuteCall) must carry preval_only")
+		t.Fatal("the parked third unknown-tool bounce (never reached ExecuteCall) must carry preval_only")
+	}
+	if !strings.Contains(d.Error, "semantic failure loop") {
+		t.Fatalf("third unknown-tool event was not semantically parked: %q", d.Error)
 	}
 }
 
