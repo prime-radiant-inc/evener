@@ -1871,6 +1871,25 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			},
 		},
 		{
+			name: "tool call repaired: nested fill_required three keys",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes: []string{
+					"fill_required:output.message:filled default",
+					"fill_required:output.data:filled default",
+					"fill_required:output.artifacts:filled default",
+				},
+			}},
+			description: "Tool call repaired",
+			contains: []string{
+				`filled the required "message" key`,
+				`filled the required "data" key`,
+				`filled the required "artifacts" key`,
+			},
+			notContains: []string{"fill_required:output.message:filled default", `"default"`},
+		},
+		{
 			name: "tool call repaired: multiple changes",
 			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
 				ToolName: "communicate",

@@ -280,8 +280,39 @@ test("job_status: body renders exhausted outcome reason without danger text", ()
     last_outcome: { status: "exhausted", reason: "budget limit reached" },
   });
   render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
-  expect(screen.getByTestId("delegate-outcome-reason")).toBeTruthy();
+  const diag = screen.getByTestId("delegate-outcome-reason");
+  expect(diag).toBeTruthy();
   expect(screen.getByText(/Last run exhausted: budget limit reached/)).toBeTruthy();
+  // Soft stops are not errors — the diagnostic must not carry the danger class.
+  expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
+});
+
+test("job_status: body renders stopped outcome reason without danger text", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "stopped", reason: "stopped_by_parent" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  const diag = screen.getByTestId("delegate-outcome-reason");
+  expect(diag).toBeTruthy();
+  expect(screen.getByText(/Last run stopped: stopped_by_parent/)).toBeTruthy();
+  expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
+});
+
+test("job_status: body renders cancelled outcome with cancelled label", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw({
+    status: "idle",
+    last_outcome: { status: "cancelled", reason: "user requested cancel" },
+  });
+  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
+  const diag = screen.getByTestId("delegate-outcome-reason");
+  expect(diag).toBeTruthy();
+  expect(screen.getByText(/Last run cancelled: user requested cancel/)).toBeTruthy();
+  expect(diag.querySelector("[class]")?.className).not.toMatch(/dangerText/);
 });
 
 test("job_read_output aliases to the same descriptor as job_status", () => {

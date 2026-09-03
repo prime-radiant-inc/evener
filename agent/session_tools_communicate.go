@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
+	"reflect"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -262,19 +262,28 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 
 // defaultEnvelopeKeys are the output-envelope keys the default communicate
 // schema declares — and the only keys the documented-defaults fill may add.
-// Kept as one constant so the shape predicate and the fill cannot drift apart.
 var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
 
+// canonicalDefaultCommunicateOutputSchema is constructed once because every
+// communicate repair checks it, sometimes multiple times. It is private and
+// only read by reflect.DeepEqual; callers never receive this mutable map.
+var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
+	parameters := tool.DefCommunicateNamed("communicate").Parameters
+	properties, _ := parameters["properties"].(map[string]any)
+	output, _ := properties["output"].(map[string]any)
+	return output
+}()
+
 // communicateEnvelopeFor reports whether t is the session's result tool with
-// its default output envelope, returning that envelope schema when it is.
+// the exact canonical default output envelope, returning that envelope schema
+// when it is.
 // This is the single owner of the fill's two gates (issue #627):
 //   - identity: only the result tool gets the fill. A same-shaped schema on
 //     any other registered tool (an MCP or plugin tool) must keep failing
 //     loudly on keys the model was required to choose.
-//   - exact shape: properties and required must each be precisely
-//     defaultEnvelopeKeys — a custom output schema (a delegate result_schema
-//     installed via WithCommunicateOutputSchema, or a WithAllowedDecisions
-//     superset) keeps failing loudly.
+//   - exact schema: equality with DefCommunicateNamed's canonical output
+//     schema. Same-key schemas can carry stricter types, enums, descriptions,
+//     or other constraints, so key-name comparison is not sufficient.
 //
 // Returning the envelope it validated (rather than a bool the caller
 // re-derives) is what keeps the check and the fill from diverging.
@@ -284,74 +293,33 @@ func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[
 	}
 	props, _ := t.Definition.Parameters["properties"].(map[string]any)
 	envelope, _ := props["output"].(map[string]any)
-	outProps, _ := envelope["properties"].(map[string]any)
-	if outProps == nil {
-		return nil, false
-	}
-	required := communicateSchemaStringSlice(envelope["required"])
-	if !stringSetsEqual(outProps, required, defaultEnvelopeKeys...) {
+	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
 		return nil, false
 	}
 	return envelope, true
 }
 
 // usesDefaultCommunicateOutputEnvelope reports whether def's `output` property
-// is exactly the default envelope DefCommunicateNamed builds: properties and
-// required are each precisely {message, data, artifacts} — no more, no fewer.
-// A superset (WithAllowedDecisions adds an enum-constrained `decision`) or a
-// differently-shaped schema is a custom envelope, whose required keys the
-// model was expected to choose.
+// equals the complete canonical output schema DefCommunicateNamed builds. A
+// superset, a same-key schema with a stricter enum, or any other variation is a
+// custom envelope whose fields must remain exact.
 func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
-	outProps, _ := output["properties"].(map[string]any)
-	if outProps == nil {
-		return false
-	}
-	required := communicateSchemaStringSlice(output["required"])
-	return stringSetsEqual(outProps, required, defaultEnvelopeKeys...)
+	return isCanonicalDefaultCommunicateOutputEnvelope(output)
 }
 
-// stringSetsEqual reports whether the schema's property names and required
-// names are each exactly the wanted set (as sets: same members, same count).
-func stringSetsEqual(props map[string]any, required []string, want ...string) bool {
-	if len(props) != len(want) || len(required) != len(want) {
-		return false
-	}
-	for _, name := range want {
-		if _, ok := props[name]; !ok {
-			return false
-		}
-		if !slices.Contains(required, name) {
-			return false
-		}
-	}
-	return true
-}
-
-func communicateSchemaStringSlice(v any) []string {
-	switch x := v.(type) {
-	case []string:
-		return append([]string(nil), x...)
-	case []any:
-		out := make([]string, 0, len(x))
-		for _, item := range x {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
+	return reflect.DeepEqual(output, canonicalDefaultCommunicateOutputSchema)
 }
 
 // fillCommunicateEnvelope fills a present default-envelope `output` object's
 // missing message/data/artifacts keys with their documented empty defaults
 // ("" / {} / []). It mutates args in place on the working copy the caller
 // owns, and never overwrites an existing key. Only communicateEnvelopeFor's
-// envelope — the default one — may be passed here; a custom output schema
-// must keep failing loudly on keys the model was required to choose.
+// envelope — the default one — may be passed here; repairDefaultCommunicateEnvelope
+// owns that canonical-schema gate before calling this helper. A custom output
+// schema must keep failing loudly on keys the model was required to choose.
 func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
 	raw, isMap := args["output"].(map[string]any)
 	if !isMap {
@@ -372,7 +340,7 @@ func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
 			continue
 		}
 		raw[key] = v
-		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output", Detail: "filled " + key})
+		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output." + key, Detail: "filled default"})
 	}
 	return changes
 }

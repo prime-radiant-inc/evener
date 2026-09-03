@@ -1745,16 +1745,30 @@ func repairChangePhrase(raw string) string {
 	case "unicode_repair":
 		return "fixed an invalid character in the arguments"
 	case "fill_required":
+		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
+			return fmt.Sprintf("filled the required %q key", fieldKey)
+		}
 		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
 			return fmt.Sprintf("filled the required %q key", key)
 		}
 		return fmt.Sprintf("filled a required key in the %q field", field)
-	default:
-		if field == "" {
-			return "adjusted the arguments"
+	case "synthesize":
+		if field == "output" && fieldDetail(parts) == "synthesized default envelope" {
+			return "created the required output object"
 		}
-		return fmt.Sprintf("adjusted the %q field", field)
+	case "copy":
+		if field == "message" && fieldDetail(parts) == "copied output.message" {
+			return "copied nested output.message to the required message"
+		}
+	case "promote_json_object":
+		if field == "output" && fieldDetail(parts) == "promoted JSON object string" {
+			return "converted the output JSON string to an object"
+		}
 	}
+	if field == "" {
+		return "adjusted the arguments"
+	}
+	return fmt.Sprintf("adjusted the %q field", field)
 }
 
 // fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
