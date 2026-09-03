@@ -690,7 +690,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		for _, m := range preResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
-		if preResult.Denied {
+		if !prep.RawArgumentsRejected && preResult.Denied {
 			denyMsg := "Tool call denied by hook"
 			if preResult.DenyMessage != "" {
 				denyMsg = preResult.DenyMessage
@@ -729,7 +729,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
-	if len(call.Arguments) > 0 {
+	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &args)
 	}
 	if d := toolStartDescription(args); d != "" {
