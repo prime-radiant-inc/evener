@@ -268,4 +268,13 @@ func TestRejectedParameter(t *testing.T) {
 	if got := RejectedParameter(classified); got != "temperature" {
 		t.Errorf("classifier structured path with null param must fall back to the message: got %q", got)
 	}
+
+	// Non-400/422 statuses classify early but keep the parameter: the accessor
+	// covers every construction path (round-6 Low on #835).
+	quotaClassified := ClassifyHTTPError("responses.create", 429, nil,
+		[]byte(`{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.","type":"invalid_request_error","param":null,"code":"rate_limit_exceeded"}}`),
+		responsesRes)
+	if got := RejectedParameter(quotaClassified); got != "temperature" {
+		t.Errorf("429 through ClassifyHTTPError must keep the rejected parameter: got %q", got)
+	}
 }
