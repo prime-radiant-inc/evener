@@ -139,10 +139,12 @@ func watchLostAtRestartStableDelegateMessage(source string) string {
 
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget on condition fires (spec §4 F1). The count is
-// the budget itself.
+// the budget itself, so the notice names condition matches rather than
+// deliveries, and offers only the levers that narrow a condition: a longer
+// progress_interval_ms cannot help, because periodic ticks do not count here.
 func watchBudgetClearedMessage(target string) string {
 	return fmt.Sprintf(
-		"watch cleared: %s delivered %d times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)",
+		"watch cleared: %s matched %d times; re-arm with a tighter condition (higher every or narrower output_match)",
 		target, watchDeliveryBudget,
 	)
 }
@@ -3193,8 +3195,9 @@ type progressTickSnapshot struct {
 
 // progressTickDecision is what decideProgressTick returns for one tick: whether
 // the timer goroutine keeps running (keepAlive), whether this tick delivers
-// (fire) and how it routes — a watch send (sendDelivery) or a notification whose
-// delivery counts against the budget (recordBudget), plus the notification job id.
+// (fire) and how it routes — a watch send (sendDelivery) or a notification that
+// counts a delivery (recordBudget), plus the notification job id. A periodic
+// tick is not a condition fire, so its delivery never counts against the budget.
 type progressTickDecision struct {
 	keepAlive    bool
 	fire         bool
@@ -3269,7 +3272,8 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	}
 	jm.mu.Unlock()
 
-	if cfg.oneShot {
+	// A fire that does not keep the goroutine alive is a one-shot's only fire.
+	if !dec.keepAlive {
 		jm.endFiredOneShot(cfg)
 	}
 	jm.enqueueWatchNotifications(notifications)
@@ -4836,18 +4840,17 @@ func (jm *jobManager) kick() {
 // empty between frames, and inferring from it would re-announce — and eventually
 // kill — a job the model explicitly said it was waiting on. A cleared watch
 // (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
-// counts as undisposed again. A high-volume watch is retained as a temporary
-// excuse while an asynchronous teardown persists the clear and queues the final
-// notification; otherwise the drain can announce in that handoff window before
-// it receives the notification that explains the clear. That excuse stays keyed
-// on deliveries rather than on the breaker's conditionFires: it is a
-// volume-based grace window, and a watch quiet enough to matter here is
-// already excused by the conditionFires == 0 arm.
+// counts as undisposed again. A watch that has just tripped the budget is
+// retained as a temporary excuse while its asynchronous teardown persists the
+// clear and queues the final notification; otherwise the drain can announce in
+// that handoff window before it receives the notification that explains the
+// clear. That window is keyed on conditionFires, the counter the breaker
+// latches on, so it closes when the teardown removes the config.
 func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for key, cfg := range jm.watches {
-		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.deliveries >= watchDeliveryBudget) {
+		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.conditionFires >= watchDeliveryBudget) {
 			return true
 		}
 	}

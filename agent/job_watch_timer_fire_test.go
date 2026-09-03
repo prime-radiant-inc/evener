@@ -51,8 +51,11 @@ func TestRepeatTimer_FiresEveryIntervalWithNote(t *testing.T) {
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
 	jm.mu.Unlock()
-	if !ok || cfg.deliveries != 3 {
-		t.Fatalf("deliveries = %d (ok=%v), want 3", cfg.deliveries, ok)
+	if !ok {
+		t.Fatalf("repeat timer %s left the live set", res.WatchID)
+	}
+	if cfg.deliveries != 3 {
+		t.Fatalf("deliveries = %d, want 3", cfg.deliveries)
 	}
 }
 
@@ -219,5 +222,43 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 	}
 	if cfg.deliveries != 3 || !cfg.budgetTripped {
 		t.Fatalf("deliveries = %d, budgetTripped = %v; want 3 and a latched breaker", cfg.deliveries, cfg.budgetTripped)
+	}
+}
+
+// TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires pins which
+// counter excuses a watched job from the undisposed-background-job
+// announcement. The excuse is "this watch has not matched yet", plus a handoff
+// window for a watch whose breaker just tripped. A watch with a progress
+// interval delivers past the budget forever without ever tripping it, so keying
+// the window on deliveries would excuse it permanently once it had fired.
+func TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires(t *testing.T) {
+	jm := newTestJM(t)
+	const jobID = "job_unfired_excuse"
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: jobID}
+	cfg := &watchConfig{target: jobID}
+	jm.mu.Lock()
+	jm.watches[key] = cfg
+	jm.mu.Unlock()
+
+	if !jm.hasLiveUnfiredWatchOnTarget(jobID) {
+		t.Fatal("a watch that has never matched must excuse its target")
+	}
+
+	// Fired once, then ticked well past the budget: no longer unfired, and its
+	// breaker has not tripped, so it is not an excuse.
+	jm.mu.Lock()
+	cfg.conditionFires = 1
+	cfg.deliveries = watchDeliveryBudget + 10
+	jm.mu.Unlock()
+	if jm.hasLiveUnfiredWatchOnTarget(jobID) {
+		t.Fatalf("a watch with %d tick deliveries and one match still excused its target", cfg.deliveries)
+	}
+
+	// At the budget in condition fires: the teardown handoff window is open.
+	jm.mu.Lock()
+	cfg.conditionFires = watchDeliveryBudget
+	jm.mu.Unlock()
+	if !jm.hasLiveUnfiredWatchOnTarget(jobID) {
+		t.Fatal("a watch at the condition-fire budget must hold the announcement while its teardown lands")
 	}
 }
