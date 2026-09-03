@@ -485,7 +485,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
     if (locationRef === null || (navigationMode !== "v1" && navigationMode !== "v2")) return;
-    if (locationFailed || (locationResource && !locationResource.stale)) return;
+    if (locationFailed || locationResource?.loading || (locationResource && !locationResource.stale)) return;
     void navigationStore
       .getState()
       .lookupLocation(locationRef)

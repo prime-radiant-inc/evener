@@ -55,6 +55,12 @@ function manifest(overrides: Partial<NavigationManifest> = {}): NavigationManife
     ...overrides,
   };
 }
+function emptyManifest(): NavigationManifest {
+  return manifest({
+    sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  });
+}
 function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
   return {
     key,
@@ -263,35 +269,85 @@ describe("resource-backed Rail", () => {
     expect(railStyles.parentScrollBody).toBeTruthy();
     expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
   });
-  test("shows bounded loading and empty states from manifest/resource state", () => {
-    installState(
-      [],
-      manifest({
-        sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-      }),
-    );
+  test.each(["v1", "v2"] as const)("shows the settled empty state in %s mode", (mode) => {
+    const empty = emptyManifest();
+    installState([], empty);
+    navigationStore.setState({ mode });
+
     render(<Rail />);
+
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
   });
-  test("v2 pending manifest suppresses the settled empty state until it finishes", () => {
-    const empty = manifest({
-      sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-      catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-    });
+  test.each(["v1", "v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
+    const empty = emptyManifest();
     const pendingManifest = {
       ...resource({ kind: "manifest" }, empty),
       data: null,
       loading: true,
     } as ResourceState<NavigationManifest>;
     installState([], empty);
-    navigationStore.setState({ mode: "v2", manifest: pendingManifest });
+    navigationStore.setState({ mode, manifest: pendingManifest });
 
     render(<Rail />);
 
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByText(/no sessions yet/i)).toBeNull();
     act(() => navigationStore.setState({ manifest: resource({ kind: "manifest" }, empty) }));
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
+  });
+  test("shows a visible skeleton for a pending v2 resource until it settles", () => {
+    const empty = emptyManifest();
+    const pendingSection = {
+      ...sectionResource("live", []),
+      data: null,
+      loading: true,
+    } as ResourceState;
+    installState([pendingSection], empty);
+    navigationStore.setState({ mode: "v2" });
+
+    render(<Rail />);
+
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByText(/no sessions yet/i)).toBeNull();
+    const settledSection = sectionResource("live", []);
+    act(() => navigationStore.setState({ resources: new Map([[keyID(settledSection.key), settledSection]]) }));
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
+  });
+  test("does not treat stale resources as pending and keeps last-good rows visible", () => {
+    const empty = emptyManifest();
+    const staleEmpty = { ...sectionResource("live", []), stale: true };
+    installState([staleEmpty], empty);
+    navigationStore.setState({ mode: "v2" });
+
+    render(<Rail />);
+
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
+
+    const staleLastGood = {
+      ...sectionResource("live", [summary({ title: "Last good session" })]),
+      stale: true,
+    };
+    act(() => navigationStore.setState({ resources: new Map([[keyID(staleLastGood.key), staleLastGood]]) }));
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(screen.getByText("Last good session")).toBeTruthy();
+    expect(screen.queryByText(/no sessions yet/i)).toBeNull();
+  });
+  test("transitions from unknown loading to a terminal navigation error", () => {
+    const empty = emptyManifest();
+    installState([], empty);
+    navigationStore.setState({ mode: "unknown" });
+
+    render(<Rail />);
+
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByText(/no sessions yet/i)).toBeNull();
+    act(() => navigationStore.setState({ mode: "error" }));
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(screen.getByText(/couldn't load sessions/i)).toBeTruthy();
   });
   test("expanding a summary loads one canonical project root", async () => {
     const loadProject = vi.fn().mockResolvedValue(undefined);

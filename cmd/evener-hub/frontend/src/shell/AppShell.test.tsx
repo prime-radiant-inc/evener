@@ -17,7 +17,12 @@ import type {
   ThreadStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import {
+  initNavigation,
+  type NavigationStoreState,
+  navigationStore,
+  resetNavigationStoreForTests,
+} from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
@@ -981,17 +986,32 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
 
 test("a deep-link lookup starts exactly once when navigation mode becomes v2", async () => {
   const ref = "local:mode-transition";
-  const lookupLocation = vi.fn().mockRejectedValue(new Error("scripted location miss"));
+  const client = navClient();
+  initNavigation(client, { version: 1, generationId: "generation_test", sequence: 0 });
+  navigationStore.setState({ mode: "unknown" });
+  const lookupLocation = vi.spyOn(navigationStore.getState(), "lookupLocation");
+  const locationCalls = () =>
+    client.calls.filter(
+      ({ method, params }) =>
+        method === "evener/navigation/read" && (params as NavigationReadParams).resource === "location",
+    );
   window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
-  navigationStore.setState({ mode: "unknown", lookupLocation });
 
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={client} />);
   expect(lookupLocation).not.toHaveBeenCalled();
+  expect(locationCalls()).toHaveLength(0);
 
   act(() => navigationStore.setState({ mode: "v2" }));
 
-  await waitFor(() => expect(lookupLocation).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(locationCalls()).toHaveLength(1));
+  expect(lookupLocation).toHaveBeenCalledTimes(1);
   expect(lookupLocation).toHaveBeenCalledWith(ref);
+  expect(locationCalls()).toEqual([
+    {
+      method: "evener/navigation/read",
+      params: { resource: "location", ref, representationVersion: 2 },
+    },
+  ]);
 });
 
 test("a nested location opens its explicit owner without loading a project", async () => {
