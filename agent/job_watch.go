@@ -2879,6 +2879,14 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			}
 			if crossedBudget {
 				overBudget = append(overBudget, cfg)
+				// The matcher hands back every match in the chunk at once, and
+				// the teardown this crossing schedules cannot run until jm.mu is
+				// released. Without this break the rest of the chunk would fire a
+				// watch that is already over budget — one chunk carrying a
+				// thousand matches would deliver a thousand frames. The crossing
+				// match itself has been recorded above: it is inside the budget,
+				// and it is the last one this watch gets.
+				break
 			}
 		}
 	}

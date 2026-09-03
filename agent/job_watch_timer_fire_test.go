@@ -521,3 +521,56 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 		t.Fatalf("history lacks a fired row with deliveries 1: %+v", recent)
 	}
 }
+
+// TestConditionFireBudget_OneChunkStopsAtTheBudget pins the output rail's
+// per-chunk match loop against the breaker. The matcher hands back EVERY match
+// in a chunk at once, so a single chunk carrying more matches than the budget
+// allows would fire the watch all the way to the end of the chunk before the
+// teardown its crossing match scheduled could run — the budget is checked inside
+// the loop, but nothing used to stop the loop. The crossing match is still
+// delivered (it is inside the budget); the rest of the chunk is not.
+func TestConditionFireBudget_OneChunkStopsAtTheBudget(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "hit"})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatalf("watch %s is not installed", res.WatchID)
+	}
+
+	chunk := []byte(strings.Repeat("hit\n", watchDeliveryBudget+10))
+	jm.feedJobOutput(rec.JobID, chunk, int64(len(chunk)))
+
+	jm.mu.Lock()
+	fires, deliveries := cfg.conditionFires, cfg.deliveries
+	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if fires != watchDeliveryBudget || deliveries != watchDeliveryBudget || live {
+		t.Fatalf("one over-budget chunk = conditionFires:%d deliveries:%d live:%t, want %d/%d and an auto-cleared watch",
+			fires, deliveries, live, watchDeliveryBudget, watchDeliveryBudget)
+	}
+	fired := 0
+	for _, notification := range notified {
+		if strings.HasPrefix(notification.Reason, "output_match: ") {
+			fired++
+		}
+	}
+	if fired != watchDeliveryBudget {
+		t.Fatalf("output_match notifications = %d, want %d", fired, watchDeliveryBudget)
+	}
+	history := jm.recentWatchSummaries()
+	if len(history) == 0 || history[0].EndReason != "budget_exhausted" {
+		t.Fatalf("watch history = %+v, want a budget_exhausted row", history)
+	}
+}
