@@ -1784,17 +1784,20 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // autoClearWatchOverBudgetNotification tears down exactly the one watch config
 // that tripped the delivery budget and returns its ONE final cleared notification
 // without enqueuing or waking. It is the circuit breaker's teardown: jm-state
-// mutation only — NO delivery from observation (spec §3). It mirrors clearWatch's
-// terminal-snapshot machinery but operates on a single (key, cfg) pair, so a
-// no-send watch sharing a target with other watches does not over-clear its
-// neighbors.
+// mutation only — NO delivery from observation (spec §3). It works on the single
+// (key, cfg) pair the breaker latched, so a watch sharing a target with others
+// does not over-clear its neighbors.
 //
-// Unlike a model-requested clear it drops NOTHING. The budget bounds how many
-// times a watch may fire; a frame it already produced — including the one whose
-// match crossed the budget, which every rail records before calling this — has
-// been persisted as pending and is owed to its receiver. The detached config
-// keeps those frames and goes onto the terminal-flush rail, exactly where a
-// watch auto-removed by its target's exit parks them.
+// The sequence is mark, persist, detach. It takes no terminal snapshot and drops
+// nothing, which is what separates it from a model-requested clear: the budget
+// bounds how many times a watch may FIRE, and a frame it already produced —
+// including the one whose match crossed the budget, which every rail records
+// before calling this — is persisted as pending and owed to its receiver. All
+// that is persisted here is the watch's own cleared event; the detached config
+// keeps its frames and goes onto the terminal-flush rail, exactly where a watch
+// auto-removed by its target's exit parks them. rejectingDelivery is the freeze
+// that holds across the durable append, so no fire past the crossing can add a
+// frame between the mark and the detach; detachOverBudgetWatch lifts it.
 //
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
