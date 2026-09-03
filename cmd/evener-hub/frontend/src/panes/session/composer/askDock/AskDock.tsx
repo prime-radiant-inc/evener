@@ -315,11 +315,13 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
+  const epoch = useAskDockStore((s) => s.byRef.get(sessionRef)?.activationEpoch ?? 0);
   const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
-  const prevRef = useRef<{ ref: string; pending: boolean; count: string }>({
+  const prevRef = useRef<{ ref: string; pending: boolean; count: string; epoch: number }>({
     ref: sessionRef,
     pending: false,
     count: "",
+    epoch: 0,
   });
 
   const pending = batches.length > 0;
@@ -334,7 +336,7 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
 
   useEffect(() => {
     const prev = prevRef.current;
-    prevRef.current = { ref: sessionRef, pending, count };
+    prevRef.current = { ref: sessionRef, pending, count, epoch };
     // A pane can be reused across refs (a sidebar click swaps the session
     // on a persistent pane): treat that as a fresh activation. The keyed
     // content remount below is what makes an identical-text re-announcement
@@ -344,14 +346,20 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
       announce(pending ? "Answer the agent’s questions." : "");
       return;
     }
-    if (pending && !prev.pending) {
+    // Every activation announces the prompt - including an atomic
+    // pending-set REPLACEMENT, which the epoch alone can see: pending stays
+    // true throughout and the new set may carry an identical answered
+    // count, so neither other signal moves.
+    if (epoch !== prev.epoch && epoch > 0) {
       announce("Answer the agent’s questions.");
-    } else if (pending && count !== prev.count) {
+      return;
+    }
+    if (pending && count !== prev.count) {
       announce(count);
     } else if (!pending && prev.pending) {
       announce("");
     }
-  }, [sessionRef, pending, count, announce]);
+  }, [sessionRef, pending, count, epoch, announce]);
 
   return (
     <div className={CLASS.visuallyHidden} role="status" aria-live="polite" data-testid="ask-dock-announcements">
@@ -379,14 +387,17 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
   //    later ask_user call that grows an already-open batch never
   //    re-triggers (test-ask-card.js's no-steal contract).
   //  - The VISIBILITY gate (IntersectionObserver): overscan mounts the row
-  //    while the reader is scrolled away, and preventScroll alone stops the
-  //    scroll but not the theft - focus would still land on an off-screen
-  //    control. Focus waits for the dock to actually intersect the viewport,
-  //    which composes with the new-content pill: its jump brings the dock
-  //    into view, and the intersection is what lands focus in the first
-  //    control (with preventScroll, so the pill's own scroll targeting stays
-  //    in charge). jsdom has no IntersectionObserver - the fallback keeps
-  //    tests without a stub on the old immediate-focus path.
+  //    while the reader is scrolled away, and focusing then would move the
+  //    reader's context to an off-screen control. Focus waits for the dock
+  //    to actually intersect the viewport, which composes with the
+  //    new-content pill: its jump brings the dock into view, and the
+  //    intersection is what lands focus. Once the dock IS visible, plain
+  //    focus() is intentional - the browser reveals the focused control,
+  //    which a tall dock needs: the pill's jump aligns the dock's END, so
+  //    the first control of a tall batch can still sit above the fold, and
+  //    focusing it there without the reveal would strand it invisibly.
+  //    jsdom has no IntersectionObserver - the fallback keeps tests without
+  //    a stub on the immediate-focus path.
   // No ref threads down into AskQuestionCard for this - querying the dock's
   // own root for the first focusable control is simpler and this is a
   // one-time, edge-triggered action. Scoped to [data-ask-question] (the
@@ -403,7 +414,7 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
         .querySelector<HTMLElement>(
           '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
         )
-        ?.focus({ preventScroll: true });
+        ?.focus();
     };
     if (typeof IntersectionObserver !== "function") {
       focusFirst();

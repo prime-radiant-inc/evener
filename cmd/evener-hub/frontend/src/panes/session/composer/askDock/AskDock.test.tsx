@@ -6,10 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
+import { hydrateThread } from "../../../../protocol/reducer";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import {
+  putThreadModel,
   readMutationPersistence,
   resetThreadsStoreForTests,
   subscribeMutationPersistence,
@@ -768,23 +770,37 @@ test("a fresh pending set after a fully resolved one re-activates auto-focus", a
 });
 
 // The dock is a virtual row now: it can mount in the list's overscan while
-// the reader is scrolled away, and a plain focus() would scroll the
-// transcript to the focused control - yanking the reader and defeating the
-// new-content pill that is supposed to be their way down (roborev PR #854).
-test("activation auto-focus never scrolls the transcript to the control", async () => {
+// the reader is scrolled away, and a focus() there would move the reader's
+// context to an off-screen control (roborev PR #854). Activation focus is
+// therefore gated on the dock intersecting the viewport at all - and once
+// it IS visible, plain focus() is intentional: the browser reveals the
+// focused control, which is exactly what a tall dock whose first control
+// sits above the fold needs (the pill's jump aligns the dock's END, so the
+// first control of a tall batch can still be off-screen without it).
+// jsdom performs no scrolling, so the scroll half is the browser's to own;
+// what this pins is the gate: NO focus call while off-screen, one once
+// visible (the round-5 test pins the same gate from the store side).
+test("activation focus waits for visibility, then lets the browser reveal the control", async () => {
   const fake = connectFakeClient();
   await hydrateWithOneAsk(fake);
   const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
   try {
     render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    observer.report(true);
     const dock = document.querySelector("[data-ask-response-dock]");
     await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
     expect(focusSpy).toHaveBeenCalled();
-    for (const call of focusSpy.mock.calls) {
-      expect(call[0]).toEqual({ preventScroll: true });
-    }
   } finally {
     focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
   }
 });
 
@@ -929,5 +945,60 @@ test("a session ref change re-announces the new session's pending prompt", async
   // content mutations, and unchanged text is no mutation - the transition
   // must remount the content to be heard at all.
   expect(region.textContent).toBe("Answer the agent’s questions.");
+  expect(region.firstChild).not.toBe(firstNode);
+});
+
+test("an atomic pending-set replacement with an identical count re-announces the prompt", async () => {
+  // The answered count is the announcements component's only in-set signal;
+  // a replacement whose new set has the SAME count (e.g. both carry a
+  // recommended pre-seeded answer) changes neither pending nor count, so
+  // without the activation epoch no announcement would fire for the new
+  // question (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake); // recommended option pre-seeds an answer
+  render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  // One snapshot resync: call_1 answered (user message after it), call_2
+  // pending after that message - one reconcile swaps the batch set.
+  const thread = {
+    ...readResponse("ref_a").thread,
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          { type: "userMessage", id: "u1", turnId: "turn_1", text: "hi", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_1",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_1",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+          { type: "userMessage", id: "u2", turnId: "turn_1", text: "[answers] yes", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_2",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_2",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+        ],
+      },
+    ],
+  };
+  act(() => {
+    putThreadModel("ref_a", hydrateThread({ thread } as never, "ref_a", Date.now()));
+  });
+
+  await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
   expect(region.firstChild).not.toBe(firstNode);
 });
