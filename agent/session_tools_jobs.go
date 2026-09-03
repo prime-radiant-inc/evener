@@ -1806,6 +1806,8 @@ func formatJobWatch(out jobWatchToolResult) string {
 	case out.ProgressIntervalMS > 0:
 		cond = append(cond, fmt.Sprintf("progress_interval_ms %dms", out.ProgressIntervalMS))
 	}
+	// A note is only admitted alongside after_seconds or repeat_seconds, so a
+	// bare check cannot label a non-timer watch.
 	if out.Note != "" {
 		cond = append(cond, "note: "+out.Note)
 	}
