@@ -186,21 +186,33 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	}
 }
 
-func TestProtocolBuildBody_HighThinkingRejectsUnknownOutputCap(t *testing.T) {
+// TestProtocolBuildBody_HighThinkingClampsUnderUnknownOutputCapFallback
+// updates the #824 guard's unknown-cap case. That guard exists to stop body
+// construction from RAISING max_tokens above its ceiling to fit a thinking
+// budget (docs/superpowers/plans/2026-09-01-provider-safe-token-budget.md,
+// step 1), and it still does — for caller-provided budgets (the ProviderOnly
+// test below) and for ceilings too small to fit Anthropic's 1024-token
+// thinking minimum. But an effort-derived budget must not wedge the request:
+// with no row cap the body's fallback max_tokens is the ceiling, and the
+// budget clamps under it instead of failing every call — the same
+// liberal-then-loud-400 philosophy fallbackMaxTokens documents for itself.
+// Failing closed here stranded sessions with no recourse: an effort-derived
+// budget that meets or exceeds the effective ceiling is the adapter's own
+// arithmetic, not caller input to validate.
+func TestProtocolBuildBody_HighThinkingClampsUnderUnknownOutputCapFallback(t *testing.T) {
 	res := protoRes(func(c *registry.Caps) {
 		c.MaxOutputTokens = nil
 		c.ThinkingShape = new("budget")
 	})
 	body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(protoReq("high"), res), res)
-	if body != nil {
-		t.Fatalf("body = %v, want no unsafe request", body)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
 	}
-	var budgetErr *llm.ContextBudgetError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
+	if got := intFromAny(body["thinking"].(map[string]any)["budget_tokens"]); got != fallbackMaxTokens-1 {
+		t.Fatalf("budget_tokens = %d, want %d under the fallback max_tokens", got, fallbackMaxTokens-1)
 	}
-	if budgetErr.Limit != "max_output_tokens" || budgetErr.Maximum != fallbackMaxTokens || budgetErr.OutputTokens != llm.ReasoningBudget("high")+1 {
-		t.Fatalf("ContextBudgetError = %+v, want fail-closed unknown-cap high effort", budgetErr)
+	if got := intFromAny(body["max_tokens"]); got != fallbackMaxTokens {
+		t.Fatalf("max_tokens = %d, want the fallback %d", got, fallbackMaxTokens)
 	}
 }
 
@@ -254,6 +266,71 @@ func TestProtocolBuildBody_MixedCaseProviderThinkingBudgetFailsWithinAdmittedMax
 	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, protoRes(nil)), protoRes(nil))
 	if _, ok := errors.AsType[*llm.ContextBudgetError](err); !ok {
 		t.Fatalf("error = %v, want *llm.ContextBudgetError", err)
+	}
+}
+
+// TestProtocolBuildBody_BudgetEffortClampedToOutputCeiling pins the fix for a
+// session-wedging defect: ReasoningBudget maps max/xhigh to 131072 tokens, and
+// a budget-shaped row whose max_output_tokens is also 131072 (kimi-for-coding
+// k3) can never satisfy the Anthropic contract that max_tokens strictly
+// exceeds budget_tokens — once a session selected max effort, every model call
+// was rejected before provider dispatch with a non-retryable
+// ContextBudgetError. An effort-derived budget must shrink under the output
+// ceiling the request already carries so a request this adapter derived is
+// always sendable. A caller-provided ProviderOptions budget that does not fit
+// keeps the explicit pre-dispatch error instead (pinned by the ProviderOnly
+// test above), and a ceiling too small to fit Anthropic's documented
+// 1024-token thinking minimum keeps it too: silently sending a sub-minimum
+// budget would only move the failure to the provider's 400.
+func TestProtocolBuildBody_BudgetEffortClampedToOutputCeiling(t *testing.T) {
+	// kimi-for-coding k3's shape: budget+effort thinking, a 131072-token
+	// output cap, and the admitted allocation ApplyTokenBudget produces for
+	// effort max (the full cap).
+	res := protoRes(func(c *registry.Caps) {
+		c.ThinkingShape = new("budget+effort")
+		c.MaxOutputTokens = new(131072)
+	})
+	req := protoReq("max")
+	req.MaxTokens = new(131072)
+	body := protoBuild(t, req, res)
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking = %#v, want a budget object", body["thinking"])
+	}
+	if got := intFromAny(thinking["budget_tokens"]); got != 131071 {
+		t.Fatalf("budget_tokens = %d, want 131071 (output ceiling minus the one token max_tokens must exceed the budget by)", got)
+	}
+	if got := intFromAny(body["max_tokens"]); got != 131072 {
+		t.Fatalf("max_tokens = %d, want the admitted 131072", got)
+	}
+	effortCfg, ok := body["output_config"].(map[string]any)
+	if !ok || effortCfg["effort"] != "max" {
+		t.Fatalf("output_config.effort = %#v, want the requested tier preserved", body["output_config"])
+	}
+
+	// A smaller admitted allocation is the ceiling: the budget clamps under it
+	// the same way instead of failing the request.
+	req.MaxTokens = new(32768)
+	body = protoBuild(t, req, res)
+	if got := intFromAny(body["thinking"].(map[string]any)["budget_tokens"]); got != 32767 {
+		t.Fatalf("budget_tokens = %d, want 32767 under the admitted 32768", got)
+	}
+	if got := intFromAny(body["max_tokens"]); got != 32768 {
+		t.Fatalf("max_tokens = %d, want the admitted 32768", got)
+	}
+
+	// A ceiling that cannot fit the 1024-token thinking minimum keeps the
+	// explicit pre-dispatch error rather than sending a wire-rejectable
+	// budget.
+	res = protoRes(func(c *registry.Caps) {
+		c.ThinkingShape = new("budget")
+		c.MaxOutputTokens = new(1024)
+	})
+	req = protoReq("high")
+	req.MaxTokens = new(1024)
+	_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if _, ok := errors.AsType[*llm.ContextBudgetError](err); !ok {
+		t.Fatalf("error = %v, want *llm.ContextBudgetError for a ceiling below the thinking minimum", err)
 	}
 }
 
