@@ -146,7 +146,9 @@ func TestWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 		s.jobManager.mu.Unlock()
 		t.Fatalf("watch for %s not installed", jobID)
 	}
+	// One condition fire short of the budget, which is what the breaker latches on.
 	watched.deliveries = watchDeliveryBudget - 1
+	watched.conditionFires = watchDeliveryBudget - 1
 	s.jobManager.mu.Unlock()
 
 	log := &notificationWakeLog{}
@@ -206,7 +208,9 @@ func TestReceiverWatchBudgetClearCoalescesWithMatchedEvent(t *testing.T) {
 		t.Fatalf("receiver watch for %s not installed", rec.JobID)
 	}
 	source.mu.Lock()
+	// One condition fire short of the budget, which is what the breaker latches on.
 	watched.deliveries = watchDeliveryBudget - 1
+	watched.conditionFires = watchDeliveryBudget - 1
 	source.mu.Unlock()
 
 	log := &notificationWakeLog{}

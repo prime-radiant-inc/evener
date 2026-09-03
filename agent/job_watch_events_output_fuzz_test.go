@@ -70,6 +70,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal(err)
 			}
 			cfg.deliveries = watchDeliveryBudget - 1
+			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: rec.JobID}] = cfg
 			jm.feedJobOutput(rec.JobID, []byte("hit\n"), 4)
 		case 6:
@@ -101,6 +102,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal(err)
 			}
 			cfg.deliveries = watchDeliveryBudget - 1
+			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: "job_x"}] = cfg
 			if !jm.fireAttachScan(cfg, "job_x", []byte("hit\n")) {
 				t.Fatal("attach scan did not fire")
@@ -166,6 +168,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal(err)
 			}
 			cfg.deliveries = watchDeliveryBudget - 1
+			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: "*"}] = cfg
 			jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate})
 		case 17:

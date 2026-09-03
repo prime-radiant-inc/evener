@@ -519,7 +519,10 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		sess.jobManager.mu.Unlock()
 		t.Fatalf("live watch for %s disappeared before budget crossing", jobID)
 	}
+	// One condition fire short of the budget: the breaker latches on
+	// conditionFires, and a watch that has fired 49 times has delivered 49 times.
 	watched.deliveries = watchDeliveryBudget - 1
+	watched.conditionFires = watchDeliveryBudget - 1
 	sess.jobManager.mu.Unlock()
 
 	// This real output match crosses the actual budget auto-clear path rather
