@@ -292,14 +292,16 @@ func publishedBundledCopy(dest string) (bool, error) {
 
 // reclaimAbandonedStaging removes staging directories orphaned by a publish
 // that was killed before its rename. Staging lives in the store so the rename
-// stays on one filesystem, so nothing else would ever collect them.
+// stays on one filesystem, so nothing else would ever collect them. Only a
+// real directory is swept: staging is always one, so anything else wearing the
+// prefix came from elsewhere and is not this code's to remove.
 func (m *Manager) reclaimAbandonedStaging(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), stagingPrefix) {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
 			continue
 		}
 		info, err := entry.Info()

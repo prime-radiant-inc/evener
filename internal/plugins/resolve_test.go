@@ -505,6 +505,24 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 			t.Fatalf("staging of a concurrent publish was reclaimed: %v", err)
 		}
 	})
+
+	t.Run("an aged entry that is not a staging directory is left alone", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+		if err := os.MkdirAll(filepath.Join(m.Root, "bundled"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stray := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-notes")
+		if err := os.WriteFile(stray, []byte("not staging"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(stray); err != nil {
+			t.Fatalf("the sweep removed an entry it never staged: %v", err)
+		}
+	})
 }
 
 // The resolver looks a bundled plugin up by its embedded directory name and
