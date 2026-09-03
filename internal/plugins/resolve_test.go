@@ -1289,3 +1289,29 @@ func TestMaterializeBundledPlugin_StopsForACallerThatLeftWhilePublishing(t *test
 		t.Errorf("the cancelled launch left no published copy: %v", err)
 	}
 }
+
+// Building the inventory reads every candidate's tree off disk, and a caller
+// can leave while it does. None of that reading is interruptible, so the
+// cancellation is only noticed on the way out — and it is answered the way one
+// seen at entry is: carried as the error, with nothing to admit a launch on.
+func TestResolveForLaunch_StopsForACallerThatLeftWhileLoading(t *testing.T) {
+	explicit := t.TempDir()
+	writePlugin(t, explicit, "alpha", nil)
+	m := NewManager(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	load := enabledLoad
+	t.Cleanup(func() { enabledLoad = load })
+	enabledLoad = func(dir string) (agentplugin.Instance, error) {
+		cancel()
+		return load(dir)
+	}
+
+	res, err := m.ResolveForLaunch(ctx, []string{explicit}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want the cancellation", err)
+	}
+	if len(res.Candidates) != 0 || len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
+		t.Errorf("resolved %+v for a caller that had given up", res)
+	}
+}

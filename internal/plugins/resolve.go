@@ -166,7 +166,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 	// notice on its own — a copy already published has no lock to wait on —
 	// so the context is read rather than waited on.
 	if err := ctx.Err(); err != nil {
-		return resolution, err
+		return nothingForACallerThatLeft(err)
 	}
 
 	// Every path under an unresolved root is relative, so the store would be
@@ -298,7 +298,7 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 					// this started, so it is given the same way: carried as
 					// the error, with no diagnostic and no missing-candidate
 					// blaming the plugin for the caller leaving.
-					return resolution, err
+					return nothingForACallerThatLeft(err)
 				case !errors.Is(err, fs.ErrNotExist):
 					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
@@ -312,7 +312,25 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 			}
 		}
 	}
+	// Loading a candidate reads its whole tree off disk and takes no context,
+	// so a caller that left while the inventory was being built is only
+	// noticed here — the last chance before the inventory is handed to
+	// somebody who would start a session on it.
+	if err := ctx.Err(); err != nil {
+		return nothingForACallerThatLeft(err)
+	}
 	return resolution, nil
+}
+
+// nothingForACallerThatLeft is the answer to a cancellation seen anywhere
+// while the inventory is being built: an empty inventory carrying the context
+// error. Nothing partial goes back — an inventory is something a caller acts
+// on, and this caller is no longer there to act.
+func nothingForACallerThatLeft(err error) (LaunchPluginResolution, error) {
+	return LaunchPluginResolution{
+		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
+		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
+	}, err
 }
 
 // stagingPrefix names the private directory a publish copies into before
