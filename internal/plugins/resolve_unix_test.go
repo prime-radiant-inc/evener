@@ -367,8 +367,12 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 			}
 			defer release()
 
+			// Cancelled while it waits, not before: a caller that had already
+			// given up never reaches the lock at all.
 			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
+			defer cancel()
+			timer := time.AfterFunc(50*time.Millisecond, cancel)
+			defer timer.Stop()
 			start := time.Now()
 			res, err := test.resolve(ctx, m)
 			if err != nil {
@@ -425,8 +429,10 @@ func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer release()
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
+			// Long enough to outlast the wait the sweep is allowed, so the
+			// launch gives up on the lock rather than on its caller.
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
 
 			if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); err != nil {
 				t.Fatal(err)

@@ -70,7 +70,7 @@ type LaunchPluginResolution struct {
 // enabled installed plugins. It loads each candidate with the same loader used
 // by session startup, retaining invalid candidates as structured diagnostics.
 func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
-	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
+	return m.resolveForLaunch(ctx, explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
 		path, warnings, err := m.materializeBundledPlugin(ctx, name)
 		return bundledCandidate{loadPath: path, path: path, warnings: warnings}, err
 	})
@@ -92,7 +92,7 @@ func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, e
 // the store until a later launch's sweep reclaims it.
 func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
-	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
+	resolution, err := m.resolveForLaunch(ctx, explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
 		dest, staging, warnings, err := m.prepareBundledStore(ctx, name, false)
 		if err != nil {
 			return bundledCandidate{path: dest, warnings: warnings}, err
@@ -152,12 +152,22 @@ type bundledCandidate struct {
 // resolveForLaunch builds the inventory. bundledPath readies a requested
 // bundled plugin; it returns fs.ErrNotExist when no bundled plugin has that
 // name.
-func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string, bundledPath func(name string) (bundledCandidate, error)) (LaunchPluginResolution, error) {
+func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string, bundledPath func(name string) (bundledCandidate, error)) (LaunchPluginResolution, error) {
 	resolution := LaunchPluginResolution{
 		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
 		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
 	}
 	seen := make(map[string]bool)
+
+	// An inventory is something a caller acts on: the hub validates plugins
+	// and then detaches from the request context to finish the spawn, so an
+	// inventory handed back after the caller gave up is a session started for
+	// a client that has gone. Nothing here necessarily blocks long enough to
+	// notice on its own — a copy already published has no lock to wait on —
+	// so the context is read rather than waited on.
+	if err := ctx.Err(); err != nil {
+		return resolution, err
+	}
 
 	// Every path under an unresolved root is relative, so the store would be
 	// whichever directory the process happens to be in: the registry would be
@@ -460,6 +470,12 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	// walked it, falls through to the locked look, which is the one entitled
 	// to an opinion.
 	if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
+		// Read again on the way out: the digest walk above is the one part of
+		// adopting that takes real time, and a caller that left during it is
+		// no more entitled to a copy than one that had already left.
+		if err := ctx.Err(); err != nil {
+			return "", nil, nil, err
+		}
 		// A launch owes the store its sweep, but only when the store has
 		// something to sweep, and the scan that answers that needs no lock.
 		// Taking one on every launch would park a routine one behind an
@@ -503,6 +519,9 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	}
 	if state == bundledDestinationPublished {
 		release()
+		if err := ctx.Err(); err != nil {
+			return "", nil, nil, err
+		}
 		return dest, nil, nil, nil
 	}
 	var warnings []string

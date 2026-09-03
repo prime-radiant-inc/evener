@@ -1203,3 +1203,52 @@ func TestSetAsideBundledConflict_RecoversAnInterruptedSetAside(t *testing.T) {
 		}
 	})
 }
+
+// A caller that has already given up must not be handed an inventory to admit
+// a launch on. The hub's thread/start validates plugins and then detaches from
+// the request context to finish the spawn, so an inventory returned after
+// cancellation is a session started for a client that has gone. Nothing else
+// on the way there necessarily blocks — with a copy already published there is
+// no lock to wait on and no work to interrupt — so the context is what has to
+// be read.
+func TestResolveForLaunch_StopsForACallerThatHasGivenUp(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(context.Context, *Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(ctx context.Context, m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(ctx context.Context, m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			res, err := test.resolve(ctx, m)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want the cancellation", err)
+			}
+			// The cancellation is the answer, carried as the error: an empty
+			// inventory with no selection is nothing to admit a launch on, and
+			// naming the requested plugin as a missing candidate would blame
+			// the plugin for the caller leaving.
+			if len(res.Candidates) != 0 || len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
+				t.Errorf("resolved %+v for a caller that had given up", res)
+			}
+		})
+	}
+}
