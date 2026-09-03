@@ -53,12 +53,14 @@ func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) 
 }
 
 // Publication cannot destroy foreign data that lands on the destination after
-// it was observed absent. The source of the rename is always a directory (the
+// it was classified. The source of the rename is always a directory (the
 // staging payload), and rename(2) refuses to replace anything a foreign writer
 // could leave there: a regular file fails with ENOTDIR, a non-empty directory
 // with ENOTEMPTY. Only an absent path or an empty directory can be replaced,
-// so the check-then-rename window costs a failed publish, never a lost file.
-// The publish that lost the rename does not adopt what it found there either.
+// so the window between classifying a destination and renaming into it costs a
+// failed rename, never a lost file. What was found there is not taken for the
+// published copy either: a directory is set aside whole, and a file is an
+// error, so nothing a foreign writer leaves is ever loaded or destroyed.
 func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 	tests := []struct {
 		name    string

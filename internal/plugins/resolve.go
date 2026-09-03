@@ -377,11 +377,11 @@ func (m *Manager) materializeBundledPlugin(name string) (string, []string, error
 		if state != bundledDestinationConflict {
 			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
 		}
-		aside, warning, asideErr := setAsideBundledConflict(dest)
+		moved, warning, asideErr := setAsideBundledConflict(dest)
 		if asideErr != nil {
 			return "", warnings, asideErr
 		}
-		if aside != "" {
+		if moved {
 			warnings = append(warnings, warning)
 		}
 		if err := os.Rename(staging.payload, dest); err != nil {
@@ -460,12 +460,12 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	}
 	var warnings []string
 	if state == bundledDestinationConflict {
-		aside, warning, err := setAsideBundledConflict(dest)
+		moved, warning, err := setAsideBundledConflict(dest)
 		if err != nil {
 			release()
 			return "", nil, nil, err
 		}
-		if aside != "" {
+		if moved {
 			warnings = append(warnings, warning)
 		}
 	}
@@ -524,23 +524,25 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 // store staying unusable for that plugin forever. The conflicting directory is
 // moved, never deleted, to the single sibling slot kept beside the
 // destination: one preserved copy per plugin, so a store that keeps meeting
-// conflicts does not grow without bound. It reports where the content went and
-// how to say so, or "" when the destination was already gone because a
-// concurrent publisher set the same conflict aside first.
-func setAsideBundledConflict(dest string) (string, string, error) {
+// conflicts does not grow without bound. Callers hold the store lock, so
+// nothing else this package runs is looking at the destination meanwhile. It
+// reports whether anything moved, and what to say about it: nothing moves when
+// the destination is already gone, which under the lock means something
+// outside this package took it away.
+func setAsideBundledConflict(dest string) (bool, string, error) {
 	aside := dest + conflictSuffix
 	// Whatever is in the slot is the previous occupant this replaces. Nothing
 	// else in the store is ever removed to make room.
 	if err := os.RemoveAll(aside); err != nil {
-		return "", "", fmt.Errorf("clear the bundled plugin path %s: %w", aside, err)
+		return false, "", fmt.Errorf("clear the bundled plugin path %s: %w", aside, err)
 	}
 	if err := os.Rename(dest, aside); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", "", nil
+			return false, "", nil
 		}
-		return "", "", fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
+		return false, "", fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
 	}
-	return aside, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
+	return true, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
 }
 
 // reclaimAbandonedStaging removes staging directories orphaned by a publish
