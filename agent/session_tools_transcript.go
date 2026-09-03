@@ -184,8 +184,10 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	var resultIdentity apiLogTranscriptResultIdentity
 	resultIsAPILog := json.Unmarshal([]byte(result.Output), &resultIdentity) == nil && resultIdentity.Source == apiLogSource
 	var args map[string]any
-	_ = json.Unmarshal(call.Arguments, &args)
-	callIsAPILog := stringArg(args, "source") == apiLogSource || strings.TrimSpace(stringArg(args, "attempt_id")) != ""
+	callIsAPILog := false
+	if json.Unmarshal(call.Arguments, &args) == nil {
+		callIsAPILog = stringArg(args, "source") == apiLogSource || strings.TrimSpace(stringArg(args, "attempt_id")) != ""
+	}
 	if !resultIsAPILog && !callIsAPILog {
 		return "", false
 	}
