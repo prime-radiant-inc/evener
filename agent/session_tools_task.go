@@ -139,6 +139,12 @@ func mutateAndPublishTaskStore(store *taskpkg.TaskStore, mutation func(epoch, re
 // prepareToolCall's guard: a direct handler caller (tests, internal callers)
 // bypasses prevalidation, and silently treating an action-shaped call as a
 // view would let the caller believe its mutations applied.
+//
+// Item-field validation deliberately runs again here as a standalone handler
+// safety invariant for direct/internal callers that bypass registry
+// PreValidate. The preparation and decode paths both call the single
+// validateTaskListItemFields validator, so their allowlists and targeted
+// diagnostics remain one shared contract rather than duplicated behavior.
 func decodeTaskArgs(args map[string]any) (adds []taskpkg.TaskInput, updates []taskpkg.TaskUpdate, err error) {
 	for _, retired := range []string{"action", "tasks", "updates"} {
 		if _, supplied := args[retired]; supplied {
