@@ -522,9 +522,11 @@ type TaskSummary struct {
 // snapshot. A nil *TaskAggregate on EvenerThread means the source cannot know
 // the session's task state; a present zero is an authoritative empty list.
 type TaskAggregate struct {
-	Total   int          `json:"total"`
-	Done    int          `json:"done"`
-	Current *TaskSummary `json:"current,omitempty"`
+	Total     int          `json:"total"`
+	Done      int          `json:"done"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
+	Current   *TaskSummary `json:"current,omitempty"`
 }
 
 type EvenerThread struct {
@@ -697,11 +699,13 @@ type ThreadQueueChangedParams struct {
 // task-list progress after a change, so a client refreshes the status row
 // event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
-	ThreadID string       `json:"threadId"`
-	Ref      string       `json:"ref"`
-	Total    int          `json:"total"`
-	Done     int          `json:"done"`
-	Current  *TaskSummary `json:"current,omitempty"`
+	ThreadID  string       `json:"threadId"`
+	Ref       string       `json:"ref"`
+	Total     int          `json:"total"`
+	Done      int          `json:"done"`
+	Cancelled int          `json:"cancelled,omitempty"`
+	Remaining int          `json:"remaining,omitempty"`
+	Current   *TaskSummary `json:"current,omitempty"`
 }
 
 // GoalUpdatedParams is the complete session goal state after a mutation. Goal

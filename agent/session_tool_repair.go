@@ -148,6 +148,12 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = filled
 	}
+	if t.PreValidate != nil {
+		if err := t.PreValidate(args); err != nil {
+			res.PrevalErr = err.Error()
+			return res
+		}
+	}
 
 	if err := t.Schema.Validate(args); err != nil {
 		// A length stop that cut the stream before any argument byte leaves

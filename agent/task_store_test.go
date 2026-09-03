@@ -936,7 +936,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 	if !strings.Contains(appendRes.Output, "Added 2 task(s)") {
 		t.Fatalf("append output missing acknowledgment: %s", appendRes.Output)
 	}
-	if !strings.Contains(appendRes.Output, "Progress: 0/2") {
+	if !strings.Contains(appendRes.Output, "Progress: 0 done, 0 cancelled, 2 remaining (2 total)") {
 		t.Fatalf("append output missing progress: %s", appendRes.Output)
 	}
 
@@ -1349,6 +1349,10 @@ func TestTaskStore_Progress(t *testing.T) {
 	if total != 3 || done != 1 {
 		t.Fatalf("after updates: expected total=3 done=1, got total=%d done=%d", total, done)
 	}
+	summary := s.Summary()
+	if summary.Cancelled != 1 || summary.Remaining != 1 {
+		t.Fatalf("after updates: Summary=%+v, want cancelled=1 remaining=1", summary)
+	}
 }
 
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
@@ -1489,6 +1493,18 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	if !strings.Contains(updateRes.Output, "Progress") {
 		t.Fatalf("tool response should include Progress: %s", updateRes.Output)
 	}
+	var updateState []taskToolState
+	if err := json.Unmarshal(updateRes.ToolState, &updateState); err != nil {
+		t.Fatalf("decode update ToolState: %v; raw=%s", err, updateRes.ToolState)
+	}
+	for _, state := range updateState {
+		if state.ID == 2 {
+			if state.Started == nil || !*state.Started {
+				t.Fatalf("auto-advanced task ToolState marker = %v, want true", state.Started)
+			}
+			break
+		}
+	}
 
 	// Steering queue should carry the current-task SYSTEM-REMINDER for task 2.
 	sess.mu.Lock()
@@ -1509,6 +1525,58 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 	if !strings.Contains(queue[0], "Task B") {
 		t.Fatalf("auto-advance steering should include task B title: %s", queue[0])
 	}
+}
+
+func TestTaskListTool_UpdateNonCurrentLeavesExistingCurrentMarkerFalse(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := context.Background()
+	env := sess.env
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:   "add",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{"add":[
+			{"type":"implement","description":"first","prompt":"first"},
+			{"type":"implement","description":"current","prompt":"current"},
+			{"type":"implement","description":"non-current","prompt":"non-current"}
+		]}`),
+	})
+	// Completing task 1 auto-advances task 2, making it the existing current
+	// task before this call completes the unrelated task 3.
+	sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "advance",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id":1,"status":"done"}]}`),
+	})
+	res := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "complete-non-current",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id":3,"status":"done"}]}`),
+	})
+	if res.IsError {
+		t.Fatalf("complete non-current: %s", res.Output)
+	}
+	var state []taskToolState
+	if err := json.Unmarshal(res.ToolState, &state); err != nil {
+		t.Fatalf("decode ToolState: %v; raw=%s", err, res.ToolState)
+	}
+	for _, task := range state {
+		if task.ID == 2 {
+			if task.Started == nil || *task.Started {
+				t.Fatalf("existing current ToolState marker = %v, want false", task.Started)
+			}
+			return
+		}
+	}
+	t.Fatal("ToolState missing existing current task")
 }
 
 func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
@@ -1550,6 +1618,23 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
+	assertStartedMarker := func(toolState []byte, want bool) {
+		t.Helper()
+		var state []taskToolState
+		if err := json.Unmarshal(toolState, &state); err != nil {
+			t.Fatalf("decode ToolState: %v; raw=%s", err, toolState)
+		}
+		for _, task := range state {
+			if task.ID == 2 {
+				if task.Started == nil || *task.Started != want {
+					t.Fatalf("task 2 ToolState marker = %v, want %t", task.Started, want)
+				}
+				return
+			}
+		}
+		t.Fatal("ToolState missing task 2")
+	}
+	assertStartedMarker(updateRes.ToolState, true)
 
 	// Tool response stays minimal.
 	if strings.Contains(updateRes.Output, "Task B") {
@@ -1572,6 +1657,17 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 	if !strings.Contains(queue[0], `<CURRENT-TASK id="2">`) {
 		t.Fatalf("manual in_progress steering should target task 2: %s", queue[0])
 	}
+
+	// Reasserting the current status is not another transition.
+	reassertRes := sess.reg.ExecuteCall(ctx, env, llm.ToolCallData{
+		ID:        "c3",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"update":[{"id": 2, "status": "in_progress", "notes": "still working"}]}`),
+	})
+	if reassertRes.IsError {
+		t.Fatalf("reassert error: %s", reassertRes.Output)
+	}
+	assertStartedMarker(reassertRes.ToolState, false)
 }
 
 func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {

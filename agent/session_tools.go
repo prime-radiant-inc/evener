@@ -668,6 +668,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	prep.Lifetime = lifetime
 	call = prep.Call
+	prevalidated := true
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
 			ToolName: call.Name,
@@ -716,6 +717,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 					IsError:    true,
 				}
 			}
+			// Preparation validated the original arguments. A hook may replace
+			// any semantic task field, so dispatch this changed call through the
+			// normal PreValidate path while unchanged prepared calls still avoid
+			// running that hook twice.
+			prevalidated = false
 		}
 	}
 	s.execToolCheckpoint("after_pre_hook")
@@ -781,7 +787,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if prep.PrevalErr != "" {
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
-		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		if prevalidated {
+			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
+		} else {
+			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		}
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	// M7: on a sandbox denial in an interactive root session, raise a human approval

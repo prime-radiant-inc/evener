@@ -107,6 +107,31 @@ func taskReminderAllDoneWhileDelegatesRun(resultTool string, delegateIDs []strin
 	return reminder + "\n" + formatTaskCompletionMachineBlock(taskCompletionSteeringData(delegateIDs))
 }
 
+// taskReminderTerminalWhileDelegatesRun preserves the completed-all-tasks
+// reminder for a fully done list, while accurately describing a list whose
+// terminal state includes cancelled tasks.
+func taskReminderTerminalWhileDelegatesRun(resultTool string, delegateIDs []string, allDone bool) string {
+	if allDone {
+		return taskReminderAllDoneWhileDelegatesRun(resultTool, delegateIDs)
+	}
+	var reminder string
+	if len(delegateIDs) == 0 {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"No actionable tasks remain on your task list. " +
+			"If you have other work to do, add it to the task list now. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool.\n" +
+			"</SYSTEM-REMINDER>"
+	} else {
+		reminder = "<SYSTEM-REMINDER>\n" +
+			"No actionable tasks remain on your task list, but delegate(s) " + strings.Join(delegateIDs, ", ") +
+			" are still running. Wait for their result before deciding whether to finish. " +
+			"If you have other work to do, add it to the task list after the delegate result arrives. " +
+			"Otherwise, deliver your final output with the " + resultTool + " tool after that result.\n" +
+			"</SYSTEM-REMINDER>"
+	}
+	return reminder + "\n" + formatTaskCompletionMachineBlock(taskCompletionSteeringData(delegateIDs))
+}
+
 func taskCompletionSteeringData(delegateIDs []string) events.TaskCompletionSteeringData {
 	state := events.TaskCompletionReadyForFinalOutput
 	if len(delegateIDs) != 0 {

@@ -72,9 +72,9 @@ func TestPrepareToolCall_UpdateEntryInAddArrayExplains(t *testing.T) {
 	}
 }
 
-// The same misfiled-entry call through execTool must surface the
-// schema-explained error to the model.
-func TestExecTool_TaskListMisfiledEntrySurfacesSchemaError(t *testing.T) {
+// The same misfiled-entry call through execTool must surface the targeted
+// task-list diagnostic before generic schema repair can discard its fields.
+func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.T) {
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
@@ -96,7 +96,34 @@ func TestExecTool_TaskListMisfiledEntrySurfacesSchemaError(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error for update-shaped entry in add, got: %s", res.FullOutput)
 	}
-	if !strings.Contains(res.FullOutput, "add[0]") || !strings.Contains(res.FullOutput, "description") {
-		t.Fatalf("model-visible error must name the add item requirements: %s", res.FullOutput)
+	if !strings.Contains(res.FullOutput, "add entry 0") || !strings.Contains(res.FullOutput, "id") || !strings.Contains(res.FullOutput, "status") {
+		t.Fatalf("model-visible error must name the misfiled add fields: %s", res.FullOutput)
+	}
+}
+
+func TestExecTool_TaskListBriefSurfacesTargetedPrevalidation(t *testing.T) {
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+	registerTaskTools(s.reg, &toolDeps{
+		emit:           func(events.EventKind, events.EventData) {},
+		steer:          func(string, string) {},
+		resultToolName: func() string { return "communicate" },
+		taskGuard: taskGuard{
+			getOrCreateTaskStore: func() *taskpkg.TaskStore {
+				return taskpkg.NewTaskStore(t.TempDir(), "brief-prevalidation")
+			},
+			markUsed: func() {},
+		},
+	})
+	res := s.execTool(context.Background(), llm.ToolCallData{
+		ID:        "brief-exec",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"add":[{"type":"implement","description":"write test","prompt":"write test","brief":"wrong field"}]}`),
+	}, "")
+	if !res.IsError {
+		t.Fatalf("expected targeted brief validation error, got: %s", res.FullOutput)
+	}
+	if !strings.Contains(res.FullOutput, "brief") || !strings.Contains(res.FullOutput, "required field named") || !strings.Contains(res.FullOutput, "description") {
+		t.Fatalf("model-visible error = %q, want targeted brief guidance", res.FullOutput)
 	}
 }

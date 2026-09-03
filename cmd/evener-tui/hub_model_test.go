@@ -2728,7 +2728,7 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 		"Dir: /tmp/details",
 		"Turns: 2",
 		"Context: 42% used",
-		"Tasks: 1/2 done, 1 active",
+		"Tasks: 1 done, 0 cancelled, 1 remaining (2 total)",
 		"Auth: openai OAuth jesse@example.test",
 		"Recent errors:",
 		"turn_2: provider quota exceeded",

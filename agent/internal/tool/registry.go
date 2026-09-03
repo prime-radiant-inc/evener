@@ -399,6 +399,9 @@ type RegisteredTool struct {
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
+	// PreValidate optionally rejects a tool-specific argument shape before the
+	// generic JSON schema validator renders its diagnostic.
+	PreValidate func(args map[string]any) error
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -909,6 +912,17 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, false)
+}
+
+// ExecutePreparedCall runs a session-prepared call. Preparation has already
+// normalized and prevalidated arguments, so it preserves ExecuteCall's generic
+// execution behavior without applying a RegisteredTool.PreValidate twice.
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
+	return r.executeCall(ctx, env, call, true)
+}
+
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prevalidated bool) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -1018,6 +1032,12 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		args = normalized
 	}
 	semanticSignature = r.semanticSignatureFor(name, args, &t)
+
+	if !prevalidated && t.PreValidate != nil {
+		if err := t.PreValidate(args); err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+	}
 
 	if err := t.Schema.Validate(args); err != nil {
 		if res, blocked := park(); blocked {

@@ -906,6 +906,12 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	if !ok || len(addReq) != 3 || addReq[0] != "type" || addReq[1] != "description" || addReq[2] != "prompt" {
 		t.Fatalf("add item required = %v, want [type description prompt]", addItems["required"])
 	}
+	if addItems["additionalProperties"] != false {
+		t.Fatalf("add item additionalProperties = %v, want false", addItems["additionalProperties"])
+	}
+	if _, has := addItems["properties"].(map[string]any)["brief"]; has {
+		t.Fatal("add item schema must not accept a brief alias")
+	}
 	update, has := props["update"]
 	if !has {
 		t.Fatal("schema must have an update property")
@@ -914,6 +920,12 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 	updateReq, ok := updateItems["required"].([]string)
 	if !ok || len(updateReq) != 1 || updateReq[0] != "id" {
 		t.Fatalf("update item required = %v, want [id]", updateItems["required"])
+	}
+	if updateItems["additionalProperties"] != false {
+		t.Fatalf("update item additionalProperties = %v, want false", updateItems["additionalProperties"])
+	}
+	if _, has := updateItems["properties"].(map[string]any)["brief"]; has {
+		t.Fatal("update item schema must not accept a brief alias")
 	}
 	if top, has := params["required"]; has {
 		t.Fatalf("schema must not force-require add/update at top level: %v", top)

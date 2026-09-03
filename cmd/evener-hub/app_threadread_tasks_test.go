@@ -47,7 +47,7 @@ func TestPastThreadReadProjectsPersistedTaskAggregate(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("pastThreadForRead: thread=%+v found=%v err=%v", thread, ok, err)
 	}
-	want := &appwire.TaskAggregate{Total: 2, Done: 1}
+	want := &appwire.TaskAggregate{Total: 2, Done: 1, Remaining: 1}
 	if thread.Evener.Tasks == nil || *thread.Evener.Tasks != *want {
 		t.Fatalf("persisted task aggregate=%+v, want %+v", thread.Evener.Tasks, want)
 	}
