@@ -380,9 +380,10 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 		"run lint":      false,
 	}
 	wantNodeCommands := map[string]bool{
-		"scripts/layoutguard/run.mjs":   false,
-		"scripts/overflowguard/run.mjs": false,
-		"scripts/spawnguard/run.mjs":    false,
+		"scripts/layoutguard/run.mjs":           false,
+		"scripts/overflowguard/run.mjs":         false,
+		"scripts/spawnguard/run.mjs":            false,
+		"scripts/transcriptscrollguard/run.mjs": false,
 	}
 	assertProcessState := func(tool, command string, fields []string, wantPrivateRoots bool) {
 		t.Helper()
