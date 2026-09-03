@@ -43,18 +43,18 @@
 //     the same sans face - fixed-width is reserved for shell, whose summary
 //     IS a command (descriptor monoSummary);
 //   - verb/target/meta are one string the descriptor's summary() produced;
-//   - affordances are trailing controls (e.g. "Open beside") and they ride the
-//     TOOL-CALL line: inline at the end of the summary when there is one,
-//     which - with an intent present - is the demoted second line, not the
-//     rationale line. An intent-only row (no summary) trails them on the
-//     intent line instead, the one line it has: a sibling flex item AFTER
-//     the trigger button (never nested inside it - a button inside a button
-//     is not valid), sprung to the line's end by the trigger's own flex-grow,
-//     the same placement the notification card's head gives "Open subagent"
-//     (notificationcard.module.css's .action). The one exception: a
-//     descriptor whose summary quotes its target verbatim (read_file's
-//     openBesideInline) anchors the control mid-summary via trailingAfter -
-//     between the file name and the line range it opens.
+//   - affordances are trailing controls (the open affordance) and they ride
+//     immediately AFTER the text they open: inline at the end of the summary
+//     when there is one, which - with an intent present - is the demoted
+//     second line, not the rationale line. An intent-only row (no summary)
+//     trails the control on the intent line instead, the one line it has: a
+//     sibling flex item directly AFTER the trigger (never nested inside it -
+//     a button inside a button is not valid), kept adjacent by the
+//     [data-intent-trailing] trigger's flex:0 1 auto + max-width reservation
+//     (toolcallitem.module.css) - never sprung to the line's far end. The one
+//     exception: a descriptor whose summary quotes its target verbatim
+//     (read_file's openBesideInline) anchors the control mid-summary via
+//     trailingAfter - between the file name and the line range it opens.
 //
 // A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.

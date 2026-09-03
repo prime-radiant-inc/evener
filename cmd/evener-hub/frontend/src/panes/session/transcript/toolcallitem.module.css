@@ -65,22 +65,18 @@
 }
 
 /* data-intent-trailing marks an intent-only row whose trailing affordance
- * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up the
- * full-width basis the rule above assigns, so trigger and control share line
- * 1, the trigger's own grow springing the control to the line's end.
- *
- * flex-basis 0, NOT auto: .row is flex-wrap:wrap, so line-breaking is decided
- * on flex BASE SIZES before shrink is considered. With basis auto the trigger's
- * base size resolves to the intent text's max-content (one long unwrapped
- * line), and an intent wider than (column - control) claims that full
- * width - pushing the trailing control (the delegate row's "open" widget)
- * onto its own second line (the regression a layoutguard case pins). Basis 0
- * starts the trigger at zero width: the intent wraps INSIDE it as the
- * trigger's grow absorbs the remaining space, and the control stays on line
- * 1. The trigger still grows to fill (flex-grow 1), so a short intent's
- * control still springs to the line's end unchanged. */
+ * rides the disclosure line (ToolRow.tsx's grammar). flex: 0 1 auto, NOT
+ * flex: 1 1 0: the control belongs immediately AFTER the intent text, and a
+ * growing trigger springs it to the line's far end - the defect this rule
+ * used to have. The max-width reserves the control's width plus the row's
+ * column-gap: flex line-breaking is decided on hypothetical main sizes (the
+ * base size CLAMPED by max-width), so a long intent still wraps INSIDE the
+ * trigger and the control still shares line 1 (the layoutguard
+ * delegate-open-widget-inline case pins exactly this). */
 .row[data-intent-trailing="true"] .trigger {
-  flex: 1 1 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - var(--tap-min, 28px) - var(--space-2));
 }
 
 .summaryLine {
@@ -319,15 +315,15 @@
  * full. */
 .clamped {
   display: flex;
-  /* Center, not the default stretch: the trailing affordance (the 28px "Open
-   * beside" IconButton) is the line's tallest item, and under stretch the
-   * head/tail text spans fill that height with their text top-aligned while
-   * the button sits align-self:center - measured 4.5px of downward offset
-   * between the icon's center and the text's center. Centering every item
-   * puts the text and the button on one axis; with no trailing control the
-   * items are all one text line and centering is invisible. */
+  /* Center, not the default stretch: keeps the text spans and the trailing
+   * affordance on one axis when their heights differ. */
   align-items: center;
-  overflow: hidden;
+  /* clip with a margin, NOT hidden: the open affordance's touch target
+   * (openbutton.module.css's .inline) overhangs the line box by design, and
+   * a hard clip would amputate its hit area. The head/tail spans keep their
+   * own overflow:hidden + ellipsis, so text clipping is unchanged. */
+  overflow: clip;
+  overflow-clip-margin: 16px;
   white-space: nowrap;
 }
 
