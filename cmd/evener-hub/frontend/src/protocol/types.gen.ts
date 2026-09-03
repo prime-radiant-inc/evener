@@ -427,6 +427,7 @@ export interface FeatureSet {
   directoryComplete: boolean;
   auth: boolean;
   transcriptDisplaySettings?: boolean;
+  keybindingsSettings?: boolean;
 }
 
 export interface GitHeadParams {
@@ -714,6 +715,27 @@ export interface JobsTreeUpdatedParams {
   threadId: string;
   ref: string;
   revision: number;
+}
+
+export interface KeybindingsConfig {
+  version: number;
+  rules: KeybindingsRule[];
+}
+
+export interface KeybindingsOverrides {
+  version: number;
+  revision: number;
+  rules: KeybindingsRule[];
+}
+
+export interface KeybindingsPatchParams {
+  expectedRevision: number;
+  config: KeybindingsConfig;
+}
+
+export interface KeybindingsRule {
+  action: string;
+  chord: string | null;
 }
 
 export interface LaunchConfigDiagnostic {
@@ -2118,6 +2140,8 @@ export const METHOD_NAMES = [
   "evener/settings/overview",
   "evener/settings/transcriptDisplay/get",
   "evener/settings/transcriptDisplay/patch",
+  "evener/settings/keybindings/get",
+  "evener/settings/keybindings/patch",
   "evener/sandbox/escalation/resolve",
 ] as const;
 
@@ -2159,6 +2183,7 @@ export const NOTIFICATION_NAMES = [
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
+  "evener/settings/keybindings/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2295,6 +2320,8 @@ export interface MethodTypes {
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
+  "evener/settings/keybindings/get": { params: EmptyParams; result: KeybindingsOverrides };
+  "evener/settings/keybindings/patch": { params: KeybindingsPatchParams; result: KeybindingsOverrides };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
@@ -2334,6 +2361,7 @@ export interface NotificationTypes {
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
+  "evener/settings/keybindings/changed": KeybindingsOverrides;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

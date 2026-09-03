@@ -246,6 +246,63 @@ func TestTranscriptDisplayCatalog(t *testing.T) {
 	}
 }
 
+func TestKeybindingsCatalog(t *testing.T) {
+	methods := map[string]MethodSpec{}
+	for _, method := range Methods {
+		methods[method.Name] = method
+	}
+	for _, name := range []string{
+		MethodEvenerSettingsKeybindingsGet,
+		MethodEvenerSettingsKeybindingsPatch,
+	} {
+		method, ok := methods[name]
+		if !ok {
+			t.Fatalf("method catalog missing %s", name)
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("method %s scope = %q, want %q", name, method.Scope, ScopeHub)
+		}
+	}
+	var changed *NotificationSpec
+	for i := range Notifications {
+		if Notifications[i].Name == NotifyEvenerSettingsKeybindingsChanged {
+			changed = &Notifications[i]
+			break
+		}
+	}
+	if changed == nil {
+		t.Fatalf("notification catalog missing %s", NotifyEvenerSettingsKeybindingsChanged)
+	}
+	if reflect.TypeOf(changed.Payload) != reflect.TypeFor[KeybindingsOverrides]() {
+		t.Fatalf("changed payload type = %T, want %T", changed.Payload, KeybindingsOverrides{})
+	}
+}
+
+func TestFeatureSetKeybindingsJSONField(t *testing.T) {
+	encoded, err := json.Marshal(FeatureSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"keybindingsSettings"`)) {
+		t.Fatalf("false feature must be omitted: %s", encoded)
+	}
+	encoded, err = json.Marshal(FeatureSet{KeybindingsSettings: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"keybindingsSettings":true`)) {
+		t.Fatalf("true feature missing from JSON: %s", encoded)
+	}
+
+	generated, err := os.ReadFile("../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("keybindingsSettings?: boolean;")) {
+		t.Fatal("generated TypeScript feature field is not optional")
+	}
+}
+
 func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
 	encoded, err := json.Marshal(FeatureSet{})
 	if err != nil {
@@ -397,6 +454,7 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 		NotifyEvenerPluginUpdated:                    true,
 		NotifyEvenerNavigationInvalidated:            true,
 		NotifyEvenerSettingsTranscriptDisplayChanged: true,
+		NotifyEvenerSettingsKeybindingsChanged:       true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {
