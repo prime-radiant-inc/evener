@@ -1,0 +1,95 @@
+import { describe, expect, test, vi } from "vitest";
+import { createKeybindingsRegistry, GLOBAL_SCOPE } from "./registry";
+
+describe("action registration", () => {
+  test("registers and unregisters an action", () => {
+    const registry = createKeybindingsRegistry();
+    const run = vi.fn();
+    const unregister = registry.getState().registerAction("palette.open", run);
+    expect(registry.getState().actions.get("palette.open")).toBe(run);
+    unregister();
+    expect(registry.getState().actions.has("palette.open")).toBe(false);
+  });
+});
+
+describe("binding registration", () => {
+  test("applies defaults: global scope, editable targets suppressed", () => {
+    const registry = createKeybindingsRegistry();
+    const binding = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    expect(binding.scope).toBe(GLOBAL_SCOPE);
+    expect(binding.allowInEditable).toBe(false);
+    expect(registry.getState().bindings).toHaveLength(1);
+  });
+
+  test("accepts a pre-parsed chord sequence", () => {
+    const registry = createKeybindingsRegistry();
+    const parsed = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    const fromAst = registry.getState().registerBinding({ id: "b2", actionId: "a1", chord: parsed.chord, scope: "s" });
+    expect(fromAst.chord).toEqual(parsed.chord);
+  });
+
+  test("rejects the same chord twice in the same scope", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    expect(() => registry.getState().registerBinding({ id: "b2", actionId: "a2", chord: "$mod+K" })).toThrow(
+      /conflict/i,
+    );
+    expect(registry.getState().bindings).toHaveLength(1);
+  });
+
+  test("allows the same chord in different scopes (stack order shadows)", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "Escape" });
+    expect(() =>
+      registry.getState().registerBinding({ id: "b2", actionId: "a2", chord: "Escape", scope: "settings" }),
+    ).not.toThrow();
+  });
+
+  test("rejects a duplicate binding id even across scopes", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    expect(() =>
+      registry.getState().registerBinding({ id: "b1", actionId: "a2", chord: "$mod+J", scope: "settings" }),
+    ).toThrow(/b1/);
+  });
+
+  test("unregisterBinding removes the entry", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    expect(registry.getState().unregisterBinding("b1")).toBe(true);
+    expect(registry.getState().bindings).toHaveLength(0);
+    expect(registry.getState().unregisterBinding("b1")).toBe(false);
+  });
+
+  test("carries an optional structured when clause without evaluating it", () => {
+    const registry = createKeybindingsRegistry();
+    const binding = registry
+      .getState()
+      .registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K", when: { pane: "settings" } });
+    expect(binding.when).toEqual({ pane: "settings" });
+  });
+});
+
+describe("scope stack", () => {
+  test("push appends, pop removes the topmost matching scope", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().pushScope("a");
+    registry.getState().pushScope("b");
+    registry.getState().pushScope("a");
+    expect(registry.getState().scopeStack).toEqual(["a", "b", "a"]);
+    expect(registry.getState().popScope("a")).toBe(true);
+    expect(registry.getState().scopeStack).toEqual(["a", "b"]);
+    expect(registry.getState().popScope("missing")).toBe(false);
+    expect(registry.getState().scopeStack).toEqual(["a", "b"]);
+  });
+
+  test("the pushScope disposer removes its own entry and is idempotent", () => {
+    const registry = createKeybindingsRegistry();
+    registry.getState().pushScope("a");
+    const dispose = registry.getState().pushScope("b");
+    dispose();
+    expect(registry.getState().scopeStack).toEqual(["a"]);
+    dispose();
+    expect(registry.getState().scopeStack).toEqual(["a"]);
+  });
+});
