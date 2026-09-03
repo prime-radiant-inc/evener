@@ -73,7 +73,7 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 	if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
 		tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
 	}
-	applyThinkingShape(body, req, caps, enforceCompletionContract)
+	applyThinkingShape(body, req, res, enforceCompletionContract)
 	if ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any); ok {
 		for k, v := range ov {
 			if k == "beta_headers" {
@@ -103,7 +103,8 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 // fit is reduced to fit (fitThinkingBudgetToOutputCeiling); a token-count
 // body keeps the effort-derived budget, since that path enforces no
 // completion contract and strips max_tokens as an output-side field.
-func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps, enforceCompletionContract bool) {
+func applyThinkingShape(body map[string]any, req llm.Request, res registry.Resolved, enforceCompletionContract bool) {
+	caps := res.Caps
 	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
 		return
 	}
@@ -130,7 +131,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		}
 		budget := llm.ReasoningBudget(effort)
 		if budget > 0 && enforceCompletionContract {
-			budget = fitThinkingBudgetToOutputCeiling(budget, body["max_tokens"], providerOptionMaxTokens(req), caps.MaxOutputTokens)
+			budget = fitThinkingBudgetToOutputCeiling(budget, body["max_tokens"], providerOptionMaxTokens(req), transportBodyMaxTokens(res), caps.MaxOutputTokens)
 		}
 		if budget > 0 {
 			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
@@ -147,18 +148,21 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 // smallest positive output bound the request carries: the max_tokens already
 // on the body (caller allocation or the fallback), the anthropic.max_tokens
 // override the ProviderOptions overlay will write (the overlay runs after
-// this fit), and the row's max_output_tokens — the same bounds
-// ReconcileOutputField min's into the final max_tokens. ReasoningBudget's
+// this fit), the max_tokens constant the transport's body constants will
+// write (they run after this fit too and override both), and the row's
+// max_output_tokens — the same bounds ReconcileOutputField min's into the
+// final max_tokens. ReasoningBudget's
 // table maps max/xhigh onto exactly the
 // 131072-token cap of rows like kimi-for-coding k3, so without this clamp the
 // max effort tier could never produce a sendable request. A budget that
 // would have to drop below Anthropic's documented thinking minimum to fit is
 // returned unchanged, so the completion contract reports the unsatisfiable
 // request instead of sending a wire-rejectable budget.
-func fitThinkingBudgetToOutputCeiling(budget int, maxTokens, overlayMaxTokens any, outputCap *int) int {
+func fitThinkingBudgetToOutputCeiling(budget int, maxTokens, overlayMaxTokens, transportConstantMaxTokens any, outputCap *int) int {
 	ceiling := requestutil.MinPositiveInt(
 		requestutil.PositiveInt(maxTokens),
 		requestutil.PositiveInt(overlayMaxTokens),
+		requestutil.PositiveInt(transportConstantMaxTokens),
 		requestutil.PositivePointerInt(outputCap),
 	)
 	if fitted := ceiling - 1; budget >= ceiling && fitted >= llm.MinimumThinkingBudgetTokens {
@@ -177,4 +181,13 @@ func providerOptionMaxTokens(req llm.Request) any {
 		return nil
 	}
 	return ov["max_tokens"]
+}
+
+// transportBodyMaxTokens returns the max_tokens constant the transport's
+// body constants will write, or nil when the row sets none. Those constants
+// run after the body builder and the ProviderOptions overlay and override
+// whatever max_tokens either left there, so the row's constant bounds the
+// effort-derived budget the same way.
+func transportBodyMaxTokens(res registry.Resolved) any {
+	return res.Transport.Body["max_tokens"]
 }
