@@ -373,6 +373,21 @@ func TestSemanticBreaker_TelemetryComponentsAreSessionKeyed(t *testing.T) {
 	}
 }
 
+func TestSemanticBreaker_CheckDoesNotRefreshLRU(t *testing.T) {
+	l := newSemanticFailureLedger()
+	l.record("oldest", "class", "boundary")
+	for i := range maxFailureLedgerEntries - 1 {
+		l.record(fmt.Sprintf("other-%d", i), "class", "boundary")
+	}
+	if count, _, _ := l.check("oldest"); count != 1 {
+		t.Fatalf("oldest count=%d, want 1", count)
+	}
+	l.record("new", "class", "boundary")
+	if count, _, _ := l.check("oldest"); count != 0 {
+		t.Fatalf("check refreshed LRU; oldest count=%d", count)
+	}
+}
+
 func TestSemanticBreaker_ConcurrentExactFailurePublishesSemanticMetadata(t *testing.T) {
 	r := NewRegistry()
 	entered := make(chan struct{}, 2)

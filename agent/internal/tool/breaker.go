@@ -208,9 +208,6 @@ func (l *semanticFailureLedger) check(base string) (count int, boundary, fingerp
 		}
 		count, boundary, fingerprint = entry.count, entry.boundary, key
 	}
-	if fingerprint != "" {
-		l.touch(fingerprint)
-	}
 	return count, boundary, fingerprint
 }
 
