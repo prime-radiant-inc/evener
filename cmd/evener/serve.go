@@ -107,7 +107,7 @@ type serveDeps struct {
 	newFlagSet       func(string, flag.ErrorHandling) *flag.FlagSet
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
-	seedMarketplaces func() error
+	seedMarketplaces func(context.Context) error
 	resolvePlugins   func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
@@ -253,6 +253,20 @@ func runServe(args []string) error {
 	return runServeWithDeps(args, defaultServeDeps())
 }
 
+// startupInterrupted reports an interrupt that arrived during a startup step
+// which could not read the context itself. Seeding marketplaces waits on the
+// plugin store lock, probing the login shell PATH and provisioning the sandbox
+// run subprocesses, and net.ListenConfig.Listen on a literal address binds
+// happily with a cancelled context — so the interrupt is only noticed where
+// the context is read, and a startup that was interrupted has to say so and
+// fail rather than bind, shut itself down and exit 0 in silence.
+func startupInterrupted(ctx context.Context, step string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("interrupted while %s: %w", step, err)
+	}
+	return nil
+}
+
 func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
@@ -373,13 +387,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {
-		seedMarketplaces = func() error {
-			_, err := pluginManager.SeedDefaultMarketplaces(context.Background())
+		seedMarketplaces = func(ctx context.Context) error {
+			_, err := pluginManager.SeedDefaultMarketplaces(ctx)
 			return err
 		}
 	}
-	if err := seedMarketplaces(); err != nil {
+	if err := seedMarketplaces(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 
 	// Resolve state directory.
@@ -463,6 +480,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
@@ -511,6 +531,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := deps.provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			return err
+		}
 	}
 
 	var sess *agent.Session
@@ -543,6 +566,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		sess.Close()
+		return err
+	}
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()

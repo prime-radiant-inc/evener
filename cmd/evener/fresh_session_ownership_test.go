@@ -206,7 +206,7 @@ func TestServeFreshIdleSessionOwnsResumeTarget(t *testing.T) {
 
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.listen = func(context.Context, string, string) (net.Listener, error) {
 		return newFreshOwnerListener(), nil
 	}
