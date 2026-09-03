@@ -813,14 +813,13 @@ func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultTool
 	}
 }
 
-// Remove deletes a single tool from the registry.
+// Remove deletes a single tool and resets its breaker lifetime, even when the
+// name is already absent.
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, found := r.tools[name]; found {
-		delete(r.tools, name)
-		r.advanceLifetimeLocked(name)
-	}
+	delete(r.tools, name)
+	r.advanceLifetimeLocked(name)
 	identity := r.breakerToolIdentity(name)
 	r.breaker.clearTool(identity)
 	r.semanticBreaker.clearTool(identity)
@@ -859,14 +858,13 @@ func (r *Registry) RequiresOutputRecovery(names []string) bool {
 	return false
 }
 
-// Unregister deletes the named tool from the registry.
+// Unregister deletes the named tool and resets its breaker lifetime, even when
+// the name is already absent.
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, found := r.tools[name]; found {
-		delete(r.tools, name)
-		r.advanceLifetimeLocked(name)
-	}
+	delete(r.tools, name)
+	r.advanceLifetimeLocked(name)
 	identity := r.breakerToolIdentity(name)
 	r.breaker.clearTool(identity)
 	r.semanticBreaker.clearTool(identity)

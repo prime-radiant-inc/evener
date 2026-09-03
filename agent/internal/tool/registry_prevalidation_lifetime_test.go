@@ -27,3 +27,32 @@ func TestPrevalidationFailure_UnknownABAOldFailureCannotParkNewAbsentLifetime(t 
 		t.Fatalf("old unknown failures parked the new absent lifetime: %#v", res)
 	}
 }
+
+func TestPrevalidationFailure_AbsentResetInvalidatesOutstandingSnapshot(t *testing.T) {
+	for _, reset := range []struct {
+		name string
+		fn   func(*Registry, string)
+	}{
+		{"remove", (*Registry).Remove},
+		{"unregister", (*Registry).Unregister},
+	} {
+		t.Run(reset.name, func(t *testing.T) {
+			r := NewRegistry()
+			call := breakerCall("absent-reset", "absent_reset_tool", `{}`)
+			_, stale := r.SnapshotPrevalidation(call.Name)
+
+			reset.fn(r, call.Name)
+			for range 2 {
+				res := r.FinalizePrevalidationFailure(context.Background(), stale, call, nil, "unknown tool", "unknown_tool", errors.New("unknown tool"))
+				if res.BreakerExactSignature != "" || res.BreakerSemanticSignature != "" || res.BreakerBypassed {
+					t.Fatalf("reset absent name accepted stale finalization: %#v", res)
+				}
+			}
+
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), call)
+			if strings.HasPrefix(res.Output, wantFailurePark(call.Name)) {
+				t.Fatalf("stale failures repopulated reset absent lifetime: %#v", res)
+			}
+		})
+	}
+}
