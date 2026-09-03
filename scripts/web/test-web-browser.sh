@@ -37,7 +37,7 @@ trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interr
 
 scratch_dir dir evener-test-web-browser
 
-for guard in layoutguard overflowguard shellguard spawnguard; do
+for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollguard; do
 	guard_dir="$dir/$guard"
 	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
 	HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &

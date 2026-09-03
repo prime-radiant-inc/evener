@@ -401,10 +401,10 @@ exists to protect. Wiring real enforcement into CI needs the durations sourced
 from the gate's own run instead of a second one. Deciding how to do that is an
 open follow-up (kata b6rv).
 
-## The Three Browser Guards, and Why There Are Three
+## The Five Browser Guards, and Why There Are Five
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Three checks in
+of frontend defect is structurally invisible to `vitest`. Five checks in
 `cmd/evener-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
@@ -412,17 +412,27 @@ of frontend defect is structurally invisible to `vitest`. Three checks in
   files, no build. Right for "does this CSS rule still hold its box".
 - **`npm run overflowguard`** renders the REAL Session pane through the REAL
   reducer and asserts nothing inside it scrolls sideways, at four widths.
+- **`npm run shellguard`** renders the production AppShell (rail + workspace)
+  with a scripted tall sidebar tree and asserts the PAGE never grows taller
+  than the viewport — the rail's own body is the scroll container, not the
+  document.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
+- **`npm run transcriptscrollguard`** renders the real transcript through the
+  real virtualization stack and drives NATIVE scroll events: the
+  jump-to-latest pill must appear on a scroll away from the bottom, and
+  clicking it must land at the true bottom of the settled geometry and stay
+  there.
 
-The first two checks cover static geometry and the Session pane; the third
-covers the Spawn pane, which has a separate responsive layout and failure modes.
-The second exists because the first could not have caught the bug that
-prompted it. Hand-authored markup freezes whatever was current when the case
-was written, so restoring the old glyph would have left the guard green while
-the app broke. All three are owned by `make test-web-browser`, which is required
-by the CI web job and remains separate from `make lint` and `make test` because
-it needs Chrome.
+The first covers static geometry; the next three cover the Session pane, the
+AppShell, and the Spawn pane, each with its own responsive layout and failure
+modes; the fifth covers scroll behavior, which only exists inside a real
+virtualization engine with real measurements. The second exists because the
+first could not have caught the bug that prompted it. Hand-authored markup
+freezes whatever was current when the case was written, so restoring the old
+glyph would have left the guard green while the app broke. All five are owned
+by `make test-web-browser`, which is required by the CI web job and remains
+separate from `make lint` and `make test` because it needs Chrome.
 
 Three traps, each of which produced a false-green here. They are listed in the
 order they were found, because each was hiding the next.
@@ -995,7 +1005,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
-| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, and the real Spawn staging/breakpoint path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, and the real transcript scroll/jump-to-latest path. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, then the full test suite. | make lint, make build, then ROOT_FULL=1 make test all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. | Any race report, test failure, or setup failure is nonzero. |

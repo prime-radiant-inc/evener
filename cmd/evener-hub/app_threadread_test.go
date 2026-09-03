@@ -164,6 +164,24 @@ func TestPastThreadSkillCatalogLayerPrecedence(t *testing.T) {
 	})
 }
 
+func TestPastThreadSkillCatalogIncludesAutomaticUserSkills(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	workingDir := t.TempDir()
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "cold-user-skill", "user description")
+	writeSkillFixture(t, filepath.Join(xdg, "evener", "skills"), "doctoring-evener", "user override")
+
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
+	}})
+	if description := skillDescription(got, "cold-user-skill"); description != "user description" {
+		t.Fatalf("automatic user skill description = %q, want %q", description, "user description")
+	}
+	if description := skillDescription(got, "doctoring-evener"); description != "user override" {
+		t.Fatalf("automatic user override description = %q, want %q", description, "user override")
+	}
+}
+
 func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
 	root := t.TempDir()
 	first := writeThreadSkillPlugin(t, root, "duplicate-plugin", "same-skill", "first value")

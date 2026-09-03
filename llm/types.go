@@ -599,16 +599,17 @@ func (req Request) Validate() error {
 	return nil
 }
 
+// MinimumThinkingBudgetTokens is the smallest thinking budget Anthropic
+// documents accepting; a lower value is wire-rejectable on budget-shaped
+// rows (#714).
+const MinimumThinkingBudgetTokens = 1024
+
 // ReasoningBudget converts a reasoning effort level to a token budget.
 // Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "minimal":
-		// Anthropic documents 1024 as the minimum for thinking.budget_tokens;
-		// a lower value is wire-rejectable on budget-shaped rows (#714).
-		return 1024
-	case "low":
-		return 1024
+	case "minimal", "low":
+		return MinimumThinkingBudgetTokens
 	case "medium":
 		return 8192
 	case "high":

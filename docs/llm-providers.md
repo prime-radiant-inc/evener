@@ -684,6 +684,11 @@ above). On the anthropic protocol, a row whose `ThinkingShape` is `adaptive`
 (e.g. Opus 4.6, Sonnet 4.6, and later) sends `output_config.effort`; a row
 whose shape is `budget` or `budget+effort` (e.g. Opus 4.5, `kimi-for-coding`)
 maps the effort to `thinking.budget_tokens`.
+That derived budget is clamped to leave the one token of headroom the
+protocol's `max_tokens > budget_tokens` contract requires, so an effort whose
+table budget meets the row's output cap (max and xhigh map to 131072 —
+`kimi-for-coding` k3's cap) still yields a sendable request instead of a
+pre-dispatch `max_output_tokens` budget error.
 
 **Setting it.** Launch: `--reasoning-effort`, `EVENER_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip
