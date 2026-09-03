@@ -444,3 +444,53 @@ func TestSemanticBreaker_ConcurrentExactFailurePublishesSemanticMetadata(t *test
 		t.Fatalf("exact threshold published without semantic metadata: %#v", parked)
 	}
 }
+
+func TestSemanticBreaker_DispatchUsesOneRegistrationSnapshot(t *testing.T) {
+	r := NewRegistry()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	oldCalls, newCalls := 0, 0
+	old := RegisteredTool{
+		Tool:                                llm.Tool{Definition: llm.ToolDefinition{Name: "snapshot", Parameters: map[string]any{"type": "object"}}},
+		OmitDescriptionFromSemanticIdentity: true,
+		ApplyBuiltInSemanticDefaults:        true,
+		NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+			close(entered)
+			<-release
+			return args, nil
+		},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			oldCalls++
+			return nil, errors.New("invalid_request: old")
+		},
+	}
+	if err := r.Register(old); err != nil {
+		t.Fatal(err)
+	}
+	call := breakerCall("snapshot-old", "snapshot", `{"description":"old"}`)
+	result := make(chan ExecResult, 1)
+	go func() { result <- r.ExecuteCall(context.Background(), breakerEnv(t), call) }()
+	<-entered
+	newTool := old
+	newTool.OmitDescriptionFromSemanticIdentity = false
+	newTool.ApplyBuiltInSemanticDefaults = false
+	newTool.NormalizeArgs = nil
+	newTool.Exec = func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+		newCalls++
+		return nil, errors.New("invalid_request: new")
+	}
+	if err := r.Register(newTool); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	res := <-result
+	args := map[string]any{"description": "old"}
+	want := r.semanticSignatureFor("snapshot", args, old.Definition.Parameters, &old)
+	if res.BreakerSemanticSignature == "" || !strings.HasPrefix(res.BreakerSemanticSignature, want+":") || oldCalls != 1 || newCalls != 0 {
+		t.Fatalf("dispatch mixed registrations: result=%#v old=%d new=%d want base=%q", res, oldCalls, newCalls, want)
+	}
+	r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall("snapshot-new", "snapshot", `{"description":"new"}`))
+	if newCalls != 1 {
+		t.Fatalf("replacement executor calls=%d, want 1", newCalls)
+	}
+}
