@@ -32,6 +32,32 @@ func TestExplainSchemaError_NamesOffendingField(t *testing.T) {
 	}
 }
 
+func TestExampleForField_NullableScalarType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  any
+		want string
+	}{
+		{name: "nullable integer", typ: []any{"integer", "null"}, want: `{"expand_turn": 0}`},
+		{name: "nullable string", typ: []any{"string", "null"}, want: `{"output_match": "..."}`},
+		{name: "ambiguous union falls back", typ: []any{"integer", "number"}, want: `{"value": "..."}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := map[string]any{"type": "object", "properties": map[string]any{"expand_turn": map[string]any{"type": tc.typ}, "output_match": map[string]any{"type": tc.typ}, "value": map[string]any{"type": tc.typ}}}
+			field := "expand_turn"
+			if tc.name == "nullable string" {
+				field = "output_match"
+			}
+			if tc.name == "ambiguous union falls back" {
+				field = "value"
+			}
+			if got := exampleForField(schema, field); got != tc.want {
+				t.Fatalf("exampleForField = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExplainSchemaError_FallbackWhenUnknownField(t *testing.T) {
 	msg := ExplainSchemaError("edit_file", editParamsForExplain(), map[string]any{}, "", "")
 	// Must still list required args + example even without a pinpointed field.

@@ -97,7 +97,8 @@ func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
 					"type": []any{"string", "null"},
 					"enum": []any{"outline", "markdown", nil},
 				},
-				"output_match": map[string]any{"type": []any{"string", "null"}},
+				"output_match":  map[string]any{"type": []any{"string", "null"}},
+				"context_lines": map[string]any{"type": []any{"integer", "null"}},
 			},
 		},
 	}}
@@ -120,6 +121,13 @@ func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
 	}
 	if got, want := outputMatch["nullable"], true; got != want {
 		t.Fatalf("Gemini output_match nullable = %#v, want %t", got, want)
+	}
+	contextLines := params["properties"].(map[string]any)["context_lines"].(map[string]any)
+	if got, want := contextLines["type"], "integer"; got != want {
+		t.Fatalf("Gemini context_lines type = %#v, want %q", got, want)
+	}
+	if got, want := contextLines["nullable"], true; got != want {
+		t.Fatalf("Gemini context_lines nullable = %#v, want %t", got, want)
 	}
 }
 

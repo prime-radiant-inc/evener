@@ -137,40 +137,40 @@ func TestParseRetainedReadArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetainedReadIncompatibleFields(t *testing.T) {
-	t.Run("range rejected", func(t *testing.T) {
+	t.Run("artifact range rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "artifact", map[string]any{"range": "1-5"}, retainedReadDefault, "range applies only to session")
 	})
-	t.Run("expand_turn rejected", func(t *testing.T) {
+	t.Run("artifact expand_turn rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "artifact", map[string]any{"expand_turn": float64(1)}, retainedReadDefault, "expand_turn applies only to session")
 	})
-	t.Run("format rejected", func(t *testing.T) {
+	t.Run("artifact format rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "artifact", map[string]any{"format": "markdown"}, retainedReadDefault, "format is not supported for artifact")
 	})
-	t.Run("valid no special args", func(t *testing.T) {
+	t.Run("artifact valid no special args", func(t *testing.T) {
 		assertRetainedReadModeError(t, "artifact", map[string]any{"transcript_ref": "artifact:abc"}, retainedReadDefault, "")
 	})
-	t.Run("range rejected", func(t *testing.T) {
+	t.Run("job range rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"range": "1-5"}, retainedReadDefault, "range applies only to session")
 	})
-	t.Run("expand_turn rejected", func(t *testing.T) {
+	t.Run("job expand_turn rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"expand_turn": float64(1)}, retainedReadDefault, "expand_turn applies only to session")
 	})
-	t.Run("format with offset rejected", func(t *testing.T) {
+	t.Run("job format with offset rejected", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"format": "jsonl", "offset_bytes": float64(1)}, retainedReadPage, "format cannot be combined")
 	})
-	t.Run("format markdown with offset accepted", func(t *testing.T) {
+	t.Run("job format markdown with offset accepted", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown", "offset_bytes": float64(1)}, retainedReadPage, "")
 	})
-	t.Run("format markdown with output_match accepted", func(t *testing.T) {
+	t.Run("job format markdown with output_match accepted", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown", "output_match": "READY"}, retainedReadSearch, "")
 	})
-	t.Run("format non-markdown", func(t *testing.T) {
+	t.Run("job format non-markdown", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"format": "jsonl"}, retainedReadDefault, "job: refs support only format=markdown")
 	})
-	t.Run("format markdown ok", func(t *testing.T) {
+	t.Run("job format markdown ok", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{"format": "markdown"}, retainedReadDefault, "")
 	})
-	t.Run("no format ok", func(t *testing.T) {
+	t.Run("job no format ok", func(t *testing.T) {
 		assertRetainedReadModeError(t, "job", map[string]any{}, retainedReadDefault, "")
 	})
 }
