@@ -387,3 +387,36 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 		})
 	}
 }
+
+// Staging that looks abandoned may belong to a publisher that is merely slow —
+// paused, swapped out, waiting on a filesystem — and the only thing that tells
+// the two apart is the store lock that publisher holds from its first look at
+// the destination until its copy is in place. So the sweep runs under that
+// lock or not at all: a launch that cannot take it reclaims nothing.
+func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
+	m := NewManager(t.TempDir())
+	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	// Somebody else holds the lock, so this launch never gets to look.
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging was swept without holding the store lock: %v", err)
+	}
+}

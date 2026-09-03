@@ -435,29 +435,35 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		return "", nil, nil, err
 	}
-	// Sweeping before the published check, not after: a publisher that lost a
-	// rename and died leaves an orphan that only ever meets callers taking the
-	// published path.
-	if reclaim {
-		m.reclaimAbandonedStaging(store)
-	}
 	// An unlocked look first, because the answer is almost always a copy
 	// already published: that costs a digest read, changes nothing, and no
 	// other publisher can take a published copy away. Only that answer is
 	// taken from it. Anything else, including a read that failed because a
 	// concurrent publisher was moving a conflicting destination aside as this
 	// walked it, falls through to the locked look, which is the one entitled
-	// to an opinion.
-	if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
-		return dest, nil, nil, nil
+	// to an opinion. A caller that owes the store its sweep skips the
+	// shortcut: the sweep needs the lock too.
+	if !reclaim {
+		if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
+			return dest, nil, nil, nil
+		}
 	}
-	// Anything else means writing to the store, which is one sequence with the
-	// classification it acts on: without the lock two launches both classify a
-	// mismatched destination, and the second sets aside the copy the first
-	// published while deleting the copy the first preserved.
+	// Everything from here writes to the store, or decides what to write, and
+	// that is one sequence with the classification it acts on: without the
+	// lock two launches both classify a mismatched destination, and the second
+	// sets aside the copy the first published while deleting the copy the
+	// first preserved.
 	release, err := acquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
+	}
+	// Sweeping under the lock, and before the published check: staging that
+	// looks abandoned belongs to a publisher that is merely slow unless this
+	// holds the lock that publisher would be holding, and an orphan left by a
+	// publisher that lost a rename and died only ever meets callers taking the
+	// published path.
+	if reclaim {
+		m.reclaimAbandonedStaging(store)
 	}
 	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
