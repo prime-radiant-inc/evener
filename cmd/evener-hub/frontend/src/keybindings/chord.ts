@@ -40,6 +40,17 @@ export function parseChord(input: string): KeySequence {
   }));
 }
 
+/** Returns a copy of the sequence with `modifier` added as an OPTIONAL
+ * modifier on every press that neither requires nor already optionally
+ * lists it, preserving canonical modifier order. Used by the default map to
+ * express the legacy "either or both of Meta/Ctrl" chords. */
+export function withOptionalModifier(sequence: KeySequence, modifier: string): KeySequence {
+  return sequence.map((press) => {
+    if (press.modifiers.includes(modifier) || press.optionalModifiers.includes(modifier)) return press;
+    return { ...press, optionalModifiers: [...press.optionalModifiers, modifier].sort(byCanonicalOrder) };
+  });
+}
+
 /** Serializes the AST back to a tinykeys keybinding string: parseChord(serializeChord(ast)) deep-equals ast. */
 export function serializeChord(sequence: KeySequence): string {
   return sequence.map(serializePress).join(" ");

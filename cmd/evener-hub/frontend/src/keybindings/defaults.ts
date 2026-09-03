@@ -19,22 +19,53 @@
 //     handler, which the dispatcher's per-binding defaultPrevented gate
 //     reproduces.
 //
+// Extra-modifier semantics are equally legacy-faithful (tinykeys matches
+// strictly, so each chord lists as OPTIONAL exactly the modifiers the legacy
+// listener ignored):
+//
+//   - ⌘K / ⌘I / ⌘J: the legacy AppShell listener checked only
+//     metaKey||ctrlKey + key - NO shift/alt guard - so ⌘⇧K, ⌘⌥I,
+//     Ctrl+Shift+J etc. all fired, on either OR BOTH of Meta/Ctrl. Chords
+//     are $mod+[Shift]+[Alt]+… plus legacyEitherMod (the other of
+//     Meta/Ctrl also optional on the entry and its twin). RATIONALE: this
+//     permissiveness means these chords keep hijacking the browser's
+//     DevTools shortcuts (⌘⌥I, Ctrl+Shift+J) exactly like the legacy
+//     listeners did - deliberately revisiting THAT is Phase 3 policy, not
+//     this PR.
+//   - ⌘': extra Shift allowed ([Shift] - the legacy listener had no shift
+//     guard), extra Alt NOT (the legacy !event.altKey AltGr guard).
+//   - ⌘B: strict - the legacy listener guarded !event.altKey &&
+//     !event.shiftKey.
+//   - Escape (settings.close): every modifier optional - the legacy
+//     listener checked only event.key === "Escape".
+//
 // settings.close is scope-gated: it lives in the settings scope, NOT global.
 // The Settings pane pushes that scope while it is open.
 
 import { ACTIONS } from "./actions";
-import { parseChord, serializeChord } from "./chord";
+import { type KeySequence, parseChord, serializeChord, withOptionalModifier } from "./chord";
 import type { Binding, BindingInput, KeybindingsRegistry } from "./registry";
 
 export const SETTINGS_SCOPE = "settings";
 
-export const DEFAULT_BINDINGS: readonly BindingInput[] = [
+/** A default-map entry: a BindingInput plus the module-internal
+ * legacyEitherMod marker (stripped before registerBinding - see modPair). */
+interface DefaultBindingInput extends BindingInput {
+  /** Legacy "either or both of Meta/Ctrl" permissiveness: the AppShell
+   * ⌘K/⌘I/⌘J listener checked metaKey||ctrlKey with no regard for the OTHER
+   * modifier's state, so Meta+Ctrl+K fired. The complement of $mod is added
+   * as an OPTIONAL modifier on both this entry and its twin. */
+  legacyEitherMod?: boolean;
+}
+
+export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.paletteOpen,
     actionId: ACTIONS.paletteOpen,
-    chord: "$mod+K",
+    chord: "$mod+[Shift]+[Alt]+K",
     allowInEditable: true,
     allowInModal: true,
+    legacyEitherMod: true,
   },
   // ignoreIfDefaultPrevented: false - RailHost's ⌘B listener guards only the
   // editable target; it has no defaultPrevented check and toggles the rail
@@ -47,19 +78,34 @@ export const DEFAULT_BINDINGS: readonly BindingInput[] = [
     allowInModal: true,
     ignoreIfDefaultPrevented: false,
   },
-  { id: ACTIONS.composerFocus, actionId: ACTIONS.composerFocus, chord: "$mod+I", allowInEditable: true },
-  { id: ACTIONS.nextNeedsYou, actionId: ACTIONS.nextNeedsYou, chord: "$mod+J", allowInEditable: true },
+  {
+    id: ACTIONS.composerFocus,
+    actionId: ACTIONS.composerFocus,
+    chord: "$mod+[Shift]+[Alt]+I",
+    allowInEditable: true,
+    legacyEitherMod: true,
+  },
+  {
+    id: ACTIONS.nextNeedsYou,
+    actionId: ACTIONS.nextNeedsYou,
+    chord: "$mod+[Shift]+[Alt]+J",
+    allowInEditable: true,
+    legacyEitherMod: true,
+  },
+  // The dispatcher preventDefaults when a handler accepts this chord; the
+  // legacy ⌘' listener never preventDefault'd. That superset is deliberate
+  // and harmless: nothing meaningful defaults on Ctrl/⌘+'.
   {
     id: ACTIONS.selectionQuote,
     actionId: ACTIONS.selectionQuote,
-    chord: "$mod+'",
+    chord: "$mod+[Shift]+'",
     allowInEditable: true,
     allowInModal: true,
   },
   {
     id: ACTIONS.settingsClose,
     actionId: ACTIONS.settingsClose,
-    chord: "Escape",
+    chord: "[Control]+[Alt]+[Shift]+[Meta]+Escape",
     scope: SETTINGS_SCOPE,
     allowInEditable: true,
   },
@@ -72,16 +118,40 @@ export const DEFAULT_BINDINGS: readonly BindingInput[] = [
 // twin of each $mod chord preserves that. It also keeps the shell's jsdom
 // suites - where $mod resolves to Control but userEvent/fireEvent press Meta
 // chords - exercising the same code path production does.
-function modTwin(input: BindingInput): BindingInput | null {
+//
+// Returns the two entries to register for a $mod-sourced binding (platform
+// base + twin), or null when the chord has no $mod. With legacyEitherMod the
+// complement of $mod is added as an OPTIONAL modifier on both entries, so
+// pressing Meta and Ctrl together also fires - legacy accepted either or
+// both regardless of the other modifier's state.
+function modPair(input: DefaultBindingInput): [BindingInput, BindingInput] | null {
   if (typeof input.chord !== "string" || !input.chord.includes("$mod")) return null;
   const resolved = serializeChord(parseChord(input.chord));
+  let twinString: string | null = null;
   for (const mod of ["Meta", "Control"] as const) {
     const candidate = input.chord.replaceAll("$mod", mod);
-    if (serializeChord(parseChord(candidate)) !== resolved) {
-      return { ...input, id: `${input.id}#mod-twin`, chord: candidate };
-    }
+    if (serializeChord(parseChord(candidate)) !== resolved) twinString = candidate;
   }
-  return null;
+  if (twinString === null) return null;
+  const { legacyEitherMod: _legacyEitherMod, ...base } = input;
+  const twin: BindingInput = { ...base, id: `${base.id}#mod-twin`, chord: twinString };
+  if (!input.legacyEitherMod) return [base, twin];
+  return [
+    { ...base, chord: withComplementOptional(parseChord(input.chord as string)) },
+    { ...twin, chord: withComplementOptional(parseChord(twinString)) },
+  ];
+}
+
+// Adds the OTHER of Meta/Ctrl as an optional modifier to every press that
+// requires one of them.
+function withComplementOptional(sequence: KeySequence): KeySequence {
+  let complement: string | null = null;
+  for (const press of sequence) {
+    if (press.modifiers.includes("Meta")) complement = "Control";
+    else if (press.modifiers.includes("Control")) complement = "Meta";
+  }
+  if (complement === null) return sequence;
+  return withOptionalModifier(sequence, complement);
 }
 
 /** Registers the full default map (plus each $mod chord's cross-platform
@@ -89,9 +159,10 @@ function modTwin(input: BindingInput): BindingInput | null {
 export function registerDefaultBindings(registry: KeybindingsRegistry): Binding[] {
   const registered: Binding[] = [];
   for (const input of DEFAULT_BINDINGS) {
-    registered.push(registry.getState().registerBinding(input));
-    const twin = modTwin(input);
-    if (twin !== null) registered.push(registry.getState().registerBinding(twin));
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      registered.push(registry.getState().registerBinding(entry));
+    }
   }
   return registered;
 }

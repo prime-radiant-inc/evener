@@ -106,7 +106,7 @@ describe("dispatcher", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  test("the modal predicate suppresses every binding", () => {
+  test("the modal predicate suppresses bindings by default", () => {
     const state = setup({ isModalOpen: () => true });
     const run = vi.fn();
     state.registerAction("a", run);

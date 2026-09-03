@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
-import { parseChord, serializeChord } from "./chord";
+import { formatSequence, parseChord, serializeChord } from "./chord";
 import { DEFAULT_BINDINGS, registerDefaultBindings, SETTINGS_SCOPE } from "./defaults";
 import { createKeybindingDispatcher, type KeybindingDispatcher } from "./dispatcher";
 import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
@@ -23,13 +23,17 @@ describe("default binding map", () => {
 
   // Chords are compared through parse+serialize so the assertion is
   // platform-independent ("$mod" resolves per host platform at parse time).
+  // The optional modifiers are the legacy-faithful semantics: the AppShell
+  // K/I/J listener had no shift/alt guard, SelectionQuote guarded only
+  // AltGr (alt), rail.toggle guarded both, and the Settings Escape listener
+  // had no modifier guard at all.
   test.each([
-    [ACTIONS.paletteOpen, "$mod+K"],
+    [ACTIONS.paletteOpen, "$mod+[Shift]+[Alt]+K"],
     [ACTIONS.railToggle, "$mod+B"],
-    [ACTIONS.composerFocus, "$mod+I"],
-    [ACTIONS.nextNeedsYou, "$mod+J"],
-    [ACTIONS.selectionQuote, "$mod+'"],
-    [ACTIONS.settingsClose, "Escape"],
+    [ACTIONS.composerFocus, "$mod+[Shift]+[Alt]+I"],
+    [ACTIONS.nextNeedsYou, "$mod+[Shift]+[Alt]+J"],
+    [ACTIONS.selectionQuote, "$mod+[Shift]+'"],
+    [ACTIONS.settingsClose, "[Control]+[Alt]+[Shift]+[Meta]+Escape"],
   ])("%s is bound to %s", (actionId, chord) => {
     const binding = DEFAULT_BINDINGS.find((b) => b.actionId === actionId);
     expect(binding).toBeDefined();
@@ -50,6 +54,13 @@ describe("default binding map", () => {
     expect(binding?.scope).toBe(SETTINGS_SCOPE);
     for (const other of DEFAULT_BINDINGS.filter((b) => b.actionId !== ACTIONS.settingsClose)) {
       expect(other.scope ?? GLOBAL_SCOPE).toBe(GLOBAL_SCOPE);
+    }
+  });
+
+  test("display formatting renders every default chord (optional modifiers are dropped from display - parked L22 minor, but it must not crash)", () => {
+    for (const binding of DEFAULT_BINDINGS) {
+      const rendered = formatSequence(parseChord(String(binding.chord)));
+      expect(rendered.length).toBeGreaterThan(0);
     }
   });
 
@@ -135,9 +146,54 @@ describe("default bindings through the dispatcher", () => {
     expect(calls).toEqual([ACTIONS.paletteOpen]);
   });
 
-  test("Mod+chords with an extra Shift do not match today's plain-chord bindings", () => {
+  // Extra-modifier variants: the legacy AppShell ⌘K/⌘I/⌘J listener checked
+  // only metaKey||ctrlKey + key (NO shift/alt guard), and the legacy
+  // Settings Escape listener checked only key === "Escape" - so these all
+  // fired legacy and must still fire.
+  test("⌘⇧K and ⌘⌥K fire palette.open (legacy had no shift/alt guard)", () => {
     setup();
-    window.dispatchEvent(keydown({ key: "k", code: "KeyK", ctrlKey: true, shiftKey: true }));
+    window.dispatchEvent(keydown({ key: "k", code: "KeyK", metaKey: true, shiftKey: true }));
+    window.dispatchEvent(keydown({ key: "k", code: "KeyK", metaKey: true, altKey: true }));
+    expect(calls).toEqual([ACTIONS.paletteOpen, ACTIONS.paletteOpen]);
+  });
+
+  test("Meta+Ctrl+K fires palette.open (legacy accepted either or both modifiers)", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "k", code: "KeyK", metaKey: true, ctrlKey: true }));
+    expect(calls).toEqual([ACTIONS.paletteOpen]);
+  });
+
+  test("⌘⇧I fires composer.focus", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "i", code: "KeyI", metaKey: true, shiftKey: true }));
+    expect(calls).toEqual([ACTIONS.composerFocus]);
+  });
+
+  test("Ctrl+Shift+J fires next-needs-you", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "j", code: "KeyJ", ctrlKey: true, shiftKey: true }));
+    expect(calls).toEqual([ACTIONS.nextNeedsYou]);
+  });
+
+  test("Shift+Escape closes settings while the settings scope is pushed (legacy had no modifier guard)", () => {
+    setup();
+    registry.getState().pushScope(SETTINGS_SCOPE);
+    window.dispatchEvent(keydown({ key: "Escape", code: "Escape", shiftKey: true }));
+    expect(calls).toEqual([ACTIONS.settingsClose]);
+  });
+
+  test("⌘⇧' fires selection.quote but ⌘⌥' does NOT (the legacy AltGr guard)", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "'", code: "Quote", metaKey: true, shiftKey: true }));
+    expect(calls).toEqual([ACTIONS.selectionQuote]);
+    window.dispatchEvent(keydown({ key: "'", code: "Quote", metaKey: true, altKey: true }));
+    expect(calls).toEqual([ACTIONS.selectionQuote]);
+  });
+
+  test("⌘⇧B and ⌘⌥B do NOT fire rail.toggle (the legacy listener guarded both)", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "b", code: "KeyB", metaKey: true, shiftKey: true }));
+    window.dispatchEvent(keydown({ key: "b", code: "KeyB", metaKey: true, altKey: true }));
     expect(calls).toEqual([]);
   });
 
