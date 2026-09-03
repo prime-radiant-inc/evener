@@ -61,7 +61,7 @@ func TestPrevalidationLifetime_StaleSnapshotsCannotContaminateSemanticTransition
 			tt.transition(r)
 
 			for range 2 {
-				res := r.FinalizePrevalidationFailure(context.Background(), stale, call, "old validation failure", "schema_validation", errors.New("old validation failure"))
+				res := r.FinalizePrevalidationFailure(context.Background(), stale, call, nil, "old validation failure", "schema_validation", errors.New("old validation failure"))
 				if !res.IsError || res.BreakerExactSignature != "" || res.BreakerSemanticSignature != "" || res.BreakerBypassed {
 					t.Fatalf("stale completion must retain only its validation error: %#v", res)
 				}
@@ -73,13 +73,13 @@ func TestPrevalidationLifetime_StaleSnapshotsCannotContaminateSemanticTransition
 				if tt.absent {
 					boundary = "unknown_tool"
 				}
-				res := r.FinalizePrevalidationFailure(context.Background(), current, call, "current validation failure", boundary, errors.New("current validation failure"))
+				res := r.FinalizePrevalidationFailure(context.Background(), current, call, nil, "current validation failure", boundary, errors.New("current validation failure"))
 				if !res.IsError || strings.HasPrefix(res.Output, wantFailurePark(call.Name)) {
 					t.Fatalf("current lifetime failure %d was parked early: %#v", i+1, res)
 				}
 			}
 			_, current := r.SnapshotPrevalidation(call.Name)
-			res := r.FinalizePrevalidationFailure(context.Background(), current, call, "current validation failure", "schema_validation", errors.New("current validation failure"))
+			res := r.FinalizePrevalidationFailure(context.Background(), current, call, nil, "current validation failure", "schema_validation", errors.New("current validation failure"))
 			if !strings.HasPrefix(res.Output, wantFailurePark(call.Name)) {
 				t.Fatalf("third current-lifetime failure was not parked: %#v", res)
 			}
@@ -107,13 +107,13 @@ func TestPrevalidationLifetime_CloneTransitionsNeverReuseLiveOrTombstonedLifetim
 			_, stale := clone.SnapshotPrevalidation(name)
 			registerPrevalidationLifetimeTool(t, clone, name)
 			clone.Remove(name)
-			res := clone.FinalizePrevalidationFailure(context.Background(), stale, call, "old clone failure", "unknown_tool", errors.New("old clone failure"))
+			res := clone.FinalizePrevalidationFailure(context.Background(), stale, call, nil, "old clone failure", "unknown_tool", errors.New("old clone failure"))
 			if !res.IsError || res.BreakerExactSignature != "" || res.BreakerSemanticSignature != "" {
 				t.Fatalf("clone reused a prior %s lifetime: %#v", name, res)
 			}
 
 			_, current := clone.SnapshotPrevalidation(name)
-			res = clone.FinalizePrevalidationFailure(context.Background(), current, call, "current clone failure", "unknown_tool", errors.New("current clone failure"))
+			res = clone.FinalizePrevalidationFailure(context.Background(), current, call, nil, "current clone failure", "unknown_tool", errors.New("current clone failure"))
 			if !res.IsError || strings.HasPrefix(res.Output, wantFailurePark(name)) {
 				t.Fatalf("fresh clone absent lifetime did not start empty: %#v", res)
 			}

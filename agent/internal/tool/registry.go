@@ -513,6 +513,9 @@ func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, register
 	if len(raw) > maxToolArgumentBytes {
 		return name + ":" + r.telemetryComponent("semantic-marker", "oversize")
 	}
+	if !utf8.Valid(raw) {
+		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-utf8")
+	}
 	args := map[string]any{}
 	if len(raw) > 0 && json.Unmarshal(raw, &args) != nil {
 		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-json")
@@ -1095,7 +1098,7 @@ func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signat
 // immutable snapshot must have been captured before repair; a stale snapshot
 // returns its original validation error but cannot alter successor telemetry,
 // signatures, or breaker state.
-func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, message, boundary string, err error) ExecResult {
+func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, semanticArgs []byte, message, boundary string, err error) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -1123,7 +1126,11 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 	humanBypassed := breakerBypassed(ctx)
 	judged := !humanBypassed && name != "model_list"
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
-	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, snapshot.registered)
+	semanticRaw := call.Arguments
+	if len(semanticArgs) > 0 {
+		semanticRaw = semanticArgs
+	}
+	semanticSignature := r.semanticSignatureFromRawFor(name, semanticRaw, snapshot.registered)
 	if boundary == "" {
 		boundary = prevalidationBoundary(name, call.Arguments, snapshot.registered != nil)
 	}

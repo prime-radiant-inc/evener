@@ -174,7 +174,7 @@ func TestBreakerLifetime_PrevalidationAndBypassDoNotCrossReplacement(t *testing.
 	old := registerBreakerFake(t, r, "prevalidation_tool", func(int) (any, error) { return "old", nil })
 	for range 2 {
 		_, snapshot := r.SnapshotPrevalidation(call.Name)
-		r.FinalizePrevalidationFailure(context.Background(), snapshot, call, "prevalidation failure", "schema_validation", errors.New("prevalidation failure"))
+		r.FinalizePrevalidationFailure(context.Background(), snapshot, call, nil, "prevalidation failure", "schema_validation", errors.New("prevalidation failure"))
 	}
 	newTool := registerBreakerFake(t, r, "prevalidation_tool", func(int) (any, error) { return "new", nil })
 	if res := r.ExecuteCall(context.Background(), env, call); old.calls != 0 || newTool.calls != 1 || res.IsError {

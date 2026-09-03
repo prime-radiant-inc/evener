@@ -27,12 +27,13 @@ const maxCommunicateOutputJSONDepth = 64
 // is non-empty, execTool returns it as the tool's error result WITHOUT calling
 // ExecuteCall — but still runs the full event/hook lifecycle.
 type prepareResult struct {
-	Call      llm.ToolCallData
-	Changes   []repair.Change
-	Lifetime  tool.PrevalidationSnapshot
-	PrevalErr string
-	Boundary  string
-	Err       error
+	Call              llm.ToolCallData
+	Changes           []repair.Change
+	Lifetime          tool.PrevalidationSnapshot
+	SemanticArguments json.RawMessage
+	PrevalErr         string
+	Boundary          string
+	Err               error
 	// RawArgumentsRejected keeps unvalidated bytes out of hook input and
 	// prevents a hook from replacing them. It is separate from PrevalErr so an
 	// unknown tool can retain its established unknown-tool diagnostic.
@@ -200,6 +201,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
 			res.Boundary = "schema_validation"
+			if t.Definition.Name == "ask_user" {
+				res.SemanticArguments, _ = json.Marshal(args)
+			}
 			return res
 		}
 		args = healed

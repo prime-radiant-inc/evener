@@ -19,7 +19,7 @@ func TestPrevalidationFailure_UnknownABAOldFailureCannotParkNewAbsentLifetime(t 
 	registerBreakerFake(t, r, "unknown_aba_tool", func(int) (any, error) { return "registered", nil })
 	r.Remove("unknown_aba_tool")
 	for range 2 {
-		r.FinalizePrevalidationFailure(context.Background(), oldSnapshot, call, "unknown tool", "unknown_tool", errors.New("unknown tool"))
+		r.FinalizePrevalidationFailure(context.Background(), oldSnapshot, call, nil, "unknown tool", "unknown_tool", errors.New("unknown tool"))
 	}
 
 	res := r.ExecuteCall(context.Background(), breakerEnv(t), call)
