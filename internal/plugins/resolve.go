@@ -307,6 +307,12 @@ func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, err
 		return "", nil, err
 	}
 	store := filepath.Dir(dest)
+	// A launch resolves plugins before the startup call that creates the user
+	// config tree privately, so any parent this is first to create gets that
+	// call's own 0o700 rather than the store root's readable mode.
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		return "", nil, err
+	}
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		return "", nil, err
 	}

@@ -528,6 +528,58 @@ func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) 
 	}
 }
 
+// A launch resolves plugins before the startup call that creates the user
+// config tree with a private mode: cmd/evener runs ResolveForLaunch ahead of
+// cmdutil.EnsureUserConfigDirs. Materializing a bundled plugin on a fresh
+// install must therefore not be what creates those parents, world-readable,
+// on the store root's behalf.
+func TestBundledStore_CreatesMissingParentsPrivately(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(*Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			m := NewManager(filepath.Join(base, "evener", "plugins"))
+			res, err := test.resolve(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ValidateSelection(); err != nil {
+				t.Fatal(err)
+			}
+			assertPerm(t, filepath.Join(base, "evener"), 0o700)
+			assertPerm(t, m.Root, 0o700)
+			assertPerm(t, filepath.Join(m.Root, "bundled"), 0o755)
+		})
+	}
+}
+
+func assertPerm(t *testing.T, path string, want fs.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %04o, want %04o", path, got, want)
+	}
+}
+
 // A published copy is reused only when the destination is a real directory. A
 // file or a symlink there belongs to someone else: adopting it would load an
 // unrelated directory and report it as the bundled plugin.
