@@ -432,6 +432,55 @@ func TestPreviewForLaunch_DoesNotWriteToTheStore(t *testing.T) {
 	}
 }
 
+// Preview must agree with launch about the published destination: a
+// destination a launch rejects fails preview the same way, and when a copy is
+// already published, preview describes that copy rather than the embedded one.
+func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("a foreign destination fails preview as it fails launch", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, []byte("not a plugin"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.ValidateSelection(); err == nil {
+			t.Errorf("preview accepted a selection a launch rejects: %+v", res.Candidates)
+		}
+		if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled {
+			t.Errorf("Diagnostics = %+v, want one bundled diagnostic", res.Diagnostics)
+		}
+	})
+
+	t.Run("a published copy is the one preview describes", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		writePlugin(t, dest, "coordinator-workflow", nil)
+		res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.ValidateSelection(); err != nil {
+			t.Fatal(err)
+		}
+		// The published copy carries no agents; the embedded contents carry the
+		// workflow roster, so an agent count betrays which one was loaded.
+		if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount != 0 {
+			t.Errorf("Candidates = %+v, want the published copy at %s with no agents", res.Candidates, dest)
+		}
+	})
+}
+
 // A published copy is reused only when the destination is a real directory. A
 // file or a symlink there belongs to someone else: adopting it would load an
 // unrelated directory and report it as the bundled plugin.
@@ -551,6 +600,26 @@ func TestBundledPluginsAreNamedAfterTheirDirectory(t *testing.T) {
 		}
 		if instance.Manifest.Name != entry.Name() {
 			t.Errorf("bundled plugin %s declares manifest name %q, want %q", entry.Name(), instance.Manifest.Name, entry.Name())
+		}
+	}
+}
+
+// Published copies and staging share the <Root>/bundled namespace, and the
+// reclaim sweep tells them apart by stagingPrefix. A bundled plugin whose
+// directory name wore that prefix would publish to a path the sweep reads as
+// an abandoned orphan, so an hour later it would delete a published copy live
+// sessions are reading.
+func TestBundledPluginNamesStayOutOfTheStagingNamespace(t *testing.T) {
+	entries, err := fs.ReadDir(bundled.Plugins(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no bundled plugins are embedded")
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), stagingPrefix) {
+			t.Errorf("bundled plugin %s publishes inside the %q staging namespace; the reclaim sweep would delete its published copy", entry.Name(), stagingPrefix)
 		}
 	}
 }

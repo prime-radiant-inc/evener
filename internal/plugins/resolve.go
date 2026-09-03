@@ -74,10 +74,12 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 	})
 }
 
-// PreviewForLaunch is ResolveForLaunch for inspection only. A requested bundled
-// plugin is loaded from a private temporary copy that is discarded before
-// returning, and described with the store path a launch would publish it at,
-// so previewing never writes to the plugin store.
+// PreviewForLaunch is ResolveForLaunch for inspection only. It classifies the
+// store destination exactly as a launch does, so a destination a launch would
+// reject fails preview the same way and an already published copy is the one
+// preview describes. Only when nothing is published yet does it load a private
+// temporary copy, discarded before returning, so previewing never writes to
+// the plugin store.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	scratch := ""
 	defer func() {
@@ -90,6 +92,14 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		if err != nil {
 			return "", "", err
 		}
+		dest := m.bundledPluginPath(name, digest)
+		published, err := publishedBundledCopy(dest)
+		if err != nil {
+			return "", "", err
+		}
+		if published {
+			return dest, dest, nil
+		}
 		if scratch == "" {
 			dir, err := os.MkdirTemp("", "evener-bundled-preview-")
 			if err != nil {
@@ -101,7 +111,7 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		if err := os.CopyFS(loadPath, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return "", "", fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
-		return loadPath, m.bundledPluginPath(name, digest), nil
+		return loadPath, dest, nil
 	})
 }
 
