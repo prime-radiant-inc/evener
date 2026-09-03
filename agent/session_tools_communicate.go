@@ -266,6 +266,16 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 // Kept as one constant so the shape predicate and the fill cannot drift apart.
 var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
 
+// canonicalDefaultCommunicateOutputSchema is constructed once because every
+// communicate repair checks it, sometimes multiple times. It is private and
+// only read by reflect.DeepEqual; callers never receive this mutable map.
+var canonicalDefaultCommunicateOutputSchema = func() map[string]any {
+	parameters := tool.DefCommunicateNamed("communicate").Parameters
+	properties, _ := parameters["properties"].(map[string]any)
+	output, _ := properties["output"].(map[string]any)
+	return output
+}()
+
 // communicateEnvelopeFor reports whether t is the session's result tool with
 // the exact canonical default output envelope, returning that envelope schema
 // when it is.
@@ -302,9 +312,7 @@ func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 }
 
 func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
-	canonicalProps, _ := tool.DefCommunicateNamed("communicate").Parameters["properties"].(map[string]any)
-	canonicalOutput, _ := canonicalProps["output"].(map[string]any)
-	return reflect.DeepEqual(output, canonicalOutput)
+	return reflect.DeepEqual(output, canonicalDefaultCommunicateOutputSchema)
 }
 
 // stringSetsEqual reports whether the schema's property names and required
@@ -345,12 +353,10 @@ func communicateSchemaStringSlice(v any) []string {
 // missing message/data/artifacts keys with their documented empty defaults
 // ("" / {} / []). It mutates args in place on the working copy the caller
 // owns, and never overwrites an existing key. Only communicateEnvelopeFor's
-// envelope — the default one — may be passed here; a custom output schema
-// must keep failing loudly on keys the model was required to choose.
+// envelope — the default one — may be passed here; repairDefaultCommunicateEnvelope
+// owns that canonical-schema gate before calling this helper. A custom output
+// schema must keep failing loudly on keys the model was required to choose.
 func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
-	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
-		return nil
-	}
 	raw, isMap := args["output"].(map[string]any)
 	if !isMap {
 		return nil

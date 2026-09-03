@@ -61,14 +61,14 @@ func TestPrepareToolCall_HealsDefaultCommunicateEnvelopeIssue831(t *testing.T) {
 		},
 		{
 			name:          "clean JSON object string",
-			arguments:     `{"end_turn":true,"output":` + strconvQuote(outputString) + `}`,
+			arguments:     `{"end_turn":true,"output":` + jsonQuote(outputString) + `}`,
 			wantMessage:   "output-only text",
 			wantOutputMsg: "output-only text",
 			wantChanges:   true,
 		},
 		{
 			name:          "observed double encoded shape",
-			arguments:     `{"end_turn":true,"message":"top-level","output":` + strconvQuote(observedDoubleEncoded) + `}`,
+			arguments:     `{"end_turn":true,"message":"top-level","output":` + jsonQuote(observedDoubleEncoded) + `}`,
 			wantMessage:   "top-level",
 			wantOutputMsg: "",
 			wantChanges:   true,
@@ -129,7 +129,7 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 		t.Run(tc.name, func(t *testing.T) {
 			arguments := tc.arguments
 			if arguments == nil {
-				arguments = []byte(`{"end_turn":true,"message":"top-level","output":` + strconvQuote(tc.output) + `}`)
+				arguments = []byte(`{"end_turn":true,"message":"top-level","output":` + jsonQuote(tc.output) + `}`)
 			}
 			res := prepareToolCall(llm.ToolCallData{ID: "issue831-invalid", Name: "communicate", Arguments: arguments}, rt, []string{"communicate"}, "communicate", "communicate", "")
 			if res.PrevalErr == "" {
@@ -140,6 +140,38 @@ func TestPrepareToolCall_RejectsInvalidDefaultCommunicateOutputStringsIssue831(t
 			}
 			if len(res.Changes) != 0 {
 				t.Fatalf("failed repair recorded changes %+v", res.Changes)
+			}
+		})
+	}
+}
+
+func TestPrepareToolCall_PromotedCommunicateOutputGuidanceOnlyNamesOutputFailuresIssue831(t *testing.T) {
+	_, rt := registerCommunicateForIssue627(t)
+	const outputGuidance = "the decoded object did not satisfy the communicate output schema"
+
+	for _, tc := range []struct {
+		name         string
+		arguments    string
+		wantGuidance bool
+	}{
+		{
+			name:         "unrelated top-level schema failure",
+			arguments:    `{"end_turn":"not-a-bool","message":"top-level","output":"{\"message\":\"valid nested\",\"data\":{},\"artifacts\":[]}"}`,
+			wantGuidance: false,
+		},
+		{
+			name:         "output descendant schema failure",
+			arguments:    `{"end_turn":true,"message":"top-level","output":"{\"message\":\"nested\",\"data\":[],\"artifacts\":[]}"}`,
+			wantGuidance: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := prepareToolCall(llm.ToolCallData{ID: "issue831-guidance", Name: "communicate", Arguments: json.RawMessage(tc.arguments)}, rt, []string{"communicate"}, "communicate", "communicate", "")
+			if res.PrevalErr == "" {
+				t.Fatalf("invalid call was accepted: %s", tc.arguments)
+			}
+			if got := strings.Contains(res.PrevalErr, outputGuidance); got != tc.wantGuidance {
+				t.Fatalf("output guidance = %t, want %t: %q", got, tc.wantGuidance, res.PrevalErr)
 			}
 		})
 	}
@@ -212,7 +244,7 @@ func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t
 	}
 }
 
-func strconvQuote(s string) string {
+func jsonQuote(s string) string {
 	return string(mustMarshalIssue831JSON(s))
 }
 
