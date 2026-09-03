@@ -489,10 +489,12 @@ export interface UseTranscriptScrollResult {
    * anchor (if active) is above the current viewport, "down" otherwise
    * (normal case: new content below, or no error anchor). */
   pillArrowDirection: "up" | "down";
-  /** Scrolls to the last turn and clears the pill - unless an error anchor
-   * is active, in which case it jumps to THAT turn's index instead (see
-   * "the error anchor" below). Also the target for a manual click on
-   * NewContentPill. */
+  /** Scrolls to the last turn and clears the pill's count/error state -
+   * unless an error anchor is active, in which case it jumps to THAT turn's
+   * index instead (see "the error anchor" below). The pill's VISIBILITY is
+   * not cleared by the click itself: it stays on offer until the landing's
+   * scroll event (or an at-bottom measurement at click time) confirms
+   * arrival. Also the target for a manual click on NewContentPill. */
   jumpToBottom: () => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
@@ -580,12 +582,13 @@ export function useTranscriptScroll({
   // reader has scrolled back, even with zero new items - rather than only a
   // new-content counter. Updated everywhere wasAtBottomRef is written:
   // handleScroll (the common path), the one-time mount init, and the per-ref
-  // reset. jumpToBottom clears it ONLY from a measurement that already reads
-  // at-bottom (where no scroll - and so no landing event - will happen);
-  // otherwise the scroll triggered by the jump fires handleScroll on landing,
-  // which clears it only once the reader has ACTUALLY arrived - so a jump
-  // that lands short leaves the pill on offer instead of vanishing into a
-  // stranded mid-transcript position.
+  // reset. jumpToBottom SETS it in the error-anchor branch (the landing is
+  // deliberately not the bottom) and, in the bottom-seeking branch, clears
+  // it ONLY from a measurement that already reads at-bottom (where no scroll
+  // - and so no landing event - will happen); otherwise the scroll triggered
+  // by the jump fires handleScroll on landing, which clears it only once the
+  // reader has ACTUALLY arrived - so a jump that lands short leaves the pill
+  // on offer instead of vanishing into a stranded mid-transcript position.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
@@ -726,45 +729,52 @@ export function useTranscriptScroll({
       // "the error anchor" - the whole point of an anchor is to land THERE).
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
+      // Mirror into render state like every other wasAtBottomRef write site:
+      // the landing is not the bottom, so the pill stays on offer.
+      setAwayFromBottom(true);
     } else {
       const count = renderedRowCountRef.current;
-      // scrollToIndex first: it engages the virtualizer's own machinery
-      // (scrollState -> measurement during the scroll, the reconcile loop,
-      // and the anchorToEnd pinning that holds the end across later
-      // estimate->measured corrections). But its target offset derives from
-      // the measurement cache - ESTIMATES for every row between here and the
-      // end that has never been rendered - so the landing it computes is not
-      // guaranteed to be the true bottom, and whether a correction arrives
-      // afterward is timing-dependent (the reconcile loop settles after one
-      // stable frame; ResizeObserver delivery is async). That shortfall was
-      // the unreliable jump: the pill had already been cleared, and with no
-      // new content arriving there was no affordance left to recover with.
-      //
-      // So after engaging the virtualizer, pin the scroll element to its
-      // true DOM maximum directly - exact by construction, whatever the
-      // estimates say. Later measurement corrections only ever change
-      // scrollHeight, and the end-anchor (threshold 4px; the pin leaves the
-      // distance at 0) keeps the viewport pinned to the new true end.
-      //
-      // Bottom state is NEVER set optimistically here: wasAtBottomRef and
-      // awayFromBottom only come from measured geometry. The landing's own
-      // scroll event confirms arrival (handleScroll), so until then the
-      // reader is still away - an append in that window increments the pill
-      // instead of auto-sticking on an unconfirmed jump, and a landing that
-      // later corrections leave short keeps the pill on offer.
-      if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+      // Bottom state is NEVER set optimistically: wasAtBottomRef and
+      // awayFromBottom only come from measured geometry. So measure BEFORE
+      // requesting any scroll - scrollToIndex can synchronously move the DOM
+      // to its estimate-derived end, which would make an after-the-fact
+      // measurement describe the jump's own unconfirmed landing rather than
+      // the reader's position at click time.
       const el = listRef.current?.getScrollElement();
-      if (el) {
-        const m = measure(el);
-        if (isAtBottom(m)) {
-          // Already at the true bottom by measurement (no scroll will happen,
-          // so no landing event will fire): confirm arrival from the
-          // measurement itself.
-          wasAtBottomRef.current = true;
-          setAwayFromBottom(false);
-        } else {
-          el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
-        }
+      const m = el ? measure(el) : undefined;
+      if (m && isAtBottom(m)) {
+        // Already at the true bottom by measurement: no scroll will happen,
+        // so no landing event will fire - confirm arrival from the
+        // measurement itself.
+        wasAtBottomRef.current = true;
+        setAwayFromBottom(false);
+      } else {
+        // scrollToIndex engages the virtualizer's own machinery (scrollState
+        // -> measurement during the scroll, the reconcile loop, and the
+        // anchorToEnd pinning that holds the end across later
+        // estimate->measured corrections). But its target offset derives from
+        // the measurement cache - ESTIMATES for every row between here and
+        // the end that has never been rendered - so the landing it computes
+        // is not guaranteed to be the true bottom, and whether a correction
+        // arrives afterward is timing-dependent (the reconcile loop settles
+        // after one stable frame; ResizeObserver delivery is async). That
+        // shortfall was the unreliable jump: the pill had already been
+        // cleared, and with no new content arriving there was no affordance
+        // left to recover with.
+        //
+        // So after engaging the virtualizer, pin the scroll element to its
+        // true DOM maximum directly - exact by construction, whatever the
+        // estimates say. Later measurement corrections only ever change
+        // scrollHeight, and the end-anchor (threshold 4px; the pin leaves the
+        // distance at 0) keeps the viewport pinned to the new true end.
+        //
+        // Arrival is confirmed only by the landing's own scroll event
+        // (handleScroll): until then the reader is still away, so an append
+        // in that window increments the pill instead of auto-sticking on an
+        // unconfirmed jump, and a landing that later corrections leave short
+        // keeps the pill on offer.
+        if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+        if (el && m) el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }
     clearPill();
