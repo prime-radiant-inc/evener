@@ -1109,3 +1109,35 @@ func TestBundledStore_SetsAsideADestinationHoldingASymlink(t *testing.T) {
 		t.Errorf("set-aside manifest mode = %v (err %v), want the symlink preserved", aside, err)
 	}
 }
+
+// The slot beside a destination holds a copy somebody may still want. Freeing
+// the destination must not begin by emptying that slot: a destination that
+// turns out not to be movable — gone, or held by something this cannot
+// rename — would leave nothing preserved where a copy used to be.
+func TestSetAsideBundledConflict_KeepsWhatItHoldsWhenThereIsNothingToMove(t *testing.T) {
+	store := t.TempDir()
+	dest := filepath.Join(store, "coordinator-workflow-0123456789abcdef")
+	aside := dest + conflictSuffix
+	writePlugin(t, aside, "coordinator-workflow", map[string]string{"kept.md": "the copy set aside earlier"})
+
+	// Nothing at the destination: the set-aside has no work to do and no
+	// business touching what the slot already holds.
+	moved, _, err := setAsideBundledConflict(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved {
+		t.Error("reported a move with nothing at the destination")
+	}
+	content, err := os.ReadFile(filepath.Join(aside, "kept.md"))
+	if err != nil || string(content) != "the copy set aside earlier" {
+		t.Errorf("earlier set-aside copy = %q (err %v), want it untouched", content, err)
+	}
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(aside) {
+		t.Errorf("store holds %v, want only the slot it started with", entries)
+	}
+}

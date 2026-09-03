@@ -300,6 +300,10 @@ const (
 	stagingMarker    = ".evener-staging"
 	abandonedStaging = time.Hour
 	conflictSuffix   = ".conflict"
+	// previousSuffix names where the slot's previous occupant waits while the
+	// destination is moved in: replaced only once there is something to
+	// replace it with.
+	previousSuffix = ".previous"
 )
 
 // bundledStaging is a private directory in the bundled store that a publish
@@ -543,16 +547,37 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 // outside this package took it away.
 func setAsideBundledConflict(dest string) (bool, string, error) {
 	aside := dest + conflictSuffix
-	// Whatever is in the slot is the previous occupant this replaces. Nothing
-	// else in the store is ever removed to make room.
-	if err := os.RemoveAll(aside); err != nil {
-		return false, "", fmt.Errorf("clear the bundled plugin path %s: %w", aside, err)
+	previous := aside + previousSuffix
+	// Whatever the slot holds is moved out of the way rather than deleted, so
+	// a destination that turns out not to be movable leaves the copy already
+	// preserved still preserved. Callers hold the store lock, so this name is
+	// nobody else's; anything under it is residue from a publish that died
+	// between the two renames below, and is the occupant being replaced.
+	if err := os.RemoveAll(previous); err != nil {
+		return false, "", fmt.Errorf("clear the bundled plugin path %s: %w", previous, err)
+	}
+	occupied := true
+	if err := os.Rename(aside, previous); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, "", fmt.Errorf("set aside the bundled plugin path %s: %w", aside, err)
+		}
+		occupied = false
 	}
 	if err := os.Rename(dest, aside); err != nil {
+		// Nothing took the slot, so the copy that was in it goes back.
+		if occupied {
+			_ = os.Rename(previous, aside)
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, "", nil
 		}
 		return false, "", fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
+	}
+	if occupied {
+		// Only now, with the slot filled again, is what it held replaceable.
+		// Best effort: a leftover is cleared by the next set-aside, and it is
+		// outside the staging namespace, so no sweep will take it for staging.
+		_ = os.RemoveAll(previous)
 	}
 	return true, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
 }
