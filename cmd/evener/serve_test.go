@@ -60,11 +60,11 @@ func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) err
 	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
 }
 
-// A selection that cannot be honoured stops the startup before it does any
-// work of its own. Ensuring the config dirs comes first and is not that work:
-// it carries the legacy-data guard, which has to see the config root before
+// A selection that cannot be honoured stops the startup before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
 // anything — plugin resolution included — creates it.
-func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+func TestServePluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	root := t.TempDir()
 	var order []string
 	deps := defaultServeDeps()

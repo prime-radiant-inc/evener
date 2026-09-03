@@ -25,11 +25,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// A selection that cannot be honoured stops the launch before it does any work
-// of its own. Ensuring the config dirs comes first and is not that work: it
+// A selection that cannot be honoured stops the launch before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
 // carries the legacy-data guard, which has to see the config root before
 // anything — plugin resolution included — creates it.
-func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	selected := []string{"missing-plugin"}
 	var order []string
 	oldResolve := runResolvePlugins
