@@ -551,6 +551,7 @@ func TestBundledStore_CreatesMissingParentsPrivately(t *testing.T) {
 			},
 		},
 	}
+	pinPermissiveUmask(t)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			base := t.TempDir()
