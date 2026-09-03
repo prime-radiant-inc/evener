@@ -539,6 +539,14 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
+	// Timer fields (in-memory only). WatchID identifies the firing timer so
+	// the session can fold repeated ticks; Fires is how many folded into this
+	// entry; Note, IntervalSeconds, and Terminal carry what the block needs.
+	WatchID         string
+	Fires           int
+	Note            string
+	IntervalSeconds int
+	Terminal        bool
 	// receiverSessionID/receiverNotify route no-send watch notifications for
 	// concrete descendant watches back to the ancestor session that installed
 	// them. They are in-memory only; active watches are not restored without a

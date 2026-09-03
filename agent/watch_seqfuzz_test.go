@@ -31,10 +31,12 @@ import (
 //	   simultaneously live (jm.watches) and torn-down-but-flushing (terminalFlush);
 //	   a cleared watch_id never reappears live (fresh ids are minted per install,
 //	   so a cleared id can never be reused).
-//	O3 (delivery budget): no watch config's delivery count ever exceeds
-//	   watchDeliveryBudget, and a LIVE watch is always strictly under budget — the
-//	   circuit breaker auto-clears exactly at the budget (spec §4 F1), so nothing at
-//	   or over budget is ever left installed.
+//	O3 (delivery budget): for a watch with no periodic tick, no config's delivery
+//	   count ever exceeds watchDeliveryBudget and a LIVE watch is always strictly
+//	   under budget — the circuit breaker auto-clears exactly at the budget (spec
+//	   §4 F1), so nothing at or over budget is ever left installed. A periodic tick
+//	   counts a delivery but is a clock rather than a condition fire, so a watch
+//	   carrying a progress interval may sit at or over the budget and stay live.
 //	O4 (delivery matches the pure core): on a session-event op, the number of
 //	   no-send caller notifications the effectful onSessionEvent actually delivers
 //	   equals the number the pure evaluateWatchEvent core predicts for the same
@@ -516,6 +518,9 @@ type ws_watchSnap struct {
 	eventCount int
 	nextSeq    uint64
 	live       bool
+	// periodic marks a config whose progress timer counts deliveries the
+	// delivery budget deliberately does not bound (see O3).
+	periodic bool
 }
 
 func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, step int) {
@@ -560,8 +565,12 @@ func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, 
 		}
 	}
 
-	// O3: delivery budget.
+	// O3: delivery budget. A periodic tick counts a delivery without tripping the
+	// breaker, so the bound holds only for watches that have no progress interval.
 	for _, s := range snaps {
+		if s.periodic {
+			continue
+		}
 		if s.deliveries > watchDeliveryBudget {
 			rt.Fatalf("step %d: watch %s deliveries=%d exceeds budget %d", step, s.watchID, s.deliveries, watchDeliveryBudget)
 		}
@@ -625,5 +634,6 @@ func ws_snapConfig(cfg *watchConfig, live bool) ws_watchSnap {
 		eventCount: cfg.eventCount,
 		nextSeq:    cfg.nextUpdateSeq,
 		live:       live,
+		periodic:   cfg.progressIntervalMS > 0,
 	}
 }

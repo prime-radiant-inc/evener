@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sort"
 	"strconv"
@@ -1453,6 +1454,14 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 }
 
 func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchConfig) bool, allowDurable bool) (watchResult, error) {
+	return jm.clearWatchByIDMatchingWithReason(watchID, allow, allowDurable, "cleared")
+}
+
+// clearWatchByIDMatchingWithReason is the teardown clearWatchByIDMatching runs,
+// with the end reason recorded in the durable clear event and the history ring
+// as a parameter: a one-shot timer retires through the same sequence but is
+// recorded as "fired" rather than "cleared".
+func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow func(*watchConfig) bool, allowDurable bool, endReason string) (watchResult, error) {
 	jm.mu.Lock()
 	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if ok && !allow(cfg) {
@@ -1471,7 +1480,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 		var clearEvent *jobstore.Event
 		if allowDurable {
 			var err error
-			clearEvent, err = jm.durableWatchClearEvent(watchID, "cleared")
+			clearEvent, err = jm.durableWatchClearEvent(watchID, endReason)
 			if err != nil {
 				jm.rollbackWatchConfigsRejecting(detachedCfgs)
 				return watchResult{}, err
@@ -1497,7 +1506,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 		key:       key,
 		cfg:       cfg,
 		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: "cleared",
+		endReason: endReason,
 	}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
@@ -3149,13 +3158,15 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 
 // progressTickSnapshot is the read-only view fireProgressTick gathers under the
 // lock before consulting decideProgressTick. target is the raw watch target,
-// echoed into the notification job id for non-session targets.
+// echoed into the notification job id for non-session targets. oneShot marks a
+// one-shot timer, whose single fire is also its last.
 type progressTickSnapshot struct {
 	closing         bool
 	stillRegistered bool
 	sessionTarget   bool
 	targetRunning   bool
 	hasSend         bool
+	oneShot         bool
 	target          string
 }
 
@@ -3175,7 +3186,9 @@ type progressTickDecision struct {
 // gates a progress tick on manager/registration/liveness and reports
 // how the surviving tick routes. It locks nothing and mutates nothing; the caller
 // performs the effects. A send tick and a budget-counted notification are mutually
-// exclusive, and a non-keepAlive tick never fires.
+// exclusive. A gated-out tick neither fires nor keeps the goroutine alive; a
+// one-shot timer's tick fires and then ends the goroutine, so fire alone — not
+// keepAlive — decides whether this tick delivers.
 func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if snap.closing || !snap.stillRegistered {
 		return progressTickDecision{}
@@ -3183,7 +3196,7 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if !snap.sessionTarget && !snap.targetRunning {
 		return progressTickDecision{}
 	}
-	dec := progressTickDecision{keepAlive: true, fire: true}
+	dec := progressTickDecision{keepAlive: !snap.oneShot, fire: true}
 	if snap.hasSend {
 		dec.sendDelivery = true
 		return dec
@@ -3198,7 +3211,6 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget bool
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, cfg.target)}
 	jm.mu.Lock()
@@ -3208,10 +3220,11 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		sessionTarget:   isWatchSessionTarget(cfg.target),
 		targetRunning:   jm.running[cfg.target] != nil,
 		hasSend:         cfg.send != nil,
+		oneShot:         cfg.oneShot,
 		target:          cfg.target,
 	}
 	dec := decideProgressTick(snap)
-	if !dec.keepAlive {
+	if !dec.fire {
 		jm.mu.Unlock()
 		return false
 	}
@@ -3219,17 +3232,38 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
 	}
 	if dec.recordBudget {
-		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, "progress_tick", root.Provenance))
-		overBudget = jm.recordWatchDeliveryLocked(cfg)
+		reason := "progress_tick"
+		if cfg.timer {
+			reason = "repeat"
+			if cfg.oneShot {
+				reason = "after"
+			}
+		}
+		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
+		if cfg.timer {
+			n.WatchID, n.Fires, n.Note, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.note, cfg.timerSeconds, cfg.oneShot
+		}
+		notifications = append(notifications, n)
+		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
 	}
 	jm.mu.Unlock()
 
+	if cfg.oneShot {
+		jm.endFiredOneShot(cfg)
+	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	if overBudget {
-		jm.autoClearWatchOverBudget(cfg)
+	return dec.keepAlive
+}
+
+// endFiredOneShot retires a one-shot timer after its only fire through the
+// same snapshot, persist, detach sequence clearWatch uses, recorded with end
+// reason "fired" so history distinguishes it from a clear. Called with jm.mu
+// released; the fire's notification is enqueued by the caller afterwards.
+func (jm *jobManager) endFiredOneShot(cfg *watchConfig) {
+	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil {
+		log.Printf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err)
 	}
-	return true
 }
 
 func watchNotification(jobID, reason string) jobNotification {
