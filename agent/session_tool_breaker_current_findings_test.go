@@ -8,10 +8,33 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+type sessionBreakerEventSet struct {
+	ends     []events.ToolCallEndData
+	repaired []events.ToolCallRepairedData
+}
+
+func drainSessionBreakerEvents(sess *Session) <-chan sessionBreakerEventSet {
+	out := make(chan sessionBreakerEventSet, 1)
+	go func() {
+		var got sessionBreakerEventSet
+		for ev := range sess.Events() {
+			switch data := ev.Data.(type) {
+			case events.ToolCallEndData:
+				got.ends = append(got.ends, data)
+			case events.ToolCallRepairedData:
+				got.repaired = append(got.repaired, data)
+			}
+		}
+		out <- got
+	}()
+	return out
+}
 
 func sessionUTF8CollisionCalls(t *testing.T, name string) ([2]llm.ToolCallData, llm.ToolCallData) {
 	t.Helper()
@@ -116,6 +139,132 @@ func TestSession_InvalidUTF8CannotPoisonLossyEquivalentValidCall(t *testing.T) {
 	other, _ := runInvalid(t, 1, false)
 	if other[0].BreakerExactSignature == results[0].BreakerExactSignature || other[0].BreakerSemanticSignature == results[0].BreakerSemanticSignature {
 		t.Fatalf("breaker identities are not session keyed: first=%#v other=%#v", results[0], other[0])
+	}
+}
+
+func TestSession_InvalidToolNamesEmitPrivateBoundedBreakerIdentity(t *testing.T) {
+	secret := "SESSION_RAW_INVALID_NAME_FRAGMENT"
+	invalidA := strings.Repeat(secret, 200) + "/one"
+	invalidB := strings.Repeat(secret, 200) + "/two"
+	args := json.RawMessage(`{"value":"same"}`)
+
+	run := func(t *testing.T, names []string) ([]tool.ExecResult, sessionBreakerEventSet) {
+		t.Helper()
+		sess := newSession(t, withoutGitSnapshot())
+		sess.stateDir = t.TempDir()
+		eventsCh := drainSessionBreakerEvents(sess)
+		results := make([]tool.ExecResult, 0, len(names))
+		for i, name := range names {
+			results = append(results, sess.execTool(context.Background(), llm.ToolCallData{
+				ID:        "invalid-session-name-" + string(rune('1'+i)),
+				Name:      name,
+				Arguments: args,
+			}, ""))
+		}
+		sess.Close()
+		return results, <-eventsCh
+	}
+
+	results, emitted := run(t, []string{invalidA, invalidA, invalidB, invalidA})
+	if strings.Contains(results[0].Output, "did not execute") || strings.Contains(results[1].Output, "did not execute") {
+		t.Fatalf("same invalid name parked before its third call: first=%q second=%q", results[0].Output, results[1].Output)
+	}
+	if strings.Contains(results[2].Output, "You just ran") || strings.Contains(results[2].Output, "did not execute") {
+		t.Fatalf("different invalid name inherited breaker history: %#v", results[2])
+	}
+	if !strings.Contains(results[3].Output, "did not execute") {
+		t.Fatalf("third same-name call was not parked: %#v", results[3])
+	}
+	if len(emitted.ends) != len(results) {
+		t.Fatalf("TOOL_CALL_END count = %d, want %d", len(emitted.ends), len(results))
+	}
+	if len(emitted.repaired) != 0 {
+		t.Fatalf("invalid names unexpectedly emitted repair telemetry: %+v", emitted.repaired)
+	}
+	for i, end := range emitted.ends {
+		for _, field := range []struct {
+			label string
+			value string
+		}{
+			{"exact", end.BreakerExactSignature},
+			{"semantic", end.BreakerSemanticSignature},
+		} {
+			if field.value == "" || len(field.value) > 98 {
+				t.Fatalf("event %d %s identity is missing or unbounded: len=%d value=%q", i+1, field.label, len(field.value), field.value)
+			}
+			if strings.Contains(field.value, secret) || strings.Contains(field.value, "/one") || strings.Contains(field.value, "/two") {
+				t.Fatalf("event %d %s identity leaks invalid name: %q", i+1, field.label, field.value)
+			}
+		}
+	}
+	if results[0].BreakerExactSignature != results[1].BreakerExactSignature || results[0].BreakerExactSignature != results[3].BreakerExactSignature || results[0].BreakerSemanticSignature != results[1].BreakerSemanticSignature || results[0].BreakerSemanticSignature != results[3].BreakerSemanticSignature {
+		t.Fatalf("same invalid name did not group in one session: %#v", results)
+	}
+	if results[0].BreakerExactSignature == results[2].BreakerExactSignature || results[0].BreakerSemanticSignature == results[2].BreakerSemanticSignature {
+		t.Fatalf("distinct invalid names shared identity: first=%#v other=%#v", results[0], results[2])
+	}
+
+	other, otherEvents := run(t, []string{invalidA})
+	if other[0].BreakerExactSignature == results[0].BreakerExactSignature || other[0].BreakerSemanticSignature == results[0].BreakerSemanticSignature {
+		t.Fatalf("invalid-name breaker tokens are not session keyed: first=%#v other=%#v", results[0], other[0])
+	}
+	if len(otherEvents.ends) != 1 || otherEvents.ends[0].BreakerExactSignature != other[0].BreakerExactSignature || otherEvents.ends[0].BreakerSemanticSignature != other[0].BreakerSemanticSignature {
+		t.Fatalf("other session event did not carry its private breaker identities: results=%#v events=%+v", other, otherEvents.ends)
+	}
+}
+
+func TestSession_InvalidUTF8PrevalidationEventsUseEncodingBoundary(t *testing.T) {
+	const name = "session_utf8_boundary"
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	eventsCh := drainSessionBreakerEvents(sess)
+	dispatches := 0
+	registerSessionUTF8CollisionTool(t, sess, name, &dispatches)
+
+	results := make([]tool.ExecResult, 0, 3)
+	for i, invalid := range []byte{0xff, 0xfe, 0xfd} {
+		raw := append([]byte(`{"value":"`), invalid)
+		raw = append(raw, []byte(`"}`)...)
+		results = append(results, sess.execTool(context.Background(), llm.ToolCallData{
+			ID:        "session-utf8-boundary-" + string(rune('1'+i)),
+			Name:      name,
+			Arguments: raw,
+		}, ""))
+	}
+	sess.Close()
+	emitted := <-eventsCh
+
+	if dispatches != 0 {
+		t.Fatalf("invalid UTF-8 prevalidation calls dispatched executor %d times", dispatches)
+	}
+	if !strings.Contains(results[1].Output, "normalized failure boundary (arguments_encoding)") {
+		t.Fatalf("second invalid UTF-8 failure has wrong session guidance: %q", results[1].Output)
+	}
+	if !strings.Contains(results[2].Output, "semantic failure loop") || !strings.Contains(results[2].Output, "normalized boundary arguments_encoding") {
+		t.Fatalf("third invalid UTF-8 failure did not park at encoding boundary: %q", results[2].Output)
+	}
+	if len(emitted.ends) != len(results) {
+		t.Fatalf("invalid UTF-8 TOOL_CALL_END count = %d, want %d", len(emitted.ends), len(results))
+	}
+	if len(emitted.repaired) != 0 {
+		t.Fatalf("raw invalid UTF-8 unexpectedly emitted repair events: %+v", emitted.repaired)
+	}
+	for i, end := range emitted.ends {
+		if !end.PrevalOnly {
+			t.Fatalf("event %d lost its prevalidation-only marker: %+v", i+1, end)
+		}
+		if i < 2 && !strings.Contains(end.Error, "not valid UTF-8") {
+			t.Fatalf("event %d lost its raw validation error: %+v", i+1, end)
+		}
+		if i == 2 && (!strings.Contains(end.Error, "semantic failure loop") || !strings.Contains(end.Error, "normalized boundary arguments_encoding")) {
+			t.Fatalf("parked event lost its argument-encoding guidance: %+v", end)
+		}
+		if strings.Contains(end.Error, "schema_validation") {
+			t.Fatalf("event %d mislabeled invalid UTF-8 as schema validation: %+v", i+1, end)
+		}
+		if end.BreakerExactSignature == "" || end.BreakerSemanticSignature == "" || len(end.BreakerExactSignature) > 98 || len(end.BreakerSemanticSignature) > 98 {
+			t.Fatalf("event %d has missing or unbounded breaker identity: %+v", i+1, end)
+		}
 	}
 }
 

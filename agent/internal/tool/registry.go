@@ -457,7 +457,19 @@ func (r *Registry) telemetryExactSignature(name string, args []byte) string {
 	h := hmac.New(sha256.New, r.telemetryKey[:])
 	_, _ = h.Write(args)
 	sum := h.Sum(nil)
-	return name + ":" + hex.EncodeToString(sum[:8])
+	return r.breakerToolIdentity(name) + ":" + hex.EncodeToString(sum[:8])
+}
+
+// breakerToolIdentity preserves the readable prefix for provider-valid names
+// while replacing every invalid incoming name with a fixed-size token keyed to
+// this registry's dispatch scope. The token is used for both emitted telemetry
+// and internal ledger keys: equal invalid names still group within a session,
+// but neither raw-name disclosure nor cross-session correlation is possible.
+func (r *Registry) breakerToolIdentity(name string) string {
+	if llm.ValidateToolName(name) == nil && len(name) <= 64 {
+		return name
+	}
+	return "invalid_" + r.telemetryComponent("invalid-tool-name", name)
 }
 
 func (r *Registry) semanticSignature(name string, args map[string]any) string {
@@ -479,7 +491,7 @@ func (r *Registry) semanticSignatureFor(name string, args map[string]any, regist
 	}
 	h := hmac.New(sha256.New, r.telemetryKey[:])
 	_, _ = h.Write(encoded)
-	return name + ":" + hex.EncodeToString(h.Sum(nil)[:8])
+	return r.breakerToolIdentity(name) + ":" + hex.EncodeToString(h.Sum(nil)[:8])
 }
 
 // MarkRegisteredToolsCoreSemanticMetadata records that the tools currently
@@ -495,8 +507,9 @@ func (r *Registry) MarkRegisteredToolsCoreSemanticMetadata() {
 		registered.OmitDescriptionFromSemanticIdentity = true
 		registered.ApplyBuiltInSemanticDefaults = true
 		r.tools[name] = registered
-		r.breaker.clearTool(name)
-		r.semanticBreaker.clearTool(name)
+		identity := r.breakerToolIdentity(name)
+		r.breaker.clearTool(identity)
+		r.semanticBreaker.clearTool(identity)
 	}
 }
 
@@ -513,15 +526,16 @@ func (r *Registry) telemetryComponent(domain, value string) string {
 }
 
 func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, registered *RegisteredTool) string {
+	identity := r.breakerToolIdentity(name)
 	if len(raw) > maxToolArgumentBytes {
-		return name + ":" + r.telemetryComponent("semantic-marker", "oversize")
+		return identity + ":" + r.telemetryComponent("semantic-marker", "oversize")
 	}
 	if !utf8.Valid(raw) {
-		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-utf8")
+		return identity + ":" + r.telemetryComponent("semantic-marker", "invalid-utf8")
 	}
 	args := map[string]any{}
 	if len(raw) > 0 && json.Unmarshal(raw, &args) != nil {
-		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-json")
+		return identity + ":" + r.telemetryComponent("semantic-marker", "invalid-json")
 	}
 	return r.semanticSignatureFor(name, args, registered)
 }
@@ -535,7 +549,7 @@ func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, register
 func (r *Registry) semanticSignatureFromNormalizedFor(name string, normalized []byte, registered *RegisteredTool) string {
 	args := map[string]any{}
 	if !utf8.Valid(normalized) || (len(normalized) > 0 && json.Unmarshal(normalized, &args) != nil) {
-		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-normalized-json")
+		return r.breakerToolIdentity(name) + ":" + r.telemetryComponent("semantic-marker", "invalid-normalized-json")
 	}
 	return r.semanticSignatureFor(name, args, registered)
 }
@@ -625,7 +639,7 @@ func (r *Registry) finalizeBreakerLocked(res ExecResult, name string, rawArgs []
 	}
 	// The exact entry becomes visible to concurrent pre-dispatch checks only
 	// after its semantic metadata is written under the exact ledger lock.
-	failStreak, repeatStreak := r.breaker.recordWithSemantic(name, rawArgs, res.IsError, body, semanticFingerprint, semanticBoundary)
+	failStreak, repeatStreak := r.breaker.recordWithSemantic(r.breakerToolIdentity(name), rawArgs, res.IsError, body, semanticFingerprint, semanticBoundary)
 	switch {
 	case failStreak >= breakerThreshold:
 		appendIntervention(&res, failureNudgeText)
@@ -755,8 +769,9 @@ func (r *Registry) Register(t RegisteredTool) error {
 	}
 	t.generation = r.advanceLifetimeLocked(t.Definition.Name)
 	r.tools[t.Definition.Name] = t
-	r.breaker.clearTool(t.Definition.Name)
-	r.semanticBreaker.clearTool(t.Definition.Name)
+	identity := r.breakerToolIdentity(t.Definition.Name)
+	r.breaker.clearTool(identity)
+	r.semanticBreaker.clearTool(identity)
 	return nil
 }
 
@@ -791,8 +806,9 @@ func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultTool
 		if !allowed[name] {
 			delete(r.tools, name)
 			r.advanceLifetimeLocked(name)
-			r.breaker.clearTool(name)
-			r.semanticBreaker.clearTool(name)
+			identity := r.breakerToolIdentity(name)
+			r.breaker.clearTool(identity)
+			r.semanticBreaker.clearTool(identity)
 		}
 	}
 }
@@ -805,8 +821,9 @@ func (r *Registry) Remove(name string) {
 		delete(r.tools, name)
 		r.advanceLifetimeLocked(name)
 	}
-	r.breaker.clearTool(name)
-	r.semanticBreaker.clearTool(name)
+	identity := r.breakerToolIdentity(name)
+	r.breaker.clearTool(identity)
+	r.semanticBreaker.clearTool(identity)
 }
 
 // RegisteredNames returns a set of all currently registered tool names.
@@ -850,8 +867,9 @@ func (r *Registry) Unregister(name string) {
 		delete(r.tools, name)
 		r.advanceLifetimeLocked(name)
 	}
-	r.breaker.clearTool(name)
-	r.semanticBreaker.clearTool(name)
+	identity := r.breakerToolIdentity(name)
+	r.breaker.clearTool(identity)
+	r.semanticBreaker.clearTool(identity)
 }
 
 // Get returns the named registered tool, or nil if it is not registered.
@@ -924,6 +942,7 @@ func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.Executio
 
 func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prevalidated bool) ExecResult {
 	name := call.Name
+	ledgerName := r.breakerToolIdentity(name)
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
 		callID = "call_" + shortHash(call.Arguments)
@@ -945,8 +964,8 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	t, ok := r.tools[name]
 	currentGeneration := r.lifetimeLocked(name)
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
-			fingerprint, boundary := r.breaker.semanticMetadata(name, call.Arguments)
+		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
+			fingerprint, boundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)
 			message := failureParkText(name, snippets)
 			if fingerprint != "" {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, boundary)
@@ -964,7 +983,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		// per-invocation, so the same call comes back and is denied again, and
 		// a streak that only ever grows would park the next one before
 		// dispatch — with no typed error left to raise another approval card.
-		r.breaker.clearFailures(name, call.Arguments)
+		r.breaker.clearFailures(ledgerName, call.Arguments)
 	}
 	r.mu.RUnlock()
 	var semanticRegistered *RegisteredTool
@@ -1138,6 +1157,7 @@ func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signat
 // signatures, or breaker state.
 func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, semanticArgs []byte, message, boundary string, err error) ExecResult {
 	name := call.Name
+	ledgerName := r.breakerToolIdentity(name)
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
 		callID = "call_" + shortHash(call.Arguments)
@@ -1174,9 +1194,9 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 		boundary = prevalidationBoundary(name, call.Arguments, snapshot.registered != nil)
 	}
 	if judged {
-		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
+		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
 			message := failureParkText(name, snippets)
-			fingerprint, recordedBoundary := r.breaker.semanticMetadata(name, call.Arguments)
+			fingerprint, recordedBoundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)
 			if fingerprint != "" {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, recordedBoundary)
 			}
@@ -1187,7 +1207,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 			return res
 		}
 	} else if humanBypassed {
-		r.breaker.clearFailures(name, call.Arguments)
+		r.breaker.clearFailures(ledgerName, call.Arguments)
 	}
 	if judged {
 		if res, blocked := r.semanticParkLocked(name, callID, semanticSignature, exactSignature, snapshot.lifetime, judged); blocked {
@@ -1204,6 +1224,9 @@ func prevalidationBoundary(name string, rawArgs []byte, registered bool) string 
 	}
 	if len(rawArgs) > maxToolArgumentBytes {
 		return "arguments_too_large"
+	}
+	if !utf8.Valid(rawArgs) {
+		return "arguments_encoding"
 	}
 	if len(rawArgs) > 0 {
 		args := map[string]any{}

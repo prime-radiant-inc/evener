@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"primeradiant.com/evener/llm"
 )
 
 // maxFailureLedgerEntries bounds the ledger's memory. It has room for
@@ -76,7 +78,18 @@ func (l *failureLedger) semanticMetadata(name string, args []byte) (fingerprint,
 // share a signature; differing JSON formatting (key order, whitespace) does
 // not, matching the loop detector's existing behavior.
 func signature(name string, args []byte) string {
-	return name + ":" + shortHash(args)
+	return boundedLedgerToolIdentity(name) + ":" + shortHash(args)
+}
+
+// boundedLedgerToolIdentity keeps direct ledger use safe even when its caller
+// has not already replaced an invalid provider-supplied name with the
+// Registry's session-private identity. Registry dispatch does replace it first;
+// this fallback is internal-only and exists to preserve the key-size invariant.
+func boundedLedgerToolIdentity(name string) string {
+	if llm.ValidateToolName(name) == nil && len(name) <= 64 {
+		return name
+	}
+	return "invalid_" + shortHash([]byte(name))
 }
 
 // semanticCallSignature returns the call half of a semantic failure
@@ -86,13 +99,14 @@ func signature(name string, args []byte) string {
 // (notably read_transcript's #827 neutral-default normalization).
 func semanticCallSignature(name string, args map[string]any) string {
 	encoded, err := semanticCanonicalBytes(name, args, false, false)
+	identity := boundedLedgerToolIdentity(name)
 	if err != nil {
 		// Args have passed JSON parsing and schema validation, so this is a
 		// defensive fallback rather than a normal path. It remains bounded and
 		// never exposes the original value.
-		return name + ":" + shortHash([]byte("unencodable"))
+		return identity + ":" + shortHash([]byte("unencodable"))
 	}
-	return name + ":" + shortHash(encoded)
+	return identity + ":" + shortHash(encoded)
 }
 
 func semanticCanonicalBytes(name string, args map[string]any, omitDescription, applyBuiltInDefaults bool) ([]byte, error) {
@@ -278,7 +292,7 @@ func (l *semanticFailureLedger) clearTool(name string) {
 	if l == nil {
 		return
 	}
-	prefix := name + ":"
+	prefix := boundedLedgerToolIdentity(name) + ":"
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key, entry := range l.entries {
@@ -524,7 +538,7 @@ func (l *failureLedger) clearTool(name string) {
 	if l == nil {
 		return
 	}
-	prefix := name + ":"
+	prefix := boundedLedgerToolIdentity(name) + ":"
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for key := range l.entries {

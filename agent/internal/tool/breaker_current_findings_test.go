@@ -133,6 +133,154 @@ func TestSemanticFailureBreaker_InvalidUTF8CannotPoisonLossyEquivalentValidCall(
 	}
 }
 
+func TestBreaker_InvalidToolNamesUsePrivateBoundedIdentity(t *testing.T) {
+	const validName = "readable_probe"
+	secret := "RAW_INVALID_TOOL_NAME_FRAGMENT"
+	invalidA := strings.Repeat(secret, 200) + "/one"
+	invalidB := strings.Repeat(secret, 200) + "/two"
+	args := json.RawMessage(`{"value":"same"}`)
+
+	r := NewRegistry()
+	call := func(id, name string) ExecResult {
+		return r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{ID: id, Name: name, Arguments: args})
+	}
+	first := call("invalid-a-1", invalidA)
+	second := call("invalid-a-2", invalidA)
+	other := call("invalid-b-1", invalidB)
+	third := call("invalid-a-3", invalidA)
+
+	if strings.Contains(first.Output, "did not execute") || strings.Contains(second.Output, "did not execute") {
+		t.Fatalf("same invalid name parked before its third call: first=%q second=%q", first.Output, second.Output)
+	}
+	if !strings.Contains(third.Output, "did not execute") {
+		t.Fatalf("third call for the same invalid name was not parked: %#v", third)
+	}
+	if strings.Contains(other.Output, "You just ran") || strings.Contains(other.Output, "did not execute") {
+		t.Fatalf("different invalid name inherited the first name's breaker history: %#v", other)
+	}
+	for _, field := range []struct {
+		label string
+		value string
+	}{
+		{"first exact", first.BreakerExactSignature},
+		{"first semantic", first.BreakerSemanticSignature},
+		{"second exact", second.BreakerExactSignature},
+		{"second semantic", second.BreakerSemanticSignature},
+		{"other exact", other.BreakerExactSignature},
+		{"other semantic", other.BreakerSemanticSignature},
+		{"third exact", third.BreakerExactSignature},
+		{"third semantic", third.BreakerSemanticSignature},
+	} {
+		if field.value == "" || len(field.value) > 98 {
+			t.Fatalf("%s identity is missing or unbounded: len=%d value=%q", field.label, len(field.value), field.value)
+		}
+		if strings.Contains(field.value, secret) || strings.Contains(field.value, "/one") || strings.Contains(field.value, "/two") {
+			t.Fatalf("%s identity leaks the invalid tool name: %q", field.label, field.value)
+		}
+	}
+	if first.BreakerExactSignature != second.BreakerExactSignature || first.BreakerExactSignature != third.BreakerExactSignature {
+		t.Fatalf("same invalid name did not retain exact identity: first=%q second=%q third=%q", first.BreakerExactSignature, second.BreakerExactSignature, third.BreakerExactSignature)
+	}
+	if first.BreakerSemanticSignature != second.BreakerSemanticSignature || first.BreakerSemanticSignature != third.BreakerSemanticSignature {
+		t.Fatalf("same invalid name did not retain semantic identity: first=%q second=%q third=%q", first.BreakerSemanticSignature, second.BreakerSemanticSignature, third.BreakerSemanticSignature)
+	}
+	if first.BreakerExactSignature == other.BreakerExactSignature || first.BreakerSemanticSignature == other.BreakerSemanticSignature {
+		t.Fatalf("distinct invalid names shared breaker identity: first=%#v other=%#v", first, other)
+	}
+
+	r.breaker.mu.Lock()
+	for key := range r.breaker.entries {
+		if len(key) > 81 || strings.Contains(key, secret) {
+			r.breaker.mu.Unlock()
+			t.Fatalf("exact failure-ledger key is unbounded or leaks an invalid name: len=%d key=%q", len(key), key)
+		}
+	}
+	r.breaker.mu.Unlock()
+	r.semanticBreaker.mu.Lock()
+	for key := range r.semanticBreaker.entries {
+		if len(key) > 98 || strings.Contains(key, secret) {
+			r.semanticBreaker.mu.Unlock()
+			t.Fatalf("semantic failure-ledger key is unbounded or leaks an invalid name: len=%d key=%q", len(key), key)
+		}
+	}
+	r.semanticBreaker.mu.Unlock()
+
+	otherRegistry := NewRegistry()
+	otherResult := otherRegistry.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{ID: "other-session", Name: invalidA, Arguments: args})
+	if otherResult.BreakerExactSignature == first.BreakerExactSignature || otherResult.BreakerSemanticSignature == first.BreakerSemanticSignature {
+		t.Fatalf("invalid-name identities are not registry/session keyed: first=%#v other=%#v", first, otherResult)
+	}
+	r.Remove(invalidA)
+	if reset := call("invalid-a-after-remove", invalidA); strings.Contains(reset.Output, "You just ran") || strings.Contains(reset.Output, "did not execute") {
+		t.Fatalf("removing an absent invalid name did not clear its breaker history: %#v", reset)
+	}
+
+	valid := r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{ID: "valid", Name: validName, Arguments: args})
+	if !strings.HasPrefix(valid.BreakerExactSignature, validName+":") || !strings.HasPrefix(valid.BreakerSemanticSignature, validName+":") {
+		t.Fatalf("valid tool name lost its readable signature prefix: %#v", valid)
+	}
+}
+
+func TestFinalizePrevalidationFailure_InvalidUTF8UsesEncodingBoundary(t *testing.T) {
+	const name = "utf8_prevalidation"
+	r := NewRegistry()
+	calls := 0
+	registerUTF8CollisionTool(t, r, name, &calls)
+
+	results := make([]ExecResult, 0, 3)
+	for i, invalid := range []byte{0xff, 0xfe, 0xfd} {
+		raw := append([]byte(`{"value":"`), invalid)
+		raw = append(raw, []byte(`"}`)...)
+		call := llm.ToolCallData{ID: "prevalidation-" + string(rune('1'+i)), Name: name, Arguments: raw}
+		_, snapshot := r.SnapshotPrevalidation(name)
+		res := r.FinalizePrevalidationFailure(context.Background(), snapshot, call, nil, "invalid tool arguments JSON: input is not valid UTF-8", "", errors.New("input is not valid UTF-8"))
+		results = append(results, res)
+		if !res.IsError || !res.PrevalOnly {
+			t.Fatalf("invalid UTF-8 failure %d did not retain prevalidation error state: %#v", i+1, res)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid UTF-8 prevalidation failures dispatched executor %d times", calls)
+	}
+	if !strings.Contains(results[1].Output, "normalized failure boundary (arguments_encoding)") {
+		t.Fatalf("second invalid UTF-8 failure has wrong guidance: %q", results[1].Output)
+	}
+	if !strings.Contains(results[2].Output, "semantic failure loop") || !strings.Contains(results[2].Output, "normalized boundary arguments_encoding") {
+		t.Fatalf("third invalid UTF-8 failure did not park at encoding boundary: %q", results[2].Output)
+	}
+	for i, res := range results {
+		if strings.Contains(res.Output, "schema_validation") {
+			t.Fatalf("invalid UTF-8 failure %d was mislabeled as schema validation: %q", i+1, res.Output)
+		}
+		if res.BreakerExactSignature == "" || res.BreakerSemanticSignature == "" || len(res.BreakerExactSignature) > 98 || len(res.BreakerSemanticSignature) > 98 {
+			t.Fatalf("invalid UTF-8 failure %d has missing or unbounded identity: %#v", i+1, res)
+		}
+	}
+}
+
+func TestPrevalidationBoundary_RawArgumentPrecedence(t *testing.T) {
+	invalidUTF8 := []byte{'{', 0xff, '}'}
+	oversizeInvalidUTF8 := bytes.Repeat([]byte{0xff}, maxToolArgumentBytes+1)
+	for _, tc := range []struct {
+		name       string
+		raw        []byte
+		registered bool
+		want       string
+	}{
+		{"unknown precedes encoding", invalidUTF8, false, "unknown_tool"},
+		{"size precedes encoding", oversizeInvalidUTF8, true, "arguments_too_large"},
+		{"invalid UTF-8", invalidUTF8, true, "arguments_encoding"},
+		{"invalid JSON", []byte(`{"open":`), true, "arguments_json"},
+		{"schema", []byte(`{"valid":"json"}`), true, "schema_validation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := prevalidationBoundary("probe", tc.raw, tc.registered); got != tc.want {
+				t.Fatalf("prevalidationBoundary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFinalizePrevalidationFailure_NormalizedAskFormsShareSemanticIdentity(t *testing.T) {
 	r := NewRegistry()
 	dispatches := 0
