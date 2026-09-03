@@ -590,9 +590,10 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
 	// A timer's id is minted before the key so the key's Slot, the config's
-	// slot, and the config's watchID are all the same id.
+	// slot, and the config's watchID are all the same id. A clear carries no
+	// slot: a fresh id would build a key that matches nothing.
 	slot := ""
-	if watchArgsIsTimer(a) {
+	if !a.Clear && watchArgsIsTimer(a) {
 		slot = jobstore.NewWatchID()
 	}
 	key := watchKey{
@@ -868,6 +869,10 @@ func validateWatchTriggerShape(a watchArgs) error {
 			{len(a.Events) > 0, "events"},
 			{a.Every > 0, "every"},
 			{a.EventFilter != nil, "event_filter"},
+			// A timer has no send rail: watchSendSnapshot and
+			// isCurrentPendingWatchSendLocked rebuild the watch key without the
+			// slot, so a timer's sends would be silently dropped as stale.
+			{a.Send != nil, "send"},
 		} {
 			if other.set {
 				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)

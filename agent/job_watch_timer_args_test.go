@@ -69,6 +69,8 @@ func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 		{"note without timer", watchArgs{Operation: "create", Source: "self", Target: "caller", Events: []string{"assistant.tool"}, Note: "x"}, "note applies to timers"},
 		{"both time fields", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60, RepeatSeconds: 60}, "after_seconds and repeat_seconds"},
 		{"timer with output_match", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60, OutputMatch: "x"}, "repeat_seconds and output_match"},
+		{"timer with send", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Send: &watchSendArgs{To: "dlg_a"}}, "repeat_seconds and send are mutually exclusive"},
+		{"one-shot with send", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Send: &watchSendArgs{To: "dlg_a"}}, "after_seconds and send are mutually exclusive"},
 		{"progress on self", watchArgs{Operation: "create", Source: "self", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
 		{"progress on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
 	}
