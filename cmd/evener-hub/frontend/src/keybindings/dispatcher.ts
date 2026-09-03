@@ -2,12 +2,18 @@
 // (createKeybindingsHandler over the active scope set); precedence, in order:
 //
 //   1. IME composition keydowns (event.isComposing / keyCode 229) are ignored.
-//   2. Per-binding editable-target policy (allowInEditable, default false).
-//   3. An open modal suppresses every binding: [aria-modal="true"] ancestor of
-//      the event target by default, plus whatever store check the caller's
-//      injected predicate adds (Task 2 wires paletteStore.open there).
-//   4. The scope stack, top-down.
-//   5. The global scope.
+//   2. The scope stack, top-down, then the global scope, decide WHICH binding
+//      a chord resolves to (the first/highest-precedence binding claims it).
+//   3. Per-binding policy on the matched binding, each flag reproducing one
+//      of the pre-dispatcher listeners' own guards:
+//      - ignoreIfDefaultPrevented (default true): an already-claimed keydown
+//        is ignored.
+//      - allowInModal (default false): an open modal suppresses the binding -
+//        [aria-modal="true"] ancestor of the event target by default, plus
+//        whatever store check the caller's injected predicate adds (the app
+//        wiring adds paletteStore.open there).
+//      - allowInEditable (default false): an editable event target suppresses
+//        the binding.
 //
 // The first (highest-precedence) binding for a chord claims it outright: a
 // firing binding preventDefaults and stops evaluation, and a shadowed or
@@ -15,10 +21,10 @@
 //
 // An event another handler already claimed (event.defaultPrevented) is
 // ignored per binding: ignoreIfDefaultPrevented defaults to true, matching
-// AppShell (AppShell.tsx:392), Settings (Settings.tsx:188), and
-// SelectionQuote (SelectionQuote.tsx:148) - but NOT RailHost's ⌘B listener
-// (RailHost.tsx:59-66), which has no defaultPrevented check and so binds with
-// ignoreIfDefaultPrevented: false in defaults.ts.
+// the pre-dispatcher AppShell ⌘K/⌘I/⌘J, Settings Escape, and SelectionQuote
+// ⌘' listeners - but NOT RailHost's ⌘B listener, which had no
+// defaultPrevented check and so binds with ignoreIfDefaultPrevented: false
+// in defaults.ts.
 
 import { createKeybindingsHandler, type KeybindingsMap } from "tinykeys";
 import { serializeChord } from "./chord";
@@ -43,9 +49,9 @@ export const isEditableTarget: EditableTargetPredicate = (target) => {
   );
 };
 
-/** The DOM half of AppShell.tsx's blockedByOpenModal. The palette is not an
- * [aria-modal] element, so callers should compose this with a
- * paletteStore.open-style store check (Task 2 injects that predicate). */
+/** The DOM half of the shell's old blockedByOpenModal check. The palette is
+ * not an [aria-modal] element, so the app wiring (shell/installKeybindings.ts)
+ * composes this with a paletteStore.open store check. */
 export const isModalOpenTarget: ModalOpenPredicate = (event) => {
   const target = event.target;
   return target instanceof Element && target.closest('[aria-modal="true"]') !== null;
@@ -83,12 +89,14 @@ export function createKeybindingDispatcher(options: DispatcherOptions = {}): Key
         if (claimed.has(chordKey)) continue;
         claimed.add(chordKey);
         map[chordKey] = (event) => {
-          if (binding.ignoreIfDefaultPrevented && event.defaultPrevented) return;
-          if (!binding.allowInEditable && isEditable(event.target)) return;
+          const real = realEvent ?? event;
+          if (binding.ignoreIfDefaultPrevented && real.defaultPrevented) return;
+          if (!binding.allowInModal && isModalOpen(real)) return;
+          if (!binding.allowInEditable && isEditable(real.target)) return;
           const run = registry.getState().actions.get(binding.actionId);
           if (!run) return;
-          event.preventDefault();
-          run(event);
+          real.preventDefault();
+          run(real);
         };
       }
     }
@@ -103,10 +111,41 @@ export function createKeybindingDispatcher(options: DispatcherOptions = {}): Key
     current = buildHandler(state);
   });
 
+  // The binding handler tinykeys invokes receives whatever event object the
+  // handler was called with; when matching ran against a code-fallback view
+  // (see handleKeyDown), the REAL event is what's run through the binding.
+  // Single-threaded dispatch makes the stash safe: current() runs
+  // synchronously to completion inside the try.
+  let realEvent: KeyboardEvent | null = null;
+
   function handleKeyDown(event: KeyboardEvent): void {
     if (event.isComposing || event.keyCode === 229) return;
-    if (isModalOpen(event)) return;
-    current(event);
+    // tinykeys' isKeyboardEvent gate drops any event with an empty `code`.
+    // Real browsers always set one, but synthetic keydowns (fireEvent-style
+    // tests, and any app code dispatching a bare KeyboardEvent) routinely
+    // omit it - and the pre-dispatcher listeners this module replaced never
+    // looked at `code`. Match against a view whose code falls back to the
+    // key: matching consults code only as a fallback for string keys
+    // (already case-insensitively matched on `key`) and as a second target
+    // for regex keys (where code===key can never add a match the key itself
+    // didn't already produce), so the fallback is semantically invisible.
+    const view =
+      event.code === "" && event.key !== ""
+        ? new KeyboardEvent("keydown", {
+            key: event.key,
+            code: event.key,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+          })
+        : event;
+    realEvent = event;
+    try {
+      current(view);
+    } finally {
+      realEvent = null;
+    }
   }
 
   return {

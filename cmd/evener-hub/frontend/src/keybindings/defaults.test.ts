@@ -59,6 +59,20 @@ describe("default binding map", () => {
       expect(binding.ignoreIfDefaultPrevented ?? true).toBe(expected);
     }
   });
+
+  test("modal policy matches today's per-site modal guards", () => {
+    // palette.open (AppShell's deliberate ⌘K exemption), rail.toggle and
+    // selection.quote (their listeners have no modal check at all) are exempt;
+    // composer.focus / next-needs-you (AppShell's blockedByOpenModal) and
+    // settings.close keep the default suppression.
+    const policy = new Map(DEFAULT_BINDINGS.map((b) => [b.actionId, b.allowInModal ?? false]));
+    expect(policy.get(ACTIONS.paletteOpen)).toBe(true);
+    expect(policy.get(ACTIONS.railToggle)).toBe(true);
+    expect(policy.get(ACTIONS.selectionQuote)).toBe(true);
+    expect(policy.get(ACTIONS.composerFocus)).toBe(false);
+    expect(policy.get(ACTIONS.nextNeedsYou)).toBe(false);
+    expect(policy.get(ACTIONS.settingsClose)).toBe(false);
+  });
 });
 
 describe("default bindings through the dispatcher", () => {
@@ -125,5 +139,25 @@ describe("default bindings through the dispatcher", () => {
     setup();
     window.dispatchEvent(keydown({ key: "k", code: "KeyK", ctrlKey: true, shiftKey: true }));
     expect(calls).toEqual([]);
+  });
+
+  test("every $mod chord also fires under Meta (today's listeners accept metaKey||ctrlKey)", () => {
+    // jsdom resolves tinykeys' $mod to Control, but the shell's pre-dispatcher
+    // listeners (and Mac users hitting Ctrl+K) accept either modifier on every
+    // platform, so registerDefaultBindings registers the cross-platform twin
+    // of each $mod chord as well.
+    setup();
+    window.dispatchEvent(keydown({ key: "k", code: "KeyK", metaKey: true }));
+    window.dispatchEvent(keydown({ key: "b", code: "KeyB", metaKey: true }));
+    window.dispatchEvent(keydown({ key: "i", code: "KeyI", metaKey: true }));
+    window.dispatchEvent(keydown({ key: "j", code: "KeyJ", metaKey: true }));
+    window.dispatchEvent(keydown({ key: "'", code: "Quote", metaKey: true }));
+    expect(calls).toEqual([
+      ACTIONS.paletteOpen,
+      ACTIONS.railToggle,
+      ACTIONS.composerFocus,
+      ACTIONS.nextNeedsYou,
+      ACTIONS.selectionQuote,
+    ]);
   });
 });

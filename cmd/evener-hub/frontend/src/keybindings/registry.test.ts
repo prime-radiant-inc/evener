@@ -21,6 +21,16 @@ describe("binding registration", () => {
     expect(registry.getState().bindings).toHaveLength(1);
   });
 
+  test("allowInModal defaults to false and is stored verbatim when set", () => {
+    const registry = createKeybindingsRegistry();
+    const plain = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
+    expect(plain.allowInModal).toBe(false);
+    const exempt = registry
+      .getState()
+      .registerBinding({ id: "b2", actionId: "a1", chord: "$mod+J", allowInModal: true });
+    expect(exempt.allowInModal).toBe(true);
+  });
+
   test("accepts a pre-parsed chord sequence", () => {
     const registry = createKeybindingsRegistry();
     const parsed = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });

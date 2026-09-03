@@ -116,6 +116,18 @@ describe("dispatcher", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  test("allowInModal: true fires while the modal predicate reports open", () => {
+    // Today's ⌘K handler deliberately exempts palette.open from the modal
+    // guard (and RailHost's ⌘B / SelectionQuote's ⌘' listeners have no modal
+    // check at all), so the modal layer is per-binding, not blanket.
+    const state = setup({ isModalOpen: () => true });
+    const run = vi.fn();
+    state.registerAction("a", run);
+    state.registerBinding({ id: "b1", actionId: "a", chord: "$mod+K", allowInModal: true });
+    pressOn(window, MOD_K);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   test("the default modal check sees an [aria-modal] ancestor of the target", () => {
     const state = setup();
     const run = vi.fn();
@@ -167,6 +179,22 @@ describe("dispatcher", () => {
     state.registerBinding({ id: "b1", actionId: "missing", chord: "$mod+K" });
     const event = pressOn(window, MOD_K);
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  test("matches a synthetic keydown with no code (fireEvent-style), running the real event", () => {
+    // The pre-dispatcher listeners never looked at event.code, and the app's
+    // existing suites (and any app code dispatching a bare KeyboardEvent)
+    // construct codeless events that tinykeys' isKeyboardEvent gate would
+    // otherwise drop.
+    const state = setup();
+    const run = vi.fn();
+    state.registerAction("a", run);
+    state.registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" });
+    const event = pressOn(window, { key: "k", ctrlKey: true });
+    expect(event.code).toBe("");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith(event);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   test("matches a multi-press sequence", () => {
