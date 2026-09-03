@@ -1344,3 +1344,47 @@ func TestLaunchRefusesACancelledLaunchWithNoPluginSelection(t *testing.T) {
 		})
 	}
 }
+
+// An unsandboxed session gets its scratch directory lazily, on the first
+// command the environment runs — session init's git snapshot is usually what
+// mints it — and only a session's Cleanup releases it. A launch that fails
+// before any session takes the environment over owes that directory and the
+// lease inside it the same disposal a sandboxed one gets.
+func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldEnsure, oldNew := runEnsureUserConfigDirs, runNewSession
+	t.Cleanup(func() { runEnsureUserConfigDirs, runNewSession = oldEnsure, oldNew })
+	runEnsureUserConfigDirs = func() error { return nil }
+	var scratch string
+	runNewSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		// What session initialization does before the steps that can fail: it
+		// runs commands through the environment, and an unsandboxed one mints
+		// its scratch for the first of them.
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("ExecCommand: %v", err)
+		}
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("session creation got a %T, want the local environment run built", env)
+		}
+		scratch = local.SessionScratchDir()
+		return nil, errors.New("no session today")
+	}
+
+	dir := t.TempDir()
+	err := run(context.Background(), runConfig{
+		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("run error = %v, want the session-creation failure", err)
+	}
+	if scratch == "" {
+		t.Fatal("the environment minted no scratch, so this is not the leak under test")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	// The lease lives inside the directory, so it goes with it.
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("unsandboxed scratch %s survived the failed launch: stat err = %v", scratch, err)
+	}
+}

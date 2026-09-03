@@ -537,12 +537,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 		// Provisioning allocates the session scratch and the flock lease that
-		// keeps the crashed-scratch sweeper off it, and nothing releases
-		// either until a session owns this environment and its Close does.
-		// Every way out between here and that hand-off has to dispose of them,
-		// or an interrupted startup leaks a directory and a lease per attempt.
+		// keeps the crashed-scratch sweeper off it, and an unsandboxed session
+		// mints one of its own on its first command; nothing releases either
+		// until a session owns this environment and its Close does. Every way
+		// out between here and that hand-off has to dispose of them, or an
+		// interrupted startup leaks a directory and a lease per attempt.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
-			env.DisposeSandboxScratch()
+			env.DisposeUnadoptedScratch()
 			return err
 		}
 	}
@@ -562,7 +563,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// A resume provisions this environment's sandbox from the
 			// session's persisted mode inside the restore, and the restore can
 			// fail after that with no session built to own what it took.
-			env.DisposeSandboxScratch()
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -572,8 +573,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
-			// The session that would have owned the scratch was never built.
-			env.DisposeSandboxScratch()
+			// The session that would have owned whatever this environment
+			// provisioned was never built.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}

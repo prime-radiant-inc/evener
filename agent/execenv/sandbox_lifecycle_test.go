@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -467,4 +468,43 @@ func writeBlockedOffEnv(t *testing.T, home, worktree string) *LocalExecutionEnvi
 		t.Fatalf("EnableSandbox(write-blocked off): %v", err)
 	}
 	return env
+}
+
+// An unsandboxed environment mints its session scratch lazily, on the first
+// command environment it builds, and a sandboxed one owns the scratch
+// EnableSandbox provisioned; only a session's Cleanup ever releases either. So
+// a launch that provisioned an environment and then failed before any session
+// adopted it has to drop both, lease and directory together, and has to be
+// able to say so more than once — several failure paths can run on the way
+// out.
+func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+
+	// Building the environment for a command is what mints the unsandboxed one.
+	_ = env.commandEnvironment(nil)
+	unsandboxed := env.SessionScratchDir()
+	if unsandboxed == "" {
+		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to dispose")
+	}
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	owned := env.SessionScratchDir()
+	if owned == "" || owned == unsandboxed {
+		t.Fatalf("owned scratch = %q, want one of its own beside the unsandboxed %q", owned, unsandboxed)
+	}
+
+	env.DisposeUnadoptedScratch()
+	env.DisposeUnadoptedScratch()
+
+	for name, dir := range map[string]string{"unsandboxed": unsandboxed, "owned": owned} {
+		// The lease lives inside the directory, so it goes with it.
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s scratch %s survived disposal: stat err = %v", name, dir, err)
+		}
+	}
+	if got := env.SessionScratchDir(); got != "" {
+		t.Errorf("SessionScratchDir = %q after disposal, want none", got)
+	}
 }
