@@ -33,6 +33,8 @@ func TestSessionPrevalidationFailuresReachSemanticBreaker(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			var first string
+			var second string
 			var third string
 			var semantic string
 			for i := range 3 {
@@ -41,9 +43,20 @@ func TestSessionPrevalidationFailuresReachSemanticBreaker(t *testing.T) {
 					Name:      tc.tool,
 					Arguments: []byte(tc.args(i)),
 				}, "")
-				if i == 2 {
+				switch i {
+				case 0:
+					first = res.Output
+				case 1:
+					second = res.Output
+				case 2:
 					third, semantic = res.Output, res.BreakerSemanticSignature
 				}
+			}
+			if strings.Contains(first, "You just ran") || strings.Contains(first, "did not execute") {
+				t.Fatalf("first prevalidation failure unexpectedly advanced breaker: %q", first)
+			}
+			if !strings.Contains(second, "You just ran") || strings.Contains(second, "did not execute") {
+				t.Fatalf("second prevalidation failure did not produce its breaker nudge: %q", second)
 			}
 			if semantic == "" || !strings.Contains(third, "semantic failure loop") {
 				t.Fatalf("prevalidation bypassed semantic breaker: signature=%q output=%q", semantic, third)
