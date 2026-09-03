@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -478,6 +482,135 @@ func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(
 			})
 		}
 	}
+}
+
+func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args func() []byte
+		want func([]byte) string
+	}{
+		{
+			name: "over limit",
+			args: func() []byte {
+				base := `{"end_turn":true,"message":"top-level"}`
+				return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
+			},
+			want: func(args []byte) string {
+				return fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(args), tool.MaxToolArgumentBytes)
+			},
+		},
+		{
+			name: "invalid UTF-8",
+			args: func() []byte {
+				args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+				return append(args, []byte(`"}`)...)
+			},
+			want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t, withoutGitSnapshot())
+			sess.stateDir = t.TempDir()
+			var mu sync.Mutex
+			var prompts []string
+			hookClient := llm.NewClient()
+			hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				mu.Lock()
+				prompts = append(prompts, req.Messages[0].Text())
+				mu.Unlock()
+				return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"updatedInput":{"end_turn":true,"message":"hook replacement","output":{"message":"","data":{},"artifacts":[]}}}}`)}
+			}})
+			runner := hooks.NewRunner(hookClient, "gpt-5.2")
+			runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
+			sess.hookRunner = runner
+
+			observed := make(chan struct {
+				repaired []events.ToolCallRepairedData
+				end      *events.ToolCallEndData
+			}, 1)
+			go func() {
+				var got struct {
+					repaired []events.ToolCallRepairedData
+					end      *events.ToolCallEndData
+				}
+				for event := range sess.Events() {
+					switch data := event.Data.(type) {
+					case events.ToolCallRepairedData:
+						got.repaired = append(got.repaired, data)
+					case events.ToolCallEndData:
+						if data.CallID == "issue831-hook-raw" {
+							data := data
+							got.end = &data
+						}
+					}
+				}
+				observed <- got
+			}()
+
+			args := tc.args()
+			res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-raw", Name: "communicate", Arguments: args}, "")
+			if !res.IsError || !res.PrevalOnly || res.FullOutput != tc.want(args) {
+				t.Fatalf("result = %+v, want raw prevalidation error %q", res, tc.want(args))
+			}
+			if len(res.FullOutput) > 256 {
+				t.Fatalf("error was not bounded: %d bytes", len(res.FullOutput))
+			}
+
+			sess.Close()
+			got := <-observed
+			mu.Lock()
+			defer mu.Unlock()
+			if len(prompts) != 1 || prompts[0] != "input=null" {
+				t.Fatalf("hook prompts = %d/%q, want one bounded null input", len(prompts), boundedStringForIssue831(prompts))
+			}
+			if len(got.repaired) != 0 {
+				t.Fatalf("invalid raw hook call emitted repairs: %+v", got.repaired)
+			}
+			if got.end == nil || got.end.ArgumentsJSON != string(args) {
+				t.Fatalf("end = %+v, want original raw arguments", got.end)
+			}
+		})
+	}
+}
+
+func TestSession_PreToolUseHookStillReceivesValidSchemaInvalidArgumentsIssue831(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	var mu sync.Mutex
+	var prompts []string
+	hookClient := llm.NewClient()
+	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+		mu.Lock()
+		prompts = append(prompts, req.Messages[0].Text())
+		mu.Unlock()
+		return llm.Response{Message: llm.Assistant(`{}`)}
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
+	sess.hookRunner = runner
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-schema", Name: "communicate", Arguments: json.RawMessage(`{"end_turn":"not-a-bool","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
+	if !res.IsError || !res.PrevalOnly {
+		t.Fatalf("result = %+v, want schema prevalidation failure", res)
+	}
+	sess.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
+		t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
+	}
+}
+
+func boundedStringForIssue831(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	const outputLimit = 200
+	if len(values[0]) <= outputLimit {
+		return values[0]
+	}
+	return values[0][:outputLimit] + "…"
 }
 
 func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssue831(t *testing.T) {

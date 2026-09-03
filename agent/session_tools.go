@@ -679,7 +679,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		hi := s.hookInput(plugin.HookPreToolUse)
 		hi.ToolName = toolname.EvenerToClaude(call.Name)
 		hi.ToolUseID = call.ID
-		if len(call.Arguments) > 0 {
+		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
 
@@ -703,7 +703,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 				IsError:    true,
 			}
 		}
-		if len(preResult.UpdatedInput) > 0 {
+		if !prep.RawArgumentsRejected && len(preResult.UpdatedInput) > 0 {
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
 				return tool.ExecResult{

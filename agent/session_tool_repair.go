@@ -31,6 +31,10 @@ type prepareResult struct {
 	Changes   []repair.Change
 	PrevalErr string
 	Err       error
+	// RawArgumentsRejected keeps unvalidated bytes out of hook input and
+	// prevents a hook from replacing them. It is separate from PrevalErr so an
+	// unknown tool can retain its established unknown-tool diagnostic.
+	RawArgumentsRejected bool
 }
 
 // prepareToolCall heals a tool call before dispatch. t is the resolved tool
@@ -46,12 +50,15 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	if strings.TrimSpace(res.Call.ID) == "" {
 		res.Call.ID = "call_" + shortHash(res.Call.Arguments)
 	}
+	if err := tool.ValidateRawArguments(res.Call.Arguments); err != nil {
+		res.RawArgumentsRejected = true
+		if t != nil {
+			res.PrevalErr = err.Error()
+			return res
+		}
+	}
 	if t == nil {
 		res.PrevalErr = repair.UnknownToolMessage(requestedVisible, visibleNames)
-		return res
-	}
-	if err := tool.ValidateRawArguments(res.Call.Arguments); err != nil {
-		res.PrevalErr = err.Error()
 		return res
 	}
 
@@ -124,7 +131,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		filled := make(map[string]any, len(args))
 		maps.Copy(filled, args)
 		var err error
-		fillChanges, promotedOutputString, err = repairDefaultCommunicateEnvelope(envelope, filled, res.Call.Arguments)
+		fillChanges, promotedOutputString, err = repairDefaultCommunicateEnvelope(envelope, filled)
 		if err != nil {
 			res.PrevalErr = communicateOutputStringObjectError(err.Error())
 			return res
@@ -231,7 +238,7 @@ func repairCommitError() string {
 // communicateEnvelopeFor, but this function repeats the equality guard so no
 // future caller can accidentally apply a default-contract repair to a custom
 // result schema.
-func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArguments []byte) ([]repair.Change, bool, error) {
+func repairDefaultCommunicateEnvelope(envelope, args map[string]any) ([]repair.Change, bool, error) {
 	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
 		return nil, false, nil
 	}
@@ -241,7 +248,7 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArgument
 		args["output"] = map[string]any{}
 		changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
 	} else if encoded, ok := raw.(string); ok {
-		decoded, err := decodeDefaultCommunicateOutputString(encoded, rawArguments)
+		decoded, err := decodeDefaultCommunicateOutputString(encoded)
 		if err != nil {
 			return nil, false, err
 		}
@@ -266,10 +273,7 @@ func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArgument
 	return changes, false, nil
 }
 
-func decodeDefaultCommunicateOutputString(encoded string, rawArguments []byte) (map[string]any, error) {
-	if err := tool.ValidateRawArguments(rawArguments); err != nil {
-		return nil, err
-	}
+func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error) {
 	if len(encoded) > tool.MaxToolArgumentBytes {
 		return nil, fmt.Errorf("exceeds the %d byte argument limit", tool.MaxToolArgumentBytes)
 	}
