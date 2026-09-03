@@ -43,6 +43,7 @@ func fitNavigationV2Snapshot(
 		snapshot hubapi.NavigationSnapshot
 		data     json.RawMessage
 		bytes    int
+		object   any
 	}
 	probe := func(candidate any) (candidateResult, error) {
 		snapshot, err := normalizeNavigationResource(key, candidate)
@@ -61,11 +62,14 @@ func fitNavigationV2Snapshot(
 		if err != nil {
 			return candidateResult{}, fmt.Errorf("encode navigation v2 response: %w", err)
 		}
-		return candidateResult{snapshot: snapshot, data: data, bytes: len(encoded)}, nil
+		return candidateResult{snapshot: snapshot, data: data, bytes: len(encoded), object: candidate}, nil
 	}
 
 	initial, err := probe(object)
 	if err != nil {
+		return hubapi.NavigationSnapshot{}, nil, err
+	}
+	if err := validateNavigationPageProgress(key.Kind, initial.object); err != nil {
 		return hubapi.NavigationSnapshot{}, nil, err
 	}
 	if initial.bytes <= maxBytes {
@@ -89,6 +93,9 @@ func fitNavigationV2Snapshot(
 			return result.bytes <= maxBytes, probeErr
 		})
 		if err != nil {
+			return hubapi.NavigationSnapshot{}, nil, err
+		}
+		if err := validateNavigationPageProgress(key.Kind, fitted.object); err != nil {
 			return hubapi.NavigationSnapshot{}, nil, err
 		}
 		return fitted.snapshot, fitted.data, nil

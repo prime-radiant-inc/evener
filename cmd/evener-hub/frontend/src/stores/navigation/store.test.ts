@@ -2124,6 +2124,75 @@ test.each([
   expect(navigationStore.getState().protocolError).toBeInstanceOf(Error);
 });
 
+test.each(["v1", "v2"] as const)("%s successful pages must advance when remaining is positive", async (mode) => {
+  const manifestKey = { kind: "manifest" } as const;
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  let sectionCalls = 0;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      if (mode === "v1") return wire(emptyManifest());
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 1,
+        etag: '"manifest"',
+        data: {
+          metadata: emptyManifest({ revision: 1 }),
+          entities: [],
+          containers: [
+            {
+              key: navigationRootContainerKey(manifestKey, "manifest"),
+              owner: { kind: "resource_root", slot: "manifest" },
+              children: [],
+            },
+          ],
+        },
+      } as NavigationReadResponse;
+    }
+    if (params.resource !== "section") throw new Error("unexpected navigation resource");
+    sectionCalls++;
+    if (mode === "v1") return wire({ sessions: [], remaining: 3 }, "ok", `"section-${sectionCalls}"`, sectionCalls);
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: generation,
+      revision: sectionCalls,
+      etag: `"section-${sectionCalls}"`,
+      data: {
+        metadata: {
+          generation_id: generation,
+          revision: sectionCalls,
+          offset: 0,
+          limit: 50,
+          remaining: 3,
+          truncated: true,
+        },
+        entities: [],
+        containers: [
+          {
+            key: navigationRootContainerKey(sectionKey, "sessions"),
+            owner: { kind: "resource_root", slot: "sessions" },
+            children: [],
+          },
+        ],
+      },
+    } as NavigationReadResponse;
+  });
+  initNavigation(client, { ...capability(), readVersions: mode === "v2" ? [1, 2] : [1] });
+  await flush();
+
+  const first = await navigationStore.getState().loadSection("live");
+  const second = await navigationStore.getState().loadSection("live");
+
+  expect(first.error).toBeInstanceOf(Error);
+  expect(second.error).toBeInstanceOf(Error);
+  expect(first.data).toBeNull();
+  expect(second.data).toBeNull();
+  expect(sectionCalls).toBe(2);
+});
+
 test("a malformed manifest body is never committed", async () => {
   await init(() => wire({}));
   expect(navigationStore.getState().manifest?.data).toBeNull();

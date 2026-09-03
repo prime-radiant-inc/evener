@@ -372,6 +372,72 @@ func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *t
 	}
 }
 
+func TestNavigationJobHeavyPageRejectsZeroProgress(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	jobHeavy := hubcore.TreeNode{
+		ID:        navigationTestSessionID,
+		Title:     "job-heavy",
+		Project:   "p1",
+		State:     "active",
+		Kind:      "session",
+		UpdatedAt: now,
+	}
+	for index := range 1_024 {
+		suffix := fmt.Sprintf("-%04d", index)
+		jobHeavy.RunningJobs = append(jobHeavy.RunningJobs, appwire.EvenerJobInfo{
+			JobID:   strings.Repeat("j", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			JobType: strings.Repeat("t", maxNavigationLabelRunes),
+			Status:  "running",
+			Command: strings.Repeat("c", maxNavigationFullCommandRunes+1),
+			Task:    strings.Repeat("k", maxNavigationLabelRunes),
+			Reason:  strings.Repeat("r", maxNavigationLabelRunes),
+			Intent:  strings.Repeat("i", maxNavigationLabelRunes),
+		})
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Live = []hubcore.TreeNode{jobHeavy}
+	source.mu.Unlock()
+	cache := newNavigationRepresentationCache(8, 64<<20)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) { cfg.Cache = cache })
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	for attempt := 1; attempt <= 2; attempt++ {
+		representation, err := service.Representation(t.Context(), key)
+		if err == nil {
+			page := representation.Object.(hubapi.NavigationSectionResource)
+			t.Fatalf("attempt %d returned successful page with rows=%d remaining=%d", attempt, len(page.Sessions), page.Remaining)
+		}
+		if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
+			t.Fatalf("attempt %d error = %v, want page progress invariant", attempt, err)
+		}
+	}
+	if stats := cache.Stats(); stats.Entries != 0 || stats.Hits != 0 || stats.Misses != 2 {
+		t.Fatalf("rejected page cache stats = %+v, want entries=0 hits=0 misses=2", stats)
+	}
+
+	object := hubapi.NavigationSectionResource{
+		GenerationID: "g",
+		Revision:     1,
+		Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{{
+			Ref:         "local:" + navigationTestSessionID,
+			HostID:      "local",
+			SessionID:   navigationTestSessionID,
+			Title:       "job-heavy",
+			Project:     "p1",
+			State:       "active",
+			Kind:        "session",
+			RunningJobs: navigationJobs(jobHeavy.RunningJobs),
+			Children:    hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		}},
+	}
+	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: "g", Revision: 1, ETag: `"one"`}
+	if _, _, err := fitNavigationV2Snapshot(key, object, response, maxNavigationResponseBytes); err == nil {
+		t.Fatal("normalized fitting returned a successful zero-progress page")
+	} else if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
+		t.Fatalf("normalized fitting error = %v, want page progress invariant", err)
+	}
+}
+
 func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
 	const roots = 40
 	rows := make([]hubcore.TreeNode, roots)

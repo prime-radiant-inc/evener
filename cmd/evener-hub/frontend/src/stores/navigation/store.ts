@@ -366,6 +366,39 @@ function isNavigationProjectResource(value: unknown): value is NavigationProject
     (tier) => !!tier && Array.isArray(tier.sessions) && Number.isSafeInteger(tier.remaining),
   );
 }
+function assertNavigationPageProgress(k: ResourceKey, value: unknown): void {
+  if (!record(value)) return;
+  let rows = 0;
+  let remaining = 0;
+  switch (k.kind) {
+    case "section":
+    case "pin_section":
+    case "project_page":
+      rows = Array.isArray(value.sessions) ? value.sessions.length : 0;
+      remaining = count(value.remaining) ? value.remaining : 0;
+      break;
+    case "pin_catalog":
+      rows = Array.isArray(value.pin_sections) ? value.pin_sections.length : 0;
+      remaining = count(value.remaining) ? value.remaining : 0;
+      break;
+    case "catalog":
+      rows = Array.isArray(value.projects) ? value.projects.length : 0;
+      remaining = count(value.remaining) ? value.remaining : 0;
+      break;
+    case "project":
+      for (const candidate of [value.current, value.recent, value.archived]) {
+        if (!record(candidate)) continue;
+        rows += Array.isArray(candidate.sessions) ? candidate.sessions.length : 0;
+        remaining += count(candidate.remaining) ? candidate.remaining : 0;
+      }
+      break;
+    default:
+      return;
+  }
+  if (rows === 0 && remaining > 0) {
+    throw new NavigationProtocolError(`${k.kind} returned no rows with remaining data`);
+  }
+}
 function paramsFor(
   k: ResourceKey,
   etag: string | null,
@@ -444,17 +477,15 @@ function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationReq
       }
       if (decoded.status !== "not_modified" && !normalized)
         throw new NavigationProtocolError("not_modified has no cached resource");
+      const materialized =
+        decoded.status === "not_modified" || !normalized ? undefined : (materializeNavigationResource(normalized) as T);
+      if (materialized !== undefined) assertNavigationPageProgress(k, materialized);
       return {
         status: decoded.status === "not_modified" ? 304 : 200,
         generationID: generationId,
         revision,
         etag: responseEtag,
-        data:
-          decoded.status === "not_modified"
-            ? undefined
-            : normalized
-              ? (materializeNavigationResource(normalized) as T)
-              : undefined,
+        data: materialized,
         v2: decoded,
         normalized,
       };
@@ -474,6 +505,7 @@ function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationReq
     if (!isNavigationValue(k, data, generationId, revision)) {
       throw new NavigationProtocolError(`invalid ${k.kind} body`);
     }
+    assertNavigationPageProgress(k, data);
     return { status: 200, generationID: generationId, revision, etag: responseEtag, data: data as T };
   };
 }
