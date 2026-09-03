@@ -204,12 +204,13 @@ func TestConditionFireBudget_TicksDoNotDisarmTheBreaker(t *testing.T) {
 }
 
 // TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget pins the
-// breaker's once-latch against the send rail's snapshot/settle skew. A send
-// watch counts a condition fire when it snapshots a frame and lands in
-// recordWatchDeliveryLocked when that frame settles, so two fires snapshotted
-// before either settles walk conditionFires straight from 49 to 51. An equality
-// test would step over the budget and disarm the breaker forever; "at or past
-// the budget", latched once per config, reports the crossing exactly once.
+// breaker's comparison as "at or past the budget" rather than equality, at the
+// settle end this test drives. Every condition match latches where the match is
+// counted, so a settle reports a crossing only after a failed teardown re-arms
+// the latch — and by then conditionFires has walked past the budget rather than
+// landing on it, because the watch kept matching while the teardown was retried.
+// An equality test would disarm the breaker forever in exactly that case; "at or
+// past the budget", latched once per config, reports the crossing exactly once.
 func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{conditionFires: watchDeliveryBudget - 1}
@@ -217,7 +218,7 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 	if jm.recordWatchDeliveryLocked(cfg) {
 		t.Fatalf("settle at %d condition fires crossed the budget early", cfg.conditionFires)
 	}
-	// Two more fires snapshot before the next settle, skipping the budget itself.
+	// The counter walks past the budget between settles, never landing on it.
 	cfg.conditionFires = watchDeliveryBudget + 1
 	if !jm.recordWatchDeliveryLocked(cfg) {
 		t.Fatalf("settle at %d condition fires did not cross the budget", cfg.conditionFires)
@@ -231,12 +232,13 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 	}
 }
 
-// TestConditionFireBudget_EveryFireGoesThroughOneHelper pins the single seam
-// every condition match passes through. Counting a fire and consulting the
-// breaker are one operation, so no match site — event rail, live output rail, or
-// attach scan — can count a match without reporting the crossing, and the latch
-// keeps that report to one per config.
-func TestConditionFireBudget_EveryFireGoesThroughOneHelper(t *testing.T) {
+// TestNoteConditionFireLocked_LatchesOnceAtTheBudget pins the helper every
+// condition match goes through: counting a fire and consulting the breaker are
+// one operation, the crossing is reported on the budget-th fire and never again,
+// and counting a fire is not counting a delivery. That every match site actually
+// uses it is a separate, structural claim —
+// TestConditionFireBudget_EveryFireGoesThroughOneHelper scans the source for it.
+func TestNoteConditionFireLocked_LatchesOnceAtTheBudget(t *testing.T) {
 	t.Parallel()
 	if noteConditionFireLocked(nil) {
 		t.Fatal("a nil config reported a budget crossing")
