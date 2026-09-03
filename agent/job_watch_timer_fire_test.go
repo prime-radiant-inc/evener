@@ -134,3 +134,62 @@ func TestPeriodicTicks_DoNotTripTheDeliveryBudget(t *testing.T) {
 		t.Fatal("a timer must survive past 50 ticks; the budget bounds condition fires only")
 	}
 }
+
+// TestConditionFireBudget_TicksDoNotDisarmTheBreaker pins what the delivery
+// budget counts. A watch that both ticks and matches output survives more ticks
+// than the budget and still auto-clears on its 50th condition fire. Anchoring
+// the latch on deliveries instead would let the ticks step over the crossing
+// and leave the circuit breaker permanently disarmed for that watch.
+func TestConditionFireBudget_TicksDoNotDisarmTheBreaker(t *testing.T) {
+	jm := newTestJM(t)
+	// The fake clock leaves the watch's background progress timer inert; the
+	// ticks below are driven synchronously, doing exactly that goroutine's work.
+	jm.clock = agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	res, err := jm.configureWatch(watchArgs{
+		Operation:          "create",
+		Source:             rec.JobID,
+		Target:             rec.JobID,
+		OutputMatch:        "hit",
+		ProgressIntervalMS: minWatchProgressIntervalMS,
+	})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !ok {
+		t.Fatalf("watch %s is not installed", res.WatchID)
+	}
+
+	for tick := 1; tick <= watchDeliveryBudget+5; tick++ {
+		if !jm.fireProgressTick(key, cfg) {
+			t.Fatalf("progress tick %d ended the watch", tick)
+		}
+	}
+	jm.mu.Lock()
+	deliveries, fires := cfg.deliveries, cfg.conditionFires
+	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !live || deliveries != watchDeliveryBudget+5 || fires != 0 {
+		t.Fatalf("after ticks: live=%v deliveries=%d conditionFires=%d, want a live watch with %d deliveries and no condition fires",
+			live, deliveries, fires, watchDeliveryBudget+5)
+	}
+
+	var offset int64
+	for fire := 1; fire <= watchDeliveryBudget; fire++ {
+		chunk := []byte("hit\n")
+		offset += int64(len(chunk))
+		jm.feedJobOutput(rec.JobID, chunk, offset)
+		jm.mu.Lock()
+		_, _, live = jm.watchConfigByIDLocked(res.WatchID)
+		jm.mu.Unlock()
+		if want := fire < watchDeliveryBudget; live != want {
+			t.Fatalf("after condition fire %d: live=%v, want %v", fire, live, want)
+		}
+	}
+}

@@ -50,8 +50,10 @@ const (
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
-	// watchDeliveryBudget caps model-facing deliveries per watch config before the
-	// circuit breaker auto-clears it (spec §4 F1). Hard-coded, no config knob.
+	// watchDeliveryBudget caps the condition fires a watch config may deliver
+	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
+	// tick counts a delivery but is a clock rather than a condition, so it never
+	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
 	// maxLiveTimers caps timers per job manager; with the 60-second floor it
 	// bounds a session to eight timer wakes a minute.
@@ -136,7 +138,8 @@ func watchLostAtRestartStableDelegateMessage(source string) string {
 }
 
 // watchBudgetClearedMessage is the single final notification text emitted when a
-// watch trips the delivery budget (spec §4 F1). The count is the budget itself.
+// watch trips the delivery budget on condition fires (spec §4 F1). The count is
+// the budget itself.
 func watchBudgetClearedMessage(target string) string {
 	return fmt.Sprintf(
 		"watch cleared: %s delivered %d times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)",
@@ -207,14 +210,17 @@ type watchConfig struct {
 	nextUpdateSeq     uint64
 	progressStop      chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
-	// caller frames + delivered sidecar sends + no-send watch notifications). At
-	// watchDeliveryBudget the watch auto-clears (circuit breaker, spec §4 F1).
-	// Counted jm-side under jm.mu; survives the observation/drain split with the
-	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
+	// caller frames + delivered sidecar sends + no-send watch notifications +
+	// periodic progress ticks). It is the volume job_list reports, not the
+	// breaker's trigger. Counted jm-side under jm.mu; survives the
+	// observation/drain split with the cfg pointer; a replacement cfg from
+	// newWatchConfig starts fresh at 0.
 	deliveries int
 	// conditionFires counts actual condition matches, distinct from deliveries:
-	// progress ticks and teardown notices consume delivery budget but do not
-	// satisfy the condition the model asked this watch to observe.
+	// progress ticks and teardown notices are deliveries but do not satisfy the
+	// condition the model asked this watch to observe. The circuit breaker
+	// latches here — the watch auto-clears on its watchDeliveryBudget-th
+	// condition fire (spec §4 F1) — so a watch that only ever ticks survives.
 	conditionFires int
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
@@ -1661,19 +1667,25 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 }
 
 // recordWatchDeliveryLocked increments the model-facing delivery count for cfg
-// and reports whether this increment is the one that crossed the delivery
-// budget. The crossing is latched to exactly one true per cfg lifetime: the
-// counter only ever rises, so it equals watchDeliveryBudget on a single
-// increment. The caller must hold jm.mu. A true result means the caller should
-// schedule autoClearWatchOverBudget(cfg) AFTER releasing jm.mu (the auto-clear
-// does durable I/O and re-takes jm.mu; it must never run from inside an
-// observation's critical section, spec §3).
+// and reports whether this delivery crossed the delivery budget. The budget
+// bounds CONDITION fires, not deliveries: every caller is a condition-fire site
+// that has already counted its match into conditionFires, while a periodic
+// progress tick counts only a delivery and never arrives here, so a watch that
+// merely ticks can never trip the breaker. A no-send watch counts its fire and
+// its delivery in one critical section, so it reports the crossing exactly
+// once, on its watchDeliveryBudget-th fire; a send watch counts the fire at
+// snapshot time and the delivery at settle, so a settle can observe the budget
+// more than once and autoClearWatchOverBudgetNotification's reverse key lookup
+// is what keeps the teardown to one. The caller must hold jm.mu. A true result
+// means the caller should schedule autoClearWatchOverBudget(cfg) AFTER
+// releasing jm.mu (the auto-clear does durable I/O and re-takes jm.mu; it must
+// never run from inside an observation's critical section, spec §3).
 func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
 	if cfg == nil {
 		return false
 	}
 	cfg.deliveries++
-	return cfg.deliveries == watchDeliveryBudget
+	return cfg.conditionFires == watchDeliveryBudget
 }
 
 // watchKeyForConfigLocked finds the live map key holding cfg. ok=false means cfg
@@ -4815,10 +4827,13 @@ func (jm *jobManager) kick() {
 // empty between frames, and inferring from it would re-announce — and eventually
 // kill — a job the model explicitly said it was waiting on. A cleared watch
 // (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
-// counts as undisposed again. A budget-crossing watch is retained as a
-// temporary excuse while its asynchronous teardown persists the clear and
-// queues the final notification; otherwise the drain can announce in that
-// handoff window before it receives the notification that explains the clear.
+// counts as undisposed again. A high-volume watch is retained as a temporary
+// excuse while an asynchronous teardown persists the clear and queues the final
+// notification; otherwise the drain can announce in that handoff window before
+// it receives the notification that explains the clear. That excuse stays keyed
+// on deliveries rather than on the breaker's conditionFires: it is a
+// volume-based grace window, and a watch quiet enough to matter here is
+// already excused by the conditionFires == 0 arm.
 func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
