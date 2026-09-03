@@ -809,10 +809,14 @@ func watchArgsHasCondition(a watchArgs) bool {
 }
 
 // watchArgsIsTimer reports whether the request is a timer create: either time
-// field set. Timers are ordinary self watches whose progress interval is set
-// from seconds and which carry a note.
+// field present and nonzero. Timers are ordinary self watches whose progress
+// interval is set from seconds and which carry a note. A negative value is a
+// timer too, so the source still defaults to self and the request reaches
+// normalizeWatchArgs' bounds check, which names the field the caller got wrong
+// instead of reporting a missing source. A present zero reads as absent:
+// providers materialize every optional property, and a zero arms nothing.
 func watchArgsIsTimer(a watchArgs) bool {
-	return a.AfterSeconds > 0 || a.RepeatSeconds > 0
+	return a.AfterSeconds != 0 || a.RepeatSeconds != 0
 }
 
 // watchArgsIsOutputMatchOnly reports whether a watch request carries an

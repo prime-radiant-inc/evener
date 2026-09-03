@@ -127,3 +127,28 @@ func TestJobWatchTool_TimerRefusedWhenTurnEndsProcess(t *testing.T) {
 		t.Fatalf("served timer create: %+v", ok)
 	}
 }
+
+// TestJobWatchTool_NegativeTimerReportsTheBoundsError pins which error a
+// negative time field earns. A present nonzero value is a timer create however
+// far out of range it is, so the source defaults to self and the request reaches
+// the bounds check; reading only positive values as timers reported the missing
+// source instead, pointing the model at a field it did not get wrong.
+func TestJobWatchTool_NegativeTimerReportsTheBoundsError(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{"after_seconds", `{"operation":"create","after_seconds":-5}`, "after_seconds must be between 60 and 86400"},
+		{"repeat_seconds", `{"operation":"create","repeat_seconds":-1}`, "repeat_seconds must be between 60 and 3600"},
+	} {
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID: "c_" + tc.name, Name: "job_watch", Arguments: json.RawMessage(tc.args),
+		})
+		if !res.IsError || !strings.Contains(res.Output, tc.want) {
+			t.Errorf("%s: result = %+v, want the error %q", tc.name, res, tc.want)
+		}
+	}
+}
