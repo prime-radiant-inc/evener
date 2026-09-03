@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Mirrors index.html's viewport meta (same reasoning as shellguard.html):
+         without width=device-width, mobile emulation would lay out at Chrome's
+         980px fallback viewport. This guard measures at a desktop viewport, but
+         the meta stays so the page the guard measures is the page the app
+         ships. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>transcript scroll guard</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/dev/transcriptscrollguard-entry.tsx"></script>
+  </body>
+</html>

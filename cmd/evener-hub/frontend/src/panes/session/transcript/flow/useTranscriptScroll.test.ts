@@ -491,6 +491,41 @@ describe("the pill while scrolled back (no new content)", () => {
     });
     expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "end" });
   });
+
+  test("a jump with stale at-bottom trackers (DOM moved without a scroll event) still measures the reader as away", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    // Mounted at the bottom: both trackers say at-bottom. Then the DOM moves
+    // WITHOUT a scroll event (content growth above the viewport, measurement
+    // corrections): the seam now reads scrolled-away, but the trackers are
+    // stale - exactly the state roborev's race describes.
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+    expect(result.current.pillVisible).toBe(false);
+
+    set(SCROLLED_AWAY); // no scroll event: the trackers do not observe this
+
+    // The click's pre-jump measurement is authoritative: the reader is away,
+    // so the pill goes on offer immediately...
+    act(() => result.current.jumpToBottom());
+    expect(result.current.pillVisible).toBe(true);
+
+    // ...and an append in the landing window counts on the pill instead of
+    // auto-sticking on the stale at-bottom state.
+    scrollToIndex.mockClear();
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]) });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(result.current.pillCount).toBe(1);
+  });
 });
 
 describe("jumpToBottom landing reliability", () => {
