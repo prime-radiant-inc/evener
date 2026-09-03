@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 )
@@ -360,8 +361,11 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := filepath.Join(first, "in-use-marker")
-	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+	// The directory a live session is reading, identified by more than its
+	// path: republishing renames a fresh copy into place, and a reader holding
+	// the old one would go on reading a directory nothing else can reach.
+	before, err := os.Stat(first)
+	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := m.materializeBundledPlugin("coordinator-workflow")
@@ -371,8 +375,12 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if second != first {
 		t.Fatalf("second materialization = %s, want the published %s", second, first)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("published copy was replaced: %v", err)
+	after, err := os.Stat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("published copy was replaced by a new directory")
 	}
 	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
 	if err != nil {
@@ -476,8 +484,21 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 
 	t.Run("a published copy is the one preview describes", func(t *testing.T) {
 		m := NewManager(t.TempDir())
-		dest := m.bundledPluginPath("coordinator-workflow", digest)
-		writePlugin(t, dest, "coordinator-workflow", nil)
+		published, err := m.materializeBundledPlugin("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A published copy holds the embedded contents or it is not adopted at
+		// all, so nothing in the result says which directory was read. The
+		// loader does: preview must read the published copy, not a staged one.
+		var loaded []string
+		load := enabledLoad
+		enabledLoad = func(dir string) (agentplugin.Instance, error) {
+			loaded = append(loaded, dir)
+			return load(dir)
+		}
+		t.Cleanup(func() { enabledLoad = load })
+
 		res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
 		if err != nil {
 			t.Fatal(err)
@@ -485,10 +506,9 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 		if err := res.ValidateSelection(); err != nil {
 			t.Fatal(err)
 		}
-		// The published copy carries no agents; the embedded contents carry the
-		// workflow roster, so an agent count betrays which one was loaded.
-		if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount != 0 {
-			t.Errorf("Candidates = %+v, want the published copy at %s with no agents", res.Candidates, dest)
+		assertStrings(t, loaded, []string{published})
+		if len(res.Candidates) != 1 || res.Candidates[0].Path != published {
+			t.Errorf("Candidates = %+v, want the published copy at %s", res.Candidates, published)
 		}
 	})
 }
@@ -839,5 +859,88 @@ func TestBundledPluginNamesStayOutOfTheStagingNamespace(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), stagingPrefix) {
 			t.Errorf("bundled plugin %s publishes inside the %q staging namespace; the reclaim sweep would delete its published copy", entry.Name(), stagingPrefix)
 		}
+	}
+}
+
+// A destination is adopted only when its contents are the contents its name
+// promises. <name>-<digest> is a claim about what is inside, so a directory
+// that hashes to anything else was not published by this code — a foreign
+// directory that took the name, or a published copy somebody edited. Neither a
+// launch nor a preview loads it, both report it as conflicting content, and
+// nobody removes or rewrites it: it belongs to whoever wrote it.
+func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvers := []struct {
+		name    string
+		resolve func(*Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, resolver := range resolvers {
+		t.Run(resolver.name+" refuses conflicting content", func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			dest := m.bundledPluginPath("coordinator-workflow", digest)
+			// A plausible impostor: a loadable plugin under the right name,
+			// holding contents the digest never described.
+			writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+			res, err := resolver.resolve(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Candidates) != 0 {
+				t.Errorf("Candidates = %+v, want the conflicting destination unselected", res.Candidates)
+			}
+			if err := res.ValidateSelection(); err == nil {
+				t.Error("selected a bundled plugin from a destination holding conflicting content")
+			}
+			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
+				!strings.Contains(res.Diagnostics[0].Message, dest) ||
+				!strings.Contains(res.Diagnostics[0].Message, "conflicting content") {
+				t.Fatalf("Diagnostics = %+v, want one bundled diagnostic naming %s as conflicting", res.Diagnostics, dest)
+			}
+			if content, err := os.ReadFile(filepath.Join(dest, "theirs.md")); err != nil || string(content) != "someone else's data" {
+				t.Errorf("conflicting destination content = %q (err %v), want it untouched", content, err)
+			}
+		})
+
+		t.Run(resolver.name+" adopts the published copy", func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			published, err := m.materializeBundledPlugin("coordinator-workflow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := resolver.resolve(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ValidateSelection(); err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Candidates) != 1 || res.Candidates[0].Path != published || res.Candidates[0].AgentCount < 7 {
+				t.Fatalf("Candidates = %+v, want the published copy at %s", res.Candidates, published)
+			}
+			entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Errorf("bundled store holds %v, want only the published copy", entries)
+			}
+		})
 	}
 }

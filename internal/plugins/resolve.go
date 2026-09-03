@@ -253,16 +253,19 @@ const (
 // bundledStaging is a private directory in the bundled store that a publish
 // fills and then renames into place. The copy lives in payload, one level
 // below the marked directory, so publishing renames the copy alone and the
-// marker never lands inside a published plugin.
+// marker never lands inside a published plugin. digest is what the destination
+// must hold, carried along so a publish that loses the rename can tell the
+// winner's copy from foreign content.
 type bundledStaging struct {
 	dir     string
 	payload string
+	digest  string
 }
 
 // newBundledStaging opens a staging directory for base inside store and marks
 // it as this code's to reclaim before anything is copied in, so a publish
 // killed at any moment leaves an orphan a later sweep recognizes.
-func newBundledStaging(store, base string) (*bundledStaging, error) {
+func newBundledStaging(store, base, digest string) (*bundledStaging, error) {
 	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
 	if err != nil {
 		return nil, err
@@ -278,7 +281,7 @@ func newBundledStaging(store, base string) (*bundledStaging, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	return &bundledStaging{dir: dir, payload: payload}, nil
+	return &bundledStaging{dir: dir, payload: payload, digest: digest}, nil
 }
 
 // materializeBundledPlugin publishes the bundled plugin named name under the
@@ -301,7 +304,14 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
-		if winner, statErr := publishedBundledCopy(dest); statErr == nil && winner {
+		// A concurrent publisher may have taken the destination first. Its
+		// copy is adopted only when it is the copy this publish would have
+		// made; anything else there is a conflict, reported as one.
+		winner, adoptErr := publishedBundledCopy(dest, staging.digest)
+		if adoptErr != nil {
+			return "", adoptErr
+		}
+		if winner {
 			return dest, nil
 		}
 		return "", fmt.Errorf("publish bundled plugin %s: %w", name, err)
@@ -331,7 +341,7 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 		return "", nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	dest := m.bundledPluginPath(name, digest)
-	published, err := publishedBundledCopy(dest)
+	published, err := publishedBundledCopy(dest, digest)
 	if err != nil {
 		return "", nil, err
 	}
@@ -354,18 +364,23 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if published {
 		return dest, nil, nil
 	}
-	staging, err := newBundledStaging(store, filepath.Base(dest))
+	staging, err := newBundledStaging(store, filepath.Base(dest), digest)
 	if err != nil {
 		return "", nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
 	return dest, staging, nil
 }
 
-// publishedBundledCopy reports whether dest already holds a published copy.
-// Only a real directory counts: a file or a symlink there was not published by
-// this code, and loading through it would report an unrelated directory as the
-// bundled plugin.
-func publishedBundledCopy(dest string) (bool, error) {
+// publishedBundledCopy reports whether dest already holds the published copy
+// of the plugin digest names. Only a real directory counts: a file or a
+// symlink there was not published by this code, and loading through it would
+// report an unrelated directory as the bundled plugin. Only the right contents
+// count as well: <name>-<digest> is a claim about what is inside, so a
+// directory that hashes to anything else is somebody else's, whether it took
+// the name in a publish race or was edited after it was published. Nothing is
+// removed or rewritten either way — the caller reports the conflict and
+// publishes nothing.
+func publishedBundledCopy(dest, digest string) (bool, error) {
 	info, err := os.Lstat(dest)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -375,6 +390,13 @@ func publishedBundledCopy(dest string) (bool, error) {
 	}
 	if !info.IsDir() {
 		return false, fmt.Errorf("bundled plugin path %s is not a directory", dest)
+	}
+	found, err := digestFS(os.DirFS(dest))
+	if err != nil {
+		return false, fmt.Errorf("read the bundled plugin at %s: %w", dest, err)
+	}
+	if found != digest {
+		return false, fmt.Errorf("bundled plugin path %s holds conflicting content", dest)
 	}
 	return true, nil
 }
@@ -434,8 +456,20 @@ func bundledPluginDigest(name string) (string, error) {
 	if info, err := fs.Stat(src, name); err != nil || !info.IsDir() {
 		return "", fs.ErrNotExist
 	}
+	digest, err := digestFS(mustSubFS(src, name))
+	if err != nil {
+		return "", fmt.Errorf("digest bundled plugin %s: %w", name, err)
+	}
+	return digest, nil
+}
+
+// digestFS summarizes a whole tree: every name in walk order, and the length
+// and contents of every file. A published copy is a copy of the embedded tree,
+// so reading the copy back through os.DirFS digests to the value the embedded
+// tree did, and a destination can be held to the digest its name promises.
+func digestFS(fsys fs.FS) (string, error) {
 	sum := sha256.New()
-	err := fs.WalkDir(mustSubFS(src, name), ".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -443,7 +477,7 @@ func bundledPluginDigest(name string) (string, error) {
 			_, _ = fmt.Fprintf(sum, "dir %s\x00", path)
 			return nil
 		}
-		content, err := fs.ReadFile(mustSubFS(src, name), path)
+		content, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return err
 		}
@@ -452,7 +486,7 @@ func bundledPluginDigest(name string) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("digest bundled plugin %s: %w", name, err)
+		return "", err
 	}
 	return hex.EncodeToString(sum.Sum(nil))[:16], nil
 }

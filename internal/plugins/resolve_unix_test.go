@@ -55,6 +55,7 @@ func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) 
 // could leave there: a regular file fails with ENOTDIR, a non-empty directory
 // with ENOTEMPTY. Only an absent path or an empty directory can be replaced,
 // so the check-then-rename window costs a failed publish, never a lost file.
+// The publish that lost the rename does not adopt what it found there either.
 func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -125,6 +126,14 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 				t.Errorf("rename error = %v, want one of %v", err, test.want)
 			}
 			test.survive(t, dest)
+
+			// What a publisher that lost the rename does next: it adopts the
+			// winner's copy. Foreign data is not that copy, so the adoption
+			// check refuses it rather than loading it as the bundled plugin.
+			adopted, adoptErr := publishedBundledCopy(dest, staging.digest)
+			if adopted || adoptErr == nil {
+				t.Errorf("publishedBundledCopy = %v, %v; want a refusal for the %s at the destination", adopted, adoptErr, test.name)
+			}
 		})
 	}
 }
