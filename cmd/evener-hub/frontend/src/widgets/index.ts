@@ -104,6 +104,8 @@ export type { TableColumn, TableFilter, TableProps, TableSortDir } from "./table
 export { Table } from "./table";
 export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
+export type { TimestampProps } from "./timestamp";
+export { Timestamp } from "./timestamp";
 export type { ToastKind } from "./toast";
 export { Toast, useToasts } from "./toast";
 export type { ToolIconKind, ToolIconProps } from "./toolicon";

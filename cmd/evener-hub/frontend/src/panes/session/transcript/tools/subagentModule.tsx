@@ -6,12 +6,12 @@ import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Chevron, IconButton } from "../../../../widgets";
+import { Chevron, IconButton, Timestamp } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { cadenceStateForStatus, useSessionNow } from "../../liveness";
-import { formatClockTimeSeconds, formatElapsed, plainQuoteLine } from "../messages/format";
+import { formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -38,6 +38,7 @@ const CLASS = {
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
+  quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
   statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
   statsSpring: requireClass(styles.statsSpring, "subagentmodule.module.css", "statsSpring"),
@@ -301,16 +302,22 @@ function SubagentCard({
                     : live && q.startedAt !== undefined
                       ? "…"
                       : undefined;
-                const stamp = formatClockTimeSeconds(q.startedAt);
-                const meta = [runtime, stamp].filter((s) => s !== undefined).join(" · ");
+                // Relative start time (absolute on hover) replaces the
+                // always-visible wall clock; an unparseable start omits it.
+                const startMs = q.startedAt !== undefined ? Date.parse(q.startedAt) : Number.NaN;
+                const hasStart = !Number.isNaN(startMs);
                 return (
-                  <li
-                    key={q.id}
-                    value={q.ordinal}
-                    className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}
-                  >
-                    {q.msg ? <em className={CLASS.quoteMsg}>{q.text}</em> : <span>{q.text}</span>}
-                    {meta && <span className={CLASS.quoteMeta}>{meta}</span>}
+                  <li key={q.id} className={live ? `${CLASS.quoteItem} ${CLASS.quoteLive}` : CLASS.quoteItem}>
+                    <span className={CLASS.quoteText}>
+                      {q.msg ? <em className={CLASS.quoteMsg}>{q.text}</em> : q.text}
+                    </span>
+                    {(runtime !== undefined || hasStart) && (
+                      <span className={CLASS.quoteMeta}>
+                        {runtime !== undefined && <span>{runtime}</span>}
+                        {runtime !== undefined && hasStart && <span className={CLASS.statsSep}>·</span>}
+                        {hasStart && <Timestamp value={startMs} now={nowMs} />}
+                      </span>
+                    )}
                   </li>
                 );
               })}

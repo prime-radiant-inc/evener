@@ -479,8 +479,22 @@ test("expanding a card lists recent quotes - intents plain, messages italic - ea
     argumentsJSON: JSON.stringify({ prompt: "audit the reducer" }),
     output: JSON.stringify({ delegate_id: "job_qs", status: "running", transcript_ref: "ref_quotes_child" }),
   });
+  // A fixed reference instant 70s after the stamped step (same calendar day),
+  // so the relative time is deterministic and the absolute stays time-only.
+  const stepStart = new Date(2026, 7, 20, 9, 41, 2);
+  const fixedNow = new Date(2026, 7, 20, 9, 42, 12).getTime();
+  const absStart = new Intl.DateTimeFormat("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(stepStart);
   const user = userEvent.setup();
-  render(<Body item={running} live={false} />);
+  render(
+    <SessionNowContext.Provider value={fixedNow}>
+      <Body item={running} live={false} />
+    </SessionNowContext.Provider>,
+  );
 
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
@@ -489,18 +503,23 @@ test("expanding a card lists recent quotes - intents plain, messages italic - ea
   // Two real steps plus the final message; the whitespace-only description
   // contributed no quote (the same statedIntentOf rule the old feed used).
   expect(items).toHaveLength(3);
-  expect(items.map((li) => li.value)).toEqual([1, 2, 3]);
+  // The activity feed is a sequence, not an enumeration: no <li> carries an
+  // ordinal value attribute, so the "72. 73. …" numbering is gone.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 
-  // Runtime + timestamp ride each stamped quote: "6s · HH:MM:SS" local. The
-  // expected stamp is computed through the same Date parsing the formatter
-  // uses, so the suite stays timezone-independent.
-  const parsed = new Date(2026, 7, 20, 9, 41, 2);
-  const stamp = `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}:${String(parsed.getSeconds()).padStart(2, "0")}`;
+  // Each stamped quote shows its per-step runtime and a relative start time
+  // (the absolute instant is the <time title> hover), never a wall-clock
+  // string in the visible text. absStart mirrors the widget's own formatter,
+  // so the assertion is timezone-independent.
+  const time0 = items[0]!.querySelector("time");
+  expect(time0).not.toBeNull();
+  expect(time0!.getAttribute("title")).toBe(absStart);
   expect(items[0]!.textContent).toContain("step one");
   expect(items[0]!.textContent).toContain("6s");
-  expect(items[0]!.textContent).toContain(stamp);
-  // Unstamped quotes render no runtime segment rather than a guess.
+  expect(items[0]!.textContent).toContain("1m ago");
+  // Unstamped quotes render no runtime or timestamp segment rather than a guess.
   expect(items[1]!.textContent).toBe("step two");
+  expect(items[1]!.querySelector("time")).toBeNull();
 
   // Expanded activity retains source-specific treatment.
   expect(items[2]!.querySelector("em")?.textContent).toBe("all done");
@@ -650,7 +669,8 @@ test("the Activity feed elides round_timings items and ordinals count only real 
   // round_timings items never entered the count, so ordinals run 2..6, not
   // 4..8.
   expect(items.map((li) => li.textContent)).toEqual(["step 2", "step 3", "step 4", "step 5", "step 6"]);
-  expect(items.map((li) => li.value)).toEqual([2, 3, 4, 5, 6]);
+  // No ordinals: the feed is unnumbered, so no <li> carries a value attribute.
+  expect(items.every((li) => li.getAttribute("value") === null)).toBe(true);
 });
 
 test("dr7e: no Job detail section renders when neither resumable nor exhaustion fields are set", async () => {
