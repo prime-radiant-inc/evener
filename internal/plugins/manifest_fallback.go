@@ -52,7 +52,7 @@ func hasPluginManifest(dir string) bool {
 //   - and dir is a cache directory evener materialized (staged), it writes a
 //     synthesized .claude-plugin/plugin.json built from the entry's fields,
 //     so every later Load() of dir (this install's own validation, a future
-//     session's EnabledPluginDirs(), `evener plugin list`'s Broken check,
+//     session's ResolveForLaunch(), `evener plugin list`'s Broken check,
 //     evener-doctor) finds an ordinary on-disk manifest and needs no
 //     special-casing. The entry may declare no components at all — Claude
 //     Code installs that shape fine (e.g. private-journal-mcp in

@@ -63,7 +63,7 @@ func TestHubCommandList_ReturnsLoadedPluginCommands(t *testing.T) {
 
 func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	// With no explicit PluginDirs, hubCommandList falls back to
-	// plugins.Manager.EnabledPluginDirs, which reads the installed-plugin
+	// plugins.Manager.ResolveForLaunch, which reads the installed-plugin
 	// registry under the XDG default plugins root. Point it at an empty temp
 	// dir so the result is deterministically empty regardless of what the
 	// machine running this test actually has installed under
@@ -136,7 +136,7 @@ func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 }
 
 // TestHubCommandList_IncludesRegistryEnabledPlugin proves hubCommandList
-// reflects what a real session actually loads (EnabledPluginDirs), not just
+// reflects what a real session actually loads (ResolveForLaunch), not just
 // the display-only glob of the plugin store's immediate subdirectories
 // (pluginDirsFromConfig). Before this fix, a plugin installed and enabled
 // through the marketplace/registry system (living at

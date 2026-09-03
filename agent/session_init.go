@@ -1665,7 +1665,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 // loadPluginsFailSoft loads each plugin directory independently so one broken
 // or duplicate-named plugin cannot brick session initialization. This matters
 // beyond the CLI's own pre-validation (internal/plugins.Manager.
-// EnabledPluginDirs, which dry-run validates and dedups the registry-enabled
+// ResolveForLaunch, which dry-run validates and dedups the registry-enabled
 // dirs before they ever reach here): resume replays a PluginDirs list
 // persisted in the session's ConfigSnapshot, which can name a plugin that was
 // edited, broken, or uninstalled since the session started, bypassing that

@@ -890,7 +890,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 }
 
 // hubCommandList answers evener/command/list by loading every plugin a real
-// session would load — internal/plugins.Manager.EnabledPluginDirs (explicit
+// session would load — internal/plugins.Manager.ResolveForLaunch (explicit
 // --plugin-dir-equivalent PluginDirs first, then every installed+enabled
 // registry entry) — and flattening their discovered slash commands into a
 // catalog. This used to mirror discoverPluginsForSettings's display-only scan
