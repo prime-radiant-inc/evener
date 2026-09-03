@@ -2821,8 +2821,11 @@ type PluginCheckNowResponse struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-// PluginPreviewParams requests the side-effect-free launch plugin inventory
-// for a working directory and optional per-launch overrides.
+// PluginPreviewParams requests the launch plugin inventory for a working
+// directory and optional per-launch overrides. Preview starts no session and
+// runs no plugin code; for a requested bundled plugin it readies the same store
+// a launch publishes into, staging and removing a marked copy, so it fails
+// wherever the launch it describes would.
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`

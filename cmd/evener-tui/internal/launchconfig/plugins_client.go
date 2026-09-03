@@ -81,8 +81,10 @@ type PluginMutateResultMsg struct {
 	Err  error
 }
 
-// PluginPreviewRequestMsg asks the hub model to run a side-effect-free plugin
-// preview. Key identifies the request's directory/override revision so a late
+// PluginPreviewRequestMsg asks the hub model to run a plugin preview. Preview
+// starts no session and runs no plugin code; for a requested bundled plugin it
+// readies the store a launch publishes into, staging and removing a marked
+// copy. Key identifies the request's directory/override revision so a late
 // response cannot replace a newer preview.
 type PluginPreviewRequestMsg struct {
 	Params appwire.PluginPreviewParams
