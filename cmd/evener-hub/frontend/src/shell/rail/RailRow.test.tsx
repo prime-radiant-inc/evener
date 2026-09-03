@@ -24,6 +24,7 @@ import type {
   RailSession,
   SessionRailNode,
 } from "./railNodes";
+import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
@@ -1364,6 +1365,192 @@ describe("session row", () => {
 });
 
 describe("project row", () => {
+  test("descendant-only project changes do not invoke the project RailRow again", () => {
+    // This fails until RailRow's memo boundary compares project rows by the
+    // fields ProjectRow renders/captures instead of by ancestor node identity.
+    const observer = vi.fn();
+    const rowInfo = info({ hasChildren: true });
+    const rowActions = actions();
+    const firstSession = apiNode({ row_id: "project:p1:local:first", ref: "local:first", session_id: "first" });
+    const secondSession = apiNode({ row_id: "project:p1:local:second", ref: "local:second", session_id: "second" });
+    const firstProject = apiProject({ sessions: [firstSession] });
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode(firstProject, [sessionRailNode(firstSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode({ ...firstProject, sessions: [secondSession] }, [sessionRailNode(secondSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(0);
+  });
+
+  test.each([
+    ["node id", (node: ProjectRailNode) => ({ ...node, id: "projectnode:p1-replaced" })],
+    ["display name", (node: ProjectRailNode) => ({ ...node, displayName: "Decorated project" })],
+    ["resource error", (node: ProjectRailNode) => ({ ...node, resourceError: "load failed" })],
+    ["retry callback", (node: ProjectRailNode) => ({ ...node, retry: vi.fn() })],
+    ["project key", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, key: "p2" } })],
+    ["project name", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, name: "Renamed" } })],
+    [
+      "project working directory",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, working_dir: "/repo/next" } }),
+    ],
+    [
+      "project rollup state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_state: "active" } }),
+    ],
+    ["project attention count", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_attn: 2 } })],
+    ["project favorite", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, favorite: true } })],
+    [
+      "project archive state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, is_archived: true } }),
+    ],
+  ] as const)("%s changes still invoke the project RailRow", (_name, change) => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const firstNode = { ...projectRailNode(apiProject()), retry: vi.fn() };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={change(firstNode)} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
+  test("changed retry, spawn directory, and project action input replace captured project-row behavior", async () => {
+    window.history.replaceState({}, "", "/");
+    const observer = vi.fn();
+    const rowInfo = info();
+    const firstRetry = vi.fn();
+    const secondRetry = vi.fn();
+    const rowActions = actions();
+    const firstProject = apiProject({ working_dir: "/repo/first" });
+    const secondProject = { ...firstProject, key: "p2", working_dir: "/repo/next" };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...projectRailNode(firstProject), resourceError: "load failed", retry: firstRetry }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{
+            ...projectRailNode(secondProject),
+            id: "projectnode:p1",
+            resourceError: "load failed",
+            retry: secondRetry,
+          }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(firstRetry).not.toHaveBeenCalled();
+    expect(secondRetry).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext");
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(rowActions.onToggleFavoriteProject).toHaveBeenCalledWith(secondProject);
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
+    const observer = vi.fn();
+    const firstInfo = info({ hasChildren: true });
+    const secondInfo = info({ hasChildren: true });
+    const firstActions = actions();
+    const secondActions = actions();
+    const node = projectRailNode(apiProject(), [sessionRailNode(apiNode())]);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={firstInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByText("Proj"));
+    expect(firstInfo.activate).not.toHaveBeenCalled();
+    expect(secondInfo.activate).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={secondActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(firstActions.onToggleFavoriteProject).not.toHaveBeenCalled();
+    expect(secondActions.onToggleFavoriteProject).toHaveBeenCalledWith(node.project);
+  });
+
+  test("non-project rows retain default memo behavior for descendant-only node replacement", () => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const session = apiNode();
+    const firstNode = sessionRailNode(session);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...firstNode, children: [sessionRailNode(apiNode({ row_id: "child", ref: "child" }))] }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
   test("renders the project's name and a Cadence reflecting its rollup state", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
