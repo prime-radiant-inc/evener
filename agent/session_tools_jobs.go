@@ -1325,7 +1325,10 @@ type watchListEntry struct {
 // recentWatchEntry is one watch that has left the active set, surfaced by job_list's
 // bounded recent_watches ring so a fired-then-removed watch stays legible. end_reason
 // is one of auto_removed_terminal, cleared, replaced, budget_exhausted, fired (a
-// one-shot timer retired by its only fire), job_manager_closed.
+// one-shot timer retired by its only fire), job_manager_closed — the whole set
+// recordWatchEndedLocked writes. runtime_lost, the reason a restart stamps on the
+// durable watch_cleared events of the watches it could not restore, never appears
+// here: those watches end in the store before this in-memory ring exists.
 type recentWatchEntry struct {
 	ID         string `json:"id"`
 	Source     string `json:"source"`
