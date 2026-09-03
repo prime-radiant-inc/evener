@@ -31,6 +31,7 @@ import {
 import { applyDelta, reconcileSnapshot } from "./merge";
 import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
 import {
+  canonicalResourceKey,
   isNavigationUnavailable,
   keyID,
   NavigationBaseInvalidError,
@@ -137,7 +138,7 @@ let manifestFanout: { key: string; promise: Promise<void> } | null = null;
 const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 const NAVIGATION_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
-const key = (k: ResourceKey) => Object.freeze(k);
+const key = (resourceKey: ResourceKey) => Object.freeze(canonicalResourceKey(resourceKey));
 function clearClientOwnedState(): void {
   navigationStore.setState({
     capability: null,
@@ -481,7 +482,8 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   const requestRevalidator = revalidator;
   const requestClient = activeClient;
   if (!requestClient) return Promise.reject(new Error("navigation is not initialized"));
-  return requestRevalidator.load<T>(key(k), requestFor<T>(k, requestClient));
+  const resourceKey = key(k);
+  return requestRevalidator.load<T>(resourceKey, requestFor<T>(resourceKey, requestClient));
 }
 async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
   const first = await load<NavigationProjectResource>({ kind: "project", projectKey });

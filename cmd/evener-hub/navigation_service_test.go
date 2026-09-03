@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 const navigationTestSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -339,6 +340,362 @@ func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testin
 	}
 	if got := builds.Load(); got != 1 {
 		t.Fatalf("projection builds = %d, want one retained core build", got)
+	}
+}
+
+func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	legacy, err := service.Representation(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy.JSON) > maxNavigationResponseBytes || len(legacy.JSON) < maxNavigationResponseBytes-4096 {
+		t.Fatalf("raw production section bytes=%d, want tightly fitted at or below %d", len(legacy.JSON), maxNavigationResponseBytes)
+	}
+	result, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result.Response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maxNavigationResponseBytes {
+		t.Fatalf("normalized v2 response bytes=%d, raw=%d, want <= %d", len(encoded), len(legacy.JSON), maxNavigationResponseBytes)
+	}
+}
+
+func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
+	const roots = 40
+	rows := make([]hubcore.TreeNode, roots)
+	next := 0
+	makeNode := func() hubcore.TreeNode {
+		next++
+		return hubcore.TreeNode{
+			ID:        fmt.Sprintf("max-field-%04d", next),
+			Title:     strings.Repeat("t", maxNavigationTitleRunes),
+			Project:   strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:    strings.Repeat("b", maxNavigationLabelRunes),
+			State:     "active",
+			Kind:      "session",
+			UpdatedAt: now,
+		}
+	}
+	for root := range rows {
+		rows[root] = makeNode()
+		rows[root].Children = make([]hubcore.TreeNode, 49)
+		for child := range rows[root].Children {
+			rows[root].Children[child] = makeNode()
+		}
+	}
+	return rows
+}
+
+func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := navigationBudgetTestSource(now)
+	service := newTestNavigationService(t, source)
+	keys := map[string]navigationResourceKey{
+		"manifest":    {Kind: navigationResourceManifest},
+		"section":     {Kind: navigationResourceLive, Limit: maxNavigationSectionRows},
+		"pin catalog": {Kind: navigationResourcePinCatalog, Limit: maxNavigationCatalogRows},
+		"catalog":     {Kind: navigationResourceProjects, Limit: maxNavigationCatalogRows},
+		"project":     {Kind: navigationResourceProject, ProjectKey: "p1"},
+		"project page": {
+			Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: maxNavigationSectionRows,
+		},
+		"location": {Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID},
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			result, err := service.readV2(t.Context(), key, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNavigationV2ResponseBudget(t, key, result.Response)
+			if name == "manifest" {
+				legacy, err := service.Representation(t.Context(), key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(legacy.JSON) > maxNavigationManifestBytes {
+					t.Fatalf("legacy manifest bytes=%d, want <= %d", len(legacy.JSON), maxNavigationManifestBytes)
+				}
+				var complete hubapi.NavigationManifest
+				if err := json.Unmarshal(legacy.JSON, &complete); err != nil {
+					t.Fatal(err)
+				}
+				if len(complete.Sources) != 64 {
+					t.Fatalf("legacy manifest sources=%d, want all 64", len(complete.Sources))
+				}
+				unbounded, err := normalizeNavigationResource(key, complete)
+				if err != nil {
+					t.Fatal(err)
+				}
+				unboundedData, err := json.Marshal(unbounded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				unboundedResponse := result.Response
+				unboundedResponse.Data = unboundedData
+				unboundedEncoded, err := json.Marshal(unboundedResponse)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(unboundedEncoded) <= maxNavigationManifestBytes {
+					t.Fatalf("complete normalized manifest response bytes=%d, want > %d to prove fitting", len(unboundedEncoded), maxNavigationManifestBytes)
+				}
+				var fitted hubapi.NavigationSnapshot
+				if err := json.Unmarshal(result.Response.Data, &fitted); err != nil {
+					t.Fatal(err)
+				}
+				var manifest hubapi.NavigationManifest
+				if err := json.Unmarshal(fitted.Metadata, &manifest); err != nil {
+					t.Fatal(err)
+				}
+				if len(manifest.Sources) != 63 {
+					t.Fatalf("fitted manifest sources=%d, want deterministic 63-source prefix", len(manifest.Sources))
+				}
+				for index := range manifest.Sources {
+					if manifest.Sources[index] != complete.Sources[index] {
+						t.Fatalf("fitted manifest source %d is not the authoritative prefix", index)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachability(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	first, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.Response.Data, second.Response.Data) {
+		t.Fatal("identical authoritative reads produced different bounded snapshots")
+	}
+	base := appwire.NavigationReadBase{
+		GenerationID: first.Response.GenerationID,
+		Revision:     first.Response.Revision,
+		ETag:         first.Response.ETag,
+	}
+	retained, ok := service.history.Lookup(key, base)
+	if !ok {
+		t.Fatal("fitted current snapshot was not admitted to history")
+	}
+	retainedData, err := json.Marshal(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(retainedData, first.Response.Data) {
+		t.Fatal("history retained a different snapshot than the fitted current response")
+	}
+	assertNavigationV2ResponseBudget(t, key, first.Response)
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(first.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNavigationResourceSnapshot(key, first.Response.GenerationID, first.Response.Revision, snapshot); err != nil {
+		t.Fatalf("bounded snapshot is not reachable: %v", err)
+	}
+	var metadata struct {
+		Remaining int  `json:"remaining"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(snapshot.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !metadata.Truncated || metadata.Remaining == 0 {
+		t.Fatalf("bounded metadata = %+v, want truncated with omitted top-level rows", metadata)
+	}
+	foundOmittedDescendants := false
+	for _, entity := range snapshot.Entities {
+		var summary hubapi.NavigationSessionSummary
+		if err := json.Unmarshal(entity.Value, &summary); err != nil {
+			t.Fatal(err)
+		}
+		if summary.OmittedDescendants > 0 {
+			foundOmittedDescendants = true
+		}
+	}
+	if !foundOmittedDescendants {
+		t.Fatal("bounded node prefix did not account for omitted descendants")
+	}
+}
+
+func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	if _, ok := service.history.Lookup(key, base); !ok {
+		t.Fatal("large-delta base snapshot was not retained")
+	}
+
+	source.mu.Lock()
+	var retitle func([]hubcore.TreeNode)
+	retitle = func(rows []hubcore.TreeNode) {
+		for index := range rows {
+			rows[index].Title = strings.Repeat("u", maxNavigationTitleRunes)
+			retitle(rows[index].Children)
+		}
+		for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+			rows[left], rows[right] = rows[right], rows[left]
+		}
+	}
+	retitle(source.inputs.Tree.Live)
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Response.Representation != appwire.NavigationRepresentationSnapshot || changed.Response.Base != nil {
+		t.Fatalf("oversized complete delta representation=%q base=%+v data=%d, want snapshot fallback without Base", changed.Response.Representation, changed.Response.Base, len(changed.Response.Data))
+	}
+	assertNavigationV2ResponseBudget(t, key, changed.Response)
+
+	service.history = newNavigationHistory(0, 0)
+	reconnect, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconnect.Response.Representation != appwire.NavigationRepresentationSnapshot || reconnect.Response.Base != nil {
+		t.Fatalf("history-missing reconnect representation=%q base=%+v data=%d, want snapshot without Base", reconnect.Response.Representation, reconnect.Response.Base, len(reconnect.Response.Data))
+	}
+	assertNavigationV2ResponseBudget(t, key, reconnect.Response)
+}
+
+func TestNavigationReadV2SmallRetainedDeltaRemainsBoundedDelta(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	source.changeTitle("small retained delta")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Response.Representation != appwire.NavigationRepresentationDelta || changed.Response.Base == nil || *changed.Response.Base != base {
+		t.Fatalf("small retained response = %+v, want delta with exact Base", changed.Response)
+	}
+	assertNavigationV2ResponseBudget(t, key, changed.Response)
+}
+
+func TestNavigationReadV2IrreducibleSnapshotOverflowIsInternalInvariant(t *testing.T) {
+	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
+	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID}
+	_, versioned, projection, err := service.versionedCore(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, _, err := projection.Resource(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := appwire.NavigationReadResponse{
+		Status: "ok", GenerationID: versioned.Generation, Revision: versioned.Revision,
+		ETag: navigationETag(key, versioned.Generation, versioned.Revision),
+	}
+	_, _, err = fitNavigationV2Snapshot(versioned, object, response, 1)
+	if err == nil || !strings.Contains(err.Error(), "navigation v2 response invariant") {
+		t.Fatalf("irreducible overflow error = %v, want internal invariant", err)
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	wireErr := navigationReadError(server, err)
+	assertNavigationWireError(t, wireErr, appwire.CodeInternalError, appwire.ErrorInternal)
+}
+
+func navigationBudgetTestSource(now time.Time) *testNavigationSource {
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.inputs.Sources = make([]hubapi.Source, 64)
+	for index := range source.inputs.Sources {
+		suffix := fmt.Sprintf("-%02d", index)
+		source.inputs.Sources[index] = hubapi.Source{
+			ID:     strings.Repeat("i", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Label:  strings.Repeat("😀", maxNavigationLabelRunes),
+			Kind:   strings.Repeat("k", 969),
+			Online: true,
+		}
+	}
+	source.inputs.PinSections = make([]hubcore.PinSection, maxNavigationCatalogRows)
+	for index := range source.inputs.PinSections {
+		suffix := fmt.Sprintf("-%03d", index)
+		source.inputs.PinSections[index] = hubcore.PinSection{
+			ID:   strings.Repeat("s", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Name: strings.Repeat("😀", maxNavigationLabelRunes), MemberCount: index,
+		}
+	}
+	projects := make([]hubcore.TreeProject, maxNavigationCatalogRows)
+	projects[0] = source.inputs.Tree.Projects[0]
+	for index := 1; index < len(projects); index++ {
+		suffix := fmt.Sprintf("-%03d", index)
+		projects[index] = hubcore.TreeProject{
+			Key:        strings.Repeat("q", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Name:       strings.Repeat("😀", maxNavigationLabelRunes),
+			WorkingDir: "/" + strings.Repeat("w", maxNavigationWorkingDirBytes-1),
+		}
+	}
+	source.inputs.Tree.Projects = projects
+	return source
+}
+
+func assertNavigationV2ResponseBudget(t *testing.T, key navigationResourceKey, response appwire.NavigationReadResponse) {
+	t.Helper()
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := maxNavigationResponseBytes
+	switch key.Kind {
+	case navigationResourceManifest:
+		limit = maxNavigationManifestBytes
+	case navigationResourcePinCatalog, navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
+		limit = maxNavigationCatalogBytes
+	}
+	if len(encoded) > limit {
+		t.Fatalf("%s exact response bytes=%d, want <= %d (data=%d)", key.Kind, len(encoded), limit, len(response.Data))
 	}
 }
 

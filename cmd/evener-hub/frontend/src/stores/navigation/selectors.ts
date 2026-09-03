@@ -1,6 +1,7 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore } from "./store";
 import {
+  canonicalResourceKey,
   isNavigationUnavailable,
   keyID,
   navigationOwnedContainerKey,
@@ -19,16 +20,17 @@ function normalizedRootCount(resource: ResourceState, slot: string): number | un
   return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
 }
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
-export const selectResource = (key: ResourceKey) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.resources.get(keyID(key));
+export const selectResource = (key: ResourceKey) => {
+  const resourceKey = canonicalResourceKey(key);
+  return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));
+};
 export const selectProjectResource = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID({ kind: "project", projectKey }));
 export const selectProjectPage =
   (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = 50) =>
   (s: ReturnType<typeof navigationStore.getState>) =>
     s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
-export const selectLocation = (ref: string) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.resources.get(keyID({ kind: "location", ref }));
+export const selectLocation = (ref: string) => selectResource({ kind: "location", ref });
 export function selectSectionRows(
   section: "live" | "needs_you",
   state = navigationStore.getState(),

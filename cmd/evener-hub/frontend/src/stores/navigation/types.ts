@@ -38,6 +38,11 @@ function canonicalNavigationLimit(limit: number, maximum: number): number {
   return limit === 0 || limit > maximum ? maximum : limit;
 }
 
+export function canonicalResourceKey(key: ResourceKey): ResourceKey {
+  if (key.kind !== "location" || key.ref.includes(":")) return key;
+  return { kind: "location", ref: `local:${key.ref}` };
+}
+
 export function navigationViewScope(key: ResourceKey): string {
   let kind: string = key.kind;
   let id = "";

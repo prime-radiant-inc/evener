@@ -424,35 +424,40 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 	if err != nil {
 		return navigationReadResult{}, err
 	}
-	snapshot, err := normalizeNavigationResource(versioned, object)
+	view := versioned.View()
+	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: generation, Revision: revision, ETag: etag}
+	limit := navigationV2ResponseLimit(versioned.Kind)
+	snapshot, snapshotData, err := fitNavigationV2Snapshot(versioned, object, response, limit)
 	if err != nil {
 		return navigationReadResult{}, err
 	}
-	view := versioned.View()
-	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: generation, Revision: revision, ETag: etag}
+	currentBase := appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}
 	if base != nil {
 		if previous, ok := s.history.Lookup(view, *base); ok {
-			currentBase := appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}
 			delta, diffErr := diffNavigationSnapshots(view, *base, currentBase, previous, snapshot)
 			if diffErr != nil {
 				return navigationReadResult{}, diffErr
 			}
-			response.Representation = appwire.NavigationRepresentationDelta
-			response.Base = base
-			response.Data, err = json.Marshal(delta)
+			deltaResponse := response
+			deltaResponse.Representation = appwire.NavigationRepresentationDelta
+			deltaResponse.Base = base
+			deltaResponse.Data, err = json.Marshal(delta)
 			if err != nil {
 				return navigationReadResult{}, err
 			}
-			_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot)
-			return navigationReadResult{Response: response}, nil
+			fits, fitErr := navigationV2ResponseFits(deltaResponse, limit)
+			if fitErr != nil {
+				return navigationReadResult{}, fitErr
+			}
+			if fits {
+				_ = s.history.Remember(view, currentBase, &snapshot)
+				return navigationReadResult{Response: deltaResponse}, nil
+			}
 		}
 	}
 	response.Representation = appwire.NavigationRepresentationSnapshot
-	response.Data, err = json.Marshal(snapshot)
-	if err != nil {
-		return navigationReadResult{}, err
-	}
-	_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot)
+	response.Data = snapshotData
+	_ = s.history.Remember(view, currentBase, &snapshot)
 	return navigationReadResult{Response: response}, nil
 }
 

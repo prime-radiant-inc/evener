@@ -138,7 +138,7 @@ const initialize = (navigation: NavigationCapability): InitializeResponse => ({
 });
 const reconnectManifestKey = { kind: "manifest" } as const;
 const reconnectSectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-const reconnectLocationKey = { kind: "location", ref: "x" } as const;
+const reconnectLocationKey = { kind: "location", ref: "local:x" } as const;
 const reconnectSessionValue = {
   ref: "x",
   host_id: "local",
@@ -158,7 +158,13 @@ const reconnectSessionSnapshot = (
   const entityKey = `${navigationViewScope(resource)}/entity/${"7".repeat(64)}`;
   return {
     metadata,
-    entities: [{ key: entityKey, kind: "session", value: reconnectSessionValue }],
+    entities: [
+      {
+        key: entityKey,
+        kind: "session",
+        value: resource.kind === "location" ? { ...reconnectSessionValue, ref: resource.ref } : reconnectSessionValue,
+      },
+    ],
     containers: [
       {
         key: navigationRootContainerKey(resource, slot),
@@ -215,7 +221,7 @@ const reconnectV2Response = (params: NavigationReadParams): NavigationReadRespon
       etag: '"location-v2"',
       data: reconnectSessionSnapshot(
         reconnectLocationKey,
-        { generation_id: generation, revision: 33, ref: "x", top_level_ref: "x", top_level: true },
+        { generation_id: generation, revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },
         "session",
       ),
     };
@@ -479,7 +485,7 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
         archived: { sessions: [], remaining: 0 },
         truncated: false,
       });
-    return wire({ ref: "r/a ?", top_level_ref: "r/a ?", top_level: true });
+    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
   });
   const s = navigationStore.getState();
   await s.loadSection("needs_you", 3, 7);
@@ -497,12 +503,133 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
     { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10 },
     { resource: "project", projectKey: "p/a ?" },
     { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11 },
-    { resource: "location", ref: "r/a ?" },
+    { resource: "location", ref: "local:r/a ?" },
   ]);
   const callCount = client.calls.length;
   await s.loadSection("needs_you", 3, 7);
   expect(client.calls).toHaveLength(callCount);
   s.setExpanded("p", false);
+});
+
+test("bare and canonical local location aliases coalesce through canonical v1 requests and selection", async () => {
+  const locationRefs: string[] = [];
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.ref !== "local:session") throw new Error(`uncanonical location ref ${params.ref}`);
+    locationRefs.push(params.ref);
+    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
+  });
+
+  const bare = await navigationStore.getState().lookupLocation("session");
+  const canonical = await navigationStore.getState().lookupLocation("local:session");
+  const state = navigationStore.getState();
+
+  expect(locationRefs).toEqual(["local:session"]);
+  expect(bare).toBe(canonical);
+  expect(bare).toMatchObject({ key: { kind: "location", ref: "local:session" }, error: null });
+  expect(selectLocation("session")(state)).toBe(bare);
+  expect(selectLocation("local:session")(state)).toBe(bare);
+  expect(
+    client.calls.map((call) => call.params as NavigationReadParams).filter((params) => params.resource === "location"),
+  ).toHaveLength(1);
+});
+
+test("qualified remote and local location refs remain unchanged", async () => {
+  const locationRefs: string[] = [];
+  await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
+    if (typeof params.ref !== "string") throw new Error("qualified location request omitted ref");
+    locationRefs.push(params.ref);
+    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
+  });
+
+  await navigationStore.getState().lookupLocation("remote:session");
+  await navigationStore.getState().lookupLocation("local:qualified");
+
+  expect(locationRefs).toEqual(["remote:session", "local:qualified"]);
+  expect(selectLocation("remote:session")(navigationStore.getState())?.key).toEqual({
+    kind: "location",
+    ref: "remote:session",
+  });
+  expect(selectLocation("local:qualified")(navigationStore.getState())?.key).toEqual({
+    kind: "location",
+    ref: "local:qualified",
+  });
+});
+
+test("bare and canonical local location aliases coalesce through canonical v2 requests and scopes", async () => {
+  const canonicalKey = { kind: "location", ref: "local:v2-session" } as const;
+  const locationRefs: string[] = [];
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 1,
+        etag: '"manifest-v2"',
+        data: {
+          metadata: emptyManifest(),
+          entities: [],
+          containers: [
+            {
+              key: navigationRootContainerKey({ kind: "manifest" }, "manifest"),
+              owner: { kind: "resource_root", slot: "manifest" },
+              children: [],
+            },
+          ],
+        },
+      };
+    }
+    if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.ref !== canonicalKey.ref) throw new Error(`uncanonical location ref ${params.ref}`);
+    locationRefs.push(params.ref);
+    const entityKey = `${navigationViewScope(canonicalKey)}/entity/${"8".repeat(64)}`;
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: generation,
+      revision: 2,
+      etag: '"location-v2"',
+      data: {
+        metadata: {
+          generation_id: generation,
+          revision: 2,
+          ref: canonicalKey.ref,
+          top_level_ref: canonicalKey.ref,
+          top_level: true,
+        },
+        entities: [{ key: entityKey, kind: "session", value: completeSession({ ref: canonicalKey.ref }) }],
+        containers: [
+          {
+            key: navigationRootContainerKey(canonicalKey, "session"),
+            owner: { kind: "resource_root", slot: "session" },
+            children: [entityKey],
+          },
+          {
+            key: navigationOwnedContainerKey(entityKey, "children"),
+            owner: { kind: "entity", entityKey, slot: "children" },
+            children: [],
+          },
+        ],
+      },
+    };
+  });
+  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  await flush();
+
+  const bare = await navigationStore.getState().lookupLocation("v2-session");
+  const canonical = await navigationStore.getState().lookupLocation(canonicalKey.ref);
+
+  expect(locationRefs).toEqual([canonicalKey.ref]);
+  expect(bare).toBe(canonical);
+  expect(bare).toMatchObject({ key: canonicalKey, error: null });
+  expect(bare.normalized?.key).toEqual(canonicalKey);
+  expect(bare.normalized?.graph.containers.has(navigationRootContainerKey(canonicalKey, "session"))).toBe(true);
+  expect(selectLocation("v2-session")(navigationStore.getState())).toBe(bare);
 });
 
 test("pin catalog page loading preserves every assignment target", async () => {
@@ -1543,7 +1670,7 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
       method: "evener/navigation/read",
       params: {
         resource: "location",
-        ref: "x",
+        ref: "local:x",
         representationVersion: 2,
         base: { generationId: generation, revision: 33, etag: '"location-v2"' },
       },
@@ -1618,7 +1745,7 @@ test("selectors expose every loaded global/pin page, location, project/page reso
       return wire({ pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
     if (params.resource === "pin_section")
       return wire({ sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }], remaining: 0 });
-    if (params.resource === "location") return wire({ session: { ref: "loc", children: [] } });
+    if (params.resource === "location") return wire({ session: { ref: params.ref, children: [] } });
     return wire({ sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
@@ -1633,7 +1760,7 @@ test("selectors expose every loaded global/pin page, location, project/page reso
   expect(selectPinSections(state).map((section) => [section.id, section.sessions.map((row) => row.ref)])).toEqual([
     ["pin", ["p1", "p2"]],
   ]);
-  expect(selectLocation("loc")(state)?.data).toMatchObject({ session: { ref: "loc" } });
+  expect(selectLocation("loc")(state)?.data).toMatchObject({ session: { ref: "local:loc" } });
   expect(selectProjectResource("p")(state)).toBeUndefined();
   expect(selectProjectPage("p", "current")(state)).toBeUndefined();
   expect(selectExpanded("p")(state)).toBe(false);
