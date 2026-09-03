@@ -81,15 +81,13 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 // what it touches: it creates <Root>/bundled if that is missing, and for a
 // requested bundled plugin not yet published it stages a marked copy there,
 // reads it, and removes it before returning. It publishes nothing, and it
-// reclaims nothing: collecting abandoned staging belongs to a launch.
+// reclaims nothing: collecting abandoned staging belongs to a launch. Removing
+// what it staged is part of the promise, so a removal that fails is reported
+// alongside whatever else went wrong; the marked directory stays in the store
+// until a later launch's sweep reclaims it.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
-	defer func() {
-		for _, dir := range scratch {
-			_ = os.RemoveAll(dir)
-		}
-	}()
-	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
+	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
 		dest, staging, err := m.prepareBundledStore(name, false)
 		if err != nil {
 			return "", "", err
@@ -103,6 +101,16 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		}
 		return staging.payload, dest, nil
 	})
+	for _, dir := range scratch {
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			// A removal that fails partway takes the marker with it, and an
+			// unmarked orphan is one no sweep will ever collect. Marking it
+			// again is what leaves a later launch able to reclaim it.
+			_ = os.WriteFile(filepath.Join(dir, stagingMarker), nil, 0o600)
+			err = errors.Join(err, fmt.Errorf("remove staged bundled preview %s: %w", dir, cleanupErr))
+		}
+	}
+	return resolution, err
 }
 
 // resolveForLaunch builds the inventory. bundledPath supplies, for a requested

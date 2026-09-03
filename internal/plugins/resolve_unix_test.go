@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
+	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/internal/bundled"
 )
 
@@ -135,5 +137,50 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 				t.Errorf("publishedBundledCopy = %v, %v; want a refusal for the %s at the destination", adopted, adoptErr, test.name)
 			}
 		})
+	}
+}
+
+// Removing the copy it staged is part of what a preview promises. When the
+// removal fails the caller has to hear about it: the marked staging directory
+// is still in the store, and only a later launch's sweep reclaims it.
+func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory mode")
+	}
+	m := NewManager(t.TempDir())
+	store := filepath.Join(m.Root, "bundled")
+	t.Cleanup(func() { _ = os.Chmod(store, 0o755) })
+	// Sealing the store from the load the preview runs between staging the
+	// copy and removing it: the staging directory itself can no longer be
+	// unlinked from its parent.
+	load := enabledLoad
+	enabledLoad = func(dir string) (agentplugin.Instance, error) {
+		instance, err := load(dir)
+		if chmodErr := os.Chmod(store, 0o500); chmodErr != nil {
+			t.Fatal(chmodErr)
+		}
+		return instance, err
+	}
+	t.Cleanup(func() { enabledLoad = load })
+
+	res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err == nil {
+		t.Fatal("PreviewForLaunch error = nil, want the failure to remove its staging")
+	}
+	if !strings.Contains(err.Error(), "staged bundled preview") {
+		t.Errorf("error = %v, want it to name the staging it could not remove", err)
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].Source != LaunchPluginSourceBundled {
+		t.Errorf("Candidates = %+v, want the preview it built before cleanup failed", res.Candidates)
+	}
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stagingPrefix) {
+		t.Fatalf("bundled store holds %v, want the staging the preview could not remove", entries)
+	}
+	if _, err := os.Lstat(filepath.Join(store, entries[0].Name(), stagingMarker)); err != nil {
+		t.Errorf("leftover staging is unmarked, so no sweep will reclaim it: %v", err)
 	}
 }
