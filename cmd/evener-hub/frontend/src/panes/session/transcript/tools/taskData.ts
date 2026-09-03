@@ -42,17 +42,21 @@ export function taskLabel(tasks: TaskRow[] | null, id: number | undefined): stri
 // done or cancelled row - completedAny, matching that Go gate's own name)
 // and did not ALSO explicitly start a task itself; either way that decision
 // already happened server-side and rides in the SAME State this call
-// returns, so it's found rather than re-derived here: the one in_progress
-// task the caller's own rows didn't already name. touchedIds is every id
-// the caller's own updates already earned a row for (including an explicit
-// in_progress one), so an explicit start is never double-counted -
-// task_store.go's Update enforces a single in_progress task store-wide, so
-// at most one candidate can ever match.
+// returns, so it's found rather than re-derived here. Current daemon snapshots
+// mark every in-progress row: only a true marker is an auto-start candidate.
+// Historical markerless snapshots retain the legacy fallback of finding the
+// untouched in-progress task. touchedIds is every id the caller's own updates
+// already earned a row for (including an explicit in_progress one), so an
+// explicit start is never double-counted.
 export function autoStartedTask(
   tasks: TaskRow[] | null,
   touchedIds: ReadonlySet<number>,
   completedAny: boolean,
 ): TaskRow | undefined {
   if (!tasks || !completedAny) return undefined;
+  const current = tasks.filter((t) => t.status === "in_progress");
+  if (current.some((t) => t.started !== undefined)) {
+    return current.find((t) => t.started === true && !touchedIds.has(t.id));
+  }
   return tasks.find((t) => t.status === "in_progress" && !touchedIds.has(t.id));
 }

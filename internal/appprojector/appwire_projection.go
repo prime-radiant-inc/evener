@@ -1025,11 +1025,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
-			ThreadID: p.threadID,
-			Ref:      p.ref,
-			Total:    data.Total,
-			Done:     data.Done,
-			Current:  taskSummary(data.Current),
+			ThreadID:  p.threadID,
+			Ref:       p.ref,
+			Total:     data.Total,
+			Done:      data.Done,
+			Cancelled: data.Cancelled,
+			Remaining: data.Remaining,
+			Current:   taskSummary(data.Current),
 		})
 		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		notification.TaskPublicationEpoch = data.TaskPublicationEpoch
@@ -1268,7 +1270,13 @@ func taskAggregate(data *events.TaskStateData) *appwire.TaskAggregate {
 	if data == nil {
 		return nil
 	}
-	return &appwire.TaskAggregate{Total: data.Total, Done: data.Done, Current: taskSummary(data.Current)}
+	return &appwire.TaskAggregate{
+		Total:     data.Total,
+		Done:      data.Done,
+		Cancelled: data.Cancelled,
+		Remaining: data.Remaining,
+		Current:   taskSummary(data.Current),
+	}
 }
 
 func goalState(data *events.GoalStateData) *appwire.GoalState {

@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -143,6 +146,79 @@ func TestTaskTool_UpdateToInProgressEmitsTaskUpdated(t *testing.T) {
 		return
 	}
 	t.Fatalf("TASK_UPDATED = %#v", emitted)
+}
+
+func TestTaskTool_MixedAddFailingUpdateIsAtomic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := taskpkg.NewTaskStore(dir, "mixed-atomic")
+	if _, err := store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeImplement, Description: "current", Prompt: "p"},
+		{Type: taskpkg.TaskTypeImplement, Description: "open", Prompt: "p"},
+	}); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("seed current task: %v", err)
+	}
+	before := store.View()
+	wantPersisted, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal pre-call tasks: %v", err)
+	}
+
+	var emitted []events.EventData
+	deps := &toolDeps{
+		emit:           func(_ events.EventKind, data events.EventData) { emitted = append(emitted, data) },
+		steer:          func(string, string) {},
+		resultToolName: func() string { return "communicate" },
+		taskGuard: taskGuard{
+			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
+			markUsed:             func() {},
+		},
+	}
+	reg := tool.NewRegistry()
+	registerTaskTools(reg, deps)
+
+	// The add is valid, but the update would introduce a second current task.
+	// It must fail as one transaction: no task, save, event, or next-ID advance
+	// from the add may escape before the conflict is detected.
+	args := json.RawMessage(`{"add":[{"type":"implement","description":"must not leak","prompt":"p"}],"update":[{"id":2,"status":"in_progress"}]}`)
+	for _, callID := range []string{"failed", "retry-failed"} {
+		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: callID, Name: "task_list", Arguments: args})
+		if !res.IsError || !strings.Contains(res.Output, "only one task may be in_progress") {
+			t.Fatalf("mixed call %s = %+v, want in_progress conflict", callID, res)
+		}
+		if got := store.View(); !reflect.DeepEqual(got, before) {
+			t.Fatalf("in-memory tasks after %s = %#v, want %#v", callID, got, before)
+		}
+		reloaded := taskpkg.NewTaskStore(dir, "mixed-atomic")
+		if err := reloaded.Load(); err != nil {
+			t.Fatalf("reload after %s: %v", callID, err)
+		}
+		persisted, err := json.Marshal(reloaded.View())
+		if err != nil {
+			t.Fatalf("marshal persisted tasks after %s: %v", callID, err)
+		}
+		if !bytes.Equal(persisted, wantPersisted) {
+			t.Fatalf("persisted tasks after %s = %s, want %s", callID, persisted, wantPersisted)
+		}
+	}
+	if len(emitted) != 0 {
+		t.Fatalf("failed mixed calls emitted task updates: %#v", emitted)
+	}
+
+	// A corrected retry gets the original next ID, proving neither failed call
+	// persisted a partial add or consumed an ID.
+	corrected := json.RawMessage(`{"add":[{"type":"implement","description":"must not leak","prompt":"p"}],"update":[{"id":1,"status":"done"}]}`)
+	res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: "corrected", Name: "task_list", Arguments: corrected})
+	if res.IsError {
+		t.Fatalf("corrected mixed retry: %s", res.Output)
+	}
+	after := store.View()
+	if len(after) != 3 || after[2].ID != 3 || after[2].Description != "must not leak" {
+		t.Fatalf("corrected retry tasks = %#v, want exactly one new task with ID 3", after)
+	}
 }
 
 func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {

@@ -273,24 +273,7 @@ func writeWrappedStatusList(b *strings.Builder, label string, items []string, wi
 }
 
 func taskSummary(tasks []taskpkg.Task) string {
-	if len(tasks) == 0 {
-		return "0/0 done"
-	}
-	done := 0
-	active := 0
-	for _, task := range tasks {
-		switch task.Status {
-		case taskpkg.TaskDone, taskpkg.TaskCancelled:
-			done++
-		case taskpkg.TaskInProgress:
-			active++
-		}
-	}
-	summary := fmt.Sprintf("%d/%d done", done, len(tasks))
-	if active > 0 {
-		summary += fmt.Sprintf(", %d active", active)
-	}
-	return summary
+	return taskpkg.Summarize(tasks).ProgressText()
 }
 
 // authSummary is the session-status pane's one-line credential field. It

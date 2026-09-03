@@ -47,7 +47,7 @@ import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer";
@@ -190,7 +190,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             canShutdown={model.capabilities.shutdown}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
-            taskLabel={model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : undefined}
+            taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             actions={{

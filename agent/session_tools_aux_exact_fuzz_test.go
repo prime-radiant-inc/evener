@@ -213,7 +213,7 @@ func auxGoalTaskExact(t *testing.T) {
 	}
 	_ = formatTaskList([]taskpkg.Task{{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "x", Status: taskpkg.TaskDone, DependsOn: []int{2}, ReasoningEffort: "high", Notes: []string{"n"}}})
 	_ = goalStateView(goal.Snapshot{})
-	if taskListAllDone([]taskpkg.Task{{Status: taskpkg.TaskOpen}}) || !taskListAllDone([]taskpkg.Task{{Status: taskpkg.TaskDone}}) {
+	if taskpkg.Summarize([]taskpkg.Task{{Status: taskpkg.TaskOpen}}).NoActionableTasks() || !taskpkg.Summarize([]taskpkg.Task{{Status: taskpkg.TaskDone}}).NoActionableTasks() {
 		t.Fatal("task completion classifier mismatch")
 	}
 }

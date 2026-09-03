@@ -640,7 +640,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, brief description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
@@ -653,9 +653,10 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"add": map[string]any{
 					"type":        "array",
-					"description": "Tasks to add. Omit or [] for none. Each: type, brief description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
+					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"type": map[string]any{
 								"type":        "string",
@@ -678,7 +679,8 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 					"type":        "array",
 					"description": "Changes to existing tasks. Omit or [] for none. Each: id plus optional status, notes, depends_on, or reasoning_effort. Omit status to leave it unchanged.",
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"id":     map[string]any{"type": "integer"},
 							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},

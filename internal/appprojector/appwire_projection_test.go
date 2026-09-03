@@ -205,6 +205,21 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
+func TestProject_TaskUpdatedPreservesFullyCancelledState(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventTaskUpdated,
+		Data: events.TaskUpdatedData{Total: 3, Cancelled: 3, Remaining: 0},
+	})
+	if len(out) != 1 {
+		t.Fatalf("notifications = %+v, want one task update", out)
+	}
+	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
+	if !ok || params.Total != 3 || params.Done != 0 || params.Cancelled != 3 || params.Remaining != 0 || params.Current != nil {
+		t.Fatalf("params = %+v, want fully cancelled task state", out[0].Params)
+	}
+}
+
 func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
@@ -212,13 +227,13 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 		TaskPublicationEpoch:    7,
 		TaskPublicationRevision: 41,
 		CurrentWork: &events.CurrentWorkSeedData{
-			Tasks: &events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
+			Tasks: &events.TaskStateData{Total: 3, Done: 1, Cancelled: 1, Remaining: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
 			Goal:  &events.GoalStateData{Objective: "seeded objective", Status: "active", Iterations: 2},
 		},
 	}})
 
 	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
-	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 ||
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 || thread.Evener.Tasks.Cancelled != 1 || thread.Evener.Tasks.Remaining != 1 ||
 		thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "seeded task" {
 		t.Fatalf("started tasks = %+v, want complete current-work seed", thread.Evener.Tasks)
 	}

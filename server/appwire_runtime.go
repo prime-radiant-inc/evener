@@ -696,7 +696,13 @@ func currentWorkSeedWithoutTasks(seed *events.CurrentWorkSeedData) *events.Curre
 }
 
 func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {
-	return cloneTaskAggregate(&appwire.TaskAggregate{Total: params.Total, Done: params.Done, Current: params.Current})
+	return cloneTaskAggregate(&appwire.TaskAggregate{
+		Total:     params.Total,
+		Done:      params.Done,
+		Cancelled: params.Cancelled,
+		Remaining: params.Remaining,
+		Current:   params.Current,
+	})
 }
 
 func goalPatch(params appwire.GoalUpdatedParams) *appwire.GoalState {

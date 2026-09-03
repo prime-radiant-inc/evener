@@ -1128,6 +1128,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         tasks: {
           total: n.params.total,
           done: n.params.done,
+          ...(n.params.cancelled === undefined ? {} : { cancelled: n.params.cancelled }),
+          ...(n.params.remaining === undefined
+            ? n.params.cancelled === undefined
+              ? {}
+              : { remaining: Math.max(0, n.params.total - n.params.done - n.params.cancelled) }
+            : { remaining: n.params.remaining }),
           ...(n.params.current ? { current: n.params.current } : {}),
         },
         lastFrameAt: now,

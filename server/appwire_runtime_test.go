@@ -14,6 +14,13 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
+func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
+	got := taskPatch(appwire.TaskUpdatedParams{Total: 3, Cancelled: 3, Remaining: 0})
+	if got == nil || got.Total != 3 || got.Done != 0 || got.Cancelled != 3 || got.Remaining != 0 || got.Current != nil {
+		t.Fatalf("taskPatch() = %+v, want fully cancelled task state", got)
+	}
+}
+
 func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
