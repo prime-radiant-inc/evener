@@ -1035,7 +1035,11 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 
 	if !prevalidated && t.PreValidate != nil {
 		if err := t.PreValidate(args); err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			if res, blocked := park(); blocked {
+				return res
+			}
+			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, prevalidationBoundary(name, call.Arguments, true))
 		}
 	}
 
