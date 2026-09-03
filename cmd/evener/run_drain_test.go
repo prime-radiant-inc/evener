@@ -139,9 +139,10 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 // running makes the session yield so the completion is delivered as a
 // notification turn (session_lifecycle.go post-tool seam), which would fold the
 // notification into the tool-result request and race these scripted steps
-// against a fast local process. waitForCompletion, when supplied, is the
-// executor's completion event, not a timing assumption about when finalization
-// will happen.
+// against a fast local process. waitForCompletion, when supplied, blocks until
+// the job manager has finalized the shell (its terminal record is durable and
+// it has left the running map), not merely until the executor reported
+// completion, so the drain never starts mid-finalization.
 func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func(*agent.Session)) {
 	t.Helper()
 	oldDrainJobTree := runDrainJobTree
