@@ -339,6 +339,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := deps.ensureConfigDirs(); err != nil {
+		return err
+	}
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
 		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
@@ -381,9 +389,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err != nil {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
-	}
-	if err := deps.ensureConfigDirs(); err != nil {
-		return err
 	}
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {

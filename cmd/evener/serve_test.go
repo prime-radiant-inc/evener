@@ -60,6 +60,10 @@ func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) err
 	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
 }
 
+// A selection that cannot be honoured stops the startup before it does any
+// work of its own. Ensuring the config dirs comes first and is not that work:
+// it carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
 func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	root := t.TempDir()
 	var order []string
@@ -78,8 +82,8 @@ func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
 		t.Fatalf("serve error = %v, want strict selection error", err)
 	}
-	if !reflect.DeepEqual(order, []string{"resolve"}) {
-		t.Fatalf("startup order = %v, want resolver only", order)
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
 	}
 }
 

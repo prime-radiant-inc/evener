@@ -25,6 +25,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// A selection that cannot be honoured stops the launch before it does any work
+// of its own. Ensuring the config dirs comes first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
 func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	selected := []string{"missing-plugin"}
 	var order []string
@@ -55,8 +59,8 @@ func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
 		t.Fatalf("run error = %v, want strict selection error", err)
 	}
-	if !reflect.DeepEqual(order, []string{"resolve"}) {
-		t.Fatalf("startup order = %v, want resolver only", order)
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
 	}
 }
 
@@ -1146,5 +1150,57 @@ func TestRunWithContextStrategy_DoesNotError(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(stdout.String()), "PONG") {
 		t.Fatalf("expected stdout to contain PONG, got: %q", stdout.String())
+	}
+}
+
+// Nothing may create the user config root before the legacy-data guard has
+// looked at it. The guard reads an existing <config>/evener as "already
+// migrated", so a bundled plugin materialized into <config>/evener/plugins
+// would silently strand a user's <config>/serf — configuration and
+// credentials included. EnsureUserConfigDirs carries that guard, so it runs
+// before any plugin resolution.
+func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T) error
+	}{
+		{
+			name: "run",
+			start: func(t *testing.T) error {
+				return run(context.Background(), runConfig{
+					prompt: "hello", workDir: t.TempDir(), stateDir: t.TempDir(),
+					enabledPlugins: &[]string{"coordinator-workflow"}, noDefaultMarketplaces: true,
+					stdout: io.Discard, stderr: io.Discard,
+				})
+			},
+		},
+		{
+			name: "serve",
+			start: func(t *testing.T) error {
+				return runServeWithDeps([]string{
+					"--enabled-plugins=coordinator-workflow", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+				}, defaultServeDeps())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			err := tt.start(t)
+			if err == nil || !strings.Contains(err.Error(), "legacy Serf data") {
+				t.Fatalf("error = %v, want the legacy-data guard to stop the startup", err)
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the config root was created before the guard ran: stat err = %v", err)
+			}
+		})
 	}
 }

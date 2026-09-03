@@ -119,6 +119,14 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := runEnsureUserConfigDirs(); err != nil {
+		return err
+	}
 	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
 	if err != nil && cfg.enabledPlugins != nil {
 		return fmt.Errorf("resolve plugins: %w", err)
@@ -128,9 +136,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
-		return err
-	}
-	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
 	}
 	// --no-default-marketplaces opts out of seeding on this bare-evener path only;
