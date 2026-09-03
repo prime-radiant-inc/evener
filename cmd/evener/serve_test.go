@@ -1138,16 +1138,20 @@ func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
 func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 	tests := []struct {
 		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
 		arm  func(t *testing.T, deps *serveDeps, interrupt func())
 	}{
 		{
 			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
 			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
 				var seedCtx context.Context
 				deps.seedMarketplaces = func(ctx context.Context) error {
 					interrupt()
 					seedCtx = ctx
-					return ctx.Err()
+					return nil
 				}
 				t.Cleanup(func() {
 					if seedCtx == nil || seedCtx.Err() == nil {
@@ -1157,12 +1161,54 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 			},
 		},
 		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the profile work just before it) is only noticed by
+				// the gate that follows it.
+				applyCheap := deps.applyCheap
+				deps.applyCheap = func(profile *provider.Profile, cheap string, client *llm.Client) (*provider.Profile, error) {
+					interrupt()
+					return applyCheap(profile, cheap, client)
+				}
+			},
+		},
+		{
 			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
 			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
 				deps.provisionSandbox = func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error {
 					interrupt()
 					return nil
 				}
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var sess *agent.Session
+				newSession := deps.newSession
+				deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the startup has to take it down: a returned-from
+				// startup that leaves a session running leaks its environment
+				// and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the startup ended", state, agent.SessionClosed)
+					}
+				})
 			},
 		},
 	}
@@ -1191,8 +1237,8 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("serve error = %v, want the interrupt that ended startup", err)
 			}
-			if !strings.Contains(err.Error(), "interrupted") {
-				t.Errorf("serve error = %q, want it to say the startup was interrupted", err)
+			if want := "interrupted while " + tt.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("serve error = %q, want it to say %q", err, want)
 			}
 			if listened {
 				t.Error("bound a listener for a startup an interrupt had already ended")
