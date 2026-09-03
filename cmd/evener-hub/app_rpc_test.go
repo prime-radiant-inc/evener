@@ -216,6 +216,95 @@ func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
 	}
 }
 
+func TestHubRPCInitialItemReadSynthesizesCompleteLegacyV3Metadata(t *testing.T) {
+	const (
+		sessionID = "02wMz5Txv733WHFsVy66SR"
+		routeRef  = "local:legacy-initial-workspace"
+		hubToken  = "legacy-initial-token"
+	)
+	legacyTurns := []appwire.Turn{
+		{ID: "turn-0", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-0-0", Text: "oldest"},
+			{Type: "agentMessage", ID: "item-0-1", Text: "older"},
+		}},
+		{ID: "turn-1", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-1-0", Text: "middle"},
+		}},
+		{ID: "turn-2", Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item-2-0", Text: "newer"},
+			{Type: "agentMessage", ID: "item-2-1", Text: "newest"},
+		}},
+	}
+	daemonRequest := make(chan appwire.ThreadReadParams, 1)
+	authHeader := make(chan string, 1)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "legacy-initial-v3-daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		daemonRequest <- params
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref}, Turns: legacyTurns,
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader <- r.Header.Get("Authorization")
+		daemon.ServeWebSocket(w, r)
+	}))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 22 * 1000, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):],
+		SourceID: "local", ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: routeRef,
+		InstanceID: "legacy-initial-v3-instance", HubToken: hubToken,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref: routeRef, ThreadID: sessionID, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFull),
+		PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3,
+	})
+	if err != nil {
+		t.Fatalf("legacy-v3 initial item read: %v", err)
+	}
+	request := <-daemonRequest
+	if request.Ref != routeRef || request.ThreadID != sessionID || !request.IncludeTurns || request.ItemsView != string(appwire.TurnItemsViewFull) || request.PageUnit != appwire.TranscriptPageUnitItem || request.ItemLimit != 3 {
+		t.Fatalf("legacy-v3 daemon request = %+v, want routed resolved item request", request)
+	}
+	if got := <-authHeader; got != "Bearer "+hubToken {
+		t.Fatalf("legacy-v3 daemon authorization = %q, want bearer token", got)
+	}
+	if response.PageUnit != appwire.TranscriptPageUnitItem || response.OlderCursor == "" {
+		t.Fatalf("legacy-v3 initial item response = %+v, want item page with continuation", response)
+	}
+	if response.Thread.ID != sessionID || response.Thread.SessionID != sessionID || response.Thread.Source != "local" || response.Thread.Evener.Ref != routeRef {
+		t.Fatalf("legacy-v3 response routing = %+v, want resolved local thread", response.Thread)
+	}
+	items := flattenTestItems(response.Thread.Turns)
+	wantIDs := []string{"item-1-0", "item-2-0", "item-2-1"}
+	wantTurnIDs := []string{"turn-1", "turn-2", "turn-2"}
+	wantPositions := []appwire.ThreadItemPosition{{Entry: 1, Item: 0}, {Entry: 2, Item: 0}, {Entry: 2, Item: 1}}
+	if len(items) != len(wantIDs) {
+		t.Fatalf("legacy-v3 initial item count = %d, want %d: %+v", len(items), len(wantIDs), items)
+	}
+	for i, item := range items {
+		if item.ID != wantIDs[i] || item.Position == nil || *item.Position != wantPositions[i] {
+			t.Fatalf("legacy-v3 initial item %d = %+v, want id %q position %+v", i, item, wantIDs[i], wantPositions[i])
+		}
+		wantTurnID := wantTurnIDs[i]
+		wantKey := appitempaging.TranscriptItemKey(wantTurnID, wantPositions[i])
+		if item.TurnID != wantTurnID || item.TranscriptKey != wantKey {
+			t.Fatalf("legacy-v3 initial item %d identity = turn %q key %q, want turn %q key %q", i, item.TurnID, item.TranscriptKey, wantTurnID, wantKey)
+		}
+	}
+}
+
 func TestHubRPCItemListPreservesTerminalSourcePageAndSavedCursorFallback(t *testing.T) {
 	cfg, entry := seedPastItemPagingThread(t)
 	sessionID := entry.Meta.ID

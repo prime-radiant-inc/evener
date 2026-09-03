@@ -124,7 +124,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	candidates, err := localDaemonItemCandidates(response.Thread.Turns)
+	candidates, err := localDaemonInitialItemCandidates(response)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -422,6 +422,27 @@ func localDaemonMaterializedItemCandidates(turns []appwire.Turn) ([]appitempagin
 		}
 	}
 	return localDaemonItemCandidates(turns)
+}
+
+// localDaemonInitialItemCandidates accepts legacy metadata only when the
+// daemon returned a complete turn-shaped transcript. A native item page or any
+// partial turn window stays strict because its slice indices are not absolute
+// transcript positions.
+func localDaemonInitialItemCandidates(response appwire.ThreadReadResponse) ([]appitempaging.TranscriptItemCandidate, error) {
+	completeLegacyShape := response.OlderCursor == "" &&
+		(response.PageUnit == "" || response.PageUnit == appwire.TranscriptPageUnitTurn)
+	if completeLegacyShape {
+		for _, turn := range response.Thread.Turns {
+			if (turn.ItemsView != "" && turn.ItemsView != appwire.TurnItemsViewFull) || turn.HasEarlierItems || turn.HasLaterItems {
+				completeLegacyShape = false
+				break
+			}
+		}
+	}
+	if completeLegacyShape {
+		return localDaemonMaterializedItemCandidates(response.Thread.Turns)
+	}
+	return localDaemonItemCandidates(response.Thread.Turns)
 }
 
 // RelaySessionSource is implemented by sources that can preserve one ordered

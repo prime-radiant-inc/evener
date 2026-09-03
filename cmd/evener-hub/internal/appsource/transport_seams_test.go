@@ -942,12 +942,51 @@ func TestLocalDaemonMaterializedCompatibilityPreservesStrictMetadataBoundary(t *
 		})
 	}
 
-	if result, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
-		Ref: "local:metadata-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1,
-	}, appwire.ThreadReadResponse{Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "native-item-turn", Items: []appwire.ThreadItem{{
-		Type: "agentMessage", ID: "native-unpositioned",
-	}}}}}}); err == nil {
-		t.Fatalf("native item-mode response without metadata returned %+v", result)
+	initialParams := appwire.ThreadReadParams{Ref: "local:metadata-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1}
+	for _, test := range []struct {
+		name     string
+		response appwire.ThreadReadResponse
+	}{
+		{name: "explicit item mode", response: appwire.ThreadReadResponse{
+			PageUnit: appwire.TranscriptPageUnitItem,
+			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "native-item-turn", Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "native-unpositioned",
+			}}}}},
+		}},
+		{name: "partial legacy cursor", response: appwire.ThreadReadResponse{
+			OlderCursor: "legacy-older",
+			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "partial-legacy-turn", Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "partial-legacy-unpositioned",
+			}}}}},
+		}},
+		{name: "partial legacy fragment", response: appwire.ThreadReadResponse{
+			Thread: appwire.Thread{Turns: []appwire.Turn{{
+				ID: "fragment-legacy-turn", ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
+				Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "fragment-legacy-unpositioned"}},
+			}}},
+		}},
+		{name: "initial mixed legacy and modern", response: appwire.ThreadReadResponse{
+			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "mixed-initial-turn", Items: []appwire.ThreadItem{
+				{Type: "agentMessage", ID: "legacy-item"},
+				{Type: "agentMessage", ID: "modern-item", TranscriptKey: "modern-key", Position: &appwire.ThreadItemPosition{Entry: 0, Item: 1}},
+			}}}},
+		}},
+		{name: "initial position only", response: appwire.ThreadReadResponse{
+			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "position-only-initial-turn", Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "position-only", Position: &appwire.ThreadItemPosition{Entry: 0, Item: 0},
+			}}}}},
+		}},
+		{name: "initial transcript key only", response: appwire.ThreadReadResponse{
+			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "key-only-initial-turn", Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "key-only", TranscriptKey: "existing-key",
+			}}}}},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if result, err := source.ItemCandidatesFromRead(context.Background(), initialParams, test.response); err == nil {
+				t.Fatalf("strict initial metadata boundary returned %+v", result)
+			}
+		})
 	}
 }
 
