@@ -88,7 +88,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 	var retainedReadChanges []repair.Change
 	if t.Definition.Name == "read_transcript" {
-		args, retainedReadChanges = normalizeRetainedReadArgsForRepair(args)
+		args, retainedReadChanges = normalizeRetainedReadArgs(args)
 	}
 
 	// The default communicate envelope documents message/data/artifacts as
@@ -124,10 +124,20 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		// newly typed defaults before the final schema gate and dispatch.
 		if t.Definition.Name == "read_transcript" {
 			var normalizedChanges []repair.Change
-			healed, normalizedChanges = normalizeRetainedReadArgsForRepair(healed)
+			healed, normalizedChanges = normalizeRetainedReadArgs(healed)
 			retainedReadChanges = append(retainedReadChanges, normalizedChanges...)
 		}
 		if err2 := t.Schema.Validate(healed); err2 != nil {
+			// Retained-read normalization was already applied to args. Preserve
+			// that real, applied change in telemetry even when another field
+			// remains invalid; failed generic repairs and envelope fills remain
+			// deliberately unrecorded.
+			if len(retainedReadChanges) > 0 {
+				res.Changes = append(res.Changes, retainedReadChanges...)
+				if b, marshalErr := json.Marshal(args); marshalErr == nil {
+					res.Call.Arguments = b
+				}
+			}
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
 			return res
 		}
@@ -149,13 +159,13 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	return res
 }
 
-// normalizeRetainedReadArgsForRepair removes only the semantically empty
-// retained-output options that providers commonly materialize. It runs before
-// the registry schema gate, so a nullable default reaches the handler as an
-// omission and the applied removal is visible in repair telemetry. Artifact
-// format is deliberately never removed: every explicit artifact format must
-// remain available for the handler to reject.
-func normalizeRetainedReadArgsForRepair(args map[string]any) (map[string]any, []repair.Change) {
+// normalizeRetainedReadArgs removes only the semantically empty retained-output
+// options that providers commonly materialize. It runs before the registry
+// schema gate for repair telemetry and again at the execution boundary so
+// direct registry calls and post-hook updatedInput use the default view too.
+// Artifact format is deliberately never removed: every explicit artifact
+// format must remain available for the handler to reject.
+func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Change) {
 	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
 	jobRef := strings.HasPrefix(ref, "job:")
 	artifactRef := strings.HasPrefix(ref, "artifact:")

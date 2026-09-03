@@ -117,6 +117,28 @@ func TestRepairArgs_Coerce_NullableIntegerFromString(t *testing.T) {
 	}
 }
 
+func TestNullableUnionNonNullType(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   any
+		want string
+	}{
+		{name: "any nullable integer", in: []any{"integer", "null"}, want: "integer"},
+		{name: "string nullable boolean", in: []string{"null", "boolean"}, want: "boolean"},
+		{name: "missing null", in: []any{"integer", "number"}},
+		{name: "multiple non-null members", in: []any{"integer", "number", "null"}},
+		{name: "duplicate null", in: []any{"integer", "null", "null"}},
+		{name: "malformed member", in: []any{"integer", 1}},
+		{name: "not a union", in: "integer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nullableUnionNonNullType(tc.in); got != tc.want {
+				t.Fatalf("nullableUnionNonNullType(%#v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRepairArgs_Coerce_ScalarToArray(t *testing.T) {
 	out, _ := RepairArgs(coerceParams(), map[string]any{"tags": "x"})
 	if !reflect.DeepEqual(out["tags"], []any{"x"}) {

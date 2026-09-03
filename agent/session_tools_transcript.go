@@ -292,6 +292,11 @@ type retainedSearchResult struct {
 }
 
 func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
+	// Preparation normally removes materialized retained defaults before hooks,
+	// but direct registry calls and PreToolUse updatedInput enter here afterward.
+	// This idempotent execution-boundary pass deliberately has no repair
+	// telemetry: it only selects the documented default operation.
+	args, _ = normalizeRetainedReadArgs(args)
 	for _, name := range readTranscriptPublicRejectedParams {
 		if _, present := args[name]; present {
 			if name == "source" || name == "attempt_id" || name == "body" {
@@ -401,8 +406,9 @@ func retainedReadIncompatibleFields(refKind string, args map[string]any) []strin
 }
 
 // retainedReadArgsValidationError is deliberately diagnostic: tool results are
-// retained as repair telemetry, so include every parse and mode incompatibility
-// exactly as received and a smallest valid call instead of naming only one key.
+// retained as repair telemetry, so include bounded, possibly truncated forms of
+// every parse and mode incompatibility and a smallest valid call instead of
+// naming only one key.
 func retainedReadArgsValidationError(refKind string, args map[string]any, names []string, parseIssues []retainedReadParseIssue, operation retainedReadOperation) error {
 	received := make([]string, 0, len(names)+len(parseIssues))
 	reasons := make([]string, 0, len(names)+len(parseIssues))
