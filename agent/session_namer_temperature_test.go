@@ -327,8 +327,9 @@ func TestIsTemperatureUnsupported(t *testing.T) {
 	}
 
 	// A structured error.param in the raw body reaches the predicate through
-	// ErrorFromHTTPStatus too, not only ClassifyHTTPError.
-	raw := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature"}}
+	// ErrorFromHTTPStatus too, not only ClassifyHTTPError. The code vouches
+	// that this is a rejection (round-7: a param alone is not one).
+	raw := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature", "code": "unknown_parameter"}}
 	statusErr := llm.ErrorFromHTTPStatus("openai", 400, "Unsupported", raw, nil)
 	if !isTemperatureUnsupported(statusErr) {
 		t.Error("ErrorFromHTTPStatus with structured param temperature must trigger the retry")
@@ -338,10 +339,17 @@ func TestIsTemperatureUnsupported(t *testing.T) {
 	// error selects it, and an unattributed error accepts either spelling.
 	googleRes := registry.Resolved{Instance: "google", Protocol: registry.ProtocolGoogle}
 	googleErr := llm.ClassifyHTTPError("generateContent", 400, nil,
-		[]byte(`{"error":{"message":"Unsupported","code":400,"status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
+		[]byte(`{"error":{"message":"Unsupported","code":"unsupported_parameter","status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
 		googleRes)
 	if !isTemperatureUnsupported(googleErr) {
 		t.Error("Google-protocol rejection naming generationConfig.temperature must trigger the retry")
+	}
+	// An invalid-value error pointing at temperature must not trigger it.
+	googleValueErr := llm.ClassifyHTTPError("generateContent", 400, nil,
+		[]byte(`{"error":{"message":"Invalid value for 'generationConfig.temperature': must be between 0 and 2.","code":"invalid_value","status":"INVALID_ARGUMENT","param":"generationConfig.temperature"}}`),
+		googleRes)
+	if isTemperatureUnsupported(googleValueErr) {
+		t.Error("Google invalid-value error naming generationConfig.temperature must not trigger the retry")
 	}
 	plainGoogleErr := llm.ErrorFromHTTPStatus("anyone", 400, "Unsupported parameter: 'generationConfig.temperature'", nil, nil)
 	if !isTemperatureUnsupported(plainGoogleErr) {

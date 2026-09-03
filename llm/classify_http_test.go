@@ -250,15 +250,30 @@ func TestRejectedParameter(t *testing.T) {
 	}
 
 	// ErrorFromHTTPStatus reads a structured error.param from raw, not only
-	// message patterns (the raw shape mirrors a decoded provider body).
-	rawStructured := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature"}}
+	// message patterns — but only when the error is actually a rejection: here
+	// the code vouches (round-7: a param alone is not a rejection).
+	rawStructured := map[string]any{"error": map[string]any{"message": "Unsupported", "type": "invalid_request_error", "param": "temperature", "code": "unknown_parameter"}}
 	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported", rawStructured, nil); RejectedParameter(err) != "temperature" {
-		t.Error("ErrorFromHTTPStatus must extract structured error.param from raw")
+		t.Error("ErrorFromHTTPStatus must extract structured error.param from raw for a rejection code")
 	}
-	// Structured param takes precedence over a message naming another one.
-	rawBoth := map[string]any{"error": map[string]any{"message": "Unsupported parameter: 'top_p'", "param": "temperature"}}
-	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported parameter: 'top_p'", rawBoth, nil); RejectedParameter(err) != "temperature" {
-		t.Error("structured error.param must take precedence over the message pattern")
+	// A rejection-shaped message vouches for the structured param too.
+	rawMsgShaped := map[string]any{"error": map[string]any{"message": "Unsupported parameter: 'top_p'", "param": "temperature"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Unsupported parameter: 'top_p'", rawMsgShaped, nil); RejectedParameter(err) != "temperature" {
+		t.Error("structured error.param must take precedence over the message pattern when the message is a rejection")
+	}
+	// A param on a non-rejection error is a pointer at the offending value,
+	// not a rejection: "Invalid value for 'temperature': must be between 0
+	// and 2" with param=temperature must NOT read as rejected (round-7).
+	rawValue := map[string]any{"error": map[string]any{"message": "Invalid value for 'temperature': must be between 0 and 2.", "type": "invalid_request_error", "param": "temperature", "code": "invalid_value"}}
+	if err := ErrorFromHTTPStatus("openai", 400, "Invalid value for 'temperature': must be between 0 and 2.", rawValue, nil); RejectedParameter(err) != "" {
+		t.Error("an invalid-value error's error.param must not read as a rejection")
+	}
+	// The same shape through the classifier.
+	valueClassified := ClassifyHTTPError("responses.create", 400, nil,
+		[]byte(`{"error":{"message":"Invalid value for 'temperature': must be between 0 and 2.","type":"invalid_request_error","param":"temperature","code":"invalid_value"}}`),
+		responsesRes)
+	if got := RejectedParameter(valueClassified); got != "" {
+		t.Errorf("classifier: an invalid-value error must not carry a rejected parameter: got %q", got)
 	}
 	// The classifier's structured code path falls back to the message when
 	// error.param is absent (JSON null, as OpenAI sends).
