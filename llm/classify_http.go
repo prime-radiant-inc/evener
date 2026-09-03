@@ -24,14 +24,16 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	var raw map[string]any
 	_ = json.Unmarshal(body, &raw) // a non-JSON body classifies by status alone
 	now := time.Now()
+	message := ProviderFailureMessage(operation, body)
 	base := httpBaseError{
-		provider:    res.Instance,
-		protocol:    res.Protocol,
-		statusCode:  status,
-		message:     ProviderFailureMessage(operation, body),
-		errorCode:   extractErrorCode(raw),
-		retryAfter:  retryDelayFromHeaders(headers, now),
-		rawResponse: raw,
+		provider:      res.Instance,
+		protocol:      res.Protocol,
+		statusCode:    status,
+		message:       message,
+		rejectedParam: rejectedParameter(raw, message),
+		errorCode:     extractErrorCode(raw),
+		retryAfter:    retryDelayFromHeaders(headers, now),
+		rawResponse:   raw,
 	}
 	code := base.errorCode
 	switch {
@@ -40,7 +42,6 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 		return &contextLengthError{base}
 	case code == "unknown_parameter", code == "unsupported_parameter":
 		base.retryable = false
-		base.rejectedParam = rejectedParameter(raw, base.message)
 		base.hint = fieldHint(base.rejectedParam, res)
 		return &invalidRequestError{base}
 	}
@@ -60,7 +61,6 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	if err := classifyByMessage(base); err != nil {
 		return err
 	}
-	base.rejectedParam = rejectedParameter(raw, base.message)
 	base.hint = fieldHint(base.rejectedParam, res)
 	return &invalidRequestError{base}
 }

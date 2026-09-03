@@ -118,8 +118,8 @@ func TemperatureSupported(res Resolved) bool {
 // row showed exactly this).
 func catalogBacked(provenance map[string]string) bool {
 	for _, source := range provenance {
-		if strings.HasSuffix(source, "/row") {
-			switch layer := strings.TrimSuffix(source, "/row"); layer {
+		if layer, ok := strings.CutSuffix(source, "/row"); ok {
+			switch layer {
 			case LayerSnapshot, LayerOverlay, LayerCache:
 				return true
 			}
