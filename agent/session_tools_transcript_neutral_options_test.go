@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -397,6 +398,40 @@ func TestRetainedReadIncompatibleArgsDiagnostics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRetainedReadDiagnosticBoundsLongReceivedRange(t *testing.T) {
+	stateDir := t.TempDir()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJobRecord(t, stateDir, owner, jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+	_, err := execReadTranscript(&toolDeps{stateDir: stateDir, sessionID: owner}, map[string]any{
+		"transcript_ref": "job:" + jobID,
+		"range":          strings.Repeat("界", 300),
+	})
+	if err == nil {
+		t.Fatal("long incompatible range succeeded")
+	}
+	message := err.Error()
+	const receivedPrefix = "incompatible fields: range="
+	_, fields, found := strings.Cut(message, receivedPrefix)
+	if !found {
+		t.Fatalf("diagnostic missing received range: %q", message)
+	}
+	value, _, found := strings.Cut(fields, "; minimal valid call:")
+	if !found {
+		t.Fatalf("diagnostic missing received range: %q", message)
+	}
+	if got := utf8.RuneCountInString(value); got > 256 {
+		t.Fatalf("received range length = %d runes, want at most 256: %q", got, value)
+	}
+	var decoded string
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		t.Fatalf("received range is not readable JSON string %q: %v", value, err)
+	}
+	if !utf8.ValidString(decoded) || !strings.HasSuffix(decoded, "…[truncated]") {
+		t.Fatalf("received range = %q, want valid UTF-8 with truncation marker", decoded)
 	}
 }
 

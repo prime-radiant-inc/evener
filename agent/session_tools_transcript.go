@@ -34,6 +34,14 @@ const transcriptToolMaxChars = 600_000
 // serialized response.
 const retainedOutputMatchMaxChars = 64 << 10
 
+// retainedReadDiagnosticValueMaxRunes bounds each caller-supplied value echoed
+// in a retained-read validation error. Longer values become a valid JSON string
+// suffixed with retainedReadDiagnosticTruncationMarker, so diagnostics stay
+// readable without allowing an incompatible free-form option to dominate them.
+const retainedReadDiagnosticValueMaxRunes = 256
+
+const retainedReadDiagnosticTruncationMarker = "…[truncated]"
+
 const artifactUnavailableReadError = "artifact_unavailable: retained artifact could not be read"
 
 // transcriptTools returns the read-only transcript inspection tools. read_transcript
@@ -404,11 +412,7 @@ func retainedReadArgsValidationError(refKind string, args map[string]any, names 
 			return
 		}
 		receivedFields[name] = true
-		encoded, err := json.Marshal(args[name])
-		if err != nil {
-			encoded = []byte(fmt.Sprintf("%#v", args[name]))
-		}
-		received = append(received, fmt.Sprintf("%s=%s", name, encoded))
+		received = append(received, name+"="+boundedRetainedReadDiagnosticValue(args[name]))
 	}
 	for _, issue := range parseIssues {
 		reasons = append(reasons, issue.Reason)
@@ -433,6 +437,41 @@ func retainedReadArgsValidationError(refKind string, args map[string]any, names 
 		return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"artifact:<id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
 	}
 	return fmt.Errorf("invalid_request: %s; incompatible fields: %s; minimal valid call: {\"transcript_ref\":\"job:<job_id>\"}", strings.Join(reasons, "; "), strings.Join(received, ", "))
+}
+
+func boundedRetainedReadDiagnosticValue(value any) string {
+	if text, ok := value.(string); ok {
+		return boundedRetainedReadDiagnosticString(text)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return boundedRetainedReadDiagnosticString(fmt.Sprintf("%#v", value))
+	}
+	if utf8.RuneCountInString(string(encoded)) <= retainedReadDiagnosticValueMaxRunes {
+		return string(encoded)
+	}
+	return boundedRetainedReadDiagnosticString(string(encoded))
+}
+
+func boundedRetainedReadDiagnosticString(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `"` + retainedReadDiagnosticTruncationMarker + `"`
+	}
+	if utf8.RuneCountInString(string(encoded)) <= retainedReadDiagnosticValueMaxRunes {
+		return string(encoded)
+	}
+	var prefix strings.Builder
+	for _, r := range value {
+		candidate := prefix.String() + string(r) + retainedReadDiagnosticTruncationMarker
+		encoded, err = json.Marshal(candidate)
+		if err != nil || utf8.RuneCountInString(string(encoded)) > retainedReadDiagnosticValueMaxRunes {
+			break
+		}
+		prefix.WriteRune(r)
+	}
+	encoded, _ = json.Marshal(prefix.String() + retainedReadDiagnosticTruncationMarker)
+	return string(encoded)
 }
 
 func compileOutputMatch(expression string) (*regexp.Regexp, error) {
