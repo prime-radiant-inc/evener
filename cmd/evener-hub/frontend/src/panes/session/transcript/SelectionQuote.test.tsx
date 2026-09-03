@@ -279,3 +279,58 @@ test("mousedown on the bar is prevented, so clicking its action never collapses 
   const event = fireEvent.mouseDown(screen.getByRole("toolbar", { name: "Selection actions" }));
   expect(event).toBe(false); // fireEvent returns false when preventDefault() was called
 });
+
+// Multi-pane workspaces mount one SelectionQuote per session pane
+// (Session.tsx), and each instance registers the selection.quote action.
+// These two tests pin the multi-instance contract against the two ways a
+// shared registry can break it: the LAST-registered instance clobbering the
+// one holding the selection, and an instance's unmount deadening the chord
+// for every remaining instance.
+function renderInstance(label: string, onInvoke: (text: string) => void) {
+  const containerRef = createRef<HTMLDivElement>();
+  const rendered = render(
+    <div ref={containerRef} data-testid={`${label}-container`}>
+      <div data-view-anchor-message="true" data-testid={`${label}-message`}>
+        selectable message prose
+      </div>
+      <SelectionQuote containerRef={containerRef} actions={[{ label: "Quote in reply", onInvoke }]} />
+    </div>,
+  );
+  return {
+    containerRef,
+    unmount: rendered.unmount,
+    messageNode: screen.getByTestId(`${label}-message`).firstChild as Text,
+  };
+}
+
+test("two mounted instances: the one holding the selection handles Mod+', not the last-registered", () => {
+  const onInvokeA = vi.fn();
+  const onInvokeB = vi.fn();
+  const a = renderInstance("a", onInvokeA);
+  renderInstance("b", onInvokeB);
+  installFakeSelection({ text: "quoted prose", anchorNode: a.messageNode });
+  act(() => {
+    a.containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+
+  fireEvent.keyDown(document, { key: "'", metaKey: true });
+
+  expect(onInvokeA).toHaveBeenCalledExactlyOnceWith("quoted prose");
+  expect(onInvokeB).not.toHaveBeenCalled();
+});
+
+test("unmounting the last-registered instance does not deaden Mod+' for the remaining ones", () => {
+  const onInvokeA = vi.fn();
+  const onInvokeB = vi.fn();
+  const a = renderInstance("a", onInvokeA);
+  const b = renderInstance("b", onInvokeB);
+  b.unmount();
+  installFakeSelection({ text: "quoted prose", anchorNode: a.messageNode });
+  act(() => {
+    a.containerRef.current?.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  });
+
+  fireEvent.keyDown(document, { key: "'", metaKey: true });
+
+  expect(onInvokeA).toHaveBeenCalledExactlyOnceWith("quoted prose");
+});

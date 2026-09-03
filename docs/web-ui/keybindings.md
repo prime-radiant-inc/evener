@@ -16,10 +16,10 @@ Four pieces, all in `src/keybindings/` and all React-free:
   round-trips an AST to a tinykeys string; `formatChord`/`formatSequence`
   render one for humans.
 - **registry.ts** — a vanilla zustand store holding three things: the
-  **action registry** (action id → run function), the **bindings** (chord →
-  action id, plus scope and policy flags), and the **scope stack**. The
-  app-wide singleton is `keybindingsRegistry`; tests build their own with
-  `createKeybindingsRegistry()`.
+  **action registry** (action id → its handlers, in registration order), the
+  **bindings** (chord → action id, plus scope and policy flags), and the
+  **scope stack**. The app-wide singleton is `keybindingsRegistry`; tests
+  build their own with `createKeybindingsRegistry()`.
 - **dispatcher.ts** — the single window-level `keydown` listener. On every
   registry change it rebuilds a tinykeys `createKeybindingsHandler` over the
   active scope set: the scope stack top-down, then the `global` scope.
@@ -67,8 +67,14 @@ When a `keydown` arrives, in order:
      fire from editable targets, as they always have.
 
 A binding whose action is not (yet) registered does not fire and does not
-preventDefault. A firing binding preventDefaults, then runs the action with
-the original event.
+preventDefault. When an action has handlers, they run in registration order
+until one accepts the event: a handler returns `false` to decline (the next
+handler is tried) and `true`/`undefined` to accept (iteration stops and the
+binding preventDefaults). An event every handler declines is not
+preventDefault'd. Multi-instance components rely on this: one SelectionQuote
+mounts per session pane, each registering `selection.quote`, and only the
+instance holding a captured selection accepts — the multi-instance
+equivalent of the per-component listeners the dispatcher replaced.
 
 ## Registering an action and a binding
 

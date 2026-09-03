@@ -6,9 +6,34 @@ describe("action registration", () => {
     const registry = createKeybindingsRegistry();
     const run = vi.fn();
     const unregister = registry.getState().registerAction("palette.open", run);
-    expect(registry.getState().actions.get("palette.open")).toBe(run);
+    expect(registry.getState().actions.get("palette.open")).toEqual([run]);
     unregister();
     expect(registry.getState().actions.has("palette.open")).toBe(false);
+  });
+
+  test("multiple handlers coexist per action id; a disposer removes only its own registration", () => {
+    // SelectionQuote mounts one instance per session pane, each registering
+    // selection.quote - the multi-instance equivalent of the old per-instance
+    // document listeners. Overwriting or clobbering across instances breaks
+    // ⌘' in multi-pane workspaces.
+    const registry = createKeybindingsRegistry();
+    const first = vi.fn();
+    const second = vi.fn();
+    registry.getState().registerAction("a", first);
+    const unregisterSecond = registry.getState().registerAction("a", second);
+    unregisterSecond();
+    expect(registry.getState().actions.get("a")).toEqual([first]);
+  });
+
+  test("a stale disposer cannot remove a later registration of the same id", () => {
+    const registry = createKeybindingsRegistry();
+    const first = vi.fn();
+    const second = vi.fn();
+    const unregisterFirst = registry.getState().registerAction("a", first);
+    unregisterFirst();
+    registry.getState().registerAction("a", second);
+    unregisterFirst(); // stale: must not clobber the second registration
+    expect(registry.getState().actions.get("a")).toEqual([second]);
   });
 });
 

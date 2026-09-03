@@ -93,10 +93,19 @@ export function createKeybindingDispatcher(options: DispatcherOptions = {}): Key
           if (binding.ignoreIfDefaultPrevented && real.defaultPrevented) return;
           if (!binding.allowInModal && isModalOpen(real)) return;
           if (!binding.allowInEditable && isEditable(real.target)) return;
-          const run = registry.getState().actions.get(binding.actionId);
-          if (!run) return;
-          real.preventDefault();
-          run(real);
+          const handlers = registry.getState().actions.get(binding.actionId);
+          if (!handlers || handlers.length === 0) return;
+          // Registration order, until one handler accepts (returns
+          // true/undefined); a handler returning false declines and the next
+          // is tried - the multi-instance equivalent of the per-component
+          // listeners this module replaced (one SelectionQuote per session
+          // pane; only the instance holding a selection acts). An event
+          // every handler declines is not preventDefault'd.
+          for (const run of handlers) {
+            if (run(real) === false) continue;
+            real.preventDefault();
+            return;
+          }
         };
       }
     }

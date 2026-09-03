@@ -181,6 +181,34 @@ describe("dispatcher", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  test("action handlers run in registration order until one handles the event", () => {
+    const state = setup();
+    const calls: string[] = [];
+    state.registerAction("a", () => {
+      calls.push("first");
+      return false; // declines: try the next handler
+    });
+    state.registerAction("a", () => {
+      calls.push("second");
+    });
+    state.registerAction("a", () => {
+      calls.push("third");
+    });
+    state.registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" });
+    const event = pressOn(window, MOD_K);
+    expect(calls).toEqual(["first", "second"]);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  test("an event every handler declines is not preventDefault'd", () => {
+    const state = setup();
+    state.registerAction("a", () => false);
+    state.registerAction("a", () => false);
+    state.registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" });
+    const event = pressOn(window, MOD_K);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   test("matches a synthetic keydown with no code (fireEvent-style), running the real event", () => {
     // The pre-dispatcher listeners never looked at event.code, and the app's
     // existing suites (and any app code dispatching a bare KeyboardEvent)

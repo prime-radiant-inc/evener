@@ -109,12 +109,21 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   // keeps the updater the pure `() => null` it always should have been.
   useEffect(() => {
     installKeybindings();
+    // One SelectionQuote mounts per session pane (Session.tsx), so several
+    // instances register selection.quote at once. The registry invokes an
+    // action's handlers in registration order until one ACCEPTS; returning
+    // false when THIS instance holds no captured selection passes the chord
+    // to the instance that does - exactly the old per-instance document
+    // listeners' semantics (every instance saw the keydown; only the one
+    // holding the selection acted). The disposer removes only this
+    // instance's registration, so unmounting one pane never deadens ⌘' for
+    // the rest.
     return keybindingsRegistry.getState().registerAction(ACTIONS.selectionQuote, () => {
       const current = selectionRef.current;
-      if (current) {
-        actionsRef.current[0]?.onInvoke(current.text);
-        setSelection(null);
-      }
+      if (!current) return false;
+      actionsRef.current[0]?.onInvoke(current.text);
+      setSelection(null);
+      return true;
     });
   }, []);
 

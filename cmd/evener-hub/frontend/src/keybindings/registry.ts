@@ -14,7 +14,13 @@ export const GLOBAL_SCOPE = "global";
  * applies. */
 export type WhenClause = Readonly<Record<string, string | boolean>>;
 
-export type ActionRunner = (event: KeyboardEvent) => void;
+/** An action handler. Returning false DECLINES the event - the dispatcher
+ * tries the action's next handler (multi-instance components like
+ * SelectionQuote register one handler per mounted instance, and only the
+ * instance holding state that can act accepts). Returning true or undefined
+ * reports the event handled and stops iteration. */
+// biome-ignore lint/suspicious/noConfusingVoidType: "false declines, anything else (including a void fall-through) accepts" IS the contract; boolean|undefined would reject the existing void-bodied handlers
+export type ActionRunner = (event: KeyboardEvent) => boolean | void;
 
 export interface Binding {
   id: string;
@@ -51,11 +57,14 @@ export interface BindingInput {
 }
 
 export interface KeybindingsState {
-  actions: ReadonlyMap<string, ActionRunner>;
+  /** Action id -> its handlers, in registration order. */
+  actions: ReadonlyMap<string, readonly ActionRunner[]>;
   bindings: readonly Binding[];
   /** Bottom-to-top; the dispatcher evaluates it top-down before the global scope. */
   scopeStack: readonly string[];
-  /** Returns an unregister disposer. */
+  /** Appends a handler for the action; the returned disposer removes ONLY
+   * this registration (by identity), never another instance's handler for
+   * the same action, and is idempotent. */
   registerAction(id: string, run: ActionRunner): () => void;
   /**
    * Throws on a duplicate binding id, or on a chord conflict: the same chord
@@ -81,13 +90,22 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
     registerAction(id, run) {
       set((s) => {
         const actions = new Map(s.actions);
-        actions.set(id, run);
+        actions.set(id, [...(actions.get(id) ?? []), run]);
         return { actions };
       });
+      let active = true;
       return () => {
+        if (!active) return;
+        active = false;
         set((s) => {
+          const list = s.actions.get(id);
+          if (!list) return {};
+          const index = list.indexOf(run);
+          if (index === -1) return {};
           const actions = new Map(s.actions);
-          actions.delete(id);
+          const next = [...list.slice(0, index), ...list.slice(index + 1)];
+          if (next.length === 0) actions.delete(id);
+          else actions.set(id, next);
           return { actions };
         });
       };
