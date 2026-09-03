@@ -73,6 +73,9 @@ func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 		{"timer with send", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Send: &watchSendArgs{To: "dlg_a"}}, "repeat_seconds and send are mutually exclusive"},
 		{"one-shot with send", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Send: &watchSendArgs{To: "dlg_a"}}, "after_seconds and send are mutually exclusive"},
 		{"progress on self", watchArgs{Operation: "create", Source: "self", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
+		// A request that names both fields is told about both, not pointed at
+		// the timer field it already used.
+		{"timer with progress", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, ProgressIntervalMS: 1000}, "repeat_seconds and progress_interval_ms are mutually exclusive"},
 		{"progress on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", ProgressIntervalMS: 1000}, "for a timer use repeat_seconds"},
 	}
 	for _, tc := range cases {
