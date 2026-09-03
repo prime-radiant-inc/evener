@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -74,7 +75,7 @@ func TestSessionRegisterToolReplacementDoesNotInheritShellDefaults(t *testing.T)
 	calls := 0
 	sess.RegisterTool("shell", "custom shell", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		calls++
-		return nil, fmt.Errorf("custom shell failure")
+		return nil, errors.New("custom shell failure")
 	})
 	for i, args := range []string{`{"command":"false"}`, `{"command":"false","mode":"foreground"}`, `{"command":"false","intent":"retry"}`} {
 		res := sess.execTool(context.Background(), llm.ToolCallData{ID: fmt.Sprintf("custom-shell-%d", i), Name: "shell", Arguments: []byte(args)}, "")
