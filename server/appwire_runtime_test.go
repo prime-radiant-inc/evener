@@ -1046,3 +1046,87 @@ func TestRecordAppEventLifecycleNotificationCarriesAllocatedIdentity(t *testing.
 		t.Fatalf("lifecycle item identity = %+v, want transcriptKey and position", found.Item)
 	}
 }
+
+func TestPreparedResumeFirstLiveLifecycleUsesAuthoritativeTurnIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "resume"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("historical"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	prepared, err := PrepareAppIdentity("local", "resume", path)
+	if err != nil {
+		t.Fatalf("PrepareAppIdentity: %v", err)
+	}
+	srv := NewServer(ServerConfig{})
+	srv.ReplaceAppIdentity(prepared, nil)
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "resume",
+		Data:      events.UserInputData{Text: "live"},
+	})
+
+	var notification appwire.ItemLifecycleParams
+	found := false
+	for _, record := range srv.AppNotificationsAfter(cursor, "resume") {
+		if record.Notification.Method != appwire.NotifyItemCompleted {
+			continue
+		}
+		if err := json.Unmarshal(record.Notification.Params, &notification); err != nil {
+			t.Fatalf("unmarshal lifecycle notification: %v", err)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("resume event produced no item/completed notification")
+	}
+	if notification.TurnID != "turn_2" || notification.Item.TurnID != "turn_2" || notification.Item.Text != "live" {
+		t.Fatalf("recorded resume lifecycle = %+v, want live turn_2 item", notification)
+	}
+
+	conn := srv.AppServer().NewConnection("resume-test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(2), appwire.MethodInitialize,
+		appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion},
+	))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("initialize: %v", init.Kind())
+	}
+	read := conn.HandleMessage(context.Background(), appwire.RequestMessage(
+		appwire.NewIntID(3), appwire.MethodThreadRead,
+		appwire.ThreadReadParams{Ref: "local:resume", IncludeTurns: true},
+	))
+	if read.Kind() != appwire.MessageResponse {
+		t.Fatalf("thread/read: %v", read.Kind())
+	}
+	readResponse, ok := read.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("thread/read result type = %T", read.Response.Result)
+	}
+	thread := readResponse.Thread
+	var liveItems []appwire.ThreadItem
+	for _, turn := range thread.Turns {
+		if turn.ID == "turn_2" {
+			liveItems = append(liveItems, turn.Items...)
+		}
+	}
+	if len(liveItems) != 1 {
+		t.Fatalf("live turn snapshot items = %+v, want one newly inserted item", liveItems)
+	}
+	if got := liveItems[0]; got.ID != notification.Item.ID || got.Text != notification.Item.Text || got.TurnID != notification.Item.TurnID || got.TranscriptKey != notification.Item.TranscriptKey || got.Position == nil || notification.Item.Position == nil || *got.Position != *notification.Item.Position {
+		t.Fatalf("recorded item=%+v differs from live snapshot item=%+v", notification.Item, got)
+	}
+	for _, turn := range thread.Turns {
+		if turn.ID == "turn_1" && len(turn.Items) == 1 && turn.Items[0].Text == "live" {
+			t.Fatalf("live lifecycle recovery replaced historical turn item: %+v", turn.Items[0])
+		}
+	}
+}

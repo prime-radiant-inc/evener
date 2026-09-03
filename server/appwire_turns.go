@@ -860,7 +860,14 @@ func (s *appTurnSnapshot) applyLifecycleAndReturn(method string, params any) (an
 	s.Apply([]appserver.SequencedNotification{{Notification: appwire.Notification{Method: method, Params: payload}}})
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	authoritativeTurnID := strings.TrimSpace(lifecycle.Item.TurnID)
+	if authoritativeTurnID == "" {
+		authoritativeTurnID = strings.TrimSpace(lifecycle.TurnID)
+	}
 	for _, turn := range s.turns {
+		if authoritativeTurnID == "" || turn.ID != authoritativeTurnID {
+			continue
+		}
 		for _, item := range turn.Items {
 			if appThreadItemIdentityMatches(item, lifecycle.Item) {
 				lifecycle.Item = cloneAppThreadItem(item)
