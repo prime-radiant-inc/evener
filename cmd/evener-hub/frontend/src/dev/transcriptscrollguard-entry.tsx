@@ -215,7 +215,7 @@ function scrollElement(): HTMLElement {
 }
 
 function pillElement(): HTMLElement | null {
-  return document.querySelector('[data-testid="new-content-pill"]');
+  return document.querySelector<HTMLElement>('[data-testid="new-content-pill"]');
 }
 
 interface TranscriptScrollMetrics {
