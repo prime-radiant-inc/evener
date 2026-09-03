@@ -1,7 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
+import type { NormalizedResource } from "./codec";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
-import { keyID, type NavigationResponse, type ResourceKey } from "./types";
+import { keyID, NavigationBaseInvalidError, type NavigationResponse, type ResourceKey } from "./types";
 
 const key: ResourceKey = { kind: "project", projectKey: "p" };
 const d = <T>() => {
@@ -30,13 +31,113 @@ test("coalesces and trails invalidation without aborting useful read", async () 
   expect(r.get(key)?.data).toBe("new");
 });
 
-test("reset retains data but clears validators and reruns", async () => {
+test("generation reset retains the graph provisionally but restarts without old authority", async () => {
+  const fresh = d<NavigationResponse>();
   const r = new NavigationRevalidator("g");
-  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  const graph = Object.freeze({
+    metadata: Object.freeze({ generation_id: "g", revision: 1 }),
+    entities: new Map(),
+    containers: new Map(),
+  });
+  const normalized: NormalizedResource = Object.freeze({
+    key,
+    graph,
+    version: Object.freeze({ generationId: "g", revision: 1, etag: "a" }),
+    presence: "present",
+  });
+  const request = vi.fn((_signal: AbortSignal, _etag: string | null, _base?: unknown) =>
+    request.mock.calls.length === 1
+      ? Promise.resolve({
+          status: 200 as const,
+          generationID: "g",
+          revision: 1,
+          etag: "a",
+          data: { value: "good" },
+          normalized,
+        })
+      : fresh.promise,
+  );
+  await r.load(key, request);
+  const retained = r.get(key);
   r.resetGeneration("h");
-  expect(r.get(key)?.data).toBe("good");
+  const restarted = r.get(key);
+
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(request.mock.calls[0]).toEqual([expect.any(AbortSignal), null, undefined]);
+  expect(request.mock.calls[1]).toEqual([expect.any(AbortSignal), null, undefined]);
+  expect(restarted?.data).toBe(retained?.data);
+  expect(restarted?.normalized).toBe(normalized);
+  expect(restarted?.normalized?.graph).toBe(graph);
+  expect(restarted).toMatchObject({
+    generationID: "h",
+    loadedRevision: null,
+    targetRevision: null,
+    etag: null,
+    stale: true,
+    loading: true,
+    error: null,
+  });
+  expect(restarted?.version).toBeUndefined();
+
+  fresh.resolve({ status: 200, generationID: "h", revision: 1, etag: "fresh", data: { value: "fresh" } });
+});
+
+test("invalid delta clears only the unusable base and performs one forced snapshot recovery", async () => {
+  const r = new NavigationRevalidator("g");
+  const installedGraph = Object.freeze({
+    metadata: Object.freeze({ generation_id: "g", revision: 1 }),
+    entities: new Map(),
+    containers: new Map(),
+  });
+  const installed: NormalizedResource = Object.freeze({
+    key,
+    graph: installedGraph,
+    version: { generationId: "g", revision: 1, etag: "a" },
+    presence: "present",
+  });
+  const forced = d<NavigationResponse>();
+  const forcedStarted = d<void>();
+  const bases: unknown[] = [];
+  let calls = 0;
+  const request = vi.fn(async (_signal: AbortSignal, _etag: string | null, baseValue?: unknown) => {
+    bases.push(baseValue);
+    calls++;
+    if (calls === 1)
+      return { status: 200, generationID: "g", revision: 1, etag: "a", data: { stable: true }, normalized: installed };
+    if (calls === 2) throw new NavigationBaseInvalidError();
+    forcedStarted.resolve();
+    return forced.promise;
+  });
+  await r.load(key, request);
+  const retainedData = r.get(key)?.data;
+
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await forcedStarted.promise;
+
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(bases).toEqual([undefined, installed.version, undefined]);
+  expect(r.get(key)?.data).toBe(retainedData);
+  expect(r.get(key)?.normalized).toBe(installed);
+  expect(r.get(key)?.normalized?.graph).toBe(installedGraph);
+  expect(r.get(key)?.version).toBeUndefined();
   expect(r.get(key)?.etag).toBeNull();
-  expect(r.get(key)?.stale).toBe(true);
+
+  const recovered: NormalizedResource = Object.freeze({
+    ...installed,
+    version: { generationId: "g", revision: 2, etag: "b" },
+  });
+  forced.resolve({
+    status: 200,
+    generationID: "g",
+    revision: 2,
+    etag: "b",
+    data: { stable: false },
+    normalized: recovered,
+  });
+  await r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]);
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(r.get(key)?.normalized).toBe(recovered);
+  expect(r.get(key)?.stale).toBe(false);
 });
 
 test("304 and protocol contradictions fail closed", async () => {

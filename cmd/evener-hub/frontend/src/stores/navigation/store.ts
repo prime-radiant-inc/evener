@@ -15,13 +15,30 @@ import type {
   NavigationProjectCatalog,
   NavigationProjectPage,
   NavigationProjectResource,
+  NavigationReadBase,
   NavigationReadParams,
   NavigationSectionResource,
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
 import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
+import {
+  type DecodedNavigationResponse,
+  decodeNavigationResponse,
+  materializeNavigationResource,
+  type NormalizedResource,
+  normalizedGraphFromSnapshot,
+} from "./codec";
+import { applyDelta, reconcileSnapshot } from "./merge";
 import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
-import { isNavigationUnavailable, keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
+import {
+  isNavigationUnavailable,
+  keyID,
+  NavigationBaseInvalidError,
+  type NavigationRequest,
+  nextNavigationOffset,
+  type ResourceKey,
+  type ResourceState,
+} from "./types";
 
 export type NavigationValue =
   | NavigationManifest
@@ -40,7 +57,7 @@ export interface NavigationStoreState {
   resources: ResourceMap;
   expanded: ReadonlyMap<string, boolean>;
   attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
-  mode: "unknown" | "v1" | "error";
+  mode: "unknown" | "v1" | "v2" | "error";
   protocolError: Error | null;
   loadManifest(): Promise<ResourceState<NavigationManifest>>;
   loadSection(
@@ -121,6 +138,18 @@ const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 const NAVIGATION_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
 const key = (k: ResourceKey) => Object.freeze(k);
+function clearClientOwnedState(): void {
+  navigationStore.setState({
+    capability: null,
+    clientGenerationID: "",
+    lastSequence: 0,
+    manifest: null,
+    resources: new Map(),
+    attention: initialAttention,
+    mode: "unknown",
+    protocolError: null,
+  });
+}
 function pinCatalogData(page: ResourceState<NavigationPinSectionCatalog>): NavigationPinSectionCatalog {
   if (page.error) throw page.error;
   if (!page.data || page.stale) throw new Error("pin catalog did not load");
@@ -134,6 +163,20 @@ function setResource(state: ResourceState): void {
   const resources = new Map(navigationStore.getState().resources);
   resources.set(keyID(state.key), state);
   navigationStore.setState({ resources });
+}
+function provisionalForGeneration<T>(state: ResourceState<T>, generationID: string): ResourceState<T> {
+  if (state.generationID === generationID) return state;
+  return Object.freeze({
+    ...state,
+    generationID,
+    loadedRevision: null,
+    targetRevision: null,
+    etag: null,
+    version: undefined,
+    stale: true,
+    loading: false,
+    error: null,
+  });
 }
 function publishResourceState(state: ResourceState): void {
   setResource(state);
@@ -322,8 +365,18 @@ function isNavigationProjectResource(value: unknown): value is NavigationProject
     (tier) => !!tier && Array.isArray(tier.sessions) && Number.isSafeInteger(tier.remaining),
   );
 }
-function paramsFor(k: ResourceKey, etag: string | null): NavigationReadParams {
-  const conditional = etag === null ? {} : { etag };
+function paramsFor(
+  k: ResourceKey,
+  etag: string | null,
+  base: NavigationReadBase | undefined,
+  mode: NavigationStoreState["mode"],
+): NavigationReadParams {
+  const v2 = mode === "v2";
+  const conditional = v2
+    ? { representationVersion: 2 as const, ...(base ? { base } : {}) }
+    : etag === null
+      ? {}
+      : { etag };
   switch (k.kind) {
     case "manifest":
       return { resource: "manifest", ...conditional };
@@ -351,10 +404,60 @@ function paramsFor(k: ResourceKey, etag: string | null): NavigationReadParams {
   }
 }
 function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationRequest<T> {
-  return async (_signal, etag) => {
-    const response = await client.request("evener/navigation/read", paramsFor(k, etag));
+  return async (_signal, etag, base) => {
+    const mode = navigationStore.getState().mode;
+    const response = await client.request("evener/navigation/read", paramsFor(k, etag, base, mode));
     if (!response || typeof response !== "object") throw new NavigationProtocolError("invalid response envelope");
     const { status, generationId, revision, etag: responseEtag, data } = response as AppwireNavigationReadResponse;
+    if (mode === "v2") {
+      let decoded: DecodedNavigationResponse;
+      try {
+        decoded = decodeNavigationResponse(k, base, response);
+      } catch (cause) {
+        if (cause instanceof NavigationBaseInvalidError) throw cause;
+        throw new NavigationProtocolError("invalid v2 response");
+      }
+      const state = navigationStore.getState();
+      const previous = (k.kind === "manifest" ? state.manifest : state.resources.get(keyID(k)))?.normalized ?? null;
+      let normalized: NormalizedResource | undefined;
+      if (decoded.status === "snapshot") {
+        const incoming: NormalizedResource = {
+          key: k,
+          graph: normalizedGraphFromSnapshot(decoded.snapshot),
+          version: decoded.version,
+          presence: "present",
+        };
+        normalized = reconcileSnapshot(previous, incoming);
+      } else if (decoded.status === "delta") {
+        if (!previous) throw new NavigationProtocolError("delta has no cached base");
+        normalized = applyDelta(previous, decoded.delta, decoded.version);
+      } else if (decoded.status === "gone") {
+        normalized = Object.freeze({
+          key: k,
+          graph: normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }),
+          version: Object.freeze({ ...decoded.version }),
+          presence: "gone",
+        });
+      } else {
+        normalized = previous ?? undefined;
+      }
+      if (decoded.status !== "not_modified" && !normalized)
+        throw new NavigationProtocolError("not_modified has no cached resource");
+      return {
+        status: decoded.status === "not_modified" ? 304 : 200,
+        generationID: generationId,
+        revision,
+        etag: responseEtag,
+        data:
+          decoded.status === "not_modified"
+            ? undefined
+            : normalized
+              ? (materializeNavigationResource(normalized) as T)
+              : undefined,
+        v2: decoded,
+        normalized,
+      };
+    }
     if (status !== "ok" && status !== "not_modified")
       throw new NavigationProtocolError("status must be exact ok or not_modified");
     if (typeof generationId !== "string" || generationId.length === 0)
@@ -445,7 +548,7 @@ function actions() {
         const data = pinCatalogData(page);
         if (data.remaining === 0) return;
         if (data.pin_sections.length === 0) throw new Error("pin catalog page did not advance");
-        offset += data.pin_sections.length;
+        offset = nextNavigationOffset(offset, data.pin_sections.length);
       }
     },
     loadPinSection: (sectionId: string, offset = 0, limit = PAGE_LIMIT) =>
@@ -493,7 +596,8 @@ function actions() {
       m.set(projectKey, !(m.get(projectKey) ?? false));
       saveExpansion(m);
       navigationStore.setState({ expanded: m });
-      if (m.get(projectKey) && navigationStore.getState().mode === "v1") void hydrateProject(projectKey, bootEpoch);
+      if (m.get(projectKey) && (navigationStore.getState().mode === "v1" || navigationStore.getState().mode === "v2"))
+        void hydrateProject(projectKey, bootEpoch);
     },
   };
 }
@@ -512,18 +616,28 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
     });
     return;
   }
-  if (revalidator && revalidator.generationID !== cap.generationId) revalidator.resetGeneration(cap.generationId);
   const previous = navigationStore.getState();
+  const generationChanged = !!revalidator && revalidator.generationID !== cap.generationId;
   navigationStore.setState({
     capability: cap,
-    mode: "v1",
+    mode: cap.readVersions?.includes(2) ? "v2" : "v1",
     clientGenerationID: cap.generationId,
     lastSequence: cap.sequence,
+    manifest:
+      generationChanged && previous.manifest
+        ? provisionalForGeneration(previous.manifest, cap.generationId)
+        : previous.manifest,
+    resources: generationChanged
+      ? new Map(
+          [...previous.resources].map(([id, resource]) => [id, provisionalForGeneration(resource, cap.generationId)]),
+        )
+      : previous.resources,
     attention:
-      previous.mode === "v1" && previous.clientGenerationID === cap.generationId
+      (previous.mode === "v1" || previous.mode === "v2") && previous.clientGenerationID === cap.generationId
         ? previous.attention
         : initialAttention,
   });
+  if (generationChanged) revalidator?.resetGeneration(cap.generationId);
   if (bootStartedEpoch === epoch) return;
   bootStartedEpoch = epoch;
   const manifest = await navigationStore
@@ -581,7 +695,8 @@ async function hydrateManifestResources(manifest: NavigationManifest, epoch: num
   );
 }
 async function hydrateProject(projectKey: string, epoch: number): Promise<void> {
-  if (epoch !== bootEpoch || navigationStore.getState().mode !== "v1") return;
+  if (epoch !== bootEpoch || (navigationStore.getState().mode !== "v1" && navigationStore.getState().mode !== "v2"))
+    return;
   const resource = await navigationStore
     .getState()
     .loadProject(projectKey)
@@ -616,10 +731,16 @@ export function initNavigation(
   initialize?: InitializeResponse | NavigationCapability | null,
 ): () => void {
   if (activeClient === client && initialize === undefined) return () => {};
+  const ownershipChanged = activeClient !== null && activeClient !== client;
   unsubs.forEach((u) => {
     u();
   });
   unsubs = [];
+  if (ownershipChanged) {
+    revalidator?.dispose();
+    revalidator = null;
+    clearClientOwnedState();
+  }
   activeClient = client;
   bootEpoch++;
   manifestFanout = null;
@@ -658,7 +779,11 @@ export function initNavigation(
       if (n.method !== "evener/navigation/invalidated") return;
       const p = n.params as NavigationInvalidatedPayload;
       const s = navigationStore.getState();
-      if (s.mode !== "v1" || p.generationId !== s.clientGenerationID || p.sequence <= s.lastSequence) {
+      if (
+        (s.mode !== "v1" && s.mode !== "v2") ||
+        p.generationId !== s.clientGenerationID ||
+        p.sequence <= s.lastSequence
+      ) {
         navigationStore.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
         return;
       }
@@ -677,33 +802,34 @@ export function initNavigation(
     }),
   );
   unsubs.push(
-    client.onReady(() => {
+    client.onReady((initialize) => {
       if (ownedClient !== activeClient || epoch !== bootEpoch) return;
-      void client
-        .connect()
-        .then((i) => {
-          if (ownedClient !== activeClient || epoch !== bootEpoch) return;
-          const cap = i.navigation;
-          if (!cap) {
-            navigationStore.setState({
-              mode: "error",
-              attention: initialAttention,
-              protocolError: new Error("navigation capability not available"),
-            });
-            return;
-          }
-          const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
-          if (same) {
-            navigationStore.setState({
-              capability: cap,
-              mode: "v1",
-              clientGenerationID: cap.generationId,
-              lastSequence: cap.sequence,
-            });
-            revalidator?.force(revalidator.loadedKeys());
-          } else start(i);
-        })
-        .catch(() => {});
+      const cap = initialize.navigation;
+      if (!cap) {
+        navigationStore.setState({
+          mode: "error",
+          attention: initialAttention,
+          protocolError: new Error("navigation capability not available"),
+        });
+        return;
+      }
+      const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
+      if (same) {
+        const previousSequence = navigationStore.getState().lastSequence;
+        if (cap.sequence < previousSequence) {
+          navigationStore.setState({
+            protocolError: new Error("navigation sequence moved backward within generation"),
+          });
+          return;
+        }
+        navigationStore.setState({
+          capability: cap,
+          mode: cap.readVersions?.includes(2) ? "v2" : "v1",
+          clientGenerationID: cap.generationId,
+          lastSequence: cap.sequence,
+        });
+        if (cap.sequence > previousSequence) revalidator?.force(revalidator.loadedKeys());
+      } else start(initialize);
     }),
   );
   if (initialize) start(initialize);
@@ -726,6 +852,7 @@ export function initNavigation(
       activeClient = null;
       bootStartedEpoch = -1;
       manifestFanout = null;
+      clearClientOwnedState();
     }
   };
 }

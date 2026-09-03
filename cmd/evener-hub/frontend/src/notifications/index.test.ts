@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   AttentionChanged,
+  InitializeResponse,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionSummary,
@@ -16,6 +17,26 @@ import { resetLeaderForTests, setLeaderForTests } from "./leader";
 
 const navigationCapability = capability;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
+const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
+  serverInfo: { name: "fake", version: "1" },
+  protocolVersion: "evener-appwire-v3",
+  sourceId: "fake",
+  features: {
+    threadList: false,
+    threadTurnsList: false,
+    turnStart: false,
+    turnSteer: false,
+    threadClear: false,
+    threadShutdown: false,
+    forkFromTurn: false,
+    tasks: false,
+    transcriptList: false,
+    modelList: false,
+    directoryComplete: false,
+    auth: false,
+  },
+  navigation: navigationCapability(generationId),
+});
 
 const navigationReadResponse = (generationId = "generation_test"): NavigationReadResponse => ({
   status: "ok",
@@ -484,16 +505,10 @@ describe("shipped defaults (title ON, favicon/os/sound OFF)", () => {
 });
 
 describe("reconnect re-baselines silently", () => {
-  test("v1 reconnect forces one navigation handshake for same or new generation", async () => {
+  test("equal-sequence reconnect skips navigation read and a new generation reloads exactly once", async () => {
     const client = new FakeClient("ready");
     let generation = "generation_test";
-    client.scriptConnect(() => ({
-      serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v3",
-      sourceId: "fake",
-      features: {} as never,
-      navigation: navigationCapability(generation),
-    }));
+    client.scriptConnect(() => navigationInitialize(generation));
     scriptNavigationManifest(client, () => generation);
     initNavigation(client);
     await flushMicrotasks();
@@ -502,13 +517,14 @@ describe("reconnect re-baselines silently", () => {
     client.emitStateChange("reconnecting");
     client.emitReady();
     await flushMicrotasks();
-    expect(client.calls).toHaveLength(2); // one forced manifest reload
+    expect(client.calls).toHaveLength(1); // equal sequence does not reload
 
     generation = "generation_next";
     client.emitStateChange("reconnecting");
-    client.emitReady();
+    client.emitReady(navigationInitialize(generation));
     await flushMicrotasks();
-    expect(client.calls).toHaveLength(3); // one reset reload, not reset plus another read
+    expect(client.calls).toHaveLength(2); // one reset reload, not reset plus another read
+    expect(client.calls.slice(1)).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
     expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
     expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
   });
@@ -560,10 +576,10 @@ describe("reconnect re-baselines silently", () => {
     await boot(attentionFromNodes([node("local:a", "awaiting")]));
     expect(fires()).toEqual({ os: 0, sound: 0 }); // baseline
 
-    // The reconnect's own refresh returns a manifest; the server also delivers
-    // an attention snapshot that GAINED local:b in the gap.
+    // The equal-sequence reconnect does not refresh navigation. The server
+    // delivers an attention snapshot that GAINED local:b in the gap.
     fake.emitStateChange("reconnecting");
-    fake.emitReady();
+    fake.emitReady(navigationInitialize());
     await tick();
     fake.emitNotification({
       method: "evener/attention/changed",

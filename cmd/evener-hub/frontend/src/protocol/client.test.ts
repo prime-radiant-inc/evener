@@ -11,6 +11,7 @@ import {
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
+import type { InitializeResponse } from "./types.gen";
 
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -69,16 +70,14 @@ describe("AppwireClient", () => {
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
     const states: ConnectionState[] = [];
     client.onStateChange((s) => states.push(s));
-    let readyCount = 0;
-    client.onReady(() => {
-      readyCount += 1;
-    });
+    const readyResults: InitializeResponse[] = [];
+    client.onReady((value) => readyResults.push(value));
 
     const result = await connectReady(fake, client);
 
     expect(client.state).toBe("ready");
     expect(states).toEqual(["connecting", "ready"]);
-    expect(readyCount).toBe(1);
+    expect(readyResults).toEqual([FAKE_INITIALIZE_RESULT]);
     expect(result).toEqual(FAKE_INITIALIZE_RESULT);
 
     const frames = sentFrames(fake);
@@ -182,7 +181,7 @@ describe("AppwireClient", () => {
     if (!socket) throw new Error("expected the initial socket");
     socket.open();
     await connecting;
-    expect(client.connect()).toBe(connecting);
+    await expect(client.connect()).resolves.toEqual(FAKE_INITIALIZE_RESULT);
 
     client.close();
     const afterClose = client.connect();

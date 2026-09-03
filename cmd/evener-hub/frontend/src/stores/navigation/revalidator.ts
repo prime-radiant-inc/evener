@@ -2,6 +2,7 @@ import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from 
 import {
   isProjectResource,
   keyID,
+  NavigationBaseInvalidError,
   type NavigationRequest,
   type NavigationResponse,
   type ResourceKey,
@@ -16,6 +17,7 @@ interface Entry {
   controller?: AbortController;
   promise?: Promise<ResourceState>;
   rerun: boolean;
+  recoveringBase: boolean;
   epoch: number;
 }
 interface TargetWaiter {
@@ -182,12 +184,14 @@ export class NavigationRevalidator {
       e.controller = undefined;
       e.epoch = this.epoch;
       e.rerun = false;
+      e.recoveringBase = false;
       e.state = frozen({
         ...e.state,
         generationID,
         loadedRevision: null,
         targetRevision: null,
         etag: null,
+        version: undefined,
         stale: true,
         loading: false,
         error: null,
@@ -226,6 +230,7 @@ export class NavigationRevalidator {
         generationID: this.generationIDValue,
       }),
       rerun: false,
+      recoveringBase: false,
       epoch: this.epoch,
     };
     this.entries.set(id, entry);
@@ -252,7 +257,7 @@ export class NavigationRevalidator {
     this.emit(e.state);
     let run!: Promise<ResourceState>;
     run = e
-      .request(controller.signal, e.state.etag)
+      .request(controller.signal, e.state.etag, e.state.version)
       .then((response) => {
         if (this.disposed || epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch)
           return e.state;
@@ -270,12 +275,15 @@ export class NavigationRevalidator {
           return this.fail(e, protocolError("late, below-target, or superseded response"));
         }
         e.rerun = false;
+        e.recoveringBase = false;
         e.state = frozen({
           ...e.state,
           data: response.status === 304 ? e.state.data : (response.data ?? null),
           loadedRevision: response.revision,
           targetRevision: response.revision,
           etag: response.etag,
+          version: { generationId: response.generationID, revision: response.revision, etag: response.etag },
+          normalized: response.status === 304 ? e.state.normalized : response.normalized,
           stale: false,
           loading: false,
           error: null,
@@ -283,7 +291,13 @@ export class NavigationRevalidator {
         this.emit(e.state);
         return e.state;
       })
-      .catch((cause) => (controller.signal.aborted ? e.state : this.fail(e, cause)))
+      .catch((cause) =>
+        controller.signal.aborted
+          ? e.state
+          : cause instanceof NavigationBaseInvalidError
+            ? this.recoverInvalidBase(e, cause)
+            : this.fail(e, cause),
+      )
       .then((state) => {
         if (e.promise === run && e.epoch === epoch) {
           e.promise = undefined;
@@ -300,6 +314,22 @@ export class NavigationRevalidator {
   }
   private fail(e: Entry, cause: unknown): ResourceState {
     e.state = frozen({ ...e.state, loading: false, stale: true, error: cause });
+    this.emit(e.state);
+    return e.state;
+  }
+  private recoverInvalidBase(e: Entry, cause: NavigationBaseInvalidError): ResourceState {
+    if (e.recoveringBase) return this.fail(e, cause);
+    e.recoveringBase = true;
+    e.rerun = true;
+    e.state = frozen({
+      ...e.state,
+      version: undefined,
+      etag: null,
+      forceToken: ++this.forceSequence,
+      loading: false,
+      stale: true,
+      error: null,
+    });
     this.emit(e.state);
     return e.state;
   }
