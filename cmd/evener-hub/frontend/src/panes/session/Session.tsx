@@ -35,7 +35,7 @@ import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
-import { AskDock, useAskDockPending } from "./composer/askDock";
+import { AskDock, AskDockAnnouncements, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -338,6 +338,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
       </div>
+      {/* The ask dock's ONE live region lives here, outside the virtual
+          list: the dock row is virtualized, so an in-row region would
+          re-announce on every scroll-away/scroll-back remount. This
+          component announces only real pending/count transitions. */}
+      <AskDockAnnouncements ref={ref} />
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;

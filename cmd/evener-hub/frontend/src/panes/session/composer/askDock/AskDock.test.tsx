@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
@@ -15,7 +15,7 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
-import { AskDock } from "./AskDock";
+import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 afterEach(() => {
@@ -786,4 +786,125 @@ test("activation auto-focus never scrolls the transcript to the control", async 
   } finally {
     focusSpy.mockRestore();
   }
+});
+
+// --- visibility-gated activation focus + externalized live region ---------
+// (roborev PR #854 round 5)
+
+// Scriptable IntersectionObserver: instances collect observed elements and
+// report() drives the callback, so tests decide when the dock is "visible".
+class ControlledIntersectionObserver {
+  static instances: ControlledIntersectionObserver[] = [];
+  private observed = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    ControlledIntersectionObserver.instances.push(this);
+  }
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+  report(isIntersecting: boolean): void {
+    this.callback(
+      [...this.observed].map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+// preventScroll stops the SCROLL, not the theft: a dock mounting in the
+// list's overscan while the reader is scrolled away would still pull focus
+// to an off-screen control. Activation focus is therefore gated on the dock
+// actually intersecting the viewport - which also composes with the
+// new-content pill: its jump brings the dock into view, and the
+// intersection is what lands focus in the first control.
+test("activation while off-screen steals no focus; becoming visible focuses the first control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(document.activeElement).toBe(document.body);
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted ?? false).toBe(false);
+
+    observer.report(true);
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
+// The dock's row is virtualized: any aria-live region inside it re-inserts
+// on every scroll-away/scroll-back remount and re-announces unchanged text.
+// The row's own text (the prompt caption, the answered count) is visual
+// only; the ONE live region is AskDockAnnouncements, mounted outside the
+// virtual list by Session.tsx.
+test("the dock row carries no live regions", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const dock = await screen.findByText("Ship now?");
+  const root = dock.closest("[data-ask-response-dock]");
+  expect(root?.querySelector("[aria-live]")).toBeNull();
+  expect(root?.querySelector('[role="status"]')).toBeNull();
+});
+
+describe("AskDockAnnouncements (the one live region, mounted outside the virtual list)", () => {
+  test("announces the prompt when a pending set arrives, and clears when it resolves", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/start", () => new Promise(() => {}));
+    await hydrateWithOneAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    await act(async () => {
+      const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+      if (batchId === undefined) throw new Error("batch did not reconcile");
+      await askDockStore.getState().sendBatch("ref_a", batchId);
+    });
+    await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
+  });
+
+  test("announces answered-count transitions while pending", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithTwoAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
+    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    act(() => {
+      askDockStore.getState().setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("1 of 2 questions answered"),
+    );
+  });
+
+  test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithOneAsk(fake);
+    render(
+      <>
+        <AskDockAnnouncements ref="ref_a" />
+        <AskDock ref="ref_a" />
+      </>,
+    );
+    const region = screen.getByTestId("ask-dock-announcements");
+    expect(region.textContent).toBe("Answer the agent’s questions.");
+    // The region's content is stable across anything the row does - the row
+    // holds no live region at all (the sibling test above pins that), so a
+    // virtualized remount has nothing to re-announce with.
+    expect(region.getAttribute("aria-live")).toBe("polite");
+  });
 });

@@ -7,4 +7,4 @@
 // its public contract - a sibling stream that needs one of those directly
 // should ask for it to be exported here first.
 export type { AskDockProps } from "./AskDock";
-export { AskDock, useAskDockPending } from "./AskDock";
+export { AskDock, AskDockAnnouncements, useAskDockPending } from "./AskDock";

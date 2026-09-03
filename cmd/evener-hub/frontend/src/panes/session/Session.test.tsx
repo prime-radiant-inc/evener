@@ -1752,6 +1752,11 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
   const rows = screen.getAllByTestId("transcript-row");
   expect(rows.at(-1)?.contains(dock)).toBe(true);
 
+  // ...while its one aria-live region stays OUTSIDE the list, so a
+  // virtualized remount of the row never re-announces unchanged text.
+  const announcements = screen.getByTestId("ask-dock-announcements");
+  expect(list.contains(announcements)).toBe(false);
+
   // ...and not inside the composer slot.
   expect(screen.getByTestId("composer-slot").contains(dock)).toBe(false);
 });
