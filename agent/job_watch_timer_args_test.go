@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -147,5 +148,45 @@ func TestWatchIntArg_MaterializedZeroOnCreateReadsAsAbsent(t *testing.T) {
 	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "after_seconds": float64(0)})
 	if err == nil || !strings.Contains(err.Error(), "source is required") {
 		t.Fatalf("after_seconds:0 with no source: err = %v, want source is required", err)
+	}
+}
+
+// TestWatchIntArg_BoundIsThePlatformIntRange pins the shared parser's numeric
+// bound to what int can hold. every predates the timer fields, its schema
+// documents no maximum, and it used to be read by shellIntArg, which accepted
+// any integral float64 a provider sent; an int32 bound here would silently
+// shrink that argument.
+func TestWatchIntArg_BoundIsThePlatformIntRange(t *testing.T) {
+	t.Parallel()
+	if math.MaxInt <= math.MaxInt32 {
+		t.Skip("32-bit platform: int cannot hold a value above int32")
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"above int32", float64(3_000_000_000), 3_000_000_000},
+		{"below negative int32", float64(-3_000_000_000), -3_000_000_000},
+		{"int32 max", float64(math.MaxInt32), math.MaxInt32},
+	} {
+		n, ok, err := watchIntArg(map[string]any{"every": tc.value}, "every")
+		if err != nil || !ok || n != tc.want {
+			t.Errorf("%s: watchIntArg = (%d, %v, %v), want (%d, true, nil)", tc.name, n, ok, err, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"above the int range", 1e19},
+		{"below the int range", -1e19},
+		{"non-integral", 1.5},
+		{"string", "600"},
+	} {
+		if _, _, err := watchIntArg(map[string]any{"every": tc.value}, "every"); err == nil ||
+			!strings.Contains(err.Error(), "every must be an integer") {
+			t.Errorf("%s: err = %v, want every must be an integer", tc.name, err)
+		}
 	}
 }
