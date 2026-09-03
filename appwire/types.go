@@ -978,12 +978,41 @@ type EvenerTurnSlots struct {
 	Drives int64 `json:"driveTurns"`
 }
 
+// TranscriptPageUnit identifies the unit bounded by a transcript page. The
+// empty value preserves the legacy turn-page wire shape during migration.
+type TranscriptPageUnit string
+
+const (
+	TranscriptPageUnitTurn TranscriptPageUnit = "turn"
+	TranscriptPageUnitItem TranscriptPageUnit = "item"
+)
+
+// TurnItemsView identifies whether a turn carries its complete item list or a
+// fragment selected by item-mode paging.
+type TurnItemsView string
+
+const (
+	TurnItemsViewFull     TurnItemsView = "full"
+	TurnItemsViewFragment TurnItemsView = "fragment"
+)
+
+// ThreadItemPosition is an absolute position in the decoded transcript and
+// the final visible projected item slice for that entry.
+type ThreadItemPosition struct {
+	Entry uint64 `json:"entry"`
+	Item  uint32 `json:"item"`
+}
+
 type Turn struct {
-	ID        string       `json:"id"`
-	Items     []ThreadItem `json:"items,omitempty"`
-	ItemsView string       `json:"itemsView"`
-	Status    string       `json:"status"`
-	Error     *TurnError   `json:"error,omitempty"`
+	ID        string        `json:"id"`
+	Items     []ThreadItem  `json:"items,omitempty"`
+	ItemsView TurnItemsView `json:"itemsView"`
+	Status    string        `json:"status"`
+	Error     *TurnError    `json:"error,omitempty"`
+	// HasEarlierItems and HasLaterItems describe completeness at the item
+	// boundaries of a fragment. They are omitted by legacy/full responses.
+	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
+	HasLaterItems   bool `json:"hasLaterItems,omitempty"`
 	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
 	// the same scale as DurationMS and the web reducer's epoch-ms read. The
 	// appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
@@ -1114,21 +1143,23 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string        `json:"type"`
-	ID                   string        `json:"id"`
-	TurnID               string        `json:"turnId,omitempty"`
-	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
-	Text                 string        `json:"text,omitempty"`
-	Delta                string        `json:"delta,omitempty"`
-	Images               []InputItem   `json:"images,omitempty"`
-	ToolName             string        `json:"toolName,omitempty"`
-	CallID               string        `json:"callId,omitempty"`
-	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
-	Description          string        `json:"description,omitempty"`
-	Output               string        `json:"output,omitempty"`
-	Error                string        `json:"error,omitempty"`
-	OutputImages         []OutputImage `json:"outputImages,omitempty"`
-	Status               string        `json:"status,omitempty"`
+	Type                 string              `json:"type"`
+	ID                   string              `json:"id"`
+	TranscriptKey        string              `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition `json:"position,omitempty"`
+	TurnID               string              `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
+	Text                 string              `json:"text,omitempty"`
+	Delta                string              `json:"delta,omitempty"`
+	Images               []InputItem         `json:"images,omitempty"`
+	ToolName             string              `json:"toolName,omitempty"`
+	CallID               string              `json:"callId,omitempty"`
+	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Output               string              `json:"output,omitempty"`
+	Error                string              `json:"error,omitempty"`
+	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
+	Status               string              `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
@@ -1218,12 +1249,14 @@ type ThreadListResponse struct {
 }
 
 type ThreadReadParams struct {
-	ThreadID            string `json:"threadId,omitempty"`
-	Ref                 string `json:"ref,omitempty"`
-	IncludeTurns        bool   `json:"includeTurns"`
-	ItemsView           string `json:"itemsView,omitempty"`
-	Subscribe           bool   `json:"subscribe,omitempty"`
-	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
+	ThreadID            string             `json:"threadId,omitempty"`
+	Ref                 string             `json:"ref,omitempty"`
+	IncludeTurns        bool               `json:"includeTurns"`
+	ItemsView           string             `json:"itemsView,omitempty"`
+	Subscribe           bool               `json:"subscribe,omitempty"`
+	ReplaceSubscription bool               `json:"replaceSubscription,omitempty"`
+	PageUnit            TranscriptPageUnit `json:"pageUnit,omitempty"`
+	ItemLimit           int                `json:"itemLimit,omitempty"`
 	// TurnLimit bounds includeTurns to the latest N turns for windowed
 	// (lazy) loading; 0 means unbounded (the full transcript). When it
 	// truncates, the response carries OlderCursor for paging back via
@@ -1232,7 +1265,8 @@ type ThreadReadParams struct {
 }
 
 type ThreadReadResponse struct {
-	Thread Thread `json:"thread"`
+	Thread   Thread             `json:"thread"`
+	PageUnit TranscriptPageUnit `json:"pageUnit,omitempty"`
 	// OlderCursor is set when TurnLimit truncated the returned turns; pass it
 	// to thread/turns/list to fetch the page of turns just before the window.
 	// Empty means the response already includes the oldest turn.
@@ -1245,16 +1279,19 @@ type ThreadUnsubscribeParams struct {
 }
 
 type ThreadTurnsListParams struct {
-	ThreadID  string `json:"threadId,omitempty"`
-	Ref       string `json:"ref,omitempty"`
-	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
-	ItemsView string `json:"itemsView,omitempty"`
+	ThreadID  string             `json:"threadId,omitempty"`
+	Ref       string             `json:"ref,omitempty"`
+	Cursor    string             `json:"cursor,omitempty"`
+	Limit     int                `json:"limit,omitempty"`
+	ItemsView string             `json:"itemsView,omitempty"`
+	PageUnit  TranscriptPageUnit `json:"pageUnit,omitempty"`
+	ItemLimit int                `json:"itemLimit,omitempty"`
 }
 
 type ThreadTurnsListResponse struct {
-	Data       []Turn `json:"data"`
-	NextCursor string `json:"nextCursor,omitempty"`
+	Data       []Turn             `json:"data"`
+	NextCursor string             `json:"nextCursor,omitempty"`
+	PageUnit   TranscriptPageUnit `json:"pageUnit,omitempty"`
 }
 
 type ThreadTurnItemsListParams struct {

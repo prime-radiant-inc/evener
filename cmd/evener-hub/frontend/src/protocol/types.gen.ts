@@ -1587,6 +1587,8 @@ export interface ThreadForkResponse {
 export interface ThreadItem {
   type: string;
   id: string;
+  transcriptKey?: string;
+  position?: ThreadItemPosition;
   turnId?: string;
   transcriptEntryIndex?: number;
   text?: string;
@@ -1610,6 +1612,11 @@ export interface ThreadItem {
   source?: string;
   steeringKind?: string;
   clientMutationId?: string;
+}
+
+export interface ThreadItemPosition {
+  entry: number;
+  item: number;
 }
 
 export interface ThreadListParams {
@@ -1684,11 +1691,14 @@ export interface ThreadReadParams {
   itemsView?: string;
   subscribe?: boolean;
   replaceSubscription?: boolean;
+  pageUnit?: string;
+  itemLimit?: number;
   turnLimit?: number;
 }
 
 export interface ThreadReadResponse {
   thread: Thread;
+  pageUnit?: string;
   olderCursor?: string;
 }
 
@@ -1794,11 +1804,14 @@ export interface ThreadTurnsListParams {
   cursor?: string;
   limit?: number;
   itemsView?: string;
+  pageUnit?: string;
+  itemLimit?: number;
 }
 
 export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
+  pageUnit?: string;
 }
 
 export interface ThreadUnsubscribeParams {
@@ -1888,6 +1901,8 @@ export interface Turn {
   itemsView: string;
   status: string;
   error?: TurnError;
+  hasEarlierItems?: boolean;
+  hasLaterItems?: boolean;
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
