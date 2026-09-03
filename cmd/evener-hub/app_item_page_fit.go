@@ -80,13 +80,20 @@ func packThreadReadItemCandidates(
 	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
 	requestedLimit ...int,
 ) (appwire.ThreadReadResponse, error) {
-	return packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadReadResponse {
+	response, err := packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadReadResponse {
 		return appwire.ThreadReadResponse{
 			Thread:      appwire.Thread{Turns: turns},
 			PageUnit:    appwire.TranscriptPageUnitItem,
 			OlderCursor: olderCursor,
 		}
 	}, requestedLimit...)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
+	return response, nil
 }
 
 func packThreadTurnsItemCandidates(
@@ -94,13 +101,20 @@ func packThreadTurnsItemCandidates(
 	enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
 	requestedLimit ...int,
 ) (appwire.ThreadTurnsListResponse, error) {
-	return packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadTurnsListResponse {
+	response, err := packItemCandidates(candidates, enrich, func(turns []appwire.Turn, olderCursor string) appwire.ThreadTurnsListResponse {
 		return appwire.ThreadTurnsListResponse{
 			Data:       turns,
 			PageUnit:   appwire.TranscriptPageUnitItem,
 			NextCursor: olderCursor,
 		}
 	}, requestedLimit...)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	return response, nil
 }
 
 func packItemCandidates[T any](
@@ -228,11 +242,7 @@ func packedOlderCursor(result transcriptItemCandidateResult, before appwire.Thre
 	if result.Candidates.OlderCursor == "" {
 		return "", errors.New("transcript item source has older candidates without cursor identity")
 	}
-	cursor, err := appitempaging.RebaseCursor(result.Candidates.OlderCursor, before)
-	if err != nil {
-		return "", fmt.Errorf("rebase transcript item cursor: %w", err)
-	}
-	return cursor, nil
+	return "", errors.New("legacy transcript item source cannot page without cursor identity")
 }
 
 func packedResultSize[T any](response T) error {

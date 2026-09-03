@@ -200,6 +200,16 @@ func TestThreadItemModeValidation(t *testing.T) {
 	}
 }
 
+func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
+	err := ValidateThreadTurnsListParams(ThreadTurnsListParams{PageUnit: TranscriptPageUnitItem, ItemLimit: 4})
+	if err == nil || err.Error() != "cursor is required for item-mode thread/turns/list" {
+		t.Fatalf("empty item cursor validation = %v, want stable invalid-params error", err)
+	}
+	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{PageUnit: TranscriptPageUnitItem, ItemLimit: 4, Cursor: "opaque"}); err != nil {
+		t.Fatalf("opaque item cursor validation: %v", err)
+	}
+}
+
 func TestThreadItemModeJSON(t *testing.T) {
 	position := &ThreadItemPosition{Entry: 12, Item: 4}
 	item := ThreadItem{Type: "agentMessage", ID: "display-1", TranscriptKey: "entry-12-item-4", Position: position}

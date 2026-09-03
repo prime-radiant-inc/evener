@@ -103,8 +103,13 @@ func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
 		if params.Limit != 0 {
 			return InvalidParams("limit and itemLimit cannot be supplied together")
 		}
-		_, err := NormalizeTranscriptItemLimit(params.ItemLimit)
-		return err
+		if _, err := NormalizeTranscriptItemLimit(params.ItemLimit); err != nil {
+			return err
+		}
+		if params.Cursor == "" {
+			return InvalidParams("cursor is required for item-mode thread/turns/list")
+		}
+		return nil
 	}
 	if params.ItemLimit != 0 {
 		return InvalidParams("itemLimit requires pageUnit \"item\"")

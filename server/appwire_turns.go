@@ -661,7 +661,7 @@ func (s *appTurnSnapshot) itemWindowLocked(before *appwire.ThreadItemPosition, l
 			Turn:            turn,
 			Item:            item,
 			Position:        entry.position,
-			HasEarlierItems: entry.position.Item > 0,
+			HasEarlierItems: i > 0 && projection.items[i-1].turnID == entry.turnID,
 			HasLaterItems:   i+1 < len(projection.items) && projection.items[i+1].turnID == entry.turnID,
 		})
 	}

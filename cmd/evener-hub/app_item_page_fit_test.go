@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -186,6 +187,116 @@ func TestPackTranscriptItemPageTurnsListUsesSameRules(t *testing.T) {
 		if item.ID != flattenTestItems(read.Thread.Turns)[i].ID {
 			t.Fatalf("item %d differs: read=%q list=%q", i, flattenTestItems(read.Thread.Turns)[i].ID, item.ID)
 		}
+	}
+}
+
+func TestPackTranscriptItemWrappersValidateFinalResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutateRead func(*appwire.ThreadReadResponse)
+		mutateList func(*appwire.ThreadTurnsListResponse)
+	}{
+		{
+			name: "valid",
+		},
+		{
+			name: "full items view",
+			mutateRead: func(response *appwire.ThreadReadResponse) {
+				response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFull
+			},
+			mutateList: func(response *appwire.ThreadTurnsListResponse) {
+				response.Data[0].ItemsView = appwire.TurnItemsViewFull
+			},
+		},
+		{
+			name: "empty transcript key",
+			mutateRead: func(response *appwire.ThreadReadResponse) {
+				response.Thread.Turns[0].Items[0].TranscriptKey = ""
+			},
+			mutateList: func(response *appwire.ThreadTurnsListResponse) {
+				response.Data[0].Items[0].TranscriptKey = ""
+			},
+		},
+		{
+			name: "nil position",
+			mutateRead: func(response *appwire.ThreadReadResponse) {
+				response.Thread.Turns[0].Items[0].Position = nil
+			},
+			mutateList: func(response *appwire.ThreadTurnsListResponse) {
+				response.Data[0].Items[0].Position = nil
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" read", func(t *testing.T) {
+			result, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+				Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(1)},
+				Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "wrapper-validation", ProjectionVersion: 1},
+				Exhausted:  true,
+			}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+				if test.mutateRead != nil {
+					test.mutateRead(&response)
+				}
+				return response, nil
+			})
+			if test.name == "valid" {
+				if err != nil {
+					t.Fatalf("valid read pack: %v", err)
+				}
+				if result.PageUnit != appwire.TranscriptPageUnitItem {
+					t.Fatalf("valid read page unit = %q", result.PageUnit)
+				}
+				return
+			}
+			assertInvalidItemResponseError(t, err)
+		})
+		t.Run(test.name+" list", func(t *testing.T) {
+			result, err := packThreadTurnsItemCandidates(transcriptItemCandidateResult{
+				Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(1)},
+				Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "wrapper-validation", ProjectionVersion: 1},
+				Exhausted:  true,
+			}, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+				if test.mutateList != nil {
+					test.mutateList(&response)
+				}
+				return response, nil
+			})
+			if test.name == "valid" {
+				if err != nil {
+					t.Fatalf("valid list pack: %v", err)
+				}
+				if result.PageUnit != appwire.TranscriptPageUnitItem {
+					t.Fatalf("valid list page unit = %q", result.PageUnit)
+				}
+				return
+			}
+			assertInvalidItemResponseError(t, err)
+		})
+	}
+}
+
+func assertInvalidItemResponseError(t *testing.T, err error) {
+	t.Helper()
+	wireErr, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %T %v, want invalid params", err, err)
+	}
+}
+
+func TestPackTranscriptItemPageRejectsOpaqueCursorWithoutIdentity(t *testing.T) {
+	const secret = "opaque-legacy-cursor-secret"
+	_, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(41), OlderCursor: secret},
+		Exhausted:  false,
+	}, nil)
+	if err == nil {
+		t.Fatal("zero-identity opaque cursor was accepted")
+	}
+	if _, ok := errors.AsType[appwire.WireError](err); ok {
+		t.Fatalf("zero-identity opaque cursor returned stale wire error: %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("zero-identity opaque cursor leaked secret: %v", err)
 	}
 }
 

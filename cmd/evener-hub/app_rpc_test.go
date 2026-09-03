@@ -127,6 +127,7 @@ func TestHubRPCItemReadAndListUseFinalPacker(t *testing.T) {
 
 	listRaw, err := json.Marshal(appwire.ThreadTurnsListParams{
 		Ref:       "codex:item-packing",
+		Cursor:    olderCursor,
 		PageUnit:  appwire.TranscriptPageUnitItem,
 		ItemLimit: 40,
 	})
@@ -200,7 +201,7 @@ func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
 
 	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
 		ID: appwire.NewIntID(2), Method: appwire.MethodThreadTurnsList,
-		Params: mustJSON(t, appwire.ThreadTurnsListParams{Ref: identity.ThreadRef, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3}),
+		Params: mustJSON(t, appwire.ThreadTurnsListParams{Ref: identity.ThreadRef, Cursor: sourceCursor, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3}),
 	})
 	if err != nil {
 		t.Fatalf("small-limit thread/turns/list: %v", err)

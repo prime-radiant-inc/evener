@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,18 +100,18 @@ func TestHubRPCItemListNativeAndLegacyParity(t *testing.T) {
 			}
 
 			nativeResponse, nativeErr := dispatchHubItemList(ctx, t, native, ref)
-			legacyResponse, legacyErr := dispatchHubItemList(ctx, t, legacy, ref)
+			_, legacyErr := dispatchHubItemList(ctx, t, legacy, ref)
 			if tc.wantError {
 				if !errors.Is(nativeErr, context.Canceled) || !errors.Is(legacyErr, context.Canceled) {
 					t.Fatalf("canceled errors = native %v, legacy %v; want context.Canceled", nativeErr, legacyErr)
 				}
 				return
 			}
-			if nativeErr != nil || legacyErr != nil {
-				t.Fatalf("list errors = native %v, legacy %v", nativeErr, legacyErr)
+			if nativeErr != nil {
+				t.Fatalf("native list error = %v", nativeErr)
 			}
-			if !reflect.DeepEqual(nativeResponse, legacyResponse) {
-				t.Fatalf("native response = %+v, legacy response = %+v", nativeResponse, legacyResponse)
+			if legacyErr == nil || legacyErr.Error() != "legacy transcript item source cannot page without cursor identity" {
+				t.Fatalf("legacy list error = %v, want identity error", legacyErr)
 			}
 			if got := len(flattenTestItems(nativeResponse.Data)); got != 40 {
 				t.Fatalf("packed item count = %d, want 40", got)
@@ -132,7 +131,7 @@ func dispatchHubItemList(ctx context.Context, t *testing.T, source appsource.Sou
 	value, err := server.Router().Dispatch(ctx, appwire.Request{
 		ID:     appwire.NewIntID(1),
 		Method: appwire.MethodThreadTurnsList,
-		Params: mustJSON(t, appwire.ThreadTurnsListParams{Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40}),
+		Params: mustJSON(t, appwire.ThreadTurnsListParams{Ref: ref, Cursor: "0", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40}),
 	})
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
@@ -142,6 +141,10 @@ func dispatchHubItemList(ctx context.Context, t *testing.T, source appsource.Sou
 		t.Fatalf("item list response = %T, want ThreadTurnsListResponse", value)
 	}
 	return response, nil
+}
+
+func (s *itemPackingRPCSource) ReadThreadWithItemCandidates(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, appsource.ItemCandidateResult, error) {
+	return s.read, s.readCandidates, nil
 }
 
 type legacyItemListRPCSource struct {
@@ -550,6 +553,19 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 		if item.Position == nil || item.Position.Entry >= minInitialEntry {
 			t.Fatalf("saved turns/list item %q position = %+v, want before initial entry %d", item.ID, item.Position, minInitialEntry)
 		}
+	}
+}
+
+func TestHubRPCItemTurnsListRequiresCursorBeforeSourceLookup(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{}, appsource.NewRegistry())
+	_, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList,
+		Params: mustJSON(t, appwire.ThreadTurnsListParams{
+			Ref: "local:missing", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 4,
+		}),
+	})
+	if err == nil || err.Error() != "cursor is required for item-mode thread/turns/list" {
+		t.Fatalf("empty item cursor hub validation = %v, want stable invalid-params error before lookup", err)
 	}
 }
 

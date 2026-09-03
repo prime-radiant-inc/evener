@@ -73,9 +73,9 @@ type prepareAppIdentitySource struct {
 var preparedAppIncarnationSerial atomic.Uint64
 
 // preparedTranscriptItemCache is used only while an identity is prepared. It
-// gives the live snapshot the same rebuildable item-index incarnation that a
-// saved item read will return later, without making any RPC read path touch the
-// transcript file.
+// builds a rebuildable, independent item-index incarnation from the same
+// transcript. Saved reads use a different projector and cache, so their cursors
+// do not transfer; RPC reads remain file-free.
 var preparedTranscriptItemCache = apptranscript.NewTurnCache()
 
 func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {

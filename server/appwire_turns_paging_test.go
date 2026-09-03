@@ -1197,6 +1197,70 @@ func TestAppTurnSnapshotItemPaging(t *testing.T) {
 	}
 }
 
+func TestAppTurnSnapshotItemRemovalPreservesSparseIdentityAndBoundaries(t *testing.T) {
+	newSnapshot := func() *appTurnSnapshot {
+		items := make([]appwire.ThreadItem, 3)
+		for i := range items {
+			position := appwire.ThreadItemPosition{Entry: 4, Item: uint32(i)}
+			items[i] = appwire.ThreadItem{
+				Type: "agentMessage", ID: fmt.Sprintf("item_%d", i), TurnID: "turn_4",
+				TranscriptKey: fmt.Sprintf("key_%d", i), Position: &position,
+			}
+		}
+		snapshot := &appTurnSnapshot{}
+		snapshot.Seed(appTurnSeed{Turns: []appwire.Turn{{ID: "turn_4", Items: items}}, ThreadRef: "local:th_4", TranscriptIncarnation: "inc-4", NextEntry: 5})
+		return snapshot
+	}
+	reset := func(t *testing.T, snapshot *appTurnSnapshot, itemID string) {
+		t.Helper()
+		params, err := json.Marshal(appwire.AgentMessageResetParams{TurnID: "turn_4", ItemID: itemID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.Apply([]appserver.SequencedNotification{{Seq: 1, Notification: appwire.Notification{Method: appwire.NotifyAgentMessageReset, Params: params}}})
+	}
+
+	t.Run("first removal", func(t *testing.T) {
+		snapshot := newSnapshot()
+		before, _, err := snapshot.LatestItemCandidates(2)
+		if err != nil || before.OlderCursor == "" {
+			t.Fatalf("initial item page = %+v, err=%v; want cursor", before, err)
+		}
+		oldCursor := before.OlderCursor
+		reset(t, snapshot, "item_0")
+		window, _, err := snapshot.LatestItemCandidates(40)
+		if err != nil || len(window.Candidates) != 2 {
+			t.Fatalf("after first removal = %+v, err=%v; want two survivors", window.Candidates, err)
+		}
+		survivor := window.Candidates[0]
+		if survivor.Item.ID != "item_1" || survivor.Item.Position == nil || *survivor.Item.Position != (appwire.ThreadItemPosition{Entry: 4, Item: 1}) || survivor.Item.TranscriptKey != "key_1" {
+			t.Fatalf("first survivor identity = %+v, want original position/key", survivor.Item)
+		}
+		if survivor.HasEarlierItems || !survivor.HasLaterItems {
+			t.Fatalf("first survivor boundaries = (%v,%v), want (false,true)", survivor.HasEarlierItems, survivor.HasLaterItems)
+		}
+		if _, _, err := snapshot.PreviousItemCandidates(oldCursor, 2); !isStaleItemCursorError(err) {
+			t.Fatalf("cursor from before first removal = %v, want stale", err)
+		}
+	})
+
+	t.Run("middle removal", func(t *testing.T) {
+		snapshot := newSnapshot()
+		reset(t, snapshot, "item_1")
+		window, _, err := snapshot.LatestItemCandidates(40)
+		if err != nil || len(window.Candidates) != 2 {
+			t.Fatalf("after middle removal = %+v, err=%v; want two survivors", window.Candidates, err)
+		}
+		first, last := window.Candidates[0], window.Candidates[1]
+		if first.Item.ID != "item_0" || first.HasEarlierItems || !first.HasLaterItems {
+			t.Fatalf("first boundary after middle removal = (%v,%v), want (false,true)", first.HasEarlierItems, first.HasLaterItems)
+		}
+		if last.Item.ID != "item_2" || !last.HasEarlierItems || last.HasLaterItems {
+			t.Fatalf("last boundary after middle removal = (%v,%v), want (true,false)", last.HasEarlierItems, last.HasLaterItems)
+		}
+	})
+}
+
 func TestAppTurnSnapshotItemProjectionCacheReusesAndInvalidates(t *testing.T) {
 	position := appwire.ThreadItemPosition{Entry: 1, Item: 0}
 	secondPosition := appwire.ThreadItemPosition{Entry: 1, Item: 1}
