@@ -130,7 +130,7 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 		}
 		budget := llm.ReasoningBudget(effort)
 		if budget > 0 && enforceCompletionContract {
-			budget = fitThinkingBudgetToOutputCeiling(budget, body["max_tokens"], caps.MaxOutputTokens)
+			budget = fitThinkingBudgetToOutputCeiling(budget, body["max_tokens"], providerOptionMaxTokens(req), caps.MaxOutputTokens)
 		}
 		if budget > 0 {
 			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
@@ -145,21 +145,36 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 // so the completion contract — max_tokens must strictly exceed budget_tokens
 // — can hold for a request this adapter itself derived. The ceiling is the
 // smallest positive output bound the request carries: the max_tokens already
-// on the body (caller allocation or the fallback) and the row's
-// max_output_tokens, the same inputs ReconcileOutputField min's into the
-// final max_tokens. ReasoningBudget's table maps max/xhigh onto exactly the
+// on the body (caller allocation or the fallback), the anthropic.max_tokens
+// override the ProviderOptions overlay will write (the overlay runs after
+// this fit), and the row's max_output_tokens — the same bounds
+// ReconcileOutputField min's into the final max_tokens. ReasoningBudget's
+// table maps max/xhigh onto exactly the
 // 131072-token cap of rows like kimi-for-coding k3, so without this clamp the
 // max effort tier could never produce a sendable request. A budget that
 // would have to drop below Anthropic's documented thinking minimum to fit is
 // returned unchanged, so the completion contract reports the unsatisfiable
 // request instead of sending a wire-rejectable budget.
-func fitThinkingBudgetToOutputCeiling(budget int, maxTokens any, outputCap *int) int {
+func fitThinkingBudgetToOutputCeiling(budget int, maxTokens, overlayMaxTokens any, outputCap *int) int {
 	ceiling := requestutil.MinPositiveInt(
 		requestutil.PositiveInt(maxTokens),
+		requestutil.PositiveInt(overlayMaxTokens),
 		requestutil.PositivePointerInt(outputCap),
 	)
 	if fitted := ceiling - 1; budget >= ceiling && fitted >= llm.MinimumThinkingBudgetTokens {
 		return fitted
 	}
 	return budget
+}
+
+// providerOptionMaxTokens returns the anthropic.max_tokens value the
+// ProviderOptions overlay will write, or nil when the caller set none. The
+// effort-budget clamp fits under it because the overlay runs after the clamp
+// while the completion contract still binds the final max_tokens.
+func providerOptionMaxTokens(req llm.Request) any {
+	ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return ov["max_tokens"]
 }
