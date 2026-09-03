@@ -832,11 +832,14 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 
 	endData := events.ToolCallEndData{
-		ToolName:      res.ToolName,
-		CallID:        res.CallID,
-		ArgumentsJSON: string(call.Arguments),
-		ToolState:     res.ToolState,
-		OutputRef:     outputRef,
+		ToolName:                 res.ToolName,
+		CallID:                   res.CallID,
+		ArgumentsJSON:            string(call.Arguments),
+		BreakerExactSignature:    res.BreakerExactSignature,
+		BreakerSemanticSignature: res.BreakerSemanticSignature,
+		BreakerBypassed:          res.BreakerBypassed,
+		ToolState:                res.ToolState,
+		OutputRef:                outputRef,
 	}
 	// A tool that returned image bytes says so here, by sha. The bytes
 	// themselves ride to the transcript with the tool-result turn and are never

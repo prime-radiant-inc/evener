@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,11 @@ const maxFailureSnippets = 2
 
 // maxFailureSnippetRunes truncates each retained failure output, in runes.
 const maxFailureSnippetRunes = 500
+
+// maxSemanticArgumentRunes bounds a single value participating in a semantic
+// signature. The signature itself is a short hash, but omitting unbounded
+// bodies before hashing prevents arbitrary prose from creating fresh retries.
+const maxSemanticArgumentRunes = 256
 
 // failureEntry tracks, for one dispatch signature (tool name + argument
 // hash), two independent streaks: consecutive failures sharing an error
@@ -58,6 +64,170 @@ func newFailureLedger() *failureLedger {
 // not, matching the loop detector's existing behavior.
 func signature(name string, args []byte) string {
 	return name + ":" + shortHash(args)
+}
+
+// semanticCallSignature returns the call half of a semantic failure
+// fingerprint. Registered-tool normalization has already happened when this
+// is called, so it intentionally preserves meaningful zero values such as an
+// explicit retained-output offset while inheriting a tool's own omission rules
+// (notably read_transcript's #827 neutral-default normalization).
+func semanticCallSignature(name string, args map[string]any) string {
+	encoded, err := json.Marshal(semanticArgumentValue(args, ""))
+	if err != nil {
+		// Args have passed JSON parsing and schema validation, so this is a
+		// defensive fallback rather than a normal path. It remains bounded and
+		// never exposes the original value.
+		return name + ":" + shortHash([]byte("unencodable"))
+	}
+	return name + ":" + shortHash(encoded)
+}
+
+// semanticArgumentValue removes presentation-only and sensitive fields from
+// a signature and replaces unbounded bodies with fixed markers. Values are
+// hashed only after this pass, so telemetry cannot recover a secret or a body.
+func semanticArgumentValue(value any, field string) any {
+	switch value := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for key, item := range value {
+			keyLower := strings.ToLower(key)
+			switch keyLower {
+			case "intent", "description":
+				continue
+			case "secret", "token", "password", "authorization", "api_key", "access_token":
+				out[key] = "<redacted>"
+				continue
+			case "body", "content", "patch":
+				out[key] = "<omitted-body>"
+				continue
+			}
+			out[key] = semanticArgumentValue(item, key)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = semanticArgumentValue(item, field)
+		}
+		return out
+	case string:
+		if len([]rune(value)) > maxSemanticArgumentRunes {
+			switch strings.ToLower(field) {
+			case "output_match", "regex", "pattern":
+				// Regex text can legitimately be large but is a meaningful
+				// selector, not a presentation body. Keep only a bounded digest.
+				return "<hash:" + shortHash([]byte(value)) + ">"
+			}
+			return "<omitted-unbounded>"
+		}
+		return value
+	default:
+		return value
+	}
+}
+
+// semanticFailureLedger records failed semantic fingerprints independently of
+// the exact-call ledger. It is separately bounded so interleaved semantic runs
+// survive raw argument variations without changing existing exact behavior.
+type semanticFailureLedger struct {
+	mu      sync.Mutex
+	entries map[string]*semanticFailureEntry
+	order   []string
+}
+
+type semanticFailureEntry struct {
+	base     string
+	boundary string
+	count    int
+}
+
+func newSemanticFailureLedger() *semanticFailureLedger {
+	return &semanticFailureLedger{entries: make(map[string]*semanticFailureEntry)}
+}
+
+func semanticFailureSignature(base, class string) string { return base + ":" + class }
+
+func (l *semanticFailureLedger) check(base string) (count int, boundary, fingerprint string) {
+	if l == nil {
+		return 0, "", ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if entry.base != base || entry.count < count || (entry.count == count && fingerprint != "" && key > fingerprint) {
+			continue
+		}
+		count, boundary, fingerprint = entry.count, entry.boundary, key
+	}
+	if fingerprint != "" {
+		l.touch(fingerprint)
+	}
+	return count, boundary, fingerprint
+}
+
+func (l *semanticFailureLedger) record(base, class, boundary string) (fingerprint string, count int) {
+	if l == nil {
+		return semanticFailureSignature(base, class), 0
+	}
+	fingerprint = semanticFailureSignature(base, class)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.entries[fingerprint]
+	if !ok {
+		entry = &semanticFailureEntry{base: base, boundary: boundary}
+		l.entries[fingerprint] = entry
+	}
+	entry.count++
+	l.touch(fingerprint)
+	return fingerprint, entry.count
+}
+
+// clear removes every failure class for one semantic call. A successful call
+// has established that this target/mode/meaningful-argument combination is no
+// longer stuck; unrelated semantic bases retain their independent histories.
+func (l *semanticFailureLedger) clear(base string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if entry.base != base {
+			continue
+		}
+		delete(l.entries, key)
+		for i, ordered := range l.order {
+			if ordered == key {
+				l.order = append(l.order[:i], l.order[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func (l *semanticFailureLedger) touch(key string) {
+	for i, ordered := range l.order {
+		if ordered == key {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			break
+		}
+	}
+	l.order = append(l.order, key)
+	if len(l.order) <= maxFailureLedgerEntries {
+		return
+	}
+	oldest := l.order[0]
+	l.order = l.order[1:]
+	delete(l.entries, oldest)
+}
+
+func (l *semanticFailureLedger) len() int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
 }
 
 // breakerThreshold is how many times a signature may produce the same answer
@@ -100,6 +270,30 @@ func failureParkText(name string, snippets []string) string {
 		for i, snippet := range snippets {
 			fmt.Fprintf(&b, "\n%d. %s", i+1, snippet)
 		}
+	}
+	return b.String()
+}
+
+func semanticFailureNudgeText(boundary string) string {
+	return fmt.Sprintf("You just ran a semantically equivalent tool call twice and hit the same normalized failure boundary (%s). Change the target, mode, or meaningful arguments before retrying.", boundary)
+}
+
+// semanticFailureParkText deliberately reports hashes and normalized boundary
+// labels rather than raw arguments or error snippets. The result is retained in
+// session telemetry, so this must remain useful without repeating secrets or
+// arbitrary user-provided bodies.
+func semanticFailureParkText(name, semanticSignature, boundary string, attempts int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, semanticSignature, attempts, boundary)
+	b.WriteString("\n\nPrior attempts:")
+	for attempt := 1; attempt <= attempts; attempt++ {
+		fmt.Fprintf(&b, "\n%d. %s", attempt, boundary)
+	}
+	b.WriteString("\n\nTake a materially different valid action: ")
+	if name == "read_transcript" {
+		b.WriteString("use a transcript_ref compatible with the selected mode; for job: and artifact: refs, omit session-only range and expand_turn fields.")
+	} else {
+		b.WriteString("change the target, operation, or meaningful arguments, or use another tool.")
 	}
 	return b.String()
 }
@@ -260,6 +454,28 @@ func errorClass(output string) string {
 
 	sum := sha256.Sum256([]byte(line))
 	return hex.EncodeToString(sum[:4])
+}
+
+// failureBoundary is the stable, presentation-free category displayed by the
+// semantic breaker. errorClass retains the full normalized first line as a
+// hash for fingerprint separation; this short label gives the model a safe
+// diagnosis without echoing attacker-controlled error prose.
+func failureBoundary(output string) string {
+	line := strings.ToLower(strings.TrimSpace(firstNonBlankLine(output)))
+	switch {
+	case strings.HasPrefix(line, "invalid_request:"):
+		return "invalid_request"
+	case strings.HasPrefix(line, "unknown tool:"):
+		return "unknown_tool"
+	case strings.HasPrefix(line, "invalid tool arguments json:"):
+		return "arguments_json"
+	case strings.HasPrefix(line, "tool args schema validation failed:"):
+		return "schema_validation"
+	case strings.HasPrefix(line, "tool arguments too large:"):
+		return "arguments_too_large"
+	default:
+		return "tool_execution"
+	}
 }
 
 func firstNonBlankLine(s string) string {

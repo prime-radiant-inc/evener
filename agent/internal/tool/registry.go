@@ -273,6 +273,14 @@ type ExecResult struct {
 	// sandbox.AsDenied(res.Err). Nil on success. Never serialized (it rides only
 	// in-process, between ExecuteCall and its immediate caller).
 	Err error `json:"-"`
+
+	// BreakerExactSignature and BreakerSemanticSignature are bounded hashes for
+	// failure-loop telemetry. They intentionally never contain raw arguments,
+	// bodies, or secrets. The semantic signature is populated after registered
+	// argument normalization and gains the stable error class on failures.
+	BreakerExactSignature    string `json:"-"`
+	BreakerSemanticSignature string `json:"-"`
+	BreakerBypassed          bool   `json:"-"`
 }
 
 // StateResult is returned by tool executors that want to emit a
@@ -381,11 +389,14 @@ type Registry struct {
 	// One registry per session, so the ledger is per-session; it carries its
 	// own mutex and is never guarded by r.mu.
 	breaker *failureLedger
+	// semanticBreaker retains failed normalized call signatures separately from
+	// the exact raw-argument fast path above.
+	semanticBreaker *semanticFailureLedger
 }
 
 // NewRegistry returns an empty Registry ready for tool registration.
 func NewRegistry() *Registry {
-	return &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger()}
+	return &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger(), semanticBreaker: newSemanticFailureLedger()}
 }
 
 // Clone returns an independent registry with the same registered tools and
@@ -631,9 +642,12 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	// model_list is an exact JSON continuation protocol. Repeating a page is a
 	// valid retry, and appending breaker text would corrupt its bounded envelope.
 	judged := !breakerBypassed(ctx) && name != "model_list"
+	exactSignature := signature(name, call.Arguments)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
-			return truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			res := truncateResult(name, callID, failureParkText(name, snippets), true, defaultToolLimit(name))
+			res.BreakerExactSignature = exactSignature
+			return res
 		}
 	} else {
 		// A human authorized this dispatch, which retires the refusals that
@@ -650,19 +664,25 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	if !ok {
 		msg := "unknown tool: " + name
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+		res := truncateResult(name, callID, msg, true, defaultToolLimit(name))
+		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+		return res
 	}
 
 	if len(call.Arguments) > maxToolArgumentBytes {
 		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+		res := truncateResult(name, callID, msg, true, defaultToolLimit(name))
+		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+		return res
 	}
 
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
-			return truncateResult(name, callID, msg, true, t.Limit)
+			res := truncateResult(name, callID, msg, true, t.Limit)
+			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+			return res
 		}
 	}
 	if args == nil {
@@ -674,21 +694,41 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
 		if err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+			return res
 		}
 		args = normalized
 	}
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+			return res
 		}
 		args = normalized
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
-		return truncateResult(name, callID, msg, true, t.Limit)
+		res := truncateResult(name, callID, msg, true, t.Limit)
+		res.BreakerExactSignature, res.BreakerBypassed = exactSignature, !judged
+		return res
+	}
+
+	semanticSignature := semanticCallSignature(name, args)
+	if judged {
+		if failStreak, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); failStreak >= breakerThreshold {
+			res := truncateResult(name, callID, semanticFailureParkText(name, fingerprint, boundary, failStreak), true, t.Limit)
+			res.BreakerExactSignature = exactSignature
+			res.BreakerSemanticSignature = fingerprint
+			return res
+		}
+	} else {
+		// Keep the human-approved bypass auditable and make it reset the same
+		// normalized run it was authorizing, not merely its raw JSON variant.
+		r.semanticBreaker.clear(semanticSignature)
 	}
 
 	r.mu.RLock()
@@ -696,7 +736,9 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	for _, mw := range mws {
 		if err := mw(ctx, name, args); err != nil {
-			return truncateResult(name, callID, err.Error(), true, t.Limit)
+			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			res.BreakerExactSignature, res.BreakerSemanticSignature, res.BreakerBypassed = exactSignature, semanticSignature, !judged
+			return res
 		}
 	}
 
@@ -713,6 +755,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
+	res.BreakerExactSignature, res.BreakerSemanticSignature, res.BreakerBypassed = exactSignature, semanticSignature, !judged
 	if judged {
 		// Recorded on the untruncated body, before any nudge is appended, so
 		// the nudge cannot poison the body hash. FullOutput rather than
@@ -726,9 +769,19 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			judgedBody = res.Output
 		}
 		failStreak, repeatStreak := r.breaker.record(name, call.Arguments, res.IsError, judgedBody)
+		semanticFailStreak := 0
+		if res.IsError {
+			semanticFailureSignature, count := r.semanticBreaker.record(semanticSignature, errorClass(judgedBody), failureBoundary(judgedBody))
+			res.BreakerSemanticSignature = semanticFailureSignature
+			semanticFailStreak = count
+		} else {
+			r.semanticBreaker.clear(semanticSignature)
+		}
 		switch {
 		case failStreak >= breakerThreshold:
 			appendIntervention(&res, failureNudgeText)
+		case semanticFailStreak >= breakerThreshold:
+			appendIntervention(&res, semanticFailureNudgeText(failureBoundary(judgedBody)))
 		case repeatStreak >= breakerThreshold:
 			// Repeats on every subsequent identical result: nothing else
 			// applies pressure once repetition is never parked.

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"strings"
@@ -18,6 +19,55 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+// TestReadTranscriptSemanticFailureBreakerReplay replays the intent/default
+// variations from issue #829. All calls retain the same invalid job-ref
+// boundary after #827's retained-default normalization, so the third must be
+// refused even though no raw argument payload repeats.
+func TestReadTranscriptSemanticFailureBreakerReplay(t *testing.T) {
+	reg := tool.NewRegistry()
+	registered := readTranscriptTool(nil)
+	executed := 0
+	originalExec := registered.Exec
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		executed++
+		return originalExec(ctx, env, args)
+	}
+	if err := reg.Register(registered); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	for i := range 20 {
+		args := map[string]any{
+			"transcript_ref": "job:job_829_replay",
+			"range":          "1-2",
+			"intent":         fmt.Sprintf("Trying transcript read variation %d", i),
+		}
+		if i%2 == 0 {
+			args["expand_turn"] = float64(0)
+			args["format"] = "markdown"
+			args["output_match"] = ""
+			args["context_lines"] = float64(0)
+		} else {
+			args["expand_turn"] = nil
+			args["format"] = nil
+			args["output_match"] = nil
+			args["context_lines"] = nil
+		}
+		result := executeReadTranscriptFromRegistry(t, reg, fmt.Sprintf("replay-%02d", i), args)
+		if i < 2 {
+			if !result.IsError || !strings.Contains(result.Output, "range applies only to session transcript refs") {
+				t.Fatalf("replay attempt %d = %#v, want the original ref-mode failure", i+1, result)
+			}
+			continue
+		}
+		if !strings.Contains(result.Output, "semantic failure loop") {
+			t.Fatalf("replay attempt %d did not hit semantic breaker: %q", i+1, result.Output)
+		}
+	}
+	if executed != 2 {
+		t.Fatalf("20-call replay executed %d calls, want semantic breaker to stop after 2 failures", executed)
+	}
+}
 
 // TestReadTranscriptNeutralMaterializedRetainedOptions covers the provider shape
 // observed in 034HvTCI5LrwbM2ZZpBMqN. The semantically empty options must select
