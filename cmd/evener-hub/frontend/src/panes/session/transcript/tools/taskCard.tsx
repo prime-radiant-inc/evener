@@ -172,13 +172,19 @@ const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
   in_progress: "started",
 };
 
-const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/;
-const OUTCOME_PROGRESS_RE = /Progress:\s*(\d+)\s+done,\s*(\d+)\s+cancelled,\s*(\d+)\s+remaining\s*\((\d+)\s+total\)/;
+const PROGRESS_RE = /Progress:\s*(\d+)\s*\/\s*(\d+)\s*tasks complete/g;
+const OUTCOME_PROGRESS_RE = /Progress:\s*(\d+)\s+done,\s*(\d+)\s+cancelled,\s*(\d+)\s+remaining\s*\((\d+)\s+total\)/g;
+
+function lastProgressMatch(output: string, pattern: RegExp): RegExpMatchArray | undefined {
+  const matches = [...output.matchAll(pattern)];
+  return matches[matches.length - 1];
+}
 
 function parseProgress(output: string | undefined): Progress | undefined {
   if (!output) return undefined;
-  const outcome = OUTCOME_PROGRESS_RE.exec(output);
-  if (outcome) {
+  const outcome = lastProgressMatch(output, OUTCOME_PROGRESS_RE);
+  const legacy = lastProgressMatch(output, PROGRESS_RE);
+  if (outcome && (!legacy || (outcome.index ?? -1) > (legacy.index ?? -1))) {
     return {
       done: Number(outcome[1]),
       cancelled: Number(outcome[2]),
@@ -186,9 +192,8 @@ function parseProgress(output: string | undefined): Progress | undefined {
       total: Number(outcome[4]),
     };
   }
-  const m = PROGRESS_RE.exec(output);
-  if (!m) return undefined;
-  return { done: Number(m[1]), total: Number(m[2]) };
+  if (!legacy) return undefined;
+  return { done: Number(legacy[1]), total: Number(legacy[2]) };
 }
 
 // isTaskMutation is the non-suppression predicate: a valid append/update with

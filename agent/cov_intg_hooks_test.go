@@ -112,6 +112,43 @@ func TestIntg_ExecTool_PreToolUseRewritesInput(t *testing.T) {
 	collect()
 }
 
+func TestIntg_ExecTool_PreToolUseRewriteRevalidatesTaskList(t *testing.T) {
+	t.Parallel()
+	sess, _ := intg_hookSession(t, `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "task_list", "hooks": [{"type": "command", "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"updatedInput\":{\"add\":[{\"type\":\"implement\",\"brief\":\"rewritten brief\",\"prompt\":\"do it\"}]}}}'"}]}
+			]
+		}
+	}`)
+	defer sess.Close()
+
+	// The original call is valid. The hook replaces its add entry with the
+	// known-bad brief shape, so the post-hook dispatch must run task_list's
+	// targeted PreValidate rather than only generic JSON-schema validation.
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "hook-rewritten-task",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"add":[{"type":"implement","description":"original","prompt":"do it"}]}`),
+	}, "")
+	if !res.IsError {
+		t.Fatalf("hook-rewritten invalid task_list = %+v, want targeted prevalidation error", res)
+	}
+	want := `add entry 0 has invalid field "brief"; use the required field named "description" instead`
+	if !strings.Contains(res.Output, want) {
+		t.Fatalf("hook-rewritten task_list diagnostic = %q, want %q", res.Output, want)
+	}
+	if strings.Contains(res.Output, "tool args schema validation failed") {
+		t.Fatalf("hook-rewritten task_list should not fall through to generic schema validation: %q", res.Output)
+	}
+	sess.mu.Lock()
+	executed := sess.taskToolEverUsed
+	sess.mu.Unlock()
+	if executed {
+		t.Fatal("hook-rewritten invalid task_list reached the task handler")
+	}
+}
+
 func TestIntg_ExecTool_PreToolUseInvalidUpdatedInputErrors(t *testing.T) {
 	t.Parallel()
 	sess, ran := intg_hookSession(t, `{

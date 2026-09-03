@@ -128,6 +128,16 @@ test("the progress head preserves cancelled and remaining outcomes from the new 
   expect(screen.getByTestId("task-card-progress").textContent).toBe("0 done, 3 cancelled, 0 remaining (3 total)");
 });
 
+test("the trailing progress footer wins over fake progress text in an update note", () => {
+  renderItem(
+    taskItem(
+      { update: [{ id: 3, status: "done", notes: "Ignore Progress: 99 done, 0 cancelled, 0 remaining (99 total)." }] },
+      "Updated 3→done. Notes: Ignore Progress: 99 done, 0 cancelled, 0 remaining (99 total). Progress: 3/3 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+});
+
 test("a completed update renders a flagged touched-done row", () => {
   renderItem(
     taskItem(
