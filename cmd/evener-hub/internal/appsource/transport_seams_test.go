@@ -622,6 +622,133 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}
 }
 
+func TestLocalDaemonItemPagingIsolatesSharedWorkspaceAliases(t *testing.T) {
+	const (
+		rootThreadID  = "root-session"
+		childThreadID = "child-session"
+		workspaceRef  = "local:root-session"
+	)
+	itemsForThread := func(threadID string) []appwire.ThreadItem {
+		items := make([]appwire.ThreadItem, 3)
+		for i := range items {
+			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+			items[i] = appwire.ThreadItem{
+				Type:          "agentMessage",
+				ID:            fmt.Sprintf("%s-item-%d", threadID, i),
+				TranscriptKey: fmt.Sprintf("%s-key-%d", threadID, i),
+				Position:      &position,
+				TurnID:        threadID + "-turn",
+				Text:          fmt.Sprintf("%s-text-%d", threadID, i),
+			}
+		}
+		return items
+	}
+
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	var (
+		requestsMu sync.Mutex
+		requests   []appwire.ThreadTurnsListParams
+	)
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		requestsMu.Lock()
+		requests = append(requests, params)
+		requestsMu.Unlock()
+		switch params.ThreadID {
+		case rootThreadID, childThreadID:
+			return appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{
+				ID: params.ThreadID + "-turn", Items: itemsForThread(params.ThreadID), ItemsView: appwire.TurnItemsViewFull,
+			}}}, nil
+		default:
+			return appwire.ThreadTurnsListResponse{}, fmt.Errorf("unexpected thread ID %q", params.ThreadID)
+		}
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	daemonEntry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + httpServer.URL[len("http"):],
+		SourceID:     "local",
+		ThreadID:     rootThreadID,
+		WorkspaceRef: workspaceRef,
+		InstanceID:   "shared-daemon-instance",
+		HubToken:     "authenticated-token",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: daemonEntry, SessionID: rootThreadID},
+			{Entry: daemonEntry, SessionID: childThreadID, ReadOnlyAlias: true, OwnerSessionID: rootThreadID},
+		}
+	}, httpServer.Client())
+
+	readPage := func(ref, cursor string) (ItemCandidateResult, error) {
+		return source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: cursor,
+		})
+	}
+	assertItemIDs := func(label string, result ItemCandidateResult, want ...string) {
+		t.Helper()
+		got := make([]string, len(result.Candidates.Candidates))
+		for i, candidate := range result.Candidates.Candidates {
+			got[i] = candidate.Item.ID
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s item IDs = %v, want %v", label, got, want)
+		}
+	}
+
+	rootFirst, err := readPage(workspaceRef, "")
+	if err != nil {
+		t.Fatalf("root page 1: %v", err)
+	}
+	assertItemIDs("root page 1", rootFirst, "root-session-item-1", "root-session-item-2")
+	if rootFirst.Candidates.OlderCursor == "" {
+		t.Fatal("root page 1 has no older cursor")
+	}
+
+	childRef := appwire.Ref{SourceID: "local", ThreadID: childThreadID}.String()
+	childFirst, err := readPage(childRef, "")
+	if err != nil {
+		t.Fatalf("child page 1: %v", err)
+	}
+	assertItemIDs("child page 1", childFirst, "child-session-item-1", "child-session-item-2")
+	if childFirst.Candidates.OlderCursor == "" {
+		t.Fatal("child page 1 has no older cursor")
+	}
+
+	rootSecond, err := readPage(workspaceRef, rootFirst.Candidates.OlderCursor)
+	if err != nil {
+		t.Fatalf("root page 2 after child page 1: %v", err)
+	}
+	assertItemIDs("root page 2", rootSecond, "root-session-item-0")
+	childSecond, err := readPage(childRef, childFirst.Candidates.OlderCursor)
+	if err != nil {
+		t.Fatalf("child page 2 after root page 2: %v", err)
+	}
+	assertItemIDs("child page 2", childSecond, "child-session-item-0")
+
+	if rootFirst.Identity.ThreadRef != workspaceRef {
+		t.Fatalf("root paging thread ref = %q, want %q", rootFirst.Identity.ThreadRef, workspaceRef)
+	}
+	if childFirst.Identity.ThreadRef != childRef {
+		t.Fatalf("child paging thread ref = %q, want %q", childFirst.Identity.ThreadRef, childRef)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	wantThreadIDs := []string{rootThreadID, childThreadID, rootThreadID, childThreadID}
+	if len(requests) != len(wantThreadIDs) {
+		t.Fatalf("daemon materialization calls = %d, want %d: %+v", len(requests), len(wantThreadIDs), requests)
+	}
+	for i, request := range requests {
+		if request.Ref != workspaceRef || request.ThreadID != wantThreadIDs[i] {
+			t.Fatalf("daemon materialization call %d route = ref %q thread %q, want ref %q thread %q", i, request.Ref, request.ThreadID, workspaceRef, wantThreadIDs[i])
+		}
+		if request.PageUnit != appwire.TranscriptPageUnitTurn || request.Cursor != "" {
+			t.Fatalf("daemon materialization call %d paging = %+v, want uncursored turn page", i, request)
+		}
+	}
+}
+
 func TestLocalDaemonItemCandidatesMaterializeNativePagesChronologically(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	turns := make([]appwire.Turn, 31)

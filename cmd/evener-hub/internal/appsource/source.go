@@ -120,7 +120,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	params appwire.ThreadReadParams,
 	response appwire.ThreadReadResponse,
 ) (ItemCandidateResult, error) {
-	entry, _, threadRef, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
+	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -131,26 +131,26 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return ItemCandidateResult{}, err
 	}
-	unlock := s.itemPagingLocks.lock(threadRef)
+	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
-	daemonIdentity := localDaemonItemDaemonIdentity(entry)
-	previous, exists := s.itemSnapshots.get(threadRef)
+	daemonIdentity := localDaemonItemDaemonIdentity(resolved.entry)
+	previous, exists := s.itemSnapshots.get(resolved.pagingRef)
 	incarnation := previous.Incarnation
 	next, extends := itemSnapshotStateAdvance(previous, candidates, response.OlderCursor == "")
-	if !exists || incarnation == "" || previous.ThreadRef != threadRef || previous.SourceIdentity != daemonIdentity || !extends {
+	if !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends {
 		incarnation = fmt.Sprintf("local-daemon-incarnation-%d", localDaemonItemIncarnationSequence.Add(1))
-		next = itemSnapshotStateForCandidates(threadRef, incarnation, daemonIdentity, candidates, response.OlderCursor == "")
+		next = itemSnapshotStateForCandidates(resolved.pagingRef, incarnation, daemonIdentity, candidates, response.OlderCursor == "")
 	}
-	next.ThreadRef = threadRef
+	next.ThreadRef = resolved.pagingRef
 	next.Incarnation = incarnation
 	next.SourceIdentity = daemonIdentity
-	s.itemSnapshots.put(threadRef, next)
+	s.itemSnapshots.put(resolved.pagingRef, next)
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
 		// the hub mints a source-owned cursor from Identity below.
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
 		Identity: appitempaging.CursorIdentity{
-			ThreadRef:         threadRef,
+			ThreadRef:         resolved.pagingRef,
 			Incarnation:       incarnation,
 			ProjectionVersion: localDaemonItemCursorProjectionVersion,
 		},
@@ -212,14 +212,14 @@ type localDaemonItemSnapshot struct {
 // the source owns the identity and validates every continuation against its
 // current snapshot.
 func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwire.ThreadReadParams) (ItemCandidateResult, error) {
-	entry, threadID, threadRef, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
+	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	unlock := s.itemPagingLocks.lock(threadRef)
+	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
 
-	snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, entry, threadID, threadRef, params.ItemsView)
+	snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -242,14 +242,14 @@ func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwi
 // materialized authenticated daemon snapshot. Browser cursors are never passed
 // to the daemon's native turns/list endpoint.
 func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
-	entry, threadID, threadRef, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
+	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	unlock := s.itemPagingLocks.lock(threadRef)
+	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
 
-	snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, entry, threadID, threadRef, params.ItemsView)
+	snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -284,22 +284,33 @@ func localDaemonItemSnapshotIdentity(snapshot localDaemonItemSnapshot) appitempa
 	}
 }
 
-func (s *LocalDaemonSource) resolveLocalDaemonItemThread(rawRef, threadID string) (rendezvous.Entry, string, string, error) {
+type localDaemonItemThread struct {
+	entry     rendezvous.Entry
+	threadID  string
+	routeRef  string
+	pagingRef string
+}
+
+func (s *LocalDaemonSource) resolveLocalDaemonItemThread(rawRef, threadID string) (localDaemonItemThread, error) {
 	entry, err := s.entryForReadRef(rawRef, threadID)
 	if err != nil {
-		return rendezvous.Entry{}, "", "", err
+		return localDaemonItemThread{}, err
 	}
 	threadID = firstLocalNonEmpty(entry.SessionID, entry.ThreadID, threadID)
-	threadRef := localDaemonWorkspaceRef(s.sourceID, entry, threadID)
-	return entry, threadID, threadRef, nil
+	return localDaemonItemThread{
+		entry:     entry,
+		threadID:  threadID,
+		routeRef:  localDaemonWorkspaceRef(s.sourceID, entry, threadID),
+		pagingRef: appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String(),
+	}, nil
 }
 
 func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 	ctx context.Context,
-	entry rendezvous.Entry,
-	threadID, threadRef, itemsView string,
+	resolved localDaemonItemThread,
+	itemsView string,
 ) (localDaemonItemSnapshot, error) {
-	turns, err := s.materializeLocalDaemonTurns(ctx, threadRef, threadID, itemsView)
+	turns, err := s.materializeLocalDaemonTurns(ctx, resolved.routeRef, resolved.threadID, itemsView)
 	if err != nil {
 		return localDaemonItemSnapshot{}, err
 	}
@@ -311,20 +322,20 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 		return localDaemonItemSnapshot{}, err
 	}
 
-	daemonIdentity := localDaemonItemDaemonIdentity(entry)
-	previous, exists := s.itemSnapshots.get(threadRef)
+	daemonIdentity := localDaemonItemDaemonIdentity(resolved.entry)
+	previous, exists := s.itemSnapshots.get(resolved.pagingRef)
 	incarnation := previous.Incarnation
 	next, extends := itemSnapshotStateAdvance(previous, candidates, true)
-	if !exists || incarnation == "" || previous.ThreadRef != threadRef || previous.SourceIdentity != daemonIdentity || !extends {
+	if !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends {
 		incarnation = fmt.Sprintf("local-daemon-incarnation-%d", localDaemonItemIncarnationSequence.Add(1))
-		next = itemSnapshotStateForCandidates(threadRef, incarnation, daemonIdentity, candidates, true)
+		next = itemSnapshotStateForCandidates(resolved.pagingRef, incarnation, daemonIdentity, candidates, true)
 	}
-	next.ThreadRef = threadRef
+	next.ThreadRef = resolved.pagingRef
 	next.Incarnation = incarnation
 	next.SourceIdentity = daemonIdentity
-	s.itemSnapshots.put(threadRef, next)
+	s.itemSnapshots.put(resolved.pagingRef, next)
 	current := localDaemonItemSnapshot{
-		ThreadRef:   threadRef,
+		ThreadRef:   resolved.pagingRef,
 		Incarnation: incarnation,
 		Candidates:  candidates,
 	}
