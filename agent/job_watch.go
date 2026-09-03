@@ -1187,6 +1187,12 @@ func normalizedWatchConfigHash(a watchArgs) string {
 		SourceDelegateID:         stableWatchSourceID(a),
 		SourceDelegateGeneration: a.SourceGeneration,
 		StableReceiver:           a.StableReceiver,
+		// The timer's own fields, not the interval they derive: a one-shot and a
+		// repeating timer that fire the same number of seconds apart are still
+		// two different watches, and so are two repeats with different notes.
+		AfterSeconds:  a.AfterSeconds,
+		RepeatSeconds: a.RepeatSeconds,
+		Note:          a.Note,
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
@@ -2014,6 +2020,18 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		SourceDelegateID:         cfg.sourceDelegateID,
 		SourceDelegateGeneration: cfg.sourceGeneration,
 		StableReceiver:           cfg.stableReceiver,
+		Note:                     cfg.note,
+	}
+	// A timer keeps only the seconds it derived and which mode derived them, so
+	// the snapshot rebuilds the field the model actually named: inspect and
+	// history have to be able to say "fires once in 10 minutes" apart from
+	// "fires every 10 minutes".
+	if cfg.timer {
+		if cfg.oneShot {
+			snapshot.AfterSeconds = cfg.timerSeconds
+		} else {
+			snapshot.RepeatSeconds = cfg.timerSeconds
+		}
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To
