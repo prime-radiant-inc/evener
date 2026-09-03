@@ -919,7 +919,7 @@ func DefReadTranscript() llm.ToolDefinition {
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Ref-specific byte offset: session expansion continuation, or job:/artifact: raw page start or search start. Job offsets are lifetime offsets."},
 				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 expression for bounded complete-line search of job: or artifact: retained output. Omit it (or send an empty/null materialized default) for the default retained-output view. Maximum 65,536 characters keeps the complete exact JSON response below the registry backstop."},
 				"context_lines": map[string]any{
-					"type":        "integer",
+					"type":        []any{"integer", "null"},
 					"minimum":     0,
 					"maximum":     10,
 					"description": "Lines before and after each output_match; requires output_match. Default 0.",

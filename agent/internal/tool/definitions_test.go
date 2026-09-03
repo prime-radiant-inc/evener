@@ -614,8 +614,9 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 		t.Errorf("output_match schema = %#v, want documented 65,536-character envelope bound", outputMatch)
 	}
 	contextLines := rp["context_lines"].(map[string]any)
-	if contextLines["type"] != "integer" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
-		t.Errorf("context_lines schema = %#v, want integer 0..10", contextLines)
+	contextLineTypes, ok := contextLines["type"].([]any)
+	if !ok || len(contextLineTypes) != 2 || contextLineTypes[0] != "integer" || contextLineTypes[1] != "null" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
+		t.Errorf("context_lines schema = %#v, want nullable integer 0..10", contextLines)
 	}
 	for _, want := range []string{"session ref", "job:", "artifact:", "output_match", "context_lines", "retained_start_bytes", "job_status"} {
 		if !strings.Contains(read.Description, want) {
