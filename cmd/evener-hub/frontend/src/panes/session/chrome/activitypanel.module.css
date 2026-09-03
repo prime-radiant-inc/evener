@@ -30,7 +30,11 @@
 .panelColumn {
   min-width: 0;
   min-height: 0;
-  overflow-x: hidden;
+  /* OpenButton's 28px hit box deliberately overhangs its 1em layout box.
+   * Half the complete target is the conservative maximum overhang, so the
+   * scrollport's first and last rows remain fully hittable at either edge. */
+  padding-block: calc(28px / 2);
+  overflow-x: clip;
   overflow-y: auto;
 }
 
@@ -39,7 +43,15 @@
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
-  overflow-x: hidden;
+  /* clip only the inline axis: overflow-x:hidden would compute the otherwise
+   * visible block axis to auto and clip Open's deliberate vertical overhang. */
+  overflow-x: clip;
+}
+
+@media (max-width: 899px) {
+  .panelColumn {
+    padding-block: calc(var(--tap-min) / 2);
+  }
 }
 
 .rowToggle {

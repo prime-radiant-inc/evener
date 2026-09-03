@@ -26,14 +26,44 @@
   display: none;
 }
 
+.headingText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .title {
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
 
 .secondary {
+  margin-left: var(--space-2);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
+}
+
+/* The final word and Open are one atomic inline flex unit, so the unit may move
+ * to the next line but Open can never move there alone. A no-whitespace decoded
+ * secondary still fits: its text child may shrink and wrap inside the unit,
+ * with Open aligned to its final line. */
+.secondaryTail {
+  display: inline-flex;
+  align-items: flex-end;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.secondaryTailText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.openTrailing {
+  display: inline-flex;
+  flex: none;
+  margin-left: var(--space-2);
+  vertical-align: middle;
 }
 
 .metadata {

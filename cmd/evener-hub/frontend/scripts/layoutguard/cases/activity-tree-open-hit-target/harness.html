@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>ActivityTree Open hit-target layoutguard</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; transition: none !important; animation: none !important; }
+  html, body { margin: 0; background: var(--surface-0); color: var(--ink-hi); }
+  body { padding: 20px; font-family: var(--font-sans); }
+  .fixtures { display: flex; flex-direction: column; gap: 16px; }
+  iframe { border: 0; width: 920px; height: 150px; }
+</style>
+</head>
+<body data-font-size="m">
+<div class="fixtures"></div>
+<script>
+const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+function openButton(id) {
+  return `<span class="inline"><button type="button" class="button quiet sm" data-open="${id}" aria-label="Open transcript" title="Open"><span class="icon" aria-hidden="true">${OPEN_SVG}</span></button></span>`;
+}
+
+function row(id) {
+  return `<div class="denseRow" data-row="${id}" role="treeitem" tabindex="-1">
+    <button type="button" class="rowToggle" tabindex="-1" aria-label="Show details">${CHEVRON_SVG}</button>
+    <span class="denseKind" aria-hidden="true">⌘</span>
+    <span class="denseName">Delegate ${id}</span>
+    ${openButton(id)}
+  </div>`;
+}
+
+function frameDocument(mode) {
+  const width = mode === "phone" ? 390 : 920;
+  const rows = Array.from({ length: 6 }, (_, i) => row(i === 0 ? "first" : i === 5 ? "last" : String(i))).join("");
+  return `<!doctype html><html lang="en" data-theme="dark"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=${width}, initial-scale=1"><base href="${location.href}">
+    <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
+    <style>
+      *, *::before, *::after { box-sizing:border-box; transition:none !important; animation:none !important; }
+      html, body { margin:0; height:100%; background:var(--surface-0); color:var(--ink-hi); }
+      body { padding:12px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
+      .panelColumn { width:330px; height:96px; border:1px solid var(--edge); }
+    </style></head><body data-font-size="m"><div class="panelColumn" data-scrollport><div class="tree" role="tree">${rows}</div></div></body></html>`;
+}
+
+const frameSpecs = [
+  { mode: "desktop", width: 920 },
+  { mode: "phone", width: 390 },
+];
+const frames = frameSpecs.map((spec) => {
+  const frame = document.createElement("iframe");
+  frame.style.width = `${spec.width}px`;
+  frame.srcdoc = frameDocument(spec.mode);
+  document.querySelector(".fixtures").append(frame);
+  return { ...spec, frame };
+});
+
+function ready({ frame }) {
+  return new Promise((resolve) => {
+    const finish = () => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(resolve));
+    if (frame.contentDocument?.readyState === "complete") finish();
+    else frame.addEventListener("load", finish, { once: true });
+  });
+}
+
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, width:r.width, height:r.height };
+}
+
+function hitExposedEdge(doc, button, edge) {
+  const r = button.getBoundingClientRect();
+  const y = edge === "first" ? r.top + 2 : r.bottom - 2;
+  const points = [
+    [r.left + r.width / 2, y],
+    [r.left + r.width / 2, r.top + r.height / 2],
+  ];
+  return points.map(([x, y]) => {
+    const hit = doc.elementFromPoint(x, y);
+    return { x, y, hit: hit ? `${hit.tagName.toLowerCase()}.${String(hit.className).replaceAll(" ", ".")}` : null, reachesButton: Boolean(hit && button.contains(hit)) };
+  });
+}
+
+function measureFrame(spec) {
+  const doc = spec.frame.contentDocument;
+  const win = spec.frame.contentWindow;
+  const scrollport = doc.querySelector("[data-scrollport]");
+  const firstButton = doc.querySelector('[data-open="first"]');
+  const firstRow = doc.querySelector('[data-row="first"]');
+  const first = { target:rect(firstButton), row:rect(firstRow), hits:hitExposedEdge(doc, firstButton, "first") };
+  scrollport.scrollTop = scrollport.scrollHeight;
+  const lastButton = doc.querySelector('[data-open="last"]');
+  const lastRow = doc.querySelector('[data-row="last"]');
+  const last = { target:rect(lastButton), row:rect(lastRow), hits:hitExposedEdge(doc, lastButton, "last") };
+  const style = win.getComputedStyle(scrollport);
+  const treeStyle = win.getComputedStyle(doc.querySelector(".tree"));
+  return {
+    mode: spec.mode,
+    viewportWidth: win.innerWidth,
+    expectedTarget: spec.mode === "phone" ? 44 : 28,
+    scrollport: { ...rect(scrollport), paddingTop:parseFloat(style.paddingTop), paddingBottom:parseFloat(style.paddingBottom), overflowX:style.overflowX, overflowY:style.overflowY },
+    treeOverflow: { x:treeStyle.overflowX, y:treeStyle.overflowY },
+    first,
+    last,
+  };
+}
+
+window.measure = async () => {
+  await Promise.all(frames.map(ready));
+  return frames.map(measureFrame);
+};
+</script>
+</body>
+</html>

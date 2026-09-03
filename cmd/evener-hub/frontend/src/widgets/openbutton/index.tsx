@@ -58,8 +58,6 @@ export interface OpenButtonProps {
   /** Accessible name. Stay specific ("Open transcript", "Open beside:
    * src/a.ts") - many open controls share a screen. Defaults to "Open". */
   label?: string;
-  /** Hover text; the one word every open affordance shows. */
-  title?: string;
   /** Click handler for the button form. An href anchor navigates instead
    * and only stopPropagates. */
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -68,13 +66,13 @@ export interface OpenButtonProps {
   tabIndex?: number;
   /** An external target renders an <a> (new tab, no opener access) instead
    * of a <button> - the settings "open in editor" case. The anchor names
-   * itself from its visible words and ignores onClick and title. */
+   * itself from its visible words and ignores onClick. */
   href?: string;
   /** The visible words the glyph follows (anchor form only). */
   word?: string;
 }
 
-export function OpenButton({ label, title = "Open", onClick, tabIndex, href, word = "open" }: OpenButtonProps) {
+export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: OpenButtonProps) {
   if (href !== undefined) {
     return (
       <a
@@ -99,7 +97,7 @@ export function OpenButton({ label, title = "Open", onClick, tabIndex, href, wor
     <span className={CLASS.inline}>
       <IconButton
         label={label ?? "Open"}
-        title={title}
+        title="Open"
         tabIndex={tabIndex}
         icon={<OpenIcon />}
         variant="quiet"
