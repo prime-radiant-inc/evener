@@ -368,6 +368,9 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			if !ok {
 				return errors.New("plugin manager does not support effective listing")
 			}
+			// context.Background: runPlugin is a one-shot command with no
+			// context of its own, and nothing cancels this listing but the
+			// process ending.
 			resolution, err := resolver.ResolveForLaunch(context.Background(), []string(pluginDirs), nil)
 			if renderErr := renderEffectivePluginList(stdout, resolution, *asJSON); renderErr != nil {
 				return renderErr
