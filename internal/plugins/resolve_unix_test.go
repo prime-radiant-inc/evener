@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -108,7 +109,10 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 			if staging == nil {
 				t.Fatal("prepareBundledStore adopted a published copy in an empty store")
 			}
-			t.Cleanup(func() { _ = os.RemoveAll(staging.dir) })
+			t.Cleanup(func() {
+				_ = os.RemoveAll(staging.dir)
+				staging.release()
+			})
 			if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), "coordinator-workflow")); err != nil {
 				t.Fatal(err)
 			}
@@ -183,5 +187,58 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(store, entries[0].Name(), stagingMarker)); err != nil {
 		t.Errorf("leftover staging is unmarked, so no sweep will reclaim it: %v", err)
+	}
+}
+
+// Two launches meeting the same mismatched destination must not undo each
+// other's work. Classifying, setting aside and publishing run as one sequence
+// under the store lock, so a classification made before the lock is never
+// acted on after it: the slot beside the destination keeps one copy of the
+// foreign content, the destination holds the copy this build publishes, and
+// neither is left vacant for a session that is already pointing at it.
+func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) {
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := range 20 {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+		const publishers = 2
+		paths := make([]string, publishers)
+		errs := make([]error, publishers)
+		var wg sync.WaitGroup
+		for i := range publishers {
+			wg.Go(func() {
+				paths[i], _, errs[i] = m.materializeBundledPlugin("coordinator-workflow")
+			})
+		}
+		wg.Wait()
+
+		for i := range publishers {
+			if errs[i] != nil {
+				t.Fatalf("attempt %d publisher %d: %v", attempt, i, errs[i])
+			}
+			if paths[i] != dest {
+				t.Fatalf("attempt %d publisher %d published %s, want %s", attempt, i, paths[i], dest)
+			}
+		}
+		found, err := digestFS(os.DirFS(dest))
+		if err != nil || found != digest {
+			t.Fatalf("attempt %d: destination digest = %q (err %v), want %q", attempt, found, err, digest)
+		}
+		content, err := os.ReadFile(filepath.Join(dest+conflictSuffix, "theirs.md"))
+		if err != nil || string(content) != "someone else's data" {
+			t.Fatalf("attempt %d: set-aside content = %q (err %v), want the foreign data preserved", attempt, content, err)
+		}
+		entries, err := os.ReadDir(filepath.Dir(dest))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("attempt %d: bundled store holds %v, want the published copy and one set-aside slot", attempt, entries)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -78,15 +79,15 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 // store the way a launch does, so a destination a launch would reject fails
 // preview the same way, a store a launch could not publish into fails preview
 // too, and an already published copy is the one preview describes. Exactly
-// what it touches: it creates <Root>/bundled if that is missing, it moves a
-// destination holding content this build did not publish to the sibling slot
-// kept for it exactly as a launch would, and for a requested bundled plugin
-// not yet published it stages a marked copy there, reads it, and removes it
-// before returning. It publishes nothing, and it
-// reclaims nothing: collecting abandoned staging belongs to a launch. Removing
-// what it staged is part of the promise, so a removal that fails is reported
-// alongside whatever else went wrong; the marked directory stays in the store
-// until a later launch's sweep reclaims it.
+// what it touches: it creates <Root>/bundled if that is missing, it takes the
+// store lock while it works there, it moves a destination holding content this
+// build did not publish to the sibling slot kept for it exactly as a launch
+// would, and for a requested bundled plugin not yet published it stages a
+// marked copy there, reads it, and removes it before returning. It publishes
+// nothing, and it reclaims nothing: collecting abandoned staging belongs to a
+// launch. Removing what it staged is part of the promise, so a removal that
+// fails is reported alongside whatever else went wrong; the marked directory
+// stays in the store until a later launch's sweep reclaims it.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
@@ -97,6 +98,10 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		if staging == nil {
 			return bundledCandidate{loadPath: dest, path: dest, warnings: warnings}, nil
 		}
+		// Preview publishes nothing, so the store lock is only wanted for the
+		// staging that fills; reading the copy back needs nothing from the
+		// store, and removing a private directory disturbs nobody.
+		defer staging.release()
 		scratch = append(scratch, staging.dir)
 		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return bundledCandidate{}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
@@ -282,18 +287,24 @@ const (
 // fills and then renames into place. The copy lives in payload, one level
 // below the marked directory, so publishing renames the copy alone and the
 // marker never lands inside a published plugin. digest is what the destination
-// must hold, carried along so a publish that loses the rename can tell the
-// winner's copy from foreign content.
+// must hold, carried along so a publish that finds the destination taken can
+// tell an identical copy from foreign content. release gives up the store lock
+// the staging was opened under: the lock makes classifying the destination,
+// setting a conflict aside and publishing one sequence, so it is held from the
+// classification this staging was created on until the caller has renamed the
+// copy into place or given up on it.
 type bundledStaging struct {
 	dir     string
 	payload string
 	digest  string
+	release func()
 }
 
 // newBundledStaging opens a staging directory for base inside store and marks
 // it as this code's to reclaim before anything is copied in, so a publish
-// killed at any moment leaves an orphan a later sweep recognizes.
-func newBundledStaging(store, base, digest string) (*bundledStaging, error) {
+// killed at any moment leaves an orphan a later sweep recognizes. release is
+// the store lock the caller holds, handed over for the staging to carry.
+func newBundledStaging(store, base, digest string, release func()) (*bundledStaging, error) {
 	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
 	if err != nil {
 		return nil, err
@@ -309,7 +320,7 @@ func newBundledStaging(store, base, digest string) (*bundledStaging, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	return &bundledStaging{dir: dir, payload: payload, digest: digest}, nil
+	return &bundledStaging{dir: dir, payload: payload, digest: digest, release: release}, nil
 }
 
 // materializeBundledPlugin publishes the bundled plugin named name under the
@@ -330,14 +341,18 @@ func (m *Manager) materializeBundledPlugin(name string) (string, []string, error
 	if staging == nil {
 		return dest, warnings, nil
 	}
+	// The lock goes last, so the staging directory is gone before another
+	// publisher is let in to look at the store.
+	defer staging.release()
 	defer func() { _ = os.RemoveAll(staging.dir) }()
 	if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 		return "", warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
-		// Somebody took the destination between the check that found it free
-		// and this rename. A concurrent publisher's copy is adopted; anything
-		// else is set aside the way the check would have, and the publish is
+		// The store lock keeps every other publisher out, so a destination
+		// that filled since it was classified was filled by something outside
+		// this package. An identical copy is adopted; anything else is set
+		// aside the way the classification would have, and the publish is
 		// retried into the name that frees.
 		state, classifyErr := classifyBundledDestination(dest, staging.digest)
 		if classifyErr != nil {
@@ -385,14 +400,12 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 		return "", nil, nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	dest := m.bundledPluginPath(name, digest)
-	state, err := classifyBundledDestination(dest, digest)
-	if err != nil {
-		return "", nil, nil, err
-	}
 	store := filepath.Dir(dest)
 	// A launch resolves plugins before the startup call that creates the user
 	// config tree privately, so any parent this is first to create gets that
-	// call's own 0o700 rather than the store root's readable mode.
+	// call's own 0o700 rather than the store root's readable mode. They are
+	// created before the lock so the lock file's parent is one of them, rather
+	// than acquireLock creating the store root world-readable on its own.
 	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
 		return "", nil, nil, err
 	}
@@ -405,21 +418,47 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if reclaim {
 		m.reclaimAbandonedStaging(store)
 	}
+	// An unlocked look first, because the answer is almost always a copy
+	// already published: that costs a digest read, changes nothing, and no
+	// other publisher can take a published copy away.
+	state, err := classifyBundledDestination(dest, digest)
+	if err != nil {
+		return "", nil, nil, err
+	}
 	if state == bundledDestinationPublished {
+		return dest, nil, nil, nil
+	}
+	// Anything else means writing to the store, which is one sequence with the
+	// classification it acts on: without the lock two launches both classify a
+	// mismatched destination, and the second sets aside the copy the first
+	// published while deleting the copy the first preserved.
+	release, err := acquireLock(context.Background(), m.lockPath(), 30*time.Second)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
+	}
+	state, err = classifyBundledDestination(dest, digest)
+	if err != nil {
+		release()
+		return "", nil, nil, err
+	}
+	if state == bundledDestinationPublished {
+		release()
 		return dest, nil, nil, nil
 	}
 	var warnings []string
 	if state == bundledDestinationConflict {
 		aside, warning, err := setAsideBundledConflict(dest)
 		if err != nil {
+			release()
 			return "", nil, nil, err
 		}
 		if aside != "" {
 			warnings = append(warnings, warning)
 		}
 	}
-	staging, err := newBundledStaging(store, filepath.Base(dest), digest)
+	staging, err := newBundledStaging(store, filepath.Base(dest), digest, release)
 	if err != nil {
+		release()
 		return "", nil, warnings, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
 	return dest, staging, warnings, nil
