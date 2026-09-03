@@ -464,10 +464,18 @@ export function useTranscriptViewRegistration(
 export interface UseTranscriptScrollResult {
   /** Items rendered since the reader last was at (or returned to) the bottom. */
   pillCount: number;
+  /** True whenever the jump-to-latest pill should be on offer: the reader is
+   * away from the bottom (even with nothing new - the pill is a scroll-
+   * position affordance first, per docs/web-ui/decisions.md's "a
+   * jump-to-latest pill when scrolled up"), OR unseen items/failures are
+   * pending. Sourced from real DOM geometry in the scroll listener, so a
+   * jump that lands short leaves it true instead of stranding the reader. */
+  pillVisible: boolean;
   /** True while the pill is showing AND the thread is currently attention-worthy
    * (askPending, or a status the pane's own Cadence mapping treats as needs-you) -
    * recomputed live every render, so a later status flip upgrades the pill
-   * in place even if it lands after the content that produced it. */
+   * in place even if it lands after the reader scrolled away or after the
+   * content that produced it. */
   pillNeedsYou: boolean;
   /** True while a failed turn the reader hasn't seen yet is anchored (see
    * "the error anchor" below) - outranks pillNeedsYou per the pinned
@@ -481,10 +489,12 @@ export interface UseTranscriptScrollResult {
    * anchor (if active) is above the current viewport, "down" otherwise
    * (normal case: new content below, or no error anchor). */
   pillArrowDirection: "up" | "down";
-  /** Scrolls to the last turn and clears the pill - unless an error anchor
-   * is active, in which case it jumps to THAT turn's index instead (see
-   * "the error anchor" below). Also the target for a manual click on
-   * NewContentPill. */
+  /** Scrolls to the last turn and clears the pill's count/error state -
+   * unless an error anchor is active, in which case it jumps to THAT turn's
+   * index instead (see "the error anchor" below). The pill's VISIBILITY is
+   * not cleared by the click itself: it stays on offer until the landing's
+   * scroll event (or an at-bottom measurement at click time) confirms
+   * arrival. Also the target for a manual click on NewContentPill. */
   jumpToBottom: () => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
@@ -566,6 +576,20 @@ export function useTranscriptScroll({
   // scroll position changes (in handleScroll), so it's always in sync with
   // the current viewport state.
   const [pillArrowDirection, setPillArrowDirection] = useState<"up" | "down">("down");
+  // "The reader is away from the bottom" as RENDER state (wasAtBottomRef is
+  // the same fact as a ref, for the long-lived scroll closure). This is what
+  // lets the pill be a scroll-position affordance - visible whenever the
+  // reader has scrolled back, even with zero new items - rather than only a
+  // new-content counter. Updated everywhere wasAtBottomRef is written:
+  // handleScroll (the common path), the one-time mount init, and the per-ref
+  // reset. jumpToBottom SETS it in the error-anchor branch (the landing is
+  // deliberately not the bottom) and, in the bottom-seeking branch, clears
+  // it ONLY from a measurement that already reads at-bottom (where no scroll
+  // - and so no landing event - will happen); otherwise the scroll triggered
+  // by the jump fires handleScroll on landing, which clears it only once the
+  // reader has ACTUALLY arrived - so a jump that lands short leaves the pill
+  // on offer instead of vanishing into a stranded mid-transcript position.
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
   const firstTurnIdRef = useRef<string | undefined>(undefined);
@@ -694,6 +718,11 @@ export function useTranscriptScroll({
     setErrorAnchorIndex(null);
     errorAnchorIndexRef.current = null;
     errorAnchorTurnIdRef.current = undefined;
+    // With the anchor gone the pill's next jump heads for the bottom, never
+    // up - and because the pill now STAYS VISIBLE after an anchor click, a
+    // stale "up" arrow would otherwise render on the plain "latest" pill
+    // until the next scroll event recomputes it.
+    setPillArrowDirection("down");
   }, []);
 
   const jumpToBottom = useCallback(() => {
@@ -705,13 +734,73 @@ export function useTranscriptScroll({
       // "the error anchor" - the whole point of an anchor is to land THERE).
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
+      // Mirror into render state like every other wasAtBottomRef write site:
+      // the landing is not the bottom, so the pill stays on offer.
+      setAwayFromBottom(true);
     } else {
       const count = renderedRowCountRef.current;
-      if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
-      wasAtBottomRef.current = true;
+      // Bottom state is NEVER set optimistically: wasAtBottomRef and
+      // awayFromBottom only come from measured geometry. So measure BEFORE
+      // requesting any scroll - scrollToIndex can synchronously move the DOM
+      // to its estimate-derived end, which would make an after-the-fact
+      // measurement describe the jump's own unconfirmed landing rather than
+      // the reader's position at click time.
+      const el = listRef.current?.getScrollElement();
+      const m = el ? measure(el) : undefined;
+      if (m && isAtBottom(m)) {
+        // Already at the true bottom by measurement: no scroll will happen,
+        // so no landing event will fire - confirm arrival from the
+        // measurement itself.
+        wasAtBottomRef.current = true;
+        setAwayFromBottom(false);
+      } else {
+        // The pre-jump measurement is authoritative for the reader's CURRENT
+        // position: they are away from the bottom. Write that into both
+        // trackers before requesting the jump - the DOM can move without a
+        // scroll event (content growth above the viewport, measurement
+        // corrections), leaving the trackers stale at at-bottom, and a stale
+        // at-bottom would let an append in the landing window auto-stick and
+        // would hide the pill the moment clearPill() runs below.
+        wasAtBottomRef.current = false;
+        setAwayFromBottom(true);
+        // scrollToIndex engages the virtualizer's own machinery (scrollState
+        // -> measurement during the scroll, the reconcile loop, and the
+        // anchorToEnd pinning that holds the end across later
+        // estimate->measured corrections). But its target offset derives from
+        // the measurement cache - ESTIMATES for every row between here and
+        // the end that has never been rendered - so the landing it computes
+        // is not guaranteed to be the true bottom, and whether a correction
+        // arrives afterward is timing-dependent (the reconcile loop settles
+        // after one stable frame; ResizeObserver delivery is async). That
+        // shortfall was the unreliable jump: the pill had already been
+        // cleared, and with no new content arriving there was no affordance
+        // left to recover with.
+        //
+        // So after engaging the virtualizer, pin the scroll element to its
+        // true DOM maximum directly - exact by construction, whatever the
+        // estimates say. Later measurement corrections only ever change
+        // scrollHeight, and the end-anchor (threshold 4px; the pin leaves the
+        // distance at 0) keeps the viewport pinned to the new true end.
+        //
+        // Arrival is confirmed only by the landing's own scroll event
+        // (handleScroll): until then the reader is still away, so an append
+        // in that window increments the pill instead of auto-sticking on an
+        // unconfirmed jump, and a landing that later corrections leave short
+        // keeps the pill on offer.
+        if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+        if (el) {
+          // Pin from LIVE geometry, re-measured after scrollToIndex: the
+          // pre-jump measurement m is only for the at-bottom classification
+          // above - engaging the virtualizer may already have corrected the
+          // DOM maximum, and a pin computed from the stale value could land
+          // short.
+          const live = measure(el);
+          el.scrollTop = Math.max(0, live.scrollHeight - live.clientHeight);
+        }
+      }
     }
     clearPill();
-  }, [listRef, clearPill]);
+  }, [listRef, clearPill, measure]);
 
   const captureViewAnchor = useCallback(() => {
     const el = listRef.current?.getScrollElement();
@@ -789,6 +878,7 @@ export function useTranscriptScroll({
       refForInitRef.current = ref;
       initializedRef.current = false;
       wasAtBottomRef.current = true;
+      setAwayFromBottom(false);
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
       pendingViewAnchorRef.current = null;
@@ -813,6 +903,7 @@ export function useTranscriptScroll({
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
+      setAwayFromBottom(!wasAtBottomRef.current);
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
       // Turns present at mount (e.g. a cold-opened session whose history
@@ -836,6 +927,7 @@ export function useTranscriptScroll({
       if (!el) return;
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
+      setAwayFromBottom(!wasAtBottomRef.current);
       if (wasAtBottomRef.current) clearPill();
       // The error anchor also clears on its own once its failed turn
       // scrolls into the rendered range - narrower than clearPill above
@@ -1031,9 +1123,21 @@ export function useTranscriptScroll({
     if (errorAnchorIndexRef.current !== rowIndex) setErrorAnchorIndex(rowIndex);
   }, [renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
 
+  // pillVisible is the union of every reason to offer the jump: scrolled
+  // back (the always-on case), unseen items pending, or an unseen failure
+  // anchored. The latter two imply the former in practice (both are only
+  // ever set while wasAtBottomRef is false, which handleScroll had already
+  // mirrored into awayFromBottom) - listing them just keeps the value right
+  // even in the gap between a content change and the next scroll event.
+  const pillVisible = awayFromBottom || pillCount > 0 || errorAnchorIndex !== null;
+
   return {
     pillCount,
-    pillNeedsYou: pillCount > 0 && isAttentionWorthy(model),
+    pillVisible,
+    // needs-you is gated on VISIBILITY, not on a nonzero count: an awaiting
+    // flip that lands after the reader scrolled away (no new items at all)
+    // still upgrades the on-offer pill in place.
+    pillNeedsYou: pillVisible && isAttentionWorthy(model),
     pillError: errorAnchorIndex !== null,
     pillArrowDirection,
     jumpToBottom,
