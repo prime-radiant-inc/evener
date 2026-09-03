@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/userdirs"
 )
 
 // GlobalPromptsDir returns the path to the global prompts directory.
@@ -16,15 +17,7 @@ func GlobalPromptsDir() string {
 // globalPromptsDir keeps environment and home-directory lookup at the boundary
 // so path construction remains deterministic for callers that supply both.
 func globalPromptsDir(xdgConfigHome string, userHomeDir func() (string, error)) string {
-	dir := xdgConfigHome
-	if dir == "" {
-		home, err := userHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "evener", "prompts")
+	return userdirs.Subdir(userdirs.ConfigRoot(xdgConfigHome, userHomeDir), "prompts")
 }
 
 // ProjectPromptsDir returns the prompts directory for a project, given the git root.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/userdirs"
 )
 
 var pluginUserHomeDir = os.UserHomeDir
@@ -31,15 +32,7 @@ func NewManager(root string) *Manager {
 // DefaultRoot is ~/.config/evener/plugins, honoring XDG_CONFIG_HOME the same way
 // the rest of evener does (envvars.XDGConfigHome).
 func DefaultRoot() string {
-	dir := envvars.XDGConfigHome.Getenv()
-	if dir == "" {
-		home, err := pluginUserHomeDir()
-		if err != nil {
-			return ""
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "evener", "plugins")
+	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir), "plugins")
 }
 
 func (m *Manager) registryPath() string { return filepath.Join(m.Root, "installed_plugins.json") }
