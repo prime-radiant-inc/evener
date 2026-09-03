@@ -493,7 +493,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 		{
 			name: "over limit",
 			args: func() []byte {
-				base := `{"end_turn":true,"message":"top-level"}`
+				base := `{"end_turn":true,"intent":"must not become a start description","message":"top-level"}`
 				return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
 			},
 			want: func(args []byte) string {
@@ -503,7 +503,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 		{
 			name: "invalid UTF-8",
 			args: func() []byte {
-				args := append([]byte(`{"end_turn":true,"message":"`), 0xff)
+				args := append([]byte(`{"end_turn":true,"intent":"must not become a start description","message":"`), 0xff)
 				return append(args, []byte(`"}`)...)
 			},
 			want: func([]byte) string { return "invalid tool arguments JSON: input is not valid UTF-8" },
@@ -527,17 +527,24 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 
 			observed := make(chan struct {
 				repaired []events.ToolCallRepairedData
+				start    *events.ToolCallStartData
 				end      *events.ToolCallEndData
 			}, 1)
 			go func() {
 				var got struct {
 					repaired []events.ToolCallRepairedData
+					start    *events.ToolCallStartData
 					end      *events.ToolCallEndData
 				}
 				for event := range sess.Events() {
 					switch data := event.Data.(type) {
 					case events.ToolCallRepairedData:
 						got.repaired = append(got.repaired, data)
+					case events.ToolCallStartData:
+						if data.CallID == "issue831-hook-raw" {
+							data := data
+							got.start = &data
+						}
 					case events.ToolCallEndData:
 						if data.CallID == "issue831-hook-raw" {
 							data := data
@@ -567,8 +574,109 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 			if len(got.repaired) != 0 {
 				t.Fatalf("invalid raw hook call emitted repairs: %+v", got.repaired)
 			}
+			if got.start == nil || got.start.Description != "" {
+				t.Fatalf("start = %+v, want no description derived from raw-invalid arguments", got.start)
+			}
 			if got.end == nil || got.end.ArgumentsJSON != string(args) {
 				t.Fatalf("end = %+v, want original raw arguments", got.end)
+			}
+		})
+	}
+}
+
+func TestSession_PreToolUseHookDenialCannotOverrideInvalidRawArgumentsIssue831(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	var mu sync.Mutex
+	var prompts []string
+	hookClient := llm.NewClient()
+	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+		mu.Lock()
+		prompts = append(prompts, req.Messages[0].Text())
+		mu.Unlock()
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"hook denial"}}`)}
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
+	sess.hookRunner = runner
+	args := []byte(`{"end_turn":true,"message":"top-level"}` + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(`{"end_turn":true,"message":"top-level"}`)))
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{ID: "issue831-hook-deny-raw", Name: "communicate", Arguments: args}, "")
+	if !res.IsError || !res.PrevalOnly || res.FullOutput != fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(args), tool.MaxToolArgumentBytes) {
+		t.Fatalf("result = %+v, want raw prevalidation error", res)
+	}
+	sess.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "input=null" {
+		t.Fatalf("hook prompts = %d/%q, want one bounded null input", len(prompts), boundedStringForIssue831(prompts))
+	}
+}
+
+func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue831(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		hookResponse string
+		wantError    bool
+		wantPreval   bool
+		wantOutput   string
+		wantUpdated  bool
+	}{
+		{
+			name:         "deny",
+			hookResponse: `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"hook denial"}}`,
+			wantError:    true,
+			wantOutput:   "hook denial",
+		},
+		{
+			name:         "update",
+			hookResponse: `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"end_turn":true}}}`,
+			wantError:    true,
+			wantPreval:   true,
+			wantUpdated:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t, withoutGitSnapshot())
+			sess.stateDir = t.TempDir()
+			var mu sync.Mutex
+			var prompts []string
+			hookClient := llm.NewClient()
+			hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				mu.Lock()
+				prompts = append(prompts, req.Messages[0].Text())
+				mu.Unlock()
+				return llm.Response{Message: llm.Assistant(tc.hookResponse)}
+			}})
+			runner := hooks.NewRunner(hookClient, "gpt-5.2")
+			runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "input=$TOOL_INPUT"})
+			sess.hookRunner = runner
+			callID := "issue831-hook-schema-" + tc.name
+			observed := make(chan *events.ToolCallEndData, 1)
+			go func() {
+				var end *events.ToolCallEndData
+				for event := range sess.Events() {
+					if data, ok := event.Data.(events.ToolCallEndData); ok && data.CallID == callID {
+						data := data
+						end = &data
+					}
+				}
+				observed <- end
+			}()
+
+			res := sess.execTool(context.Background(), llm.ToolCallData{ID: callID, Name: "communicate", Arguments: json.RawMessage(`{"end_turn":"not-a-bool","message":"top-level","output":{"message":"","data":{},"artifacts":[]}}`)}, "")
+			if res.IsError != tc.wantError || res.PrevalOnly != tc.wantPreval || (tc.wantOutput != "" && res.FullOutput != tc.wantOutput) {
+				t.Fatalf("result = %+v, want error=%t preval=%t output=%q", res, tc.wantError, tc.wantPreval, tc.wantOutput)
+			}
+			sess.Close()
+			end := <-observed
+			mu.Lock()
+			defer mu.Unlock()
+			if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
+				t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
+			}
+			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":true`)) {
+				t.Fatalf("updated raw-valid call end = %+v, want hook update applied", end)
 			}
 		})
 	}
