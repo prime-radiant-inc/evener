@@ -642,6 +642,37 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 	})
 }
 
+// A publisher that lost the rename and was killed before it cleaned up leaves
+// an orphan beside the winner's published copy. Every later materialization
+// takes the published path, so the sweep has to run there too or the orphan is
+// never reclaimed.
+func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-orphan")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	again, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != published {
+		t.Fatalf("materialization = %s, want the published %s", again, published)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging beside a published copy was never reclaimed (stat err = %v)", err)
+	}
+}
+
 // The resolver looks a bundled plugin up by its embedded directory name and
 // then keys the inventory by the manifest name the loader reports, so every
 // bundled plugin must carry the manifest name its directory promises.

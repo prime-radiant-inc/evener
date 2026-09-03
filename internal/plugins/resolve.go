@@ -294,7 +294,8 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 // there yet, a private staging directory to fill; staging is nil for a copy
 // that is already published. Creating that directory is what proves the store
 // can be published into, so a launch and a preview that share this preparation
-// fail identically on a store neither can write.
+// fail identically on a store neither can write. Abandoned staging is
+// reclaimed on every call, including the calls that adopt a published copy.
 func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, error) {
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
@@ -305,14 +306,17 @@ func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, err
 	if err != nil {
 		return "", nil, err
 	}
-	if published {
-		return dest, nil, nil
-	}
 	store := filepath.Dir(dest)
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		return "", nil, err
 	}
+	// Sweeping before the published check, not after: a publisher that lost a
+	// rename and died leaves an orphan that only ever meets callers taking the
+	// published path.
 	m.reclaimAbandonedStaging(store)
+	if published {
+		return dest, nil, nil
+	}
 	staging, err := newBundledStaging(store, filepath.Base(dest))
 	if err != nil {
 		return "", nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
