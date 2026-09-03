@@ -1623,3 +1623,23 @@ describe("ask dock activation edge (roborev PR #854)", () => {
     expect(result.current.pillCount).toBe(0);
   });
 });
+
+test("the pill is needs-you on the dock edge even when the wire's snapshot-only askPending has not landed", () => {
+  const { ref } = makeListHandle();
+  const { measure } = makeMeasure(SCROLLED_AWAY);
+  const { result, rerender } = renderHook(
+    ({ m, askDockPending }) =>
+      useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure, askDockPending }),
+    // model.askPending stays FALSE throughout: the field is
+    // snapshot-authoritative (only hydrateThread sets it - no notification
+    // carries it, per reducer.test.ts), so a live-arriving ask leaves it
+    // unset until the next snapshot. The dock's own pending signal is the
+    // live one.
+    { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false } },
+  );
+
+  rerender({ m: model([turn("t1", ["i1"])]), askDockPending: true });
+
+  expect(result.current.pillCount).toBe(1);
+  expect(result.current.pillNeedsYou).toBe(true);
+});

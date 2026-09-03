@@ -1065,7 +1065,11 @@ export function useTranscriptScroll({
 
   return {
     pillCount,
-    pillNeedsYou: pillCount > 0 && isAttentionWorthy(model),
+    // The dock's own pending signal is part of the predicate, not just the
+    // model: model.askPending is snapshot-authoritative (only hydrateThread
+    // sets it - no notification carries it), so a live-arriving ask would
+    // otherwise read as generic "new" content until the next snapshot.
+    pillNeedsYou: pillCount > 0 && (isAttentionWorthy(model) || askDockPending),
     pillError: errorAnchorIndex !== null,
     pillArrowDirection,
     jumpToBottom,
