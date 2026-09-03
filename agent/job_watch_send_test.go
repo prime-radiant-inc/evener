@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
@@ -157,7 +158,9 @@ func TestWatchDeliveryCounterAndBudget(t *testing.T) {
 // SNAPSHOTS a frame and only reaches the settle path when that frame is
 // delivered, so a receiver that never takes its frames left the breaker
 // unconsulted and the watch matching without bound. The 50th match latches the
-// breaker where the match is counted, and the watch auto-clears over budget.
+// breaker where the match is counted, and the watch auto-clears over budget —
+// carrying the frames it already produced onto the terminal-flush rail rather
+// than dropping them.
 func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -182,8 +185,20 @@ func TestSendWatchBudgetTripsWhenFramesNeverSettle(t *testing.T) {
 		t.Fatalf("send watch at the budget = conditionFires:%d live:%t count:%d, want %d fires and an auto-cleared watch",
 			fires, live, count, watchDeliveryBudget)
 	}
-	if jm.hasPendingWatchSends() {
-		t.Fatal("the over-budget teardown left pending frames behind")
+	// The teardown detaches the config but does not drop what it already
+	// produced: the one coalesced frame moves off the live watch onto the
+	// terminal-flush rail, still there for a receiver that comes back for it.
+	jm.mu.Lock()
+	livePending, flushPending := 0, 0
+	for _, live := range jm.watches {
+		livePending += len(live.pendingOrder)
+	}
+	for flushing := range jm.terminalFlush {
+		flushPending += len(flushing.pendingOrder)
+	}
+	jm.mu.Unlock()
+	if livePending != 0 || flushPending != 1 {
+		t.Fatalf("pending frames after the teardown = live:%d flushing:%d, want the budget-crossing frame flushing and nothing live", livePending, flushPending)
 	}
 	cleared := 0
 	for _, notification := range notified {
@@ -239,5 +254,59 @@ func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)
 		}
+	}
+}
+
+// TestSendWatchDeliversTheBudgetCrossingFrame pins what the condition-fire
+// budget bounds: how many times a watch may FIRE, not whether a frame it has
+// already produced reaches its receiver. The 50th match is inside the budget, so
+// its frame is delivered; the teardown that same match latches still runs, so
+// the 51st match never happens and the watch ends budget_exhausted.
+func TestSendWatchDeliversTheBudgetCrossingFrame(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	jm := s.jobManager
+	const ping = "budget-crossing-ping"
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: ping},
+	})
+	key := watchKey{
+		VisibleSessionID: jm.sessionID,
+		Target:           runtimeMessageAliasCaller,
+		SendTo:           runtimeMessageAliasCaller,
+	}
+	// One more match than the budget allows: the parent takes every frame, so
+	// each fire settles before the next one starts.
+	for range watchDeliveryBudget + 1 {
+		onSessionEventKD(jm, events.EventCommunicate, nil)
+		drainAndAccept(t, s)
+	}
+
+	delivered := 0
+	s.mu.Lock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), ping) {
+			delivered++
+		}
+	}
+	s.mu.Unlock()
+	if delivered != watchDeliveryBudget {
+		t.Fatalf("delivered frames = %d, want %d (the budget-crossing frame must reach the receiver)", delivered, watchDeliveryBudget)
+	}
+
+	jm.mu.Lock()
+	live := jm.watches[key] != nil
+	jm.mu.Unlock()
+	if live {
+		t.Fatal("watch still live after the budget crossing")
+	}
+	if jm.hasPendingWatchSends() {
+		t.Fatal("every frame settled, so the teardown must leave nothing pending")
+	}
+	history := jm.recentWatchSummaries()
+	if len(history) == 0 || history[0].EndReason != "budget_exhausted" {
+		t.Fatalf("watch history = %+v, want a budget_exhausted row", history)
 	}
 }

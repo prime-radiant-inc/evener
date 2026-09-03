@@ -1774,10 +1774,17 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // autoClearWatchOverBudgetNotification tears down exactly the one watch config
 // that tripped the delivery budget and returns its ONE final cleared notification
 // without enqueuing or waking. It is the circuit breaker's teardown: jm-state
-// mutation plus durable drop of pending sends — NO delivery from observation
-// (spec §3). It mirrors clearWatch's terminal-snapshot machinery but operates on
-// a single (key, cfg) pair, so a no-send watch sharing a target with other watches
-// does not over-clear its neighbors.
+// mutation only — NO delivery from observation (spec §3). It mirrors clearWatch's
+// terminal-snapshot machinery but operates on a single (key, cfg) pair, so a
+// no-send watch sharing a target with other watches does not over-clear its
+// neighbors.
+//
+// Unlike a model-requested clear it drops NOTHING. The budget bounds how many
+// times a watch may fire; a frame it already produced — including the one whose
+// match crossed the budget, which every rail records before calling this — has
+// been persisted as pending and is owed to its receiver. The detached config
+// keeps those frames and goes onto the terminal-flush rail, exactly where a
+// watch auto-removed by its target's exit parks them.
 //
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
@@ -1789,24 +1796,40 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 		jm.mu.Unlock()
 		return jobNotification{}, false
 	}
-	targets := []watchConfigTerminalSnapshot{{
-		key:       key,
-		cfg:       cfg,
-		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: "budget_exhausted",
-	}}
+	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted"}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
 
-	dropped := terminalSnapshots(targets)
-	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
+	if err := jm.appendWatchTeardownBatch(nil, targets); err != nil {
 		jm.rollbackWatchBudgetTeardown(targets, cfg)
 		return jobNotification{}, false
 	}
 	jm.detachWatchConfigSnapshots(targets)
-	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.flushDetachedPendingSends(cfg)
 
 	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+}
+
+// flushDetachedPendingSends releases the config the over-budget teardown has
+// just detached onto the terminal-flush rail, where drains, restore, and
+// clear-by-id can still see and settle the frames it already produced. The
+// rejecting mark comes off HERE and not earlier: it is what froze the config
+// while the teardown persisted, so no fire past the crossing could slip a frame
+// in, and a config still marked rejecting delivers nothing. Detached, it can
+// gain no new frames — a delivery snapshotted before the teardown no longer
+// resolves to a live watch. A config with nothing pending is left off the rail:
+// terminalFlush holds flushing configs, not ended ones.
+func (jm *jobManager) flushDetachedPendingSends(cfg *watchConfig) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if cfg == nil {
+		return
+	}
+	cfg.rejectingDelivery = false
+	if len(cfg.pending) == 0 {
+		return
+	}
+	jm.rememberDetachedPendingLocked(cfg)
 }
 
 // rollbackWatchBudgetTeardown undoes a budget teardown that did not persist:
@@ -2495,13 +2518,21 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
+	//
+	// The fired sends are recorded BEFORE the over-budget teardown, the way the
+	// output rail and the attach scan already order it, so the frame whose match
+	// crossed the budget is pending by the time its watch is torn down and
+	// leaves on the terminal-flush rail: the budget bounds how many times a
+	// watch may fire, not whether a frame it already produced reaches its
+	// receiver. The teardown's cleared notification still rides out with this
+	// event's matched notifications, so the model is woken once for both.
+	jm.recordWatchSendsAndKick(deliveries)
 	for _, cfg := range overBudget {
 		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
 			notifications = append(notifications, notification)
 		}
 	}
 	jm.enqueueWatchNotifications(notifications)
-	jm.recordWatchSendsAndKick(deliveries)
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
