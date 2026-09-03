@@ -176,6 +176,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			DirectoryComplete:         true,
 			Auth:                      true,
 			TranscriptDisplaySettings: true,
+			KeybindingsSettings:       true,
 		},
 	})
 	hubStateRoot := cfg.HubStateRoot
@@ -220,6 +221,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
+	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	return server
 }
 
