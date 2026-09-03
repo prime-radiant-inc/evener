@@ -779,6 +779,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
 	semanticSignature := r.semanticSignatureFromRaw(name, call.Arguments, nil)
+	preNormalizationSignature := semanticSignature
 	finish := func(res ExecResult) ExecResult {
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed, "")
 	}
@@ -876,7 +877,13 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 	v, err := t.Exec(ctx, env, args)
 	res := dispatchedResult(name, callID, t.Limit, v, err)
-	return finish(res)
+	res = finish(res)
+	if !res.IsError && semanticSignature != preNormalizationSignature {
+		// A successful normalized execution retires prior repair/normalization
+		// failures recorded against the raw pre-normalization identity too.
+		r.semanticBreaker.clear(preNormalizationSignature)
+	}
+	return res
 }
 
 // FinalizePrevalidationFailure records a session-level validation failure in the
