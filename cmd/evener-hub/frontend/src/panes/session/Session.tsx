@@ -35,7 +35,7 @@ import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
-import { AskDock, AskDockAnnouncements, useAskDockPending } from "./composer/askDock";
+import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -178,6 +178,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // !model early return, per the rules of hooks; the composer reads the same
   // seam to hide its own input row meanwhile.
   const askPending = useAskDockPending(ref);
+  // The pending set's activation counter: the pill edge keys on this (not
+  // the boolean) so an atomic pending-set replacement on resync re-fires it.
+  const askEpoch = useAskDockActivationEpoch(ref);
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -223,8 +226,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     sourceTurnRowIndexes,
     // ...and its activation is new content: an ask_user item completing
     // changes no turn/item shape, so without this signal a scrolled-away
-    // reader would get no pill while the composer's input hides itself.
+    // reader would get no pill while the composer's input hides itself. The
+    // edge keys on the epoch so an atomic pending-set replacement (a resync
+    // swapping an answered-elsewhere batch for a new one) re-fires it while
+    // the boolean never leaves true.
     askDockPending: askPending,
+    askDockActivationEpoch: askEpoch,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since

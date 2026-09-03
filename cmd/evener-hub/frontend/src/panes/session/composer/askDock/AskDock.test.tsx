@@ -908,3 +908,26 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     expect(region.getAttribute("aria-live")).toBe("polite");
   });
 });
+
+test("a session ref change re-announces the new session's pending prompt", async () => {
+  // Session panes are reused across refs (a sidebar click swaps the ref on a
+  // persistent pane - useTranscriptScroll's refForInitRef comment), so the
+  // announcements component must treat a ref change as a fresh activation
+  // even when both sessions' pending counts are identical (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake, "ref_a");
+  await hydrateWithOneAsk(fake, "ref_b");
+
+  const { rerender } = render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  rerender(<AskDockAnnouncements ref="ref_b" />);
+
+  // Identical text, but a NEW announcement node: a live region announces
+  // content mutations, and unchanged text is no mutation - the transition
+  // must remount the content to be heard at all.
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expect(region.firstChild).not.toBe(firstNode);
+});

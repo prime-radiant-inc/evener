@@ -50,7 +50,7 @@
 //   - Failure feedback for a local durable-enqueue error is a toast (the
 //     wave's decided convention, T1's loadOlder reference implementation);
 //     network outcomes are rendered by recovery state, not an inline banner.
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskQuestionCard } from "./AskQuestionCard";
@@ -84,6 +84,14 @@ const UNTOUCHED_ANSWER: AskAnswerState = { resolution: null, note: "" };
 // see this file's own header.
 export function useAskDockPending(ref: string): boolean {
   return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
+}
+
+// useAskDockActivationEpoch is the pending set's activation counter
+// (askDockStore's activationEpoch) - the signal the transcript's
+// new-content pill edges on, since a pending boolean alone cannot express
+// "still pending, but atomically replaced by a different question".
+export function useAskDockActivationEpoch(ref: string): number {
+  return useAskDockStore((s) => s.byRef.get(ref)?.activationEpoch ?? 0);
 }
 
 function answerFor(answers: Record<string, AskAnswerState>, key: string): AskAnswerState {
@@ -307,8 +315,12 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
-  const [announcement, setAnnouncement] = useState("");
-  const prevRef = useRef<{ pending: boolean; count: string }>({ pending: false, count: "" });
+  const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
+  const prevRef = useRef<{ ref: string; pending: boolean; count: string }>({
+    ref: sessionRef,
+    pending: false,
+    count: "",
+  });
 
   const pending = batches.length > 0;
   const total = batches.reduce((n, batch) => n + batch.questions.length, 0);
@@ -318,21 +330,32 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
   );
   const count = pending ? `${answered} of ${total} ${total === 1 ? "question" : "questions"} answered` : "";
 
+  const announce = useCallback((text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 })), []);
+
   useEffect(() => {
     const prev = prevRef.current;
-    prevRef.current = { pending, count };
-    if (pending && !prev.pending) {
-      setAnnouncement("Answer the agent’s questions.");
-    } else if (pending && count !== prev.count) {
-      setAnnouncement(count);
-    } else if (!pending && prev.pending) {
-      setAnnouncement("");
+    prevRef.current = { ref: sessionRef, pending, count };
+    // A pane can be reused across refs (a sidebar click swaps the session
+    // on a persistent pane): treat that as a fresh activation. The keyed
+    // content remount below is what makes an identical-text re-announcement
+    // audible at all - a live region announces content mutations, and
+    // unchanged text is no mutation.
+    if (prev.ref !== sessionRef) {
+      announce(pending ? "Answer the agent’s questions." : "");
+      return;
     }
-  }, [pending, count]);
+    if (pending && !prev.pending) {
+      announce("Answer the agent’s questions.");
+    } else if (pending && count !== prev.count) {
+      announce(count);
+    } else if (!pending && prev.pending) {
+      announce("");
+    }
+  }, [sessionRef, pending, count, announce]);
 
   return (
     <div className={CLASS.visuallyHidden} role="status" aria-live="polite" data-testid="ask-dock-announcements">
-      {announcement}
+      <span key={announcement.key}>{announcement.text}</span>
     </div>
   );
 }

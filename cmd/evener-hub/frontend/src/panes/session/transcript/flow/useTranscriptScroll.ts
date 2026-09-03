@@ -71,6 +71,16 @@ export interface UseTranscriptScrollOptions {
    * already followed the appended row into view.
    */
   askDockPending?: boolean;
+  /**
+   * The dock pending set's activation counter (askDockStore's
+   * activationEpoch). The pill edge keys on THIS, not the boolean: a
+   * snapshot resync can atomically replace the pending set (old batch
+   * answered elsewhere, new one pending) without the boolean ever leaving
+   * true, and that replacement is exactly the moment a scrolled-away reader
+   * most needs the pill. Same-set additions don't bump it - the reader was
+   * already told.
+   */
+  askDockActivationEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -569,6 +579,7 @@ export function useTranscriptScroll({
   renderedRowCount: renderedRowCountInput,
   sourceTurnRowIndexes,
   askDockPending = false,
+  askDockActivationEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -923,21 +934,24 @@ export function useTranscriptScroll({
     restoreViewAnchorAfterMeasurement();
   }, [viewKey, restoreViewAnchorAfterMeasurement]);
 
-  // The ask dock's rising edge (see the option's own doc comment): new
+  // The ask dock's activation edge (see the options' own doc comments): new
   // answerable content appeared below without any transcript shape change.
-  // Declared AFTER the mount effect above so a ref change (which resets
+  // Keyed on the activation EPOCH, not the pending boolean, so an atomic
+  // pending-set replacement (a resync swapping an answered-elsewhere batch
+  // for a new one) re-fires it while the boolean never left true. Declared
+  // AFTER the mount effect above so a ref change (which resets
   // wasAtBottomRef to true for the fresh open) is already reflected when
   // this edge evaluates, and a session OPENED with an already-pending ask
   // never fires it - initial mount scrolls to the end, so the dock starts
   // visible and there is nothing unseen to count.
-  const prevAskDockPendingRef = useRef(askDockPending);
+  const prevAskDockEpochRef = useRef(askDockActivationEpoch);
   useLayoutEffect(() => {
-    const wasPending = prevAskDockPendingRef.current;
-    prevAskDockPendingRef.current = askDockPending;
-    if (wasPending || !askDockPending) return;
+    const previous = prevAskDockEpochRef.current;
+    prevAskDockEpochRef.current = askDockActivationEpoch;
+    if (askDockActivationEpoch === previous || askDockActivationEpoch === 0) return;
     if (!initializedRef.current || wasAtBottomRef.current) return;
     setPillCount((count) => count + 1);
-  }, [askDockPending]);
+  }, [askDockActivationEpoch]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

@@ -3,10 +3,16 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
+import { hydrateThread } from "../../../../protocol/reducer";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { readMutationPersistence, resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import {
+  putThreadModel,
+  readMutationPersistence,
+  resetThreadsStoreForTests,
+  threadsStore,
+} from "../../../../stores/threads";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
@@ -622,5 +628,80 @@ describe("recommended default seeding", () => {
       ref: "ref_a",
       input: [{ type: "text", text: '[answers]\n1. [Design] → "Approve"' }],
     });
+  });
+});
+
+// A pending set can be REPLACED atomically: a snapshot resync (reconnect,
+// pane reopen) can land a model where the previously pending ask was
+// answered by another client AND a new ask is pending, in one reconcile.
+// Batch ids are disjoint, but the set never reads empty - so an
+// empty-only greeting reset would leave the new questions treated as
+// already-announced: no focus activation, no new-content pill (roborev PR
+// #854). Same-set additions (a sibling batch while one is sending) must
+// NOT re-arm - that no-steal contract stands.
+describe("activation epochs", () => {
+  function resyncWith(ref: string, items: Array<Record<string, unknown>>): void {
+    const thread = testThread(ref, {
+      turns: [{ id: "turn_1", status: "completed", itemsView: "full", items } as never],
+    });
+    putThreadModel(ref, hydrateThread({ thread } as ThreadReadResponse, ref, Date.now()));
+  }
+
+  function askItem(id: string, callId: string): Record<string, unknown> {
+    return {
+      type: "commandExecution",
+      id,
+      turnId: "turn_1",
+      toolName: "ask_user",
+      callId,
+      status: "completed",
+      argumentsJson: askArgs(ONE_QUESTION),
+    };
+  }
+  function userItem(id: string): Record<string, unknown> {
+    return { type: "userMessage", id, turnId: "turn_1", text: "reply", status: "completed" };
+  }
+
+  test("an atomic snapshot replacement of the pending set re-arms the greeting and bumps the epoch", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+
+    const before = askDockStore.getState().byRef.get("ref_a");
+    expect(before?.batches).toHaveLength(1);
+    const firstEpoch = before?.activationEpoch;
+    askDockStore.getState().markPendingGreeted("ref_a");
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+
+    // One snapshot: call_1's ask answered (user message after it), a NEW
+    // ask pending after that message - one reconcile swaps the batch set.
+    resyncWith("ref_a", [userItem("u1"), askItem("item_1", "call_1"), userItem("u2"), askItem("item_2", "call_2")]);
+
+    const after = askDockStore.getState().byRef.get("ref_a");
+    expect(after?.batches).toHaveLength(1);
+    expect(after?.batches[0]?.questions[0]?.callId).toBe("call_2");
+    expect(after?.pendingGreeted).toBe(false);
+    expect(after?.activationEpoch).toBe((firstEpoch ?? 0) + 1);
+  });
+
+  test("a same-set addition keeps the greeting and the epoch", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    startTurn(fake, "ref_a", "turn_1");
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+    askDockStore.getState().markPendingGreeted("ref_a");
+    const epoch = askDockStore.getState().byRef.get("ref_a")?.activationEpoch;
+
+    // A second ask_user call joins the SAME pending set (no user message
+    // between them) - an addition, not a replacement.
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2");
+
+    const state = askDockStore.getState().byRef.get("ref_a");
+    expect(state?.batches.length).toBeGreaterThan(0);
+    expect(state?.pendingGreeted).toBe(true);
+    expect(state?.activationEpoch).toBe(epoch);
   });
 });
