@@ -466,7 +466,7 @@ func (r *Registry) telemetryExactSignature(name string, args []byte) string {
 // and internal ledger keys: equal invalid names still group within a session,
 // but neither raw-name disclosure nor cross-session correlation is possible.
 func (r *Registry) breakerToolIdentity(name string) string {
-	if llm.ValidateToolName(name) == nil && len(name) <= 64 {
+	if readableBreakerToolName(name) {
 		return name
 	}
 	return "invalid_" + r.telemetryComponent("invalid-tool-name", name)

@@ -86,10 +86,18 @@ func signature(name string, args []byte) string {
 // Registry's session-private identity. Registry dispatch does replace it first;
 // this fallback is internal-only and exists to preserve the key-size invariant.
 func boundedLedgerToolIdentity(name string) string {
-	if llm.ValidateToolName(name) == nil && len(name) <= 64 {
+	if readableBreakerToolName(name) {
 		return name
 	}
 	return "invalid_" + shortHash([]byte(name))
+}
+
+// readableBreakerToolName is stricter than ValidateToolName because that
+// configuration validator tolerates surrounding whitespace. Incoming call names
+// are never normalized before lookup, so only the exact provider grammar is safe
+// to retain as a readable breaker identity.
+func readableBreakerToolName(name string) bool {
+	return name == strings.TrimSpace(name) && len(name) <= 64 && llm.ValidateToolName(name) == nil
 }
 
 // semanticCallSignature returns the call half of a semantic failure

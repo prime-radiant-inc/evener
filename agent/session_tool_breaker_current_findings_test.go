@@ -213,6 +213,34 @@ func TestSession_InvalidToolNamesEmitPrivateBoundedBreakerIdentity(t *testing.T)
 	}
 }
 
+func TestSession_WhitespacePaddedToolNameEmitsPrivateIdentity(t *testing.T) {
+	const secret = "SESSION_WHITESPACE_PADDED_SECRET"
+	name := " " + secret + " "
+	sess := newSession(t, withoutGitSnapshot())
+	sess.stateDir = t.TempDir()
+	eventsCh := drainSessionBreakerEvents(sess)
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "session-whitespace-padded-name",
+		Name:      name,
+		Arguments: json.RawMessage(`{"value":"same"}`),
+	}, "")
+	sess.Close()
+	emitted := <-eventsCh
+	if !res.IsError || len(emitted.ends) != 1 {
+		t.Fatalf("result/event = %#v / %+v, want one failed call event", res, emitted.ends)
+	}
+	for label, value := range map[string]string{
+		"result exact":    res.BreakerExactSignature,
+		"result semantic": res.BreakerSemanticSignature,
+		"event exact":     emitted.ends[0].BreakerExactSignature,
+		"event semantic":  emitted.ends[0].BreakerSemanticSignature,
+	} {
+		if value == "" || len(value) > 98 || strings.Contains(value, secret) || strings.HasPrefix(value, name+":") {
+			t.Fatalf("%s breaker identity is missing, unbounded, or leaks the raw name: %q", label, value)
+		}
+	}
+}
+
 func TestSession_InvalidUTF8PrevalidationEventsUseEncodingBoundary(t *testing.T) {
 	const name = "session_utf8_boundary"
 	sess := newSession(t, withoutGitSnapshot())

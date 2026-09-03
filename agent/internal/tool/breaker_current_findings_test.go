@@ -221,6 +221,35 @@ func TestBreaker_InvalidToolNamesUsePrivateBoundedIdentity(t *testing.T) {
 	}
 }
 
+func TestBreaker_WhitespacePaddedToolNameUsesPrivateIdentity(t *testing.T) {
+	const secret = "WHITESPACE_PADDED_SECRET"
+	name := " " + secret + " "
+	r := NewRegistry()
+	res := r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{
+		ID:        "whitespace-padded-name",
+		Name:      name,
+		Arguments: json.RawMessage(`{"value":"same"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("unknown whitespace-padded tool unexpectedly succeeded: %#v", res)
+	}
+	for label, value := range map[string]string{
+		"exact":    res.BreakerExactSignature,
+		"semantic": res.BreakerSemanticSignature,
+	} {
+		if value == "" || len(value) > 98 || strings.Contains(value, secret) || strings.HasPrefix(value, name+":") {
+			t.Fatalf("%s breaker identity is missing, unbounded, or leaks the raw name: %q", label, value)
+		}
+	}
+	r.breaker.mu.Lock()
+	defer r.breaker.mu.Unlock()
+	for key := range r.breaker.entries {
+		if len(key) > 81 || strings.Contains(key, secret) {
+			t.Fatalf("exact ledger key is unbounded or leaks the raw name: %q", key)
+		}
+	}
+}
+
 func TestFinalizePrevalidationFailure_InvalidUTF8UsesEncodingBoundary(t *testing.T) {
 	const name = "utf8_prevalidation"
 	r := NewRegistry()
