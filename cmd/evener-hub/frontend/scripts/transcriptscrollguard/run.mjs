@@ -94,8 +94,13 @@ async function main() {
     try {
       await applyViewport(send, VIEWPORT);
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`);
-      initial = JSON.parse(await evaluate(send, "(async () => JSON.stringify(await window.settledTranscript))()"));
+      // Fonts FIRST, then settle: a late-arriving webfont changes row
+      // geometry, so the settle loop must measure post-font geometry -
+      // otherwise a font-driven shift could surface the pill before the
+      // scroll-away phase and the pill assertions would pass for the wrong
+      // reason.
       await waitForFonts(send);
+      initial = JSON.parse(await evaluate(send, "(async () => JSON.stringify(await window.waitForTranscriptSettled()))()"));
 
       // Harness sanity FIRST (docs/developing-evener/testing.md's
       // unfalsifiable-fixture trap): the transcript really overflowed by a
