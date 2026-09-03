@@ -107,3 +107,27 @@ func TestEnabledPluginDirs_RendersResolverDiagnostics(t *testing.T) {
 		t.Fatalf("missing registry warning: %q", got)
 	}
 }
+
+// An unresolved store root stops the resolver before the registry, so the
+// warning has to name the store rather than blame a --plugin-dir the caller
+// passed. Explicit directories are the caller's own and still resolve.
+func TestEnabledPluginDirs_WarnsOnUnresolvedStoreRoot(t *testing.T) {
+	explicit := t.TempDir()
+	writePlugin(t, explicit, "widget", nil)
+	m := NewManager(t.TempDir())
+	m.Root = ""
+	var warn bytes.Buffer
+	m.Stderr = &warn
+
+	dirs := m.EnabledPluginDirs([]string{explicit})
+	if len(dirs) != 1 || dirs[0] != explicit {
+		t.Fatalf("EnabledPluginDirs = %v, want [%s]", dirs, explicit)
+	}
+	got := warn.String()
+	if !strings.Contains(got, "no plugin store root is configured") {
+		t.Fatalf("missing store-root warning: %q", got)
+	}
+	if strings.Contains(got, "--plugin-dir") {
+		t.Fatalf("store-root warning blamed a --plugin-dir: %q", got)
+	}
+}

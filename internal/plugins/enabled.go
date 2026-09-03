@@ -23,6 +23,10 @@ func (m *Manager) EnabledPluginDirs(explicit []string) []string {
 		switch {
 		case len(diagnostic.Name) > 0 && isDuplicateDiagnostic(diagnostic):
 			_, _ = fmt.Fprintf(m.stderr(), "warning: duplicate plugin name %q at %s; keeping the first\n", diagnostic.Name, diagnostic.Path)
+		case diagnostic.Source == LaunchPluginSourceBundled:
+			// Not about any directory the caller named: the store itself is
+			// unusable, so the message stands on its own.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: %s\n", diagnostic.Message)
 		case diagnostic.Source == LaunchPluginSourceInstalled:
 			_, _ = fmt.Fprintf(m.stderr(), "warning: skipping broken plugin %s: %s\n", diagnostic.Path, diagnostic.Message)
 		default:

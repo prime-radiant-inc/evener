@@ -115,6 +115,21 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 	}
 	seen := make(map[string]bool)
 
+	// Every path under an unresolved root is relative, so the store would be
+	// whichever directory the process happens to be in: the registry would be
+	// read from there, and an entry naming a requested plugin would answer the
+	// request as an installed candidate before the bundled store was ever
+	// consulted. Nothing derived from the root is read or created while it is
+	// unresolved; explicit directories the caller named are its own business
+	// and still resolve.
+	rootErr := m.storeRootError()
+	if rootErr != nil {
+		resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+			Message: fmt.Sprintf("%v: installed and bundled plugins are unavailable", rootErr),
+			Source:  LaunchPluginSourceBundled,
+		})
+	}
+
 	requested := make(map[string]bool)
 	if enabledNames != nil {
 		for _, name := range *enabledNames {
@@ -174,18 +189,21 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 		add(path, path, LaunchPluginSourceDirectory, "", "", "")
 	}
 
-	items, err := m.List()
-	if err != nil {
-		return resolution, err
-	}
-	for _, item := range items {
-		if !item.Enabled {
-			continue
+	if rootErr == nil {
+		items, err := m.List()
+		if err != nil {
+			return resolution, err
 		}
-		// Deliberately do not filter item.Broken. List's validation is a useful
-		// snapshot, but loading here gives Preview a structured diagnostic and
-		// avoids turning a broken candidate into a registry-level failure.
-		add(item.InstallPath, item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin)
+		for _, item := range items {
+			if !item.Enabled {
+				continue
+			}
+			// Deliberately do not filter item.Broken. List's validation is a
+			// useful snapshot, but loading here gives Preview a structured
+			// diagnostic and avoids turning a broken candidate into a
+			// registry-level failure.
+			add(item.InstallPath, item.InstallPath, LaunchPluginSourceInstalled, item.Marketplace, item.Version, item.Plugin)
+		}
 	}
 
 	if enabledNames != nil {
@@ -196,7 +214,7 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 				})
 				continue
 			}
-			if !seen[name] {
+			if !seen[name] && rootErr == nil {
 				// Bundled plugins join the inventory only by request, so an
 				// unremarkable launch never picks them up. The lookup is by
 				// embedded directory name while add keys the inventory by
@@ -304,15 +322,13 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if err != nil {
 		return "", nil, err
 	}
-	// Checked after the digest so a name that is not bundled at all still
-	// reports fs.ErrNotExist rather than a store complaint. An unresolved Root
-	// (DefaultRoot returns "" when there is no XDG_CONFIG_HOME and no home
-	// directory) would make every path below relative, materializing the store
-	// into whichever directory the process happens to be in and loading a
-	// plugin back out of it. cmdutil owns evener's config-root fallback and
-	// already depends on this package, so there is no fallback to share.
-	if m.Root == "" {
-		return "", nil, fmt.Errorf("materialize bundled plugin %s: no plugin store root is configured", name)
+	// The resolver rejects an unresolved root before it reads or builds
+	// anything; this is the same guard on the function that does the creating,
+	// for any caller that arrives here directly. Checked after the digest so a
+	// name that is not bundled at all still reports fs.ErrNotExist rather than
+	// a store complaint.
+	if err := m.storeRootError(); err != nil {
+		return "", nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	dest := m.bundledPluginPath(name, digest)
 	published, err := publishedBundledCopy(dest)
@@ -389,6 +405,18 @@ func (m *Manager) reclaimAbandonedStaging(dir string) {
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
 		_ = os.RemoveAll(staging)
 	}
+}
+
+// storeRootError reports why the plugin store cannot be used. DefaultRoot
+// returns "" when there is no XDG_CONFIG_HOME and no home directory, and every
+// path built from that root would be relative to the process's working
+// directory. cmdutil owns evener's config-root fallback and already depends on
+// this package, so there is no fallback to share here.
+func (m *Manager) storeRootError() error {
+	if m.Root == "" {
+		return errors.New("no plugin store root is configured")
+	}
+	return nil
 }
 
 func (m *Manager) bundledPluginPath(name, digest string) string {

@@ -578,9 +578,12 @@ func assertPerm(t *testing.T, path string, want fs.FileMode) {
 // no XDG_CONFIG_HOME is set and the home directory cannot be found; every
 // store path built from that root would be relative, so a launch would
 // materialize <cwd>/bundled and then load a plugin out of whatever directory
-// the process happened to be in. cmdutil owns evener's config-root fallback
-// and already depends on this package, so there is no fallback to share here:
-// the root is rejected before anything is created.
+// the process happened to be in. The registry is such a path too: a
+// working-directory installed_plugins.json naming the requested plugin would
+// answer the request from ambient state and never reach the store check.
+// cmdutil owns evener's config-root fallback and already depends on this
+// package, so there is no fallback to share here: the root is rejected before
+// anything is read or created.
 func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -608,6 +611,14 @@ func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
 			pluginUserHomeDir = func() (string, error) { return "", errors.New("no home directory") }
 			t.Cleanup(func() { pluginUserHomeDir = restoreHome })
 
+			// The ambient registry an unresolved root would read: it names the
+			// requested plugin, so reading it would answer the request.
+			ambient := filepath.Join(t.TempDir(), "coordinator-workflow")
+			writePlugin(t, ambient, "coordinator-workflow", nil)
+			saveTestRegistry(t, NewManager(cwd), map[string][]InstallEntry{
+				"coordinator-workflow@ambient": {{InstallPath: ambient, Version: "1", Enabled: true}},
+			})
+
 			m := NewManager("")
 			if m.Root != "" {
 				t.Fatalf("Root = %q, want the unresolved root this test covers", m.Root)
@@ -615,6 +626,9 @@ func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
 			res, err := test.resolve(m)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if len(res.Candidates) != 0 {
+				t.Errorf("Candidates = %+v, want nothing resolved from the working directory", res.Candidates)
 			}
 			if err := res.ValidateSelection(); err == nil {
 				t.Errorf("selected a bundled plugin with no store root: %+v", res.Candidates)
@@ -626,8 +640,8 @@ func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(entries) != 0 {
-				t.Errorf("working directory gained %v, want nothing", entries)
+			if len(entries) != 1 || entries[0].Name() != "installed_plugins.json" {
+				t.Errorf("working directory holds %v, want only the registry this test planted", entries)
 			}
 		})
 	}
