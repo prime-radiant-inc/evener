@@ -72,6 +72,21 @@
   word-break: break-word;
 }
 
+/* A watch card's own prose (a timer's fired sentence and the watch's note).
+ * A <pre> keeps the note on its own line; the UA's monospace default and
+ * margin are overridden back to the excerpt block's sans treatment. */
+.prose {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* The raw payload is secondary diagnostic material. Keep its disclosure and
  * preformatted body as full-width block rows so long attributes cannot turn
  * the summary into a narrow side column. */

@@ -409,3 +409,15 @@ excerpt:
   expect(n.message).toBe("**done**");
   expect(n.concerns).toEqual(["real concern"]);
 });
+
+test("a timer notification keeps its prose and watch id", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" description="" status="watch" reason="repeat" output_bytes="0" watch_id="w1">
+Timer fired (every 300s), 3 times since your last turn.
+Note: PR #123: newer than id 456 &lt;x&gt;
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.watchId).toBe("w1");
+  expect(n.prose).toContain("Timer fired (every 300s), 3 times since your last turn.");
+  expect(n.prose).toContain("Note: PR #123: newer than id 456 &lt;x&gt;");
+});
