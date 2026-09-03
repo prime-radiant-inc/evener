@@ -584,6 +584,7 @@ func (*localEmptyItemRPCSource) RelayOnThreadRead() bool { return false }
 func (s *localEmptyItemRPCSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	return appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: s.threadID, SessionID: s.threadID, Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + s.threadID},
+		Turns: []appwire.Turn{{ID: "live-in-progress", Status: appwire.TurnStatusInProgress, ItemsView: appwire.TurnItemsViewFull}},
 	}, PageUnit: appwire.TranscriptPageUnitItem}, nil
 }
 

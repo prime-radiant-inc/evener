@@ -331,7 +331,14 @@ func registerThreadHandlers(
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp := read.response
-		liveItemTurnsEmpty := params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns && len(resp.Thread.Turns) == 0
+		liveItemCandidatesEmpty := false
+		if params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns {
+			if read.hasItemCandidates {
+				liveItemCandidatesEmpty = len(read.itemCandidates.Candidates.Candidates) == 0
+			} else if candidates, candidateErr := itemCandidateResultFromReadResponse(resp); candidateErr == nil {
+				liveItemCandidatesEmpty = len(candidates.Candidates.Candidates) == 0
+			}
+		}
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
 		if err != nil {
 			read.finish(false)
@@ -339,7 +346,7 @@ func registerThreadHandlers(
 		}
 		if params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns {
 			usedPastItemPage := false
-			if liveItemTurnsEmpty && len(resp.Thread.Turns) > 0 {
+			if liveItemCandidatesEmpty && len(resp.Thread.Turns) > 0 {
 				past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 				if pastErr != nil {
 					read.finish(false)
