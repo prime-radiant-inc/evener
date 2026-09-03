@@ -41,12 +41,14 @@ in plugin commands.
 A skill is a directory containing a `SKILL.md` with YAML frontmatter
 (`name` and `description` required, `allowed-tools` optional). Evener
 discovers skills from the set bundled with evener itself (the base layer),
-from `skills/` directories walking the git root down to your cwd, from any
-`skills_dirs` launch-config entries, and from plugins. Among the bare-named
-sources, later ones shadow earlier ones by name: a project or `skills_dirs`
-skill overrides a bundled skill of the same name. Plugin skills are
-namespaced (`plugin:skill`) and never shadow a bare-named skill — invoke
-them by qualified name, or by bare name when no bare-named skill has it.
+from `skills/` directories walking the git root down to your cwd, from the
+automatic user-global `skills` directory, from any `skills_dirs` launch-config
+entries, and from plugins. Among the bare-named sources, later ones shadow
+earlier ones by name: a project or `skills_dirs` skill overrides a bundled or
+automatic user skill of the same name, and a `skills_dirs` skill overrides a
+project skill of the same name. Plugin skills are namespaced
+(`plugin:skill`) and never shadow a bare-named skill — invoke them by qualified
+name, or by bare name when no bare-named skill has it.
 
 Skill bodies are loaded as text and injected for the model to follow. Evener
 performs no expansion on them: no shell execution, no file inclusion, no
@@ -94,6 +96,10 @@ cwd wins.
   of the palette's commands, Enter sends it to the session as-is — a fuzzy
   near-miss (say `/stat` for `status`) still reaches your command. Project
   commands invoke through that fallthrough.
+- Standalone skills are not command-file entries in the command catalog, but an
+  exact `/skill-name` token is recognized by the session when that skill is
+  loaded and activates the skill body. Skill names and descriptions are shown
+  in the model's skill catalog.
 
 ## Plugin commands
 

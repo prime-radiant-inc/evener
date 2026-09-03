@@ -58,6 +58,9 @@ func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[s
 		ScanSkillsDir(filepath.Join(dir, "skills"), out)
 	}
 	for _, dir := range extraDirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
 		ScanSkillsDir(dir, out)
 	}
 
