@@ -231,6 +231,38 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 	}
 }
 
+// TestConditionFireBudget_EveryFireGoesThroughOneHelper pins the single seam
+// every condition match passes through. Counting a fire and consulting the
+// breaker are one operation, so no match site — event rail, live output rail, or
+// attach scan — can count a match without reporting the crossing, and the latch
+// keeps that report to one per config.
+func TestConditionFireBudget_EveryFireGoesThroughOneHelper(t *testing.T) {
+	t.Parallel()
+	if noteConditionFireLocked(nil) {
+		t.Fatal("a nil config reported a budget crossing")
+	}
+
+	cfg := &watchConfig{}
+	for fire := 1; fire < watchDeliveryBudget; fire++ {
+		if noteConditionFireLocked(cfg) {
+			t.Fatalf("condition fire %d crossed the budget early", fire)
+		}
+	}
+	if !noteConditionFireLocked(cfg) {
+		t.Fatalf("condition fire %d did not cross the budget", cfg.conditionFires)
+	}
+	if noteConditionFireLocked(cfg) {
+		t.Fatalf("condition fire %d crossed the budget a second time", cfg.conditionFires)
+	}
+	if cfg.conditionFires != watchDeliveryBudget+1 || !cfg.budgetTripped {
+		t.Fatalf("conditionFires = %d, budgetTripped = %v; want %d fires and a latched breaker",
+			cfg.conditionFires, cfg.budgetTripped, watchDeliveryBudget+1)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d; counting a fire must not count a delivery", cfg.deliveries)
+	}
+}
+
 // TestConditionFireBudget_FailedTeardownRearmsTheBreaker pins the once-only
 // latch against a durable teardown that does not persist. The failed teardown
 // rolls the watch back into the live set still over budget, so the latch must
