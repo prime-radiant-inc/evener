@@ -62,7 +62,7 @@ type SessionConfig struct {
 	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
 
 	// MaxSubagentDepth limits how deeply sub-agents may spawn further
-	// sub-agents (root session is depth 0). Zero defaults to 1.
+	// sub-agents (root session is depth 0). Zero defaults to 2.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
