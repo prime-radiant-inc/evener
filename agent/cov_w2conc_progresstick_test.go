@@ -12,7 +12,7 @@ func TestW2Conc_FireProgressTickClosingBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestW2Conc_FireProgressTickStaleConfigBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestW2Conc_FireProgressTickStaleConfigBails(t *testing.T) {
 func TestW2Conc_FireProgressTickJobTargetGoneBails(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	cfg, err := newWatchConfig(watchArgs{Target: "job_gone", ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: "job_gone", ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestW2Conc_FireProgressTickOverBudgetAutoClears(t *testing.T) {
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}

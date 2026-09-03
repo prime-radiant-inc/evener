@@ -43,7 +43,7 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 
 		// Settlement is the production accounting edge. Starting one below the
 		// cap forces exactly this delivery to cross the budget and invoke teardown.
-		cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, jm.now())
+		cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, jm.now(), "")
 		if err != nil {
 			t.Fatalf("new budget config: %v", err)
 		}
@@ -92,7 +92,7 @@ func jwccManager(t *testing.T) *jobManager {
 
 func jwccDetached(t *testing.T, jm *jobManager, target string) *watchConfig {
 	t.Helper()
-	cfg, err := newWatchConfig(watchArgs{Target: target, Events: []string{"job.notification"}}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: target, Events: []string{"job.notification"}}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("new detached config: %v", err)
 	}
@@ -240,7 +240,7 @@ func jwccExerciseInterleavingSeams(t *testing.T) {
 	// winner rather than overwriting it.
 	winnerJM := jwccManager(t)
 	jwccDetached(t, winnerJM, runtimeMessageAliasCaller)
-	winner, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}, winnerJM.now())
+	winner, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}, winnerJM.now(), "")
 	if err != nil {
 		t.Fatalf("new winner config: %v", err)
 	}
