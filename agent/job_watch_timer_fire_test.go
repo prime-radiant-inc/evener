@@ -331,6 +331,41 @@ func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
 	}
 }
 
+// TestConditionFireBudget_RollbackRearmsTheLatchInOneCriticalSection pins the
+// two halves of a failed teardown's rollback to a single jm.mu critical
+// section. Split across two acquisitions, a condition fire that lands between
+// them sees delivery re-enabled with the latch still set: it counts its fire,
+// reports no crossing, and nothing is left to retry the auto-clear for a watch
+// that is live and over budget. The test holds jm.mu across the locked helper
+// and reads both flags before releasing it, so the rollback and the re-arm can
+// only pass here as one operation.
+func TestConditionFireBudget_RollbackRearmsTheLatchInOneCriticalSection(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: "job_budget_rollback"}
+	cfg := &watchConfig{
+		target:            key.Target,
+		conditionFires:    watchDeliveryBudget,
+		budgetTripped:     true,
+		rejectingDelivery: true,
+	}
+	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg}}
+
+	jm.mu.Lock()
+	jm.watches[key] = cfg
+	rollbackWatchBudgetTeardownLocked(jm, targets, cfg)
+	rejecting, tripped := cfg.rejectingDelivery, cfg.budgetTripped
+	crossed := noteConditionFireLocked(cfg)
+	jm.mu.Unlock()
+
+	if rejecting || tripped {
+		t.Fatalf("one rollback call left rejectingDelivery=%v budgetTripped=%v; a fire in that window would skip its teardown", rejecting, tripped)
+	}
+	if !crossed {
+		t.Fatal("the fire after a rolled-back teardown reported no crossing: the breaker was not re-armed with the rejecting marks")
+	}
+}
+
 // TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires pins which
 // counter excuses a watched job from the undisposed-background-job
 // announcement. The excuse is "this watch has not matched yet", plus a handoff
