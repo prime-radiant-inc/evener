@@ -315,6 +315,14 @@ const (
 	// destination is moved in: replaced only once there is something to
 	// replace it with.
 	previousSuffix = ".previous"
+	// bundledPublishLockWait is how long readying the store waits for the
+	// store lock, the same wait every other mutation takes. Publishing is what
+	// the launch came for, so it waits like one. bundledSweepLockWait is what
+	// the sweep waits on its way past: housekeeping nobody is waiting on, so a
+	// lock that is busy is somebody else's turn rather than something to queue
+	// behind.
+	bundledPublishLockWait = 30 * time.Second
+	bundledSweepLockWait   = time.Second
 )
 
 // bundledStaging is a private directory in the bundled store that a publish
@@ -459,14 +467,17 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 		// Taking one on every launch would park a routine one behind an
 		// auto-upgrade holding the store lock across git fetches.
 		if reclaim && len(m.abandonedStaging(store)) > 0 {
-			// Housekeeping for a launch that is otherwise done, so a lock this
-			// cannot get is left to the next launch rather than failing this
-			// one. Whether the orphans are really abandoned is decided again
-			// under the lock.
-			if release, lockErr := acquireLock(ctx, m.lockPath(), 30*time.Second); lockErr == nil {
+			// Housekeeping for a launch that is otherwise done: it waits the
+			// housekeeping wait, not the wait a publish is entitled to. A lock
+			// it does not get quickly is left to the next launch rather than
+			// making this one queue behind whatever holds it. Whether the
+			// orphans are really abandoned is decided again under the lock.
+			sweepCtx, cancelSweep := context.WithTimeout(ctx, bundledSweepLockWait)
+			if release, lockErr := acquireLock(sweepCtx, m.lockPath(), bundledSweepLockWait); lockErr == nil {
 				m.reclaimAbandonedStaging(store)
 				release()
 			}
+			cancelSweep()
 		}
 		return dest, nil, nil, nil
 	}
@@ -475,7 +486,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	// lock two launches both classify a mismatched destination, and the second
 	// sets aside the copy the first published while deleting the copy the
 	// first preserved.
-	release, err := acquireLock(ctx, m.lockPath(), 30*time.Second)
+	release, err := acquireLock(ctx, m.lockPath(), bundledPublishLockWait)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}

@@ -474,3 +474,50 @@ func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheStoreLock(t *tes
 		t.Errorf("adopting took %v, want it not to wait on the lock at all", waited)
 	}
 }
+
+// The sweep is housekeeping a launch does on its way past, so it waits for the
+// store lock the way housekeeping should: briefly. One stale orphan must not
+// put every adopting launch behind an auto-upgrade holding the lock across git
+// fetches, waiting out the budget a publish is entitled to and then leaving
+// the orphan for the next launch to wait out again.
+func TestMaterializeBundledPlugin_GivesUpQuicklyOnTheSweepLock(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	// Somebody else is holding the store lock, the way an auto-upgrade does.
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// No deadline of its own: the bound has to come from the code.
+	start := time.Now()
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited > 3*time.Second {
+		t.Errorf("adopting waited %v on the sweep lock, want it to give up quickly", waited)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("a launch that could not sweep failed to select the published copy: %v", err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != published {
+		t.Fatalf("SelectedDirs = %v, want the published copy at %s", res.SelectedDirs, published)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Errorf("the orphan it could not take the lock for is gone: %v", err)
+	}
+}
