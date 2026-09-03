@@ -86,8 +86,9 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 // marked copy there, reads it, and removes it before returning. It publishes
 // nothing, and it reclaims nothing: collecting abandoned staging belongs to a
 // launch. Removing what it staged is part of the promise, so a removal that
-// fails is reported alongside whatever else went wrong; the marked directory
-// stays in the store until a later launch's sweep reclaims it.
+// fails is reported as a diagnostic on the inventory it returns rather than as
+// an error that would throw the inventory away; the marked directory stays in
+// the store until a later launch's sweep reclaims it.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
@@ -114,7 +115,14 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 			// unmarked orphan is one no sweep will ever collect. Marking it
 			// again is what leaves a later launch able to reclaim it.
 			_ = os.WriteFile(filepath.Join(dir, stagingMarker), nil, 0o600)
-			err = errors.Join(err, fmt.Errorf("remove staged bundled preview %s: %w", dir, cleanupErr))
+			// A diagnostic rather than an error: the inventory the caller
+			// asked for is complete, and failing the whole preview over the
+			// cleanup after it would leave the caller with nothing to show.
+			resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+				Path:    dir,
+				Message: fmt.Sprintf("remove staged bundled preview %s: %v", dir, cleanupErr),
+				Source:  LaunchPluginSourceBundled,
+			})
 		}
 	}
 	return resolution, err
@@ -425,12 +433,12 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	}
 	// An unlocked look first, because the answer is almost always a copy
 	// already published: that costs a digest read, changes nothing, and no
-	// other publisher can take a published copy away.
-	state, err := classifyBundledDestination(dest, digest)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	if state == bundledDestinationPublished {
+	// other publisher can take a published copy away. Only that answer is
+	// taken from it. Anything else, including a read that failed because a
+	// concurrent publisher was moving a conflicting destination aside as this
+	// walked it, falls through to the locked look, which is the one entitled
+	// to an opinion.
+	if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
 		return dest, nil, nil, nil
 	}
 	// Anything else means writing to the store, which is one sequence with the
@@ -441,7 +449,7 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
-	state, err = classifyBundledDestination(dest, digest)
+	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
 		release()
 		return "", nil, nil, err

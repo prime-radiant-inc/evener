@@ -169,18 +169,25 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 	t.Cleanup(func() { enabledLoad = load })
 
 	res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
-	if err == nil {
-		t.Fatal("PreviewForLaunch error = nil, want the failure to remove its staging")
+	if err != nil {
+		// The inventory is what the caller asked for and it is complete; a
+		// failure to clean up after it is a warning about the store, not a
+		// reason to throw the answer away and empty the picker.
+		t.Fatalf("PreviewForLaunch error = %v, want the inventory it built", err)
 	}
-	if !strings.Contains(err.Error(), "staged bundled preview") {
-		t.Errorf("error = %v, want it to name the staging it could not remove", err)
+	if err := res.ValidateSelection(); err != nil {
+		t.Errorf("a cleanup failure made the preview unselectable: %v", err)
 	}
 	if len(res.Candidates) != 1 || res.Candidates[0].Source != LaunchPluginSourceBundled {
 		t.Errorf("Candidates = %+v, want the preview it built before cleanup failed", res.Candidates)
 	}
-	entries, err := os.ReadDir(store)
-	if err != nil {
-		t.Fatal(err)
+	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
+		!strings.Contains(res.Diagnostics[0].Message, "staged bundled preview") {
+		t.Fatalf("Diagnostics = %+v, want one naming the staging it could not remove", res.Diagnostics)
+	}
+	entries, readErr := os.ReadDir(store)
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stagingPrefix) {
 		t.Fatalf("bundled store holds %v, want the staging the preview could not remove", entries)
