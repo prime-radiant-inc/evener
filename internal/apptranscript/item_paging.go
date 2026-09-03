@@ -1,0 +1,301 @@
+package apptranscript
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"os"
+
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
+)
+
+const itemIndexProjectionID = "apptranscript-items-v1"
+
+// ItemWindowOptions controls one indexed atomic-item read. Cursor is empty for
+// an initial read and is the opaque cursor returned by a prior item window for
+// a previous read.
+type ItemWindowOptions struct {
+	ThreadRef string
+	Cursor    string
+	Limit     int
+}
+
+// LatestItemWindowFromFile returns the newest indexed projected items without
+// projecting records outside the selected batch.
+func (c *TurnCache) LatestItemWindowFromFile(
+	path string,
+	maxLineBytes int,
+	options ItemWindowOptions,
+	project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	if options.Cursor != "" {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, appwire.TranscriptItemCursorStale()
+	}
+	return c.itemWindowFromFile(path, maxLineBytes, options, project, false)
+}
+
+// PreviousItemWindowFromFile returns the indexed projected items immediately
+// before the cursor boundary. The boundary is exclusive and is never clamped.
+func (c *TurnCache) PreviousItemWindowFromFile(
+	path string,
+	maxLineBytes int,
+	options ItemWindowOptions,
+	project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	return c.itemWindowFromFile(path, maxLineBytes, options, project, true)
+}
+
+type indexedItemRange struct {
+	record  indexedTurn
+	entry   uint64
+	start   uint64
+	count   uint64
+	lo      uint64
+	hi      uint64
+	prelude bool
+}
+
+func (c *TurnCache) itemWindowFromFile(path string, maxLineBytes int, options ItemWindowOptions, project BoundedEntryProjector, previous bool) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	limit, err := appwire.NormalizeTranscriptItemLimit(options.Limit)
+	if err != nil {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+	}
+	index, stats, err := c.loadTurnIndexForItemPaging(path, maxLineBytes, project)
+	if err != nil {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+	}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef:         options.ThreadRef,
+		Incarnation:       index.Incarnation,
+		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
+	if options.ThreadRef == "" || identity.Incarnation == "" {
+		return appitempaging.TranscriptItemWindow{}, identity, appwire.TranscriptItemCursorStale()
+	}
+
+	ranges, total, err := indexedItemRanges(index)
+	if err != nil {
+		return appitempaging.TranscriptItemWindow{}, identity, err
+	}
+	if previous && options.Cursor == "" {
+		return appitempaging.TranscriptItemWindow{}, identity, nil
+	}
+
+	end := total
+	if previous {
+		before, err := appitempaging.DecodeCursor(options.Cursor, identity)
+		if err != nil {
+			return appitempaging.TranscriptItemWindow{}, identity, err
+		}
+		end, err = cursorBoundaryRank(ranges, before)
+		if err != nil {
+			return appitempaging.TranscriptItemWindow{}, identity, err
+		}
+	}
+	start := uint64(0)
+	if end > uint64(limit) {
+		start = end - uint64(limit)
+	}
+
+	selectedRanges := intersectItemRanges(ranges, start, end)
+	candidates, projectedRecords, err := projectIndexedItemRanges(path, index, selectedRanges, project)
+	if err != nil {
+		c.invalidate(path)
+		return appitempaging.TranscriptItemWindow{}, identity, err
+	}
+	selected, _, err := appitempaging.SelectCandidates(candidates, nil, limit)
+	if err != nil {
+		return appitempaging.TranscriptItemWindow{}, identity, err
+	}
+	stats.ProjectedItems = len(selected)
+	stats.ProjectedTurns = projectedRecords
+	observeIndexRead(stats)
+
+	window := appitempaging.TranscriptItemWindow{Candidates: selected}
+	if start > 0 && len(selected) > 0 {
+		cursor, err := appitempaging.EncodeCursor(identity, selected[0].Position)
+		if err != nil {
+			return appitempaging.TranscriptItemWindow{}, identity, err
+		}
+		window.OlderCursor = cursor
+	}
+	return window, identity, nil
+}
+
+func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) {
+	ranges := make([]indexedItemRange, 0, index.VisibleRecords+1)
+	var total uint64
+	if prelude := PreludeTurn(index.Header); prelude != nil {
+		count := uint64(len(prelude.Items))
+		if count > uint64(math.MaxUint32) {
+			return nil, 0, errors.New("prelude item count exceeds uint32")
+		}
+		ranges = append(ranges, indexedItemRange{start: 0, count: count, prelude: true})
+		total = count
+	}
+	for rank := 0; rank < index.VisibleRecords; rank++ {
+		record, ok := index.visibleRecordAt(rank, nil)
+		if !ok || record.ItemCount == 0 {
+			continue
+		}
+		if record.Index <= 0 {
+			return nil, 0, fmt.Errorf("indexed entry ordinal %d is invalid", record.Index)
+		}
+		count := uint64(record.ItemCount)
+		if ^uint64(0)-total < count {
+			return nil, 0, errors.New("projected item count overflows uint64")
+		}
+		entry := uint64(record.Index - 1)
+		if PreludeTurn(index.Header) != nil {
+			// Entry zero is reserved for the synthetic prelude item range.
+			entry = uint64(record.Index)
+		}
+		ranges = append(ranges, indexedItemRange{record: record, entry: entry, start: total, count: count})
+		total += count
+	}
+	return ranges, total, nil
+}
+
+func cursorBoundaryRank(ranges []indexedItemRange, before appwire.ThreadItemPosition) (uint64, error) {
+	for _, itemRange := range ranges {
+		if itemRange.prelude {
+			if before.Entry != 0 {
+				continue
+			}
+			if uint64(before.Item) >= itemRange.count {
+				return 0, appwire.TranscriptItemCursorStale()
+			}
+			return itemRange.start + uint64(before.Item), nil
+		}
+		if itemRange.entry != before.Entry {
+			continue
+		}
+		if uint64(before.Item) >= itemRange.count {
+			return 0, appwire.TranscriptItemCursorStale()
+		}
+		return itemRange.start + uint64(before.Item), nil
+	}
+	return 0, appwire.TranscriptItemCursorStale()
+}
+
+func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexedItemRange {
+	selected := make([]indexedItemRange, 0, len(ranges))
+	for _, itemRange := range ranges {
+		rangeEnd := itemRange.start + itemRange.count
+		if itemRange.start >= end || rangeEnd <= start {
+			continue
+		}
+		itemRange.lo = max(start, itemRange.start) - itemRange.start
+		itemRange.hi = min(end, rangeEnd) - itemRange.start
+		selected = append(selected, itemRange)
+	}
+	return selected
+}
+
+func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
+	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
+	projectedRecords := 0
+	var file *os.File
+	var err error
+	for _, itemRange := range ranges {
+		if itemRange.prelude {
+			turn := PreludeTurn(index.Header)
+			if turn == nil {
+				continue
+			}
+			items, err := positionPreludeItems(turn.Items)
+			if err != nil {
+				return nil, projectedRecords, err
+			}
+			for itemIndex, item := range items {
+				position := *item.Position
+				if uint64(itemIndex) < itemRange.lo || uint64(itemIndex) >= itemRange.hi {
+					continue
+				}
+				candidates = append(candidates, appitempaging.TranscriptItemCandidate{
+					TurnID:          turn.ID,
+					Turn:            *turn,
+					Item:            item,
+					Position:        position,
+					HasEarlierItems: position.Item > 0,
+					HasLaterItems:   uint64(itemIndex)+1 < itemRange.count,
+				})
+			}
+			projectedRecords++
+			continue
+		}
+		if file == nil {
+			file, err = os.Open(path)
+			if err != nil {
+				return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
+			}
+		}
+		raw := make([]byte, itemRange.record.Length)
+		if _, err := file.ReadAt(raw, itemRange.record.Offset); err != nil {
+			_ = file.Close()
+			return nil, projectedRecords, fmt.Errorf("read transcript entry: %w", err)
+		}
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
+			_ = file.Close()
+			return nil, projectedRecords, fmt.Errorf("parse transcript entry: %w", err)
+		}
+		turnID := persistedTurnID(entry.Turn, itemRange.record.Index)
+		var projected []appwire.ThreadItem
+		if project != nil {
+			projected = project(entry.Turn, turnID, itemRange.record.Index, cloneToolNames(itemRange.record.ToolSeed))
+		}
+		if uint64(len(projected)) != itemRange.count {
+			_ = file.Close()
+			return nil, projectedRecords, fmt.Errorf("indexed item count for entry %d changed", itemRange.record.Index)
+		}
+		positioned, err := positionProjectedItemsAt(projected, turnID, itemRange.entry)
+		if err != nil {
+			_ = file.Close()
+			return nil, projectedRecords, err
+		}
+		turn := appwire.Turn{ID: turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
+		StampTurnFailure(&turn, entry.Turn)
+		if !entry.Turn.Timestamp.IsZero() {
+			startedAt := entry.Turn.Timestamp.UnixMilli()
+			turn.StartedAt = &startedAt
+		}
+		turn.Usage = appwire.EvenerUsageFromLLM(entry.Turn.Usage)
+		for itemIndex := range positioned {
+			position := *positioned[itemIndex].Position
+			if uint64(itemIndex) < itemRange.lo || uint64(itemIndex) >= itemRange.hi {
+				continue
+			}
+			candidate := appitempaging.TranscriptItemCandidate{
+				TurnID:          turnID,
+				Turn:            turn,
+				Item:            positioned[itemIndex],
+				Position:        position,
+				HasEarlierItems: uint64(itemIndex) > 0,
+				HasLaterItems:   uint64(itemIndex)+1 < itemRange.count,
+			}
+			candidates = append(candidates, candidate)
+		}
+		projectedRecords++
+	}
+	if file != nil {
+		_ = file.Close()
+	}
+	return candidates, projectedRecords, nil
+}
+
+func positionPreludeItems(items []appwire.ThreadItem) ([]appwire.ThreadItem, error) {
+	positioned := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
+		if uint64(i) > uint64(math.MaxUint32) {
+			return nil, errors.New("prelude item index exceeds uint32")
+		}
+		position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+		item.Position = &position
+		item.TranscriptKey = appitempaging.TranscriptItemKey(appwire.SystemPreludeTurnID, position)
+		positioned[i] = item
+	}
+	return positioned, nil
+}

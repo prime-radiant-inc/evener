@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 type CodexSourceConfig struct {
@@ -34,8 +35,10 @@ type CodexSource struct {
 	client          *http.Client
 	dial            appwireDialFunc
 	mu              sync.Mutex
+	itemPagingLocks keyedMutexRegistry
 	live            map[string]*codexLiveThread
 	cache           map[string]appwire.Thread
+	itemSnapshots   *itemSnapshotStateCache
 	waitReadRetry   func(context.Context, time.Duration) error
 }
 
@@ -74,6 +77,7 @@ func NewCodexSource(cfg CodexSourceConfig, client *http.Client) *CodexSource {
 		dial:            defaultAppwireDial,
 		live:            map[string]*codexLiveThread{},
 		cache:           map[string]appwire.Thread{},
+		itemSnapshots:   newItemSnapshotStateCache(defaultItemSnapshotStateEntries),
 		waitReadRetry:   waitCodexFullReadRetry,
 	}
 }
@@ -114,6 +118,10 @@ func (s *CodexSource) ReadThread(ctx context.Context, params appwire.ThreadReadP
 	if err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		response, _, err := s.ReadThreadWithItemCandidates(ctx, params)
+		return response, err
+	}
 	if thread, ok := s.cachedThread(threadID); ok {
 		return appwire.ThreadReadResponse{
 			Thread: cloneCodexCachedThread(thread, params.IncludeTurns),
@@ -124,6 +132,50 @@ func (s *CodexSource) ReadThread(ctx context.Context, params appwire.ThreadReadP
 		return appwire.ThreadReadResponse{}, err
 	}
 	return appwire.ThreadReadResponse{Thread: thread}, nil
+}
+
+func (s *CodexSource) ReadThreadWithItemCandidates(
+	ctx context.Context,
+	params appwire.ThreadReadParams,
+) (appwire.ThreadReadResponse, ItemCandidateResult, error) {
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	thread, err := s.readMappedThread(ctx, threadID, false, params.ItemsView)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	thread.Turns = nil
+	response := appwire.ThreadReadResponse{Thread: thread, PageUnit: appwire.TranscriptPageUnitItem}
+	if params.PageUnit != appwire.TranscriptPageUnitItem || !params.IncludeTurns {
+		return response, ItemCandidateResult{Exhausted: true}, nil
+	}
+
+	unlock := s.itemPagingLocks.lock(threadID)
+	defer unlock()
+	window, identity, err := s.latestItemWindowLocked(ctx, threadID, params.ItemLimit, params.ItemsView)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	thread.Turns, err = codexItemTurns(window.Candidates)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	response.Thread = thread
+	response.OlderCursor = window.OlderCursor
+	responseCandidates, err := localDaemonItemCandidates(response.Thread.Turns)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	if err := appitempaging.ValidateCandidates(responseCandidates); err != nil {
+		return appwire.ThreadReadResponse{}, ItemCandidateResult{}, err
+	}
+	return response, ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: responseCandidates, OlderCursor: window.OlderCursor},
+		Identity:   identity,
+		Exhausted:  window.OlderCursor == "",
+	}, nil
 }
 
 func (s *CodexSource) readMappedThread(
@@ -149,6 +201,26 @@ func (s *CodexSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsL
 	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
+	}
+	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		var window appitempaging.TranscriptItemWindow
+		if params.Cursor == "" {
+			window, _, err = s.latestItemWindow(ctx, threadID, params.ItemLimit, params.ItemsView)
+		} else {
+			window, _, err = s.previousItemWindow(ctx, threadID, params.Cursor, params.ItemLimit, params.ItemsView)
+		}
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		data, err := codexItemTurns(window.Candidates)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		return appwire.ThreadTurnsListResponse{
+			Data:       data,
+			NextCursor: window.OlderCursor,
+			PageUnit:   appwire.TranscriptPageUnitItem,
+		}, nil
 	}
 	var out codexTurnsListResponse
 	err = s.withClient(ctx, func(client *appwire.Client) error {

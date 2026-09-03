@@ -50,6 +50,10 @@ func cloneCodexCachedItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone.CompletedAt = cloneCodexCachedInt64(item.CompletedAt)
 	clone.DurationMS = cloneCodexCachedInt64(item.DurationMS)
 	clone.ExitCode = cloneCodexCachedInt64(item.ExitCode)
+	if item.Position != nil {
+		position := *item.Position
+		clone.Position = &position
+	}
 	clone.Raw = slices.Clone(item.Raw)
 	clone.OutputImages = slices.Clone(item.OutputImages)
 	clone.Images = slices.Clone(item.Images)

@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,8 +26,8 @@ import (
 )
 
 const (
-	turnIndexVersion        = 8
-	turnIndexJournalVersion = 2
+	turnIndexVersion        = 9
+	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
 	// Index records contain fixed metadata plus a bounded expansion of fields
@@ -48,6 +49,7 @@ type FilePage struct {
 type ReadStats struct {
 	IndexedBytes   int64
 	ProjectedTurns int
+	ProjectedItems int
 
 	// The remaining fields are intentionally unexported test/benchmark
 	// instrumentation. Production callers do not depend on them.
@@ -102,6 +104,7 @@ type turnIndexDisk struct {
 	IntegrityStamp          string            `json:"integrity_stamp"`
 	FirstAnchor             turnIndexAnchor   `json:"first_anchor"`
 	TailAnchor              turnIndexAnchor   `json:"tail_anchor"`
+	Incarnation             string            `json:"incarnation"`
 
 	// deltaRoot is an immutable persistent rope of records loaded from or
 	// destined for the append-only journal. Keeping suffixes out of Records
@@ -140,6 +143,7 @@ type turnIndexJournalFrame struct {
 	IntegrityStamp          string            `json:"integrity_stamp"`
 	FirstAnchor             turnIndexAnchor   `json:"first_anchor"`
 	TailAnchor              turnIndexAnchor   `json:"tail_anchor"`
+	Incarnation             string            `json:"incarnation"`
 }
 
 type indexedTurn struct {
@@ -149,6 +153,7 @@ type indexedTurn struct {
 	Kind         string            `json:"kind"`
 	Visible      bool              `json:"visible"`
 	VisibleIndex int               `json:"visible_index,omitempty"`
+	ItemCount    uint32            `json:"item_count"`
 	ToolSeed     map[string]string `json:"tool_seed,omitempty"`
 	ToolChanges  []toolNameChange  `json:"tool_changes,omitempty"`
 }
@@ -435,6 +440,14 @@ func recordNodeAt(node *turnIndexRecordNode, i int) indexedTurn {
 }
 
 func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexInternal(path, maxLineBytes, project, false)
+}
+
+func (c *TurnCache) loadTurnIndexForItemPaging(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexInternal(path, maxLineBytes, project, true)
+}
+
+func (c *TurnCache) loadTurnIndexInternal(path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool) (turnIndexDisk, ReadStats, error) {
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
 
@@ -478,23 +491,54 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	sameFile := candidate != nil && currentFileIdentity != "" && candidate.FileIdentity == currentFileIdentity
 	appendOnly := sameFile && candidate.TranscriptSize < info.Size()
 	index, start, validatedBytes := usableTurnIndex(file, info.Size(), maxLineBytes, projectionID, candidate, identityMatches, appendOnly, fromCache, &stats)
+	if start >= 0 && appendOnly && strictItemAppendValidation {
+		// Sparse anchors can prove that their two small regions are unchanged,
+		// but cannot prove that an arbitrary interior rewrite did not occur before
+		// an append. Item cursors require the complete indexed prefix to validate
+		// before preserving its incarnation, including for a warm candidate.
+		stamp, readBytes := prefixStamp(file, index.CompleteSize)
+		validatedBytes += readBytes
+		if index.PrefixStamp == "" || index.PrefixStamp != stamp {
+			start = -1
+		}
+	}
+	if start >= 0 && !fromCache && !validIndexedItemCounts(index) {
+		start = -1
+	}
+	if start >= 0 && strings.TrimSpace(index.Incarnation) == "" {
+		start = -1
+	}
 	rebuilt := start < 0
-	stats.rebuilt = rebuilt
 	if start < 0 {
+		incarnation, err := newTurnIndexIncarnation()
+		if err != nil {
+			c.invalidate(path)
+			return turnIndexDisk{}, stats, err
+		}
 		index = turnIndexDisk{
 			Version:                 turnIndexVersion,
 			TranscriptFormatVersion: transcript.FormatVersion,
 			MaxLineBytes:            maxLineBytes,
 			ProjectionID:            projectionID,
 			PrefixStamp:             initialPrefixStamp(),
+			Incarnation:             incarnation,
 		}
 		start = 0
-	} else if fromCache && start == info.Size() {
+	} else if fromCache && identityMatches && start == info.Size() {
 		c.mu.Lock()
 		c.touch(path)
 		c.mu.Unlock()
 		return index, stats, nil
+	} else if !appendOnly && !identityMatches {
+		incarnation, err := newTurnIndexIncarnation()
+		if err != nil {
+			c.invalidate(path)
+			return turnIndexDisk{}, stats, err
+		}
+		index.Incarnation = incarnation
+		rebuilt = true
 	}
+	stats.rebuilt = rebuilt
 	stats.IndexedBytes = validatedBytes
 	previousIndex := index
 	resolver := map[string]string{}
@@ -564,6 +608,16 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	return index, stats, nil
 }
 
+func validIndexedItemCounts(index turnIndexDisk) bool {
+	for i := 0; i < index.recordCount(); i++ {
+		record := index.recordAt(i)
+		if record.Visible != (record.ItemCount > 0) {
+			return false
+		}
+	}
+	return true
+}
+
 func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID string, candidate *turnIndexDisk, identityMatches bool, appendOnly bool, trustedMemory bool, stats *ReadStats) (turnIndexDisk, int64, int64) {
 	if candidate == nil || candidate.Version != turnIndexVersion || candidate.TranscriptFormatVersion != transcript.FormatVersion || candidate.MaxLineBytes != maxLineBytes || candidate.ProjectionID != projectionID {
 		return turnIndexDisk{}, -1, 0
@@ -575,8 +629,10 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		return turnIndexDisk{}, -1, 0
 	}
 	validatedBytes := int64(0)
-	if appendOnly && !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
-		return turnIndexDisk{}, -1, validatedBytes
+	if appendOnly {
+		if !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
 	}
 	if !identityMatches && !appendOnly {
 		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
@@ -681,14 +737,18 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind}
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
-			visible := false
+			var projectedItems []appwire.ThreadItem
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
-				visible = len(project(entry.Turn, persistedTurnID(entry.Turn, entryIndex), entryIndex, recordNames)) > 0
+				projectedItems = project(entry.Turn, persistedTurnID(entry.Turn, entryIndex), entryIndex, recordNames)
+				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
+					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+				}
 			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
-			record.Visible = visible
-			if visible {
+			record.ItemCount = uint32(len(projectedItems))
+			record.Visible = record.ItemCount > 0
+			if record.Visible {
 				visibleRecords++
 			}
 			record.VisibleIndex = visibleRecords
@@ -986,6 +1046,7 @@ func readTurnIndexWithJournal(path string, transcriptSize int64) (turnIndexDisk,
 			return turnIndexDisk{}, fmt.Errorf("decode index journal: %w", err)
 		}
 		if frame.Version != turnIndexJournalVersion || frame.PreviousStamp != index.IntegrityStamp ||
+			frame.Incarnation != index.Incarnation ||
 			frame.IntegrityStamp == "" || frame.IntegrityStamp != turnIndexJournalStamp(frame) {
 			return turnIndexDisk{}, errors.New("invalid index journal integrity chain")
 		}
@@ -1006,6 +1067,7 @@ func readTurnIndexWithJournal(path string, transcriptSize int64) (turnIndexDisk,
 		index.IntegrityStamp = frame.IntegrityStamp
 		index.FirstAnchor = frame.FirstAnchor
 		index.TailAnchor = frame.TailAnchor
+		index.Incarnation = frame.Incarnation
 		index.journalApplied = true
 		validBytes += int64(len(line))
 	}
@@ -1107,6 +1169,7 @@ func appendTurnIndexJournal(path string, previous turnIndexDisk, index *turnInde
 		ModTimeUnixNS:           index.ModTimeUnixNS,
 		FirstAnchor:             index.FirstAnchor,
 		TailAnchor:              index.TailAnchor,
+		Incarnation:             index.Incarnation,
 	}
 	if stats != nil {
 		stats.journalRecords += int64(len(records))
@@ -1211,6 +1274,14 @@ func writeTurnIndex(path string, index turnIndexDisk, stats *ReadStats) error {
 func initialPrefixStamp() string {
 	sum := sha256.Sum256([]byte("evener-apptranscript-prefix-v1"))
 	return hex.EncodeToString(sum[:])
+}
+
+func newTurnIndexIncarnation() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate transcript index incarnation: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func extendPrefixStamp(stamp string, line []byte) string {
@@ -1369,7 +1440,7 @@ func projectionIdentity(project BoundedEntryProjector) string {
 			name = "<unknown>"
 		}
 	}
-	return fmt.Sprintf("turn-index-v%d:%s", turnIndexVersion, name)
+	return fmt.Sprintf("turn-index-v%d:%s:%s", turnIndexVersion, itemIndexProjectionID, name)
 }
 
 func cloneTurnIndexForAppend(index turnIndexDisk) turnIndexDisk {

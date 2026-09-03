@@ -2,13 +2,19 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -403,6 +409,238 @@ func fuzzScenarioForwardLocalDaemonNotificationCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	forwardLocalDaemonNotification(ctx, make(chan appwire.Notification), appwire.Notification{})
+}
+
+func TestLocalDaemonItemPagingForwardsItemAndLegacyModes(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	var reads []appwire.ThreadReadParams
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads = append(reads, params)
+		return appwire.ThreadReadResponse{PageUnit: params.PageUnit, Thread: appwire.Thread{ID: "thread", Evener: appwire.EvenerThread{Ref: "local:thread"}}}, nil
+	})
+	var lists []appwire.ThreadTurnsListParams
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		lists = append(lists, params)
+		return appwire.ThreadTurnsListResponse{PageUnit: params.PageUnit}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):],
+			SourceID: "local", ThreadID: "thread", SessionID: "thread",
+		}}}
+	}, httpServer.Client())
+	ctx := context.Background()
+	if _, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: "local:thread", IncludeTurns: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 7}); err != nil {
+		t.Fatalf("item ReadThread: %v", err)
+	}
+	if _, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 7, Cursor: "opaque-cursor"}); err != nil {
+		t.Fatalf("item ListTurns: %v", err)
+	}
+	if _, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: "local:thread", IncludeTurns: true, TurnLimit: 3}); err != nil {
+		t.Fatalf("legacy ReadThread: %v", err)
+	}
+	if _, err := source.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: "local:thread", Limit: 3, Cursor: "7"}); err != nil {
+		t.Fatalf("legacy ListTurns: %v", err)
+	}
+	if len(reads) != 2 || reads[0].PageUnit != appwire.TranscriptPageUnitItem || reads[0].ItemLimit != 7 || reads[0].TurnLimit != 0 || reads[1].PageUnit != "" || reads[1].ItemLimit != 0 || reads[1].TurnLimit != 3 {
+		t.Fatalf("read params forwarded = %+v", reads)
+	}
+	if len(lists) != 2 || lists[0].PageUnit != appwire.TranscriptPageUnitItem || lists[0].ItemLimit != 7 || lists[0].Cursor != "opaque-cursor" || lists[0].Limit != 0 || lists[1].PageUnit != "" || lists[1].ItemLimit != 0 || lists[1].Cursor != "7" || lists[1].Limit != 3 {
+		t.Fatalf("list params forwarded = %+v", lists)
+	}
+}
+
+func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	var requests []appwire.ThreadTurnsListParams
+	items := make([]appwire.ThreadItem, 41)
+	for i := range items {
+		position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+		items[i] = appwire.ThreadItem{
+			Type:          "agentMessage",
+			ID:            fmt.Sprintf("item-%02d", i),
+			TranscriptKey: fmt.Sprintf("daemon-key-%02d", i),
+			Position:      &position,
+			TurnID:        "turn-1",
+			Text:          fmt.Sprintf("text-%02d", i),
+		}
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		requests = append(requests, params)
+		return appwire.ThreadTurnsListResponse{
+			Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFull}},
+		}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + httpServer.URL[len("http"):],
+		SourceID:     "local",
+		ThreadID:     "thread",
+		SessionID:    "thread",
+		WorkspaceRef: "local:thread",
+		InstanceID:   "instance-1",
+		HubToken:     "authenticated-token",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, httpServer.Client())
+
+	first, err := source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{
+		Ref:       "local:thread",
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatalf("initial candidate read: %v", err)
+	}
+	if len(first.Candidates.Candidates) != 40 || first.Candidates.Candidates[0].Item.ID != "item-01" || first.Candidates.Candidates[39].Item.ID != "item-40" {
+		t.Fatalf("initial candidates = %d (%q..%q), want item-01..item-40", len(first.Candidates.Candidates), first.Candidates.Candidates[0].Item.ID, first.Candidates.Candidates[39].Item.ID)
+	}
+	if first.Identity.ThreadRef != "local:thread" || first.Identity.Incarnation == "" || first.Identity.ProjectionVersion == 0 {
+		t.Fatalf("candidate identity = %+v, want authenticated thread identity", first.Identity)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatal("initial candidate page has no older cursor")
+	}
+	retained, err := json.Marshal(retainedItemSnapshotStates(source.itemSnapshots))
+	if err != nil {
+		t.Fatalf("marshal retained local paging state: %v", err)
+	}
+	if strings.Contains(string(retained), "text-40") {
+		t.Fatalf("retained local paging state contains transcript payload (serialized bytes=%d)", len(retained))
+	}
+	boundary, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode source cursor: %v", err)
+	}
+	if boundary != (appwire.ThreadItemPosition{Entry: 0, Item: 1}) {
+		t.Fatalf("source cursor boundary = %+v, want entry 0 item 1", boundary)
+	}
+
+	second, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref:       "local:thread",
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+		Cursor:    first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("older candidate read: %v", err)
+	}
+	if len(second.Candidates.Candidates) != 1 || second.Candidates.Candidates[0].Item.ID != "item-00" || !second.Exhausted || second.Candidates.OlderCursor != "" {
+		t.Fatalf("older candidates = %+v, want only exhausted item-00", second)
+	}
+	for i, request := range requests {
+		if request.PageUnit != appwire.TranscriptPageUnitTurn || request.Cursor != "" || request.ItemLimit != 0 {
+			t.Fatalf("materialization request %d = %+v, want authenticated legacy turn request without browser cursor", i, request)
+		}
+	}
+	partialResponse := appwire.ThreadReadResponse{
+		Thread: appwire.Thread{ID: "thread", Evener: appwire.EvenerThread{Ref: "local:thread"}, Turns: []appwire.Turn{{
+			ID: "turn-1", Items: items[1:], ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
+		}}},
+		PageUnit:    appwire.TranscriptPageUnitItem,
+		OlderCursor: "daemon-native-cursor",
+	}
+	partial, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	}, partialResponse)
+	if err != nil {
+		t.Fatalf("convert partial atomic read: %v", err)
+	}
+	if partial.Exhausted || partial.Candidates.OlderCursor != "" || len(partial.Candidates.Candidates) != 40 {
+		t.Fatalf("converted partial atomic read = %+v, want 40 source-owned non-exhausted candidates", partial)
+	}
+	partialCursor, err := appitempaging.EncodeCursor(partial.Identity, partial.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode converted partial cursor: %v", err)
+	}
+	partialOlder, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: partialCursor,
+	})
+	if err != nil {
+		t.Fatalf("backfill converted partial cursor: %v", err)
+	}
+	if len(partialOlder.Candidates.Candidates) != 1 || partialOlder.Candidates.Candidates[0].Item.ID != "item-00" {
+		t.Fatalf("converted partial backfill = %+v, want item-00", partialOlder.Candidates.Candidates)
+	}
+
+	entry.InstanceID = "instance-2"
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref:       "local:thread",
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+		Cursor:    first.Candidates.OlderCursor,
+	}); err == nil {
+		t.Fatal("cursor from a different authenticated daemon instance was accepted")
+	}
+}
+
+func TestLocalDaemonItemCandidatesMaterializeNativePagesChronologically(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	turns := make([]appwire.Turn, 31)
+	for i := range turns {
+		position := appwire.ThreadItemPosition{Entry: uint64(i), Item: 0}
+		turns[i] = appwire.Turn{ID: fmt.Sprintf("turn-%02d", i), Items: []appwire.ThreadItem{{
+			Type: "agentMessage", ID: fmt.Sprintf("item-%02d", i), TranscriptKey: fmt.Sprintf("daemon-key-%02d", i), Position: &position,
+			TurnID: fmt.Sprintf("turn-%02d", i), Text: fmt.Sprintf("text-%02d", i),
+		}}}
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		if params.Cursor == "" {
+			return appwire.ThreadTurnsListResponse{Data: turns[1:], NextCursor: "older"}, nil
+		}
+		if params.Cursor == "older" {
+			return appwire.ThreadTurnsListResponse{Data: turns[:1]}, nil
+		}
+		return appwire.ThreadTurnsListResponse{}, fmt.Errorf("unexpected native cursor %q", params.Cursor)
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local", ThreadID: "thread", SessionID: "thread",
+		WorkspaceRef: "local:thread", InstanceID: "instance-1", HubToken: "authenticated-token",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+
+	result, err := source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1})
+	if err != nil {
+		t.Fatalf("multi-page item read: %v", err)
+	}
+	if len(result.Candidates.Candidates) != 1 || result.Candidates.Candidates[0].Item.ID != "item-30" {
+		t.Fatalf("latest multi-page item = %+v, want newest item-30", result.Candidates.Candidates)
+	}
+}
+
+func TestLocalDaemonItemPagingCycleErrorDoesNotLeakNativeCursor(t *testing.T) {
+	const secret = "local-secret-cursor"
+	respond := func(method string) (any, error) {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+		case appwire.MethodThreadTurnsList:
+			return appwire.ThreadTurnsListResponse{NextCursor: secret}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %q", method)
+		}
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local", ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread",
+		}}}
+	}, nil)
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		return respondingTransport(respond), nil
+	}
+	_, err := source.materializeLocalDaemonTurns(context.Background(), "local:thread", "thread", "full")
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("cycle error = %v, want non-leaking error", err)
+	}
 }
 
 func fuzzScenarioLocalDaemonInternalHandshakeErrorFallbacks(t *testing.T) {

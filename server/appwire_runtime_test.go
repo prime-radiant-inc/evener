@@ -5,13 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
@@ -542,6 +550,8 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 	duration := int64(4200)
 	exitCode := int64(0)
 	cause := appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 500}
+	position := appwire.ThreadItemPosition{Entry: 4, Item: 2}
+	wantPosition := position
 	seed := []appwire.Turn{{
 		ID:        "turn_1",
 		ItemsView: "full",
@@ -554,11 +564,13 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 			// DurationMS and ExitCode are pointers the transcript projector
 			// populates on tool-call items, and they were the two fields the
 			// clone helper missed.
-			TurnID:     "turn_1",
-			Text:       "original text",
-			DurationMS: &duration,
-			ExitCode:   &exitCode,
-			Raw:        json.RawMessage(`{"k":"original"}`),
+			TurnID:        "turn_1",
+			Text:          "original text",
+			DurationMS:    &duration,
+			ExitCode:      &exitCode,
+			Position:      &position,
+			TranscriptKey: appitempaging.TranscriptItemKey("turn_1", position),
+			Raw:           json.RawMessage(`{"k":"original"}`),
 			Images: []appwire.InputItem{{
 				Type:      "image",
 				MediaType: "image/png",
@@ -586,10 +598,14 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 	seed[0].Items[0].Images[0].Name = "mutated.png"
 	*seed[0].Items[0].DurationMS = 9999
 	*seed[0].Items[0].ExitCode = 137
+	*seed[0].Items[0].Position = appwire.ThreadItemPosition{Entry: 99, Item: 99}
 
 	after := snapshot.Snapshot()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("Seed aliased caller state:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	if got := after[0].Items[0].Position; got == nil || *got != wantPosition {
+		t.Fatalf("Seed position = %+v, want unchanged position %+v", got, wantPosition)
 	}
 
 	// Two reads must not hand back the same pointers either, or one caller
@@ -600,6 +616,9 @@ func TestAppTurnSnapshotSeedIsDeepDefensiveCopy(t *testing.T) {
 	}
 	if a[0].Items[0].ExitCode == b[0].Items[0].ExitCode {
 		t.Fatal("Snapshot shares one *ExitCode across reads")
+	}
+	if a[0].Items[0].Position == b[0].Items[0].Position {
+		t.Fatal("Snapshot shares one *Position across reads")
 	}
 }
 
@@ -762,5 +781,176 @@ func TestAppTurnSnapshotCompletedTurnClearsActiveSteeringTarget(t *testing.T) {
 	}
 	if len(turns[0].Items) != 0 {
 		t.Fatalf("steering attached to a completed turn: %+v", turns[0].Items)
+	}
+}
+
+func TestAppWireItemPagingSubscriptionCut(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "prompt"}})
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	t.Cleanup(httpServer.Close)
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+
+	var reads int
+	restore := apptranscript.InstallReadObserverForTesting(func(apptranscript.ReadStats) { reads++ })
+	t.Cleanup(restore)
+	response, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true, Subscribe: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1})
+	if err != nil {
+		t.Fatalf("item read: %v", err)
+	}
+	if response.PageUnit != appwire.TranscriptPageUnitItem || len(response.Thread.Turns) == 0 || len(response.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("item read response = %+v, want one positioned item fragment", response)
+	}
+	item := response.Thread.Turns[0].Items[0]
+	if item.TranscriptKey == "" || item.Position == nil {
+		t.Fatalf("item metadata = %+v, want transcript key and position", item)
+	}
+	if reads != 0 {
+		t.Fatalf("subscribed item read performed %d transcript read(s)", reads)
+	}
+}
+
+func TestPrepareAppIdentityUsesPersistedItemIndexIncarnation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_index"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	prepared, err := PrepareAppIdentityForRef("local", "th_index", "local:th_index", path)
+	if err != nil {
+		t.Fatalf("PrepareAppIdentityForRef: %v", err)
+	}
+	_, preparedIdentity, err := prepared.turns.LatestItemCandidates(40)
+	if err != nil {
+		t.Fatalf("prepared LatestItemCandidates: %v", err)
+	}
+	_, indexedIdentity, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: "local:th_index",
+		Limit:     40,
+	}, preparedItemProjector)
+	if err != nil {
+		t.Fatalf("indexed item window: %v", err)
+	}
+	if preparedIdentity.Incarnation == "" || preparedIdentity.Incarnation != indexedIdentity.Incarnation {
+		t.Fatalf("prepared incarnation=%q, indexed=%q; want persisted item-index identity", preparedIdentity.Incarnation, indexedIdentity.Incarnation)
+	}
+}
+
+func TestPrepareAppIdentityFromEntriesForPathUsesPersistedItemIndexIncarnation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_restore_index"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, indexedIdentity, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: "local:th_restore_index",
+		Limit:     40,
+	}, preparedItemProjector)
+	if err != nil {
+		t.Fatalf("indexed item window: %v", err)
+	}
+	writer, entries, err := transcript.OpenWriterForSession(path, "th_restore_index")
+	if err != nil {
+		t.Fatalf("OpenWriterForSession: %v", err)
+	}
+	defer writer.Close()
+	prepared, err := PrepareAppIdentityFromEntriesForPath("local", "th_restore_index", "local:th_restore_index", path, writer.Header(), entries)
+	if err != nil {
+		t.Fatalf("PrepareAppIdentityFromEntriesForPath: %v", err)
+	}
+	_, preparedIdentity, err := prepared.turns.LatestItemCandidates(40)
+	if err != nil {
+		t.Fatalf("prepared LatestItemCandidates: %v", err)
+	}
+	if preparedIdentity.Incarnation == "" || preparedIdentity.Incarnation != indexedIdentity.Incarnation {
+		t.Fatalf("restore prepared incarnation=%q, indexed=%q; want persisted item-index identity", preparedIdentity.Incarnation, indexedIdentity.Incarnation)
+	}
+}
+
+func TestPrepareAppIdentityFromEntriesRetainsFallbackIdentity(t *testing.T) {
+	entries := []transcript.Entry{{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hello"))}}
+	prepared, err := PrepareAppIdentityFromEntries("local", "th_restore_fallback", "local:th_restore_fallback", transcript.Header{SessionID: "th_restore_fallback"}, entries)
+	if err != nil {
+		t.Fatalf("PrepareAppIdentityFromEntries: %v", err)
+	}
+	_, identity, err := prepared.turns.LatestItemCandidates(40)
+	if err != nil {
+		t.Fatalf("prepared LatestItemCandidates: %v", err)
+	}
+	if identity.Incarnation == "" || !strings.HasPrefix(identity.Incarnation, "appwire-prepared-v") {
+		t.Fatalf("fallback incarnation=%q; want documented prepared fallback", identity.Incarnation)
+	}
+}
+
+func TestPrepareAppIdentityWithPreludeReservesLiveEntryCoordinate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_prelude_index", SystemPrompt: "system"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	prepared, err := PrepareAppIdentityForRef("local", "th_prelude_index", "local:th_prelude_index", path)
+	if err != nil {
+		t.Fatalf("PrepareAppIdentityForRef: %v", err)
+	}
+	started, err := json.Marshal(appwire.TurnStartedParams{ThreadID: "th_prelude_index", Turn: appwire.Turn{ID: "turn_live", Status: appwire.TurnStatusInProgress}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := json.Marshal(appwire.ItemLifecycleParams{TurnID: "turn_live", Item: appwire.ThreadItem{
+		ID: "live_item", TurnID: "turn_live", Type: "agentMessage", Status: appwire.TurnStatusCompleted, Text: "live",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.turns.Apply([]appserver.SequencedNotification{
+		{Seq: 1, Notification: appwire.Notification{Method: appwire.NotifyTurnStarted, Params: started}},
+		{Seq: 2, Notification: appwire.Notification{Method: appwire.NotifyItemStarted, Params: item}},
+	})
+	window, _, err := prepared.turns.LatestItemCandidates(40)
+	if err != nil {
+		t.Fatalf("LatestItemCandidates: %v", err)
+	}
+	if len(window.Candidates) != 3 {
+		t.Fatalf("candidate count=%d, want prelude, persisted, and live items", len(window.Candidates))
+	}
+	if got := window.Candidates[0].Position; got != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) {
+		t.Fatalf("prelude position=%+v, want (0,0)", got)
+	}
+	if got := window.Candidates[1].Position; got != (appwire.ThreadItemPosition{Entry: 1, Item: 0}) {
+		t.Fatalf("persisted position=%+v, want (1,0)", got)
+	}
+	if got := window.Candidates[2].Position; got != (appwire.ThreadItemPosition{Entry: 2, Item: 0}) {
+		t.Fatalf("live position=%+v, want entry 2 after one persisted entry and reserved prelude", got)
 	}
 }

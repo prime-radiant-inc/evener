@@ -13,13 +13,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -62,6 +66,35 @@ func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppI
 type prepareAppIdentitySource struct {
 	turns            []appwire.Turn
 	persistedEntries int
+	threadRef        string
+	incarnation      string
+}
+
+var preparedAppIncarnationSerial atomic.Uint64
+
+// preparedTranscriptItemCache is used only while an identity is prepared. It
+// gives the live snapshot the same rebuildable item-index incarnation that a
+// saved item read will return later, without making any RPC read path touch the
+// transcript file.
+var preparedTranscriptItemCache = apptranscript.NewTurnCache()
+
+func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	if entryIndex <= 0 {
+		return nil
+	}
+	items := apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+	return positionAppItems(items, turnID, uint64(entryIndex-1))
+}
+
+func preparedItemIndexIncarnation(path, threadRef string) (string, error) {
+	_, identity, err := preparedTranscriptItemCache.LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: threadRef,
+		Limit:     40,
+	}, preparedItemProjector)
+	if err != nil {
+		return "", err
+	}
+	return identity.Incarnation, nil
 }
 
 // fromTranscriptFile is the file-reading source. A missing transcript is not
@@ -69,7 +102,7 @@ type prepareAppIdentitySource struct {
 // transcript whose header names a DIFFERENT session is an error -- seeding
 // one thread from another thread's history would publish a conversation
 // that never happened.
-func fromTranscriptFile(threadID, transcriptPath string) (prepareAppIdentitySource, error) {
+func fromTranscriptFile(threadID, threadRef, transcriptPath string) (prepareAppIdentitySource, error) {
 	var out prepareAppIdentitySource
 	if path := strings.TrimSpace(transcriptPath); path != "" {
 		header := transcriptHeader(path, appTranscriptMaxLineBytes)
@@ -82,6 +115,14 @@ func fromTranscriptFile(threadID, transcriptPath string) (prepareAppIdentitySour
 		}
 		out.turns = projected
 		out.persistedEntries = entries
+		if err == nil {
+			incarnation, identityErr := preparedItemIndexIncarnation(path, threadRef)
+			if identityErr != nil {
+				return out, identityErr
+			}
+			out.threadRef = threadRef
+			out.incarnation = incarnation
+		}
 	}
 	return out, nil
 }
@@ -105,27 +146,36 @@ func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (P
 	if parsedRef.SourceID != sourceID {
 		return PreparedAppIdentity{}, fmt.Errorf("app identity ref belongs to source %s, not %s", parsedRef.SourceID, sourceID)
 	}
-	source, err := fromTranscriptFile(threadID, transcriptPath)
+	source, err := fromTranscriptFile(threadID, parsedRef.String(), transcriptPath)
 	if err != nil {
 		return PreparedAppIdentity{}, err
 	}
 	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, source)
 }
 
-// PrepareAppIdentityFromEntries is PrepareAppIdentityForRef for the resume
-// path: it projects the SAME transcript the session restore just
-// strict-decoded, instead of re-reading and re-decoding the file. header and
-// entries must come from that restore pass (OpenWriterForSession's resume
-// reader), which already validated the header's SessionID against threadID --
-// so a transcript naming a different session cannot reach this point, and
-// the error contract of the file form (a mismatch is an error) is preserved
-// by construction rather than by re-reading. Callers that cannot prove
-// that validation must use the file form.
+// PrepareAppIdentityFromEntries is the sidecar-free resume wrapper: it projects
+// the SAME transcript the session restore just strict-decoded, instead of
+// re-reading and re-decoding the file. header and entries must come from that
+// restore pass (OpenWriterForSession's resume reader), which already validated
+// the header's SessionID against threadID. Because this wrapper has no path, it
+// uses a prepared process-local incarnation; callers that have the transcript
+// path should use PrepareAppIdentityFromEntriesForPath instead.
 //
-// Everything else -- ref parsing, turn seeding, projector construction, and
-// the fence of live turn ids above the seeded ones -- is identical to
-// PrepareAppIdentityForRef.
+// Ref parsing, turn seeding, projector construction, and the fence of live turn
+// ids above the seeded ones are identical to PrepareAppIdentityForRef.
 func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	return prepareAppIdentityFromEntries(sourceID, threadID, ref, "", header, entries)
+}
+
+// PrepareAppIdentityFromEntriesForPath is the path-aware resume form. The
+// entries are still the already strict-decoded restore result; transcriptPath
+// is consulted only so the prepared live snapshot can reuse the persisted
+// item-index incarnation instead of minting a process-local cursor generation.
+func PrepareAppIdentityFromEntriesForPath(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
+	return prepareAppIdentityFromEntries(sourceID, threadID, ref, transcriptPath, header, entries)
+}
+
+func prepareAppIdentityFromEntries(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (PreparedAppIdentity, error) {
 	if sourceID == "" {
 		sourceID = "local"
 	}
@@ -146,15 +196,36 @@ func PrepareAppIdentityFromEntries(sourceID, threadID, ref string, header transc
 	if err != nil {
 		return PreparedAppIdentity{}, err
 	}
-	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, prepareAppIdentitySource{turns: turns, persistedEntries: persisted})
+	source := prepareAppIdentitySource{turns: turns, persistedEntries: persisted}
+	if path := strings.TrimSpace(transcriptPath); path != "" {
+		incarnation, err := preparedItemIndexIncarnation(path, parsedRef.String())
+		if err != nil {
+			return PreparedAppIdentity{}, err
+		}
+		source.threadRef = parsedRef.String()
+		source.incarnation = incarnation
+	}
+	return finishPreparedAppIdentity(sourceID, threadID, parsedRef, source)
 }
 
 // finishPreparedAppIdentity validates the identity triple and installs the
 // projected source into a PreparedAppIdentity. It is the shared tail of
 // PrepareAppIdentityForRef and PrepareAppIdentityFromEntries.
 func finishPreparedAppIdentity(sourceID, threadID string, parsedRef appwire.Ref, source prepareAppIdentitySource) (PreparedAppIdentity, error) {
+	incarnation := source.incarnation
+	if incarnation == "" {
+		incarnation = fmt.Sprintf("appwire-prepared-v%d", preparedAppIncarnationSerial.Add(1))
+	}
+	threadRef := source.threadRef
+	if threadRef == "" {
+		threadRef = parsedRef.String()
+	}
 	snapshot := &appTurnSnapshot{threadID: threadID}
-	snapshot.Seed(source.turns)
+	nextEntry := uint64(source.persistedEntries)
+	if len(source.turns) > 0 && source.turns[0].ID == appwire.SystemPreludeTurnID {
+		nextEntry++
+	}
+	snapshot.Seed(appTurnSeed{Turns: source.turns, ThreadRef: threadRef, TranscriptIncarnation: incarnation, NextEntry: nextEntry})
 	// Fence the live turn ids above the seeded ones HERE, where the seed count
 	// is known, rather than waiting for the session's own SessionStart to carry
 	// it: nothing orders that event ahead of the first turn-starting request,
@@ -985,28 +1056,32 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 }
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if err := appwire.ValidateThreadReadParams(params); err != nil {
+		return appwire.ThreadReadResponse{}, err
+	}
 	if !params.Subscribe {
-		return s.appThreadReadSnapshot(params), nil
+		return s.appThreadReadSnapshotChecked(params)
 	}
 	threadID := s.appThreadIDForRead(params)
 	if threadID == "" {
 		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
 	var response appwire.ThreadReadResponse
+	var readErr error
 	captured := appserver.CaptureSubscription(
 		ctx,
 		params.ReplaceSubscription,
 		func() string { return s.appNotificationTarget(threadID) },
 		s.appNotifier.CurrentSequence,
 		func() bool {
-			response = s.appThreadReadSnapshot(params)
+			response, readErr = s.appThreadReadSnapshotChecked(params)
 			return true
 		},
 	)
 	if !captured {
 		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 	}
-	return response, nil
+	return response, readErr
 }
 
 // appThreadReadSnapshot answers entirely from memory. It runs under the
@@ -1031,16 +1106,36 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // this is a struct copy, and the Server holds no callback that could reach a
 // session from a read path.
 func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
+	response, _ := s.appThreadReadSnapshotChecked(params)
+	return response
+}
+
+func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	threadID := s.appThreadIDForRead(params)
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {
-		return appwire.ThreadReadResponse{}
+		return appwire.ThreadReadResponse{}, nil
 	}
 	var olderCursor string
 	if params.IncludeTurns {
-		thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
+		if params.PageUnit == appwire.TranscriptPageUnitItem {
+			var err error
+			thread.Turns, olderCursor, err = s.appLatestItemTurns(thread.ID, params.ItemLimit)
+			if err != nil {
+				return appwire.ThreadReadResponse{}, err
+			}
+		} else {
+			thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
+		}
 	}
-	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+	response := appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
+	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		response.PageUnit = appwire.TranscriptPageUnitItem
+		if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+	}
+	return response, nil
 }
 
 // handleAppThreadUnsubscribe drops the calling connection's subscription to
@@ -1197,6 +1292,22 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 	return snapshot.Latest(limit)
 }
 
+func (s *Server) appLatestItemTurns(threadID string, limit int) ([]appwire.Turn, string, error) {
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return nil, "", nil
+	}
+	window, _, err := snapshot.LatestItemCandidates(limit)
+	if err != nil {
+		return nil, "", err
+	}
+	turns, err := appitempaging.RegroupTurnFragments(appitempaging.NormalizeProjectedItemCompleteness(window.Candidates))
+	if err != nil {
+		return nil, "", err
+	}
+	return turns, window.OlderCursor, nil
+}
+
 // appPageTurns pages backward through the installed snapshot from cursor.
 func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
 	snapshot := s.appTurnSnapshotForID(threadID)
@@ -1210,9 +1321,31 @@ func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.Thread
 // loading. The web client seeds the latest window via thread/read(TurnLimit)
 // and walks back with this as the user scrolls up.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
+	}
+	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		snapshot := s.appTurnSnapshotForID(threadID)
+		if snapshot == nil {
+			return appwire.ThreadTurnsListResponse{PageUnit: appwire.TranscriptPageUnitItem}, nil
+		}
+		window, _, err := snapshot.PreviousItemCandidates(params.Cursor, params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		turns, err := appitempaging.RegroupTurnFragments(appitempaging.NormalizeProjectedItemCompleteness(window.Candidates))
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		response := appwire.ThreadTurnsListResponse{Data: turns, NextCursor: window.OlderCursor, PageUnit: appwire.TranscriptPageUnitItem}
+		if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		return response, nil
 	}
 	return s.appPageTurns(threadID, params.Cursor, params.Limit), nil
 }

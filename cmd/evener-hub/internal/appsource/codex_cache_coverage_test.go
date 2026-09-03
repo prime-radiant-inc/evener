@@ -114,10 +114,12 @@ func TestCloneCodexCachedTurnNoError(t *testing.T) {
 func TestCloneCodexCachedItem(t *testing.T) {
 	startedAt := int64(500)
 	exitCode := int64(0)
+	position := appwire.ThreadItemPosition{Entry: 7, Item: 3}
 	item := appwire.ThreadItem{
 		Type:      "commandExecution",
 		StartedAt: &startedAt,
 		ExitCode:  &exitCode,
+		Position:  &position,
 		Raw:       json.RawMessage(`{"x":1}`),
 		Images: []appwire.InputItem{
 			{Data: []byte("img"), Metadata: map[string]string{"w": "10"}},
@@ -134,6 +136,10 @@ func TestCloneCodexCachedItem(t *testing.T) {
 	*clone.StartedAt = 999
 	if *item.StartedAt != 500 {
 		t.Fatal("original StartedAt should be unaffected")
+	}
+	clone.Position.Entry = 99
+	if item.Position.Entry != 7 {
+		t.Fatal("original Position should be unaffected by clone modification")
 	}
 	if clone.ExitCode == nil || *clone.ExitCode != 0 {
 		t.Fatal("ExitCode should be cloned")

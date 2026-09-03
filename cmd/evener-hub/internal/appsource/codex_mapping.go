@@ -25,7 +25,7 @@ func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {
 func mapCodexTurn(turn codexTurn) appwire.Turn {
 	out := appwire.Turn{
 		ID:          turn.ID,
-		ItemsView:   envvars.FirstNonEmpty(turn.ItemsView, "full"),
+		ItemsView:   appwire.TurnItemsView(envvars.FirstNonEmpty(turn.ItemsView, "full")),
 		Status:      mapCodexTurnStatus(turn.Status),
 		StartedAt:   turn.StartedAt,
 		CompletedAt: turn.CompletedAt,

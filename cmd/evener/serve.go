@@ -155,10 +155,11 @@ type serveDeps struct {
 	prepareAppIdentity func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error)
 	// prepareAppIdentityFromEntries is the resume-path form of
 	// prepareAppIdentity: same projection from the entries restore already
-	// decoded instead of a second file read. Injectable for the same reason —
-	// the resume branch below bypasses prepareAppIdentity, so without this
-	// seam no test can observe which form ran.
-	prepareAppIdentityFromEntries func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
+	// decoded, with the transcript path available to reuse the persisted item
+	// index incarnation. Injectable for the same reason — the resume branch
+	// below bypasses prepareAppIdentity, so without this seam no test can
+	// observe which form ran.
+	prepareAppIdentityFromEntries func(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
 	updateSessionID               func(*rvreg.Registration, string) error
 	observeCallbacks              func(serveCallbackObserver)
 }
@@ -203,7 +204,7 @@ func defaultServeDeps() serveDeps {
 		provisionSandbox:              provisionSandbox,
 		newClearSession:               agent.NewSession,
 		prepareAppIdentity:            server.PrepareAppIdentityForRef,
-		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntries,
+		prepareAppIdentityFromEntries: server.PrepareAppIdentityFromEntriesForPath,
 		updateSessionID:               func(r *rvreg.Registration, id string) error { return r.UpdateSessionID(id) },
 	}
 }
@@ -614,7 +615,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// OpenWriterForSession pass) and validated its header against the
 		// session id; projecting from those entries keeps the daemon's
 		// startup from re-reading and re-decoding the whole append-only file.
-		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, header, entries)
+		prepared, err = deps.prepareAppIdentityFromEntries("local", sess.ID(), workspaceRef, sess.TranscriptPath(), header, entries)
 	} else {
 		prepared, err = deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	}

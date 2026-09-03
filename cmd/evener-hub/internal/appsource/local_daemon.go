@@ -24,6 +24,9 @@ type LocalDaemonSource struct {
 	client   *http.Client
 	dial     appwireDialFunc
 
+	itemPagingLocks keyedMutexRegistry
+	itemSnapshots   *itemSnapshotStateCache
+
 	relayMu       sync.Mutex
 	relaySessions map[string]*relaySession
 	legacyRelays  map[string]legacyRelayRead
@@ -87,6 +90,7 @@ func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaem
 		entries:       entries,
 		client:        client,
 		dial:          defaultAppwireDial,
+		itemSnapshots: newItemSnapshotStateCache(defaultItemSnapshotStateEntries),
 		relaySessions: map[string]*relaySession{},
 		legacyRelays:  map[string]legacyRelayRead{},
 	}
@@ -915,6 +919,14 @@ func localDaemonWorkspaceRef(sourceID string, entry rendezvous.Entry, threadID s
 		return ref.String()
 	}
 	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+}
+
+func localDaemonItemDaemonIdentity(entry rendezvous.Entry) string {
+	instanceID := strings.TrimSpace(entry.InstanceID)
+	if instanceID == "" {
+		instanceID = strings.TrimSpace(entry.SessionID)
+	}
+	return fmt.Sprintf("instance=%s;pid=%d;started=%s;endpoint=%s", instanceID, entry.PID, entry.StartedAt.UTC().String(), strings.TrimSpace(entry.Endpoint))
 }
 
 func localDaemonThreadID(item LocalDaemonEntry) string {

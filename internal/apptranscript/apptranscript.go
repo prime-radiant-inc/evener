@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 )
@@ -769,6 +770,20 @@ func persistedTurnID(turn schema.Turn, entryIndex int) string {
 		return turn.StableTurnID
 	}
 	return fmt.Sprintf("turn_%d", entryIndex)
+}
+
+func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOrdinal uint64) ([]appwire.ThreadItem, error) {
+	if uint64(len(items)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("projected item count for entry ordinal %d exceeds uint32", entryOrdinal)
+	}
+	positioned := make([]appwire.ThreadItem, len(items))
+	for i, item := range items {
+		position := appwire.ThreadItemPosition{Entry: entryOrdinal, Item: uint32(i)}
+		item.Position = &position
+		item.TranscriptKey = appitempaging.TranscriptItemKey(turnID, position)
+		positioned[i] = item
+	}
+	return positioned, nil
 }
 
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
