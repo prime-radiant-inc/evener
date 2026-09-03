@@ -92,14 +92,14 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		if err != nil {
 			return "", "", err
 		}
-		if staging == "" {
+		if staging == nil {
 			return dest, dest, nil
 		}
-		scratch = append(scratch, staging)
-		if err := os.CopyFS(staging, mustSubFS(bundled.Plugins(), name)); err != nil {
+		scratch = append(scratch, staging.dir)
+		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return "", "", fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
-		return staging, dest, nil
+		return staging.payload, dest, nil
 	})
 }
 
@@ -220,13 +220,46 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 }
 
 // stagingPrefix names the private directory a publish copies into before
-// renaming it into place. abandonedStaging is how stale such a directory must
-// be before a later publish reclaims it: orders of magnitude longer than the
-// copy it names, so a publish in flight is never disturbed.
+// renaming it into place, and stagingMarker is the file inside it that proves
+// this code created it. abandonedStaging is how stale such a directory must be
+// before a later publish reclaims it: orders of magnitude longer than the copy
+// it names, so a publish in flight is never disturbed.
 const (
 	stagingPrefix    = ".stage-"
+	stagingMarker    = ".evener-staging"
 	abandonedStaging = time.Hour
 )
+
+// bundledStaging is a private directory in the bundled store that a publish
+// fills and then renames into place. The copy lives in payload, one level
+// below the marked directory, so publishing renames the copy alone and the
+// marker never lands inside a published plugin.
+type bundledStaging struct {
+	dir     string
+	payload string
+}
+
+// newBundledStaging opens a staging directory for base inside store and marks
+// it as this code's to reclaim before anything is copied in, so a publish
+// killed at any moment leaves an orphan a later sweep recognizes.
+func newBundledStaging(store, base string) (*bundledStaging, error) {
+	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, stagingMarker), nil, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	payload := filepath.Join(dir, "payload")
+	// Created with the staging directory's own mode: a published copy keeps
+	// the private mode MkdirTemp gave it rather than CopyFS's 0o777 default.
+	if err := os.Mkdir(payload, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return &bundledStaging{dir: dir, payload: payload}, nil
+}
 
 // materializeBundledPlugin publishes the bundled plugin named name under the
 // store root as <Root>/bundled/<name>-<digest>, where digest covers the
@@ -240,15 +273,14 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if staging == "" {
+	if staging == nil {
 		return dest, nil
 	}
-	if err := os.CopyFS(staging, mustSubFS(bundled.Plugins(), name)); err != nil {
-		_ = os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging.dir) }()
+	if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
-	if err := os.Rename(staging, dest); err != nil {
-		_ = os.RemoveAll(staging)
+	if err := os.Rename(staging.payload, dest); err != nil {
 		if winner, statErr := publishedBundledCopy(dest); statErr == nil && winner {
 			return dest, nil
 		}
@@ -259,31 +291,31 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 
 // prepareBundledStore readies <Root>/bundled to hold the bundled plugin named
 // name. It returns the published destination and, when nothing is published
-// there yet, a private staging directory to fill; staging is empty for a copy
+// there yet, a private staging directory to fill; staging is nil for a copy
 // that is already published. Creating that directory is what proves the store
 // can be published into, so a launch and a preview that share this preparation
 // fail identically on a store neither can write.
-func (m *Manager) prepareBundledStore(name string) (dest, staging string, err error) {
+func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, error) {
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
-	dest = m.bundledPluginPath(name, digest)
+	dest := m.bundledPluginPath(name, digest)
 	published, err := publishedBundledCopy(dest)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	if published {
-		return dest, "", nil
+		return dest, nil, nil
 	}
 	store := filepath.Dir(dest)
 	if err := os.MkdirAll(store, 0o755); err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	m.reclaimAbandonedStaging(store)
-	staging, err = os.MkdirTemp(store, stagingPrefix+filepath.Base(dest)+"-")
+	staging, err := newBundledStaging(store, filepath.Base(dest))
 	if err != nil {
-		return "", "", fmt.Errorf("stage bundled plugin %s: %w", name, err)
+		return "", nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
 	return dest, staging, nil
 }
@@ -308,9 +340,10 @@ func publishedBundledCopy(dest string) (bool, error) {
 
 // reclaimAbandonedStaging removes staging directories orphaned by a publish
 // that was killed before its rename. Staging lives in the store so the rename
-// stays on one filesystem, so nothing else would ever collect them. Only a
-// real directory is swept: staging is always one, so anything else wearing the
-// prefix came from elsewhere and is not this code's to remove.
+// stays on one filesystem, so nothing else would ever collect them. Only this
+// code's own staging is swept: a real directory, wearing the prefix, holding
+// the marker a publish writes before it copies anything. Anything else at that
+// name is someone else's data, however old it is.
 func (m *Manager) reclaimAbandonedStaging(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -320,12 +353,16 @@ func (m *Manager) reclaimAbandonedStaging(dir string) {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
 			continue
 		}
+		staging := filepath.Join(dir, entry.Name())
+		if _, err := os.Lstat(filepath.Join(staging, stagingMarker)); err != nil {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil || m.now().Sub(info.ModTime()) < abandonedStaging {
 			continue
 		}
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
-		_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
+		_ = os.RemoveAll(staging)
 	}
 }
 

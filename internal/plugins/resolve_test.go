@@ -326,6 +326,11 @@ func TestMaterializeBundledPlugin_PublishesContentAddressedDir(t *testing.T) {
 	if len(res.Candidates) != 1 || res.Candidates[0].Path != want {
 		t.Fatalf("Candidates = %+v, want Path %s", res.Candidates, want)
 	}
+	// The published copy is the embedded plugin and nothing else: the marker
+	// that makes staging reclaimable stays behind in the staging directory.
+	if _, err := os.Stat(filepath.Join(want, stagingMarker)); !os.IsNotExist(err) {
+		t.Fatalf("published copy carries the staging marker (stat err = %v)", err)
+	}
 }
 
 func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
@@ -563,13 +568,18 @@ func TestMaterializeBundledPlugin_RejectsAForeignDestination(t *testing.T) {
 
 // A publish killed between staging and rename leaves an orphan directory in
 // the store; the next publish reclaims it. Staging a live publisher may still
-// be filling is left alone.
+// be filling, and a directory this code never staged, are left alone.
 func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
-	plantStaging := func(t *testing.T, m *Manager) string {
+	plantStaging := func(t *testing.T, m *Manager, marked bool) string {
 		t.Helper()
 		staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
 		if err := os.MkdirAll(staging, 0o755); err != nil {
 			t.Fatal(err)
+		}
+		if marked {
+			if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return staging
 	}
@@ -577,7 +587,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 	t.Run("abandoned staging is reclaimed", func(t *testing.T) {
 		m := NewManager(t.TempDir())
 		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
-		staging := plantStaging(t, m)
+		staging := plantStaging(t, m, true)
 		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
@@ -588,12 +598,28 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 
 	t.Run("staging in flight is left alone", func(t *testing.T) {
 		m := NewManager(t.TempDir())
-		staging := plantStaging(t, m)
+		staging := plantStaging(t, m, true)
 		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(staging); err != nil {
 			t.Fatalf("staging of a concurrent publish was reclaimed: %v", err)
+		}
+	})
+
+	t.Run("an aged directory this code never staged is left alone", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+		staging := plantStaging(t, m, false)
+		keep := filepath.Join(staging, "someone-elses-data")
+		if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("the sweep removed a directory it never staged: %v", err)
 		}
 	})
 
