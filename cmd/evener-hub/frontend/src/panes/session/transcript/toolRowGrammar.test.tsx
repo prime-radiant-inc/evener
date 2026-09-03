@@ -685,19 +685,29 @@ test("an intent-only row trails its affordance on the disclosure line, not a lin
   // Exactly one rendering, in the intent-line slot, outside the trigger.
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
   expect(screen.getByTestId("tool-row-intent-trailing").contains(button)).toBe(true);
-  expect(screen.getByTestId("tool-row-trigger").contains(button)).toBe(false);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const intent = screen.getByTestId("tool-row-intent");
+  const chevron = screen.getByTestId("tool-row-chevron");
+  expect(trigger.contains(button)).toBe(false);
+  expect(trigger.contains(chevron)).toBe(false);
+  // Valid sibling controls in binding visual order: intent text, Open,
+  // aria-hidden chevron. The overlay trigger still owns disclosure semantics.
+  expect(intent.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(button.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   // No second line at all: nothing renders a summary element or summaryLine.
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(row.getAttribute("data-intent-trailing")).toBe("true");
-  // The stylesheet keeps trigger and control on one line: the trigger's
-  // max-width reserves the control's width plus the row's column-gap, and
+  // The stylesheet keeps visible intent content, control, and chevron on one
+  // line: the content's max-width reserves both trailing items and both gaps,
   // flex line-breaking is decided on hypothetical main sizes (the base size
   // CLAMPED by max-width), so a long intent wraps inside the trigger instead
   // of the control wrapping to its own line - the regression a layoutguard
   // geometry case (delegate-open-widget-inline) pins, since jsdom computes
   // no cascade and can't see the wrap.
   const css = rowCss();
-  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*0 1 auto/);
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
 });
 
 // Without an affordance an intent-only row changes shape not at all: no
@@ -1646,10 +1656,10 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
 
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "toolcallitem.module.css"), "utf8");
 
-test("the intent-trailing trigger reserves the control's width instead of growing past it", () => {
-  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s+\.trigger\s*\{[^}]*flex:\s*0 1 auto/);
+test("the intent-trailing content reserves Open and chevron instead of growing past them", () => {
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
   expect(css).toMatch(
-    /\.row\[data-intent-trailing="true"\]\s+\.trigger\s*\{[^}]*max-width:\s*calc\(100% - var\(--tap-min, 28px\) - var\(--space-2\)\)/,
+    /\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width:\s*calc\(100% - var\(--tap-min, 28px\) - 14px - var\(--space-2\) - var\(--space-2\)\)/,
   );
 });
 

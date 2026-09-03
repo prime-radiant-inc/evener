@@ -217,6 +217,27 @@ test("a valid local child ref opens the shared transcript action beside the focu
   expect(opened?.slot).toBe("secondary");
 });
 
+test("binds Open to the final notification text fragment instead of permitting a lone control line", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        secondary:
+          "Inspect the complete delegated implementation and verify every browser geometry invariant before reporting",
+        transcriptRef: "local:child",
+      })}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Open subagent" });
+  const openTrailing = button.parentElement?.parentElement;
+  const secondaryTail = openTrailing?.parentElement;
+  const headingText = secondaryTail?.parentElement?.parentElement;
+  expect(secondaryTail?.textContent).toContain("reporting");
+  expect(secondaryTail?.contains(button)).toBe(true);
+  expect(headingText?.contains(screen.getByText("Job completed"))).toBe(true);
+  expect(headingText?.contains(screen.getByText(/Inspect the complete delegated/))).toBe(true);
+  // Real line geometry is pinned by layoutguard/notification-open-last-line.
+});
+
 test("opening a child restores the notification owner as main when an unrelated session is focused", async () => {
   workspaceStore.setState({
     panes: [

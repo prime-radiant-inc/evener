@@ -1,0 +1,19 @@
+{
+  "name": "activity-tree-open-hit-target",
+  "description": "The ActivityTree scrollport reserves enough block-edge inset for OpenButton's deliberate 28px desktop / 44px phone overhang. At both sizes, elementFromPoint reaches every near-corner of the first and last row's complete Open target, while the dense row remains shorter than that target.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/chrome/activitypanel.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 700, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "activitypanel.module.css: remove .panelColumn padding-block",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Without the block-edge inset, elementFromPoint misses the first target's top corners and the last target's bottom corners at both desktop and phone sizes."
+  }
+}

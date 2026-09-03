@@ -64,19 +64,40 @@
   flex: 1 1 100%;
 }
 
-/* data-intent-trailing marks an intent-only row whose trailing affordance
- * rides the disclosure line (ToolRow.tsx's grammar). flex: 0 1 auto, NOT
- * flex: 1 1 0: the control belongs immediately AFTER the intent text, and a
- * growing trigger springs it to the line's far end - the defect this rule
- * used to have. The max-width reserves the control's width plus the row's
- * column-gap: flex line-breaking is decided on hypothetical main sizes (the
- * base size CLAMPED by max-width), so a long intent still wraps INSIDE the
- * trigger and the control still shares line 1 (the layoutguard
- * delegate-open-widget-inline case pins exactly this). */
-.row[data-intent-trailing="true"] .trigger {
+.intentTriggerContent {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
+  pointer-events: none;
+}
+
+/* One semantic disclosure button still owns the full intent-only line,
+ * including the chevron after Open. Its visible siblings ignore pointer input;
+ * the Open slot opts back in below and already stopPropagates. */
+.intentOverlayTrigger {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* data-intent-trailing marks an intent-only row whose trailing Open affordance
+ * rides the disclosure line (ToolRow.tsx's grammar). The visible content is a
+ * sibling of the overlay trigger so its valid DOM order can be text, Open,
+ * chevron. flex: 0 1 auto, NOT flex: 1 1 0: the control belongs immediately
+ * AFTER the intent text, and growing this content springs it to the line's far
+ * end. The max-width reserves Open, the 14px chevron, and both column gaps:
+ * flex line-breaking uses hypothetical main sizes (the base size CLAMPED by
+ * max-width), so a long intent wraps INSIDE this content and all three items
+ * share line 1 (delegate-open-widget-inline pins both regressions). */
+.row[data-intent-trailing="true"] .intentTriggerContent {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: calc(100% - var(--tap-min, 28px) - var(--space-2));
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--space-2) - var(--space-2));
 }
 
 .summaryLine {
@@ -365,6 +386,8 @@
  * baseline-aligned with the rationale like every other line-mate; the row's
  * own column-gap separates it from the trigger. */
 .intentTrailing {
+  position: relative;
+  z-index: var(--z-raised);
   display: inline-flex;
   flex: none;
 }
@@ -429,6 +452,13 @@
  * prevent the button from adding 8px to the row's width. */
 .bodyTrigger .chevron {
   margin-left: 0;
+}
+
+.row[data-intent-trailing="true"] > .chevron {
+  position: relative;
+  flex: none;
+  margin-left: 0;
+  pointer-events: none;
 }
 
 /* The expanded body: hairline-framed, --surface-1, no heavy fill. */

@@ -6,7 +6,7 @@
 // THE ROW GRAMMAR, two lines when an intent exists (one otherwise):
 //
 //     rail:   [kind icon, 50%]            (in the gutter, beside line 1)
-//     line 1: [✗ failure glyph?] [status?] intent[chevron inline]
+//     line 1: [✗ failure glyph?] [status?] intent[Open?][chevron inline]
 //     line 2: verb target [· meta] [affordances]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
@@ -31,10 +31,9 @@
 //     than one full line plus one clamped one.
 //   - the chevron rides INLINE at the end of the headline text - inside the
 //     intent when there is one, otherwise inside the summary - wrapping with
-//     the words it opens. It is never a flex item of the row: right-justified
-//     at the end of the line it sat a column of whitespace away from its own
-//     rationale (Jesse's review call), the very defect the trailing placement
-//     was supposed to fix;
+//     the words it opens. The intent-only Open variant is the exception: its
+//     valid sibling order is intent, Open, chevron (never Open beyond the
+//     disclosure arrow), with one overlay trigger owning the whole line;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the intent is the agent's own stated reason for the call
@@ -48,10 +47,11 @@
 //     when there is one, which - with an intent present - is the demoted
 //     second line, not the rationale line. An intent-only row (no summary)
 //     trails the control on the intent line instead, the one line it has: a
-//     sibling flex item directly AFTER the trigger (never nested inside it -
-//     a button inside a button is not valid), kept adjacent by the
-//     [data-intent-trailing] trigger's flex:0 1 auto + max-width reservation
-//     (toolcallitem.module.css) - never sprung to the line's far end. The one
+//     sibling flex item directly AFTER the trigger's visible content (never
+//     nested inside the overlay trigger - a button inside a button is not
+//     valid), kept adjacent by the [data-intent-trailing] content's
+//     flex:0 1 auto + max-width reservation (toolcallitem.module.css) - never
+//     sprung to the line's far end. The one
 //     exception: a descriptor whose summary quotes its target verbatim
 //     (read_file's openBesideInline) anchors the control mid-summary via
 //     trailingAfter - between the file name and the line range it opens.
@@ -66,6 +66,8 @@ import styles from "./toolcallitem.module.css";
 const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
   trigger: requireClass(styles.trigger, "toolcallitem.module.css", "trigger"),
+  intentTriggerContent: requireClass(styles.intentTriggerContent, "toolcallitem.module.css", "intentTriggerContent"),
+  intentOverlayTrigger: requireClass(styles.intentOverlayTrigger, "toolcallitem.module.css", "intentOverlayTrigger"),
   summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
@@ -279,9 +281,9 @@ export function ToolRow({
     return [trailingAfter, summary.slice(trailingAfter.length)];
   })();
   // The chevron rides INLINE at the end of the headline text (see the grammar
-  // above): inside the intent when there is one, otherwise inside the
-  // summary - never a flex item of the row, so nothing can justify it away
-  // from the words it opens.
+  // above): inside the intent when there is one, otherwise inside the summary.
+  // The intent-only Open form moves it after the sibling control below so Open
+  // can never land on the far side of the disclosure arrow.
   const chevron = expandable ? (
     <span
       className={CLASS.chevron}
@@ -314,9 +316,10 @@ export function ToolRow({
   // An intent-only row has no tool-call line for affordances to ride, so they
   // ride the DISCLOSURE line - the one line it has (see the grammar above).
   // The disclosure trigger is a <button>, so the control cannot nest inside
-  // it: the slot follows the trigger as a sibling flex item of the row, and
-  // data-intent-trailing on the row is the stylesheet's hook for letting the
-  // two share line 1.
+  // it. The intent-only variant therefore uses a full-line overlay trigger;
+  // its visible content, the control, and the aria-hidden chevron are valid
+  // siblings in exactly that visual order. data-intent-trailing is the
+  // stylesheet hook that keeps all three on line 1.
   const intentLineTrailing =
     hasIntent && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
       <span className={CLASS.intentTrailing} data-testid="tool-row-intent-trailing">
@@ -530,7 +533,29 @@ export function ToolRow({
       data-intent-trailing={showIntentTrailing || bodyTriggerOnIntentLine ? "true" : undefined}
       title={title}
     >
-      {hasIntent ? (
+      {hasIntent && showIntentTrailing ? (
+        <>
+          <button
+            type="button"
+            className={`${CLASS.trigger} ${CLASS.intentOverlayTrigger}`}
+            data-testid="tool-row-trigger"
+            aria-expanded={triggerExpanded}
+            aria-controls={triggerControls}
+            aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
+            onClick={triggerOnClick}
+          />
+          <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
+            {iconNode}
+            {failureNode}
+            {statusNode}
+            <span className={CLASS.intent} data-testid="tool-row-intent">
+              {statedIntent}
+            </span>
+          </span>
+          {intentLineTrailing}
+          {chevron}
+        </>
+      ) : hasIntent ? (
         <button
           type="button"
           className={CLASS.trigger}
@@ -554,7 +579,7 @@ export function ToolRow({
           {statusNode}
         </>
       )}
-      {intentLineTrailing}
+      {!showIntentTrailing && intentLineTrailing}
       {bodyTriggerOnIntentLine && bodyTriggerButton}
       {!hasIntent && <div className={CLASS.summaryLine}>{summaryContent}</div>}
       {!hasIntent && (

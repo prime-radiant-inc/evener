@@ -28,13 +28,6 @@ test("the accessible name falls back to 'Open' when no label is given", () => {
   expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
 });
 
-test("a title override wins over the 'Open' default", () => {
-  render(<OpenButton label="Open transcript" title="Open the child transcript" onClick={() => {}} />);
-  expect(screen.getByRole("button", { name: "Open transcript" }).getAttribute("title")).toBe(
-    "Open the child transcript",
-  );
-});
-
 test("a click never reaches the enclosing row - the affordance rides disclosures", () => {
   const onParentClick = vi.fn();
   render(

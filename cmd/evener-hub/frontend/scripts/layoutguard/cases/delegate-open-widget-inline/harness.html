@@ -38,10 +38,10 @@
      widgets/openbutton/openbutton.module.css:
 
        <div class="row" data-intent="true" data-intent-trailing="true">
-         <button class="trigger">
-           <span class="intent">{statedIntent}<span class="chevron"><Chevron/></span></span>
-         </button>
+         <button class="trigger intentOverlayTrigger"></button>
+         <span class="intentTriggerContent"><span class="intent">{statedIntent}</span></span>
          <span class="intentTrailing">{trailing open control}</span>
+         <span class="chevron"><Chevron/></span>
        </div>
 
      The trailing control is the icon-only OpenButton the delegate row renders
@@ -53,7 +53,10 @@
      must follow button.module.css in cssFiles: both define a plain .sm, and
      the icon-only square sizing (padding:0) only wins the cascade second.
 
-     Two intent lengths x two column widths:
+     The visible sibling order is text → Open → chevron. The empty trigger is
+     absolutely overlaid across the line, so it remains the one keyboard/click
+     disclosure target while the nested Open button stays a valid sibling and
+     opts back into pointer input. Two intent lengths x two column widths:
        short intent - already fits beside the control, so it is inline
          regardless of the trigger's flex-basis (it is not the binding case,
          but it must not regress either) AND the control hugs the intent's
@@ -78,18 +81,17 @@ const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden
 // the quiet Button's ink is what it inherits in production.
 const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
 
-// ToolRow.tsx's intent-only expandable branch: the trigger holds the intent
-// + inline chevron; the trailing control follows as a sibling flex item in
-// the .intentTrailing slot (data-intent-trailing="true" on the row).
+// ToolRow.tsx's intent-only expandable branch: one overlay trigger owns the
+// disclosure while visible trigger content, Open, and chevron are siblings.
 function delegateRowHtml(id, intent) {
   return `
     <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true">
-      <button type="button" class="trigger" id="trigger-${id}" aria-expanded="false">
+      <button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>
+      <span class="intentTriggerContent" id="trigger-content-${id}">
         <span class="intent" id="intent-${id}">
           ${intent}
-          <span class="chevron" aria-hidden="true" data-open="false">${CHEVRON_SVG}</span>
         </span>
-      </button>
+      </span>
       <span class="intentTrailing" id="trailing-${id}">
         <span class="inline">
           <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open">
@@ -97,6 +99,7 @@ function delegateRowHtml(id, intent) {
           </button>
         </span>
       </span>
+      <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="false">${CHEVRON_SVG}</span>
     </div>`;
 }
 
@@ -150,15 +153,10 @@ function firstLineBox(intentEl) {
   const rects = range.getClientRects();
   // An intent with no text would return nothing; the harness always has one.
   const first = rects[0];
-  // getClientRects returns one rect PER FRAGMENT, not one union per line:
-  // rects[0] is the text's own first fragment and its right edge stops at the
-  // last WORD - before the chevron's margin-left (8px) + 14px box, which ride
-  // the same line as later fragments. The vertical band (top/bottom) is the
-  // first fragment's (the chevron's 14px box stays inside the title
-  // line-height), but the RIGHT edge the adjacency check measures against is
-  // the whole first line, chevron included: union every fragment that
-  // overlaps line 1's vertical span. (Line 2's fragments begin exactly at
-  // line 1's bottom, so the strict-overlap test excludes them.)
+  // getClientRects returns one rect PER TEXT FRAGMENT. Union only text
+  // fragments on line 1: the chevron is deliberately a sibling after Open,
+  // and including it here was the old guard bug that blessed text → chevron →
+  // Open while claiming to measure adjacency from the intent text.
   let right = first.right;
   for (const r of rects) {
     if (r.top < first.bottom && r.bottom > first.top) right = Math.max(right, r.right);
@@ -170,8 +168,10 @@ window.measure = () => {
   return CONFIGS.map((c) => {
     const row      = document.getElementById(`row-${c.key}`);
     const trigger  = box(document.getElementById(`trigger-${c.key}`));
+    const triggerContent = box(document.getElementById(`trigger-content-${c.key}`));
     const trailing = box(document.getElementById(`trailing-${c.key}`));
     const open     = box(document.getElementById(`open-${c.key}`));
+    const chevron  = box(document.getElementById(`chevron-${c.key}`));
     const intentEl = document.getElementById(`intent-${c.key}`);
     const intent   = box(intentEl);
     const line1    = firstLineBox(intentEl);
@@ -181,21 +181,26 @@ window.measure = () => {
     // 1px tolerance absorbs rounding where line 2 meets line 1's bottom.
     const sameLine = open.top < line1.bottom - 1;
     // Adjacency: how far the control's left edge sits past the trigger's
-    // line-1 right edge (the intent text + its inline chevron, a Range
-    // rect). flex:0 1 auto keeps the trigger hugging its content, so the
+    // line-1 TEXT right edge (a Range rect; never the chevron). flex:0 1 auto
+    // keeps the visible trigger content hugging its text, so the
     // gap is exactly the row's column-gap; a growing trigger would spring
     // the control to the line's far end (a gap far larger than the
     // column-gap). The row's computed column-gap is measured, not assumed.
     const columnGap = parseFloat(getComputedStyle(row).columnGap);
     const controlLeftGap = open.left - line1.right;
+    const chevronHit = document.elementFromPoint(chevron.left + chevron.width / 2, chevron.top + chevron.height / 2);
+    const openElement = document.getElementById(`open-${c.key}`);
+    const openHit = document.elementFromPoint(open.left + open.width / 2, open.top + open.height / 2);
     return {
       id: c.key,
       label: c.label,
       width: c.width,
       shortIntent: c.shortIntent,
       trigger,
+      triggerContent,
       trailing,
       open,
+      chevron,
       intent,
       line1,
       sameLine,
@@ -204,6 +209,10 @@ window.measure = () => {
       dropBelowLine1: open.top - line1.bottom,
       columnGap,
       controlLeftGap,
+      controlPrecedesChevron: open.right <= chevron.left + 1,
+      chevronLeftGap: chevron.left - open.right,
+      chevronHitIsTrigger: Boolean(chevronHit && document.getElementById(`trigger-${c.key}`).contains(chevronHit)),
+      openHitIsOpen: Boolean(openHit && openElement.contains(openHit)),
     };
   });
 };

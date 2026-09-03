@@ -42,8 +42,12 @@ const CLASS = {
   disclosure: requireClass(styles.disclosure, "notificationcard.module.css", "disclosure"),
   root: requireClass(styles.root, "notificationcard.module.css", "root"),
   head: requireClass(styles.head, "notificationcard.module.css", "head"),
+  headingText: requireClass(styles.headingText, "notificationcard.module.css", "headingText"),
   title: requireClass(styles.title, "notificationcard.module.css", "title"),
   secondary: requireClass(styles.secondary, "notificationcard.module.css", "secondary"),
+  secondaryTail: requireClass(styles.secondaryTail, "notificationcard.module.css", "secondaryTail"),
+  secondaryTailText: requireClass(styles.secondaryTailText, "notificationcard.module.css", "secondaryTailText"),
+  openTrailing: requireClass(styles.openTrailing, "notificationcard.module.css", "openTrailing"),
   metadata: requireClass(styles.metadata, "notificationcard.module.css", "metadata"),
   field: requireClass(styles.field, "notificationcard.module.css", "field"),
   fieldLabel: requireClass(styles.fieldLabel, "notificationcard.module.css", "fieldLabel"),
@@ -57,6 +61,13 @@ const CLASS = {
 
 const EXCERPT_PREVIEW = 500;
 const MESSAGE_MAX = 8000;
+
+function splitTrailingWord(text: string): [leading: string, trailing: string] {
+  const match = /^(.*\s)(\S+)$/.exec(text);
+  const leading = match?.[1];
+  const trailing = match?.[2];
+  return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
+}
 
 // Only warning/error earn colour (attention/danger); success + neutral recede
 // with no chip at all (the done glyph is the same neutral as any other card).
@@ -173,6 +184,7 @@ export function NotificationCard({
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
+  const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   return (
     <details className={CLASS.disclosure} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
@@ -188,11 +200,39 @@ export function NotificationCard({
         }}
       >
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
-        <span className={CLASS.title}>{notification.title}</span>
-        {notification.secondary && <span className={CLASS.secondary}>{notification.secondary}</span>}
-        {transcriptRef && (
-          <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
-        )}
+        <span className={CLASS.headingText}>
+          {secondaryParts || !transcriptRef ? (
+            <span className={CLASS.title}>{notification.title}</span>
+          ) : (
+            <span className={CLASS.secondaryTail}>
+              <span className={`${CLASS.title} ${CLASS.secondaryTailText}`}>{notification.title}</span>
+              <span className={CLASS.openTrailing}>
+                <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
+              </span>
+            </span>
+          )}
+          {secondaryParts ? (
+            <span className={CLASS.secondary}>
+              {transcriptRef ? (
+                <>
+                  {secondaryParts[0]}
+                  <span className={CLASS.secondaryTail}>
+                    <span className={CLASS.secondaryTailText}>{secondaryParts[1]}</span>
+                    <span className={CLASS.openTrailing}>
+                      <OpenTranscriptButton
+                        transcriptRef={transcriptRef}
+                        parentRef={sessionRef}
+                        label="Open subagent"
+                      />
+                    </span>
+                  </span>
+                </>
+              ) : (
+                notification.secondary
+              )}
+            </span>
+          ) : null}
+        </span>
       </summary>
       {open && (
         <Card>

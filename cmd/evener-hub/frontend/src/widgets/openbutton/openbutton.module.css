@@ -20,9 +20,9 @@
  * margin-block hands exactly one text line back to layout, so a row with the
  * affordance is the height of a row without it. The margin is symmetric, so
  * the glyph does not move; min(0px, ...) means a font taller than the hit
- * size never earns a positive margin. The one container that would clip the
- * overhang - toolcallitem.module.css's .clamped - relaxes its clip with
- * overflow-clip-margin (see there). */
+ * size never earns a positive margin. Containers that clip an axis must leave
+ * room for the overhang: ToolRow's .clamped uses overflow-clip-margin, while
+ * ActivityTree's vertical scrollport reserves block-edge padding. */
 .inline {
   display: inline-flex;
   align-items: center;

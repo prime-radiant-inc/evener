@@ -1,6 +1,6 @@
 {
   "name": "delegate-open-widget-inline",
-  "description": "An intent-only tool row (the delegate/subagent card) keeps its 'open' control on the SAME line as the disclosure trigger AND immediately beside the intent text: the trigger is flex:0 1 auto with a max-width reserving the control's width plus the column-gap, so a long intent wraps INSIDE the trigger (hypothetical main sizes are clamped by max-width before line-breaking) while a short intent leaves the control hugging its end. Removing the max-width reservation lets a long intent claim the full line and wraps the control to line 2; restoring flex-grow springs the control to the line's far end, away from the item it opens.",
+  "description": "An intent-only tool row keeps visual order intent text → Open → chevron, with one overlay disclosure trigger and valid sibling controls. Open shares line 1, is measured adjacent to the TEXT edge (never a chevron-unioned edge), and precedes the chevron. Visible content is flex:0 1 auto with a max-width reserving Open, chevron, and both gaps: removing the reservation wraps the trailing items, while restoring flex-grow springs them away from the text.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -11,9 +11,9 @@
   ],
   "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
-    "declaration": "toolcallitem.module.css: .row[data-intent-trailing=\"true\"] .trigger max-width reservation removed (plain flex:0 1 auto)",
+    "declaration": "toolcallitem.module.css: .intentTriggerContent max-width removed; separately flex:0 1 auto changed to flex:1 1 0",
     "verified": "2026-09-03",
     "expect": "fail",
-    "note": "Without the clamp the long-intent fixtures' base size is the text's max-content, the control wraps to its own line, and sameLine fails - the same regression the old flex:1 1 0 rule fixed, now guarded against the new mechanism."
+    "note": "Without the clamp the long-intent fixtures fail sameLine. With flex-grow restored the short fixtures fail text-edge adjacency. Both mutations were reverified after the text → Open → chevron restructure."
   }
 }
