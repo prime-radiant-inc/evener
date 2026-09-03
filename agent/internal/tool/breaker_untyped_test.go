@@ -119,9 +119,14 @@ func TestSemanticFailureBreaker_LongTerminalTraceVariantsPark(t *testing.T) {
 	r := NewRegistry()
 	calls := 0
 	prefix := strings.Repeat("x", 190)
+	traceTokens := []string{
+		strings.Repeat("a", 60),
+		strings.Repeat("b", 60),
+		strings.Repeat("c", 60),
+	}
 	registerSemanticBreakerFake(t, r, func(map[string]any, int) (any, error) {
 		calls++
-		return nil, errors.New(prefix + " [trace " + []string{"a", "b", "c"}[calls-1] + "]")
+		return nil, errors.New(prefix + " [trace " + traceTokens[calls-1] + "]")
 	})
 	for i, raw := range []string{
 		`{"target":"job:one","intent":"first"}`,
