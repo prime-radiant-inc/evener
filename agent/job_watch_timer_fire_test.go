@@ -385,3 +385,68 @@ func TestOneShotTimer_FailedTeardownWarnsThroughTheSession(t *testing.T) {
 		t.Fatalf("warning message = %q, want the watch id and the store error", warnings[0].Message)
 	}
 }
+
+// TestOneShotTimer_FailedTeardownRetriesOnTheNextTick pins the ghost-timer case.
+// A one-shot whose durable teardown does not persist stays registered, so its
+// ticker must stay armed and retry the end on the next tick; stopping the ticker
+// would leave a live watch nothing can ever end. The retry is an end, not a
+// second fire — the model hears about the timer exactly once.
+func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
+	jm, clk, got := newTimerTestJM(t)
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	teardownFails := true
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(evs []jobstore.Event) error {
+		mu.Lock()
+		fails := teardownFails
+		mu.Unlock()
+		for _, ev := range evs {
+			if fails && ev.Kind == jobstore.EventWatchCleared {
+				return errors.New("one-shot teardown append failed")
+			}
+		}
+		return realAppendEvents(evs)
+	}
+
+	clk.BlockUntil(1)
+	clk.Advance(60 * time.Second)
+	if n := recvNotification(t, got); n.Reason != "after" {
+		t.Fatalf("one-shot fire = %+v, want the single fire delivered", n)
+	}
+	jm.mu.Lock()
+	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !live {
+		t.Fatal("a teardown that did not persist still dropped the one-shot from the live set")
+	}
+
+	mu.Lock()
+	teardownFails = false
+	mu.Unlock()
+	clk.Advance(60 * time.Second)
+	waitForCondition(t, 5*time.Second, "the retried one-shot teardown to end the watch", func() bool {
+		jm.mu.Lock()
+		defer jm.mu.Unlock()
+		_, _, stillLive := jm.watchConfigByIDLocked(res.WatchID)
+		return !stillLive
+	})
+	select {
+	case extra := <-got:
+		t.Fatalf("the retry tick delivered a second notification: %+v", extra)
+	default:
+	}
+	recent := jm.recentWatchSummaries()
+	found := false
+	for _, r := range recent {
+		if r.ID == res.WatchID && r.EndReason == "fired" && r.Deliveries == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history lacks a fired row with deliveries 1: %+v", recent)
+	}
+}

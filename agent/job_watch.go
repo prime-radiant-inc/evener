@@ -189,14 +189,19 @@ type watchConfig struct {
 	// timer marks a watch created with after_seconds or repeat_seconds; its
 	// progressIntervalMS is timerSeconds*1000. oneShot ends the watch after
 	// its first fire. note rides every fire's block.
-	timer          bool
-	oneShot        bool
-	timerSeconds   int
-	note           string
-	events         []string
-	eventKinds     map[events.EventKind]bool
-	wildcardEvents bool
-	eventFilter    *watchEventFilter
+	timer   bool
+	oneShot bool
+	// firedPendingEnd marks a one-shot that has already delivered its single
+	// fire but whose durable teardown did not persist. The ticker stays armed
+	// so the next tick retries the end instead of leaving a registered watch
+	// with a dead timer; the retry never fires again.
+	firedPendingEnd bool
+	timerSeconds    int
+	note            string
+	events          []string
+	eventKinds      map[events.EventKind]bool
+	wildcardEvents  bool
+	eventFilter     *watchEventFilter
 	// every-Nth throttle: set from `every` + the single events[0] when every > 0.
 	triggerKind       events.EventKind
 	triggerEvery      int
@@ -3233,6 +3238,7 @@ type progressTickSnapshot struct {
 	targetRunning   bool
 	hasSend         bool
 	oneShot         bool
+	firedPendingEnd bool
 	target          string
 }
 
@@ -3246,6 +3252,7 @@ type progressTickDecision struct {
 	fire         bool
 	sendDelivery bool
 	recordBudget bool
+	endOneShot   bool
 	notifyJobID  string
 }
 
@@ -3260,10 +3267,17 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if snap.closing || !snap.stillRegistered {
 		return progressTickDecision{}
 	}
+	// A one-shot that already fired and could not persist its end retries the
+	// teardown on this tick and delivers nothing. The retry outranks the
+	// liveness gate below: the watch is registered and owes an end, whatever
+	// its target is now doing.
+	if snap.firedPendingEnd {
+		return progressTickDecision{keepAlive: true, endOneShot: true}
+	}
 	if !snap.sessionTarget && !snap.targetRunning {
 		return progressTickDecision{}
 	}
-	dec := progressTickDecision{keepAlive: !snap.oneShot, fire: true}
+	dec := progressTickDecision{keepAlive: !snap.oneShot, fire: true, endOneShot: snap.oneShot}
 	if snap.hasSend {
 		dec.sendDelivery = true
 		return dec
@@ -3288,10 +3302,11 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		targetRunning:   jm.running[cfg.target] != nil,
 		hasSend:         cfg.send != nil,
 		oneShot:         cfg.oneShot,
+		firedPendingEnd: cfg.firedPendingEnd,
 		target:          cfg.target,
 	}
 	dec := decideProgressTick(snap)
-	if !dec.fire {
+	if !dec.fire && !dec.endOneShot {
 		jm.mu.Unlock()
 		return false
 	}
@@ -3315,9 +3330,14 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	}
 	jm.mu.Unlock()
 
-	// A fire that does not keep the goroutine alive is a one-shot's only fire.
-	if !dec.keepAlive {
-		jm.endFiredOneShot(cfg)
+	// A one-shot ends on the tick that fires it, or on a later tick retrying an
+	// end that did not persist. An end that lands stops the ticker with the
+	// watch; one that fails keeps it armed for the next retry.
+	if dec.endOneShot {
+		dec.keepAlive = !jm.endFiredOneShot(cfg)
+		if dec.keepAlive {
+			jm.markOneShotFiredPendingEnd(cfg)
+		}
 	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
@@ -3327,13 +3347,31 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 // endFiredOneShot retires a one-shot timer after its only fire through the
 // same snapshot, persist, detach sequence clearWatch uses, recorded with end
 // reason "fired" so history distinguishes it from a clear. Called with jm.mu
-// released; the fire's notification is enqueued by the caller afterwards.
-func (jm *jobManager) endFiredOneShot(cfg *watchConfig) {
-	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil && jm.emit != nil {
-		jm.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err),
-		}, nil)
+// released; the fire's notification is enqueued by the caller afterwards. It
+// reports whether the end persisted; a failure is warned about and left for the
+// caller to retry.
+func (jm *jobManager) endFiredOneShot(cfg *watchConfig) bool {
+	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil {
+		if jm.emit != nil {
+			jm.emit(events.EventWarning, events.WarningData{
+				Message: fmt.Sprintf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err),
+			}, nil)
+		}
+		return false
 	}
+	return true
+}
+
+// markOneShotFiredPendingEnd records that a one-shot has spent its single fire
+// and still owes a durable end, so the next tick retries the teardown without
+// delivering again.
+func (jm *jobManager) markOneShotFiredPendingEnd(cfg *watchConfig) {
+	if cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg.firedPendingEnd = true
 }
 
 func watchNotification(jobID, reason string) jobNotification {
