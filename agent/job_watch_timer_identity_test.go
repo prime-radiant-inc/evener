@@ -280,3 +280,73 @@ func calleeName(fun ast.Expr) string {
 	}
 	return ""
 }
+
+// TestNormalizedWatchConfigHash_TimerModeAndNoteAreIdentity pins what a timer's
+// configured identity is. A one-shot and a repeating timer collapse to the same
+// derived interval, and the note is what the fire says when it arrives, so a
+// hash built from the derived interval alone calls three different watches the
+// same watch.
+func TestNormalizedWatchConfigHash_TimerModeAndNoteAreIdentity(t *testing.T) {
+	t.Parallel()
+	base := watchArgs{Operation: "create", Source: "self", Target: "caller"}
+	timer := func(mutate func(*watchArgs)) watchArgs {
+		a := base
+		mutate(&a)
+		return a
+	}
+	hashes := map[string]string{}
+	for _, tc := range []struct {
+		name string
+		args watchArgs
+	}{
+		{"after_300", timer(func(a *watchArgs) { a.AfterSeconds = 300 })},
+		{"repeat_300", timer(func(a *watchArgs) { a.RepeatSeconds = 300 })},
+		{"repeat_300_note", timer(func(a *watchArgs) { a.RepeatSeconds = 300; a.Note = "check the build" })},
+		{"repeat_300_other_note", timer(func(a *watchArgs) { a.RepeatSeconds = 300; a.Note = "check the deploy" })},
+	} {
+		hash := normalizedWatchConfigHash(tc.args)
+		if previous, clash := hashes[hash]; clash {
+			t.Errorf("%s hashes the same as %s (%s); timer mode and note are part of the identity", tc.name, previous, hash)
+			continue
+		}
+		hashes[hash] = tc.name
+	}
+}
+
+// TestWatchConfigSnapshot_CarriesTimerModeAndNote pins the durable config
+// snapshot inspect and history read back: the derived interval alone cannot say
+// whether the timer fires once or repeats, or what it was for.
+func TestWatchConfigSnapshot_CarriesTimerModeAndNote(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	for _, tc := range []struct {
+		name          string
+		args          watchArgs
+		afterSeconds  int
+		repeatSeconds int
+		note          string
+	}{
+		{"one_shot", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600, Note: "wake me"}, 600, 0, "wake me"},
+		{"repeating", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300}, 0, 300, ""},
+	} {
+		res, err := jm.configureWatch(tc.args)
+		if err != nil {
+			t.Fatalf("%s: configure: %v", tc.name, err)
+		}
+		jm.mu.Lock()
+		var snapshot *jobstore.WatchConfigSnapshot
+		for _, cfg := range jm.watches {
+			if cfg.watchID == res.WatchID {
+				snapshot = watchConfigSnapshot(cfg)
+			}
+		}
+		jm.mu.Unlock()
+		if snapshot == nil {
+			t.Fatalf("%s: no installed watch with id %q", tc.name, res.WatchID)
+		}
+		if snapshot.AfterSeconds != tc.afterSeconds || snapshot.RepeatSeconds != tc.repeatSeconds || snapshot.Note != tc.note {
+			t.Errorf("%s: snapshot after_seconds=%d repeat_seconds=%d note=%q, want %d/%d/%q",
+				tc.name, snapshot.AfterSeconds, snapshot.RepeatSeconds, snapshot.Note, tc.afterSeconds, tc.repeatSeconds, tc.note)
+		}
+	}
+}

@@ -98,6 +98,14 @@ type WatchConfigSnapshot struct {
 	SourceDelegateID         string `json:"source_delegate_id,omitempty"`
 	SourceDelegateGeneration uint64 `json:"source_delegate_generation,omitempty"`
 	StableReceiver           bool   `json:"stable_receiver,omitempty"`
+	// A timer's mode and note are part of its configured identity: a one-shot
+	// and a repeating timer collapse to the same derived interval, and the note
+	// is what its fire says on arrival. These stay after the receiver fields for
+	// the same reason those stayed last — a non-timer config omits all three, so
+	// its JSON encoding, and the config hash taken over it, are unchanged.
+	AfterSeconds  int    `json:"after_seconds,omitempty"`
+	RepeatSeconds int    `json:"repeat_seconds,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 type WatchEventFilterSnapshot struct {
