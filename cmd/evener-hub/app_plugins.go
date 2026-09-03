@@ -54,7 +54,7 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 // It reads manifests and registry state, and for a requested bundled plugin it
 // prepares the store the way a launch does: it creates <Root>/bundled when that
 // is missing, stages a marked copy there, reads it, and removes it before
-// returning. It publishes nothing and reclaims nothing, plugin hooks, MCP
+// returning. It publishes nothing and reclaims nothing. Plugin hooks, MCP
 // commands, and session state are never touched, and it fails the way a launch
 // would on a store neither can write.
 func (c *hubPluginsController) Preview(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
