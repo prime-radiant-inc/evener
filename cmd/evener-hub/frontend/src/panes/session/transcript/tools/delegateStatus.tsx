@@ -340,7 +340,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
       {/* Config: one inline line */}
       {config.length > 0 && <MetaLine segments={config} />}
 
-      {/* Diagnostics: not-resumable reason and/or last outcome reason */}
+      {/* Diagnostics: not-resumable reason and/or last outcome reason.
+          All non-success terminal outcomes render their reason: failed→danger,
+          exhausted/cancelled/stopped→neutral (soft stops, not errors). */}
       {state.not_resumable_reason && (
         <div className={CLASS.diagnostic} data-testid="delegate-not-resumable">
           <div className={`${CLASS.diagnosticBody} ${CLASS.dangerText}`}>
@@ -362,6 +364,13 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
             </div>
           </div>
         )}
+      {state.last_outcome?.reason && classifyJobStatus(state.last_outcome.status) === "stopped" && (
+        <div className={CLASS.diagnostic} data-testid="delegate-outcome-reason">
+          <div className={CLASS.diagnosticBody}>
+            Last run {state.last_outcome.status === "cancelled" ? "cancelled" : "stopped"}: {state.last_outcome.reason}
+          </div>
+        </div>
+      )}
 
       {/* Available tools */}
       {tools.length > 0 && (
