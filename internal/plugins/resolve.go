@@ -115,7 +115,7 @@ func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, e
 			}
 		}()
 		scratch = append(scratch, staging.dir)
-		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
+		if err := copyBundledPayload(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return bundledCandidate{path: dest, warnings: warnings}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
 		handed = true
@@ -342,6 +342,12 @@ const (
 	bundledSweepLockWait   = time.Second
 )
 
+// copyBundledPayload writes an embedded plugin tree into a staging directory.
+// Indirect because filling the staging directory is the only part of
+// publishing that takes real time, and a test proving what a launch does about
+// a caller who leaves during it has to be inside that window.
+var copyBundledPayload = os.CopyFS
+
 // bundledStaging is a private directory in the bundled store that a publish
 // fills and then renames into place. The copy lives in payload, one level
 // below the marked directory, so publishing renames the copy alone and the
@@ -404,7 +410,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 	// publisher is let in to look at the store.
 	defer staging.release()
 	defer func() { _ = os.RemoveAll(staging.dir) }()
-	if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
+	if err := copyBundledPayload(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 		return "", warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
@@ -418,7 +424,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 			return "", warnings, classifyErr
 		}
 		if state == bundledDestinationPublished {
-			return dest, warnings, nil
+			return publishedForCaller(ctx, dest, warnings)
 		}
 		if state != bundledDestinationConflict {
 			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
@@ -431,6 +437,20 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 		if err := os.Rename(staging.payload, dest); err != nil {
 			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
 		}
+	}
+	return publishedForCaller(ctx, dest, warnings)
+}
+
+// publishedForCaller hands back the published path only while the caller is
+// still waiting for it. Copying the payload into the store and renaming it
+// into place is the slow part of a launch, and none of it is work to abandon
+// halfway — the copy is finished and stays published for the launches that
+// follow — so the context is read on the way out instead, and a caller that
+// left during it is told so rather than handed a plugin to start a session
+// with.
+func publishedForCaller(ctx context.Context, dest string, warnings []string) (string, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", warnings, err
 	}
 	return dest, warnings, nil
 }
@@ -497,6 +517,13 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 			if release, lockErr := acquireLock(ctx, m.lockPath(), bundledSweepLockWait); lockErr == nil {
 				m.reclaimAbandonedStaging(store)
 				release()
+			}
+			// A lock failure the sweep is entitled to ignore is also how the
+			// caller's own cancellation arrives, and waiting for it is the
+			// last thing this launch does. So the context is read once more
+			// rather than handing back a copy nobody is waiting for.
+			if err := ctx.Err(); err != nil {
+				return "", nil, nil, err
 			}
 		}
 		return dest, nil, nil, nil

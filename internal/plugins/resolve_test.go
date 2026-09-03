@@ -1252,3 +1252,40 @@ func TestResolveForLaunch_StopsForACallerThatHasGivenUp(t *testing.T) {
 		})
 	}
 }
+
+// Copying the payload into the store is the slow half of publishing, and a
+// caller can leave during it. The copy is finished and published for the
+// launches that follow — publication is not something to abandon halfway —
+// but this launch answers with the cancellation rather than a selection
+// nobody is waiting for.
+func TestMaterializeBundledPlugin_StopsForACallerThatLeftWhilePublishing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	copied := false
+	original := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = original })
+	copyBundledPayload = func(dir string, fsys fs.FS) error {
+		copied = true
+		cancel()
+		return original(dir, fsys)
+	}
+
+	res, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+	if !copied {
+		t.Fatal("nothing was published, so this is not the cancellation under test")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want the cancellation", err)
+	}
+	if len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
+		t.Errorf("resolved %+v for a caller that had given up", res)
+	}
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err != nil {
+		t.Fatalf("the copy the cancelled launch published is not adoptable: %v", err)
+	}
+	if _, err := os.Stat(published); err != nil {
+		t.Errorf("the cancelled launch left no published copy: %v", err)
+	}
+}

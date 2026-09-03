@@ -581,3 +581,50 @@ func TestMaterializeBundledPlugin_LeavesStagingWhoseMarkerIsNotAFile(t *testing.
 		})
 	}
 }
+
+// A launch can be given up on while its sweep waits for the store lock. The
+// sweep swallows its own lock failure by design — housekeeping nobody is
+// waiting on — and the caller's cancellation arrives as exactly that failure,
+// so the context has to be read again before the copy is handed back. What the
+// launch has by then is a published copy it is no longer entitled to return.
+func TestMaterializeBundledPlugin_StopsForACallerThatLeftDuringTheSweep(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	// Somebody else is holding the store lock, so the sweep has to wait for it.
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// Cancelled while it waits, not before: a caller that had already given up
+	// never reaches the sweep.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	timer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	res, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want the cancellation the sweep waited into", err)
+	}
+	if len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
+		t.Errorf("resolved %+v for a caller that had given up", res)
+	}
+	// Publication is immutable: the copy stays for the launches that follow.
+	if _, err := os.Stat(published); err != nil {
+		t.Errorf("the published copy did not survive the cancelled launch: %v", err)
+	}
+}
