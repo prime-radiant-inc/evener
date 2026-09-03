@@ -1,0 +1,22 @@
+{
+  "name": "askdock-transcript-row",
+  "description": "the questions widget is the transcript's trailing row: it sizes to its content (no internal scroll), centers on the 76rem reading measure, and leaves the transcript's allocation and the footer untouched however tall the batch - the transcript alone scrolls",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "panes/session/composer/askDock/askdock.module.css"
+  ],
+  "viewport": {
+    "width": 1600,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/panescaffold/panescaffold.module.css: .body { overflow-y: auto } (transcript scroll ownership) - without it the tall batch stretches the pane instead of scrolling inside the transcript",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Verified by hand: reverting to overflow-y: visible fails the case with 'transcript overflow belongs to visible, not the pane body'."
+  }
+}

@@ -244,6 +244,21 @@ export interface TranscriptBodyProps {
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: () => void;
   trailingContent?: ReactNode;
+  /**
+   * An extra row appended AFTER the last transcript row, inside the virtual
+   * list itself (unlike trailingContent, which sits beside the list and
+   * therefore stays pinned). This is the slot for an interactive surface
+   * that must scroll away with the transcript - the session pane's pending-
+   * questions dock (composer/askDock): anchored to the composer's footer it
+   * kept covering the bottom of the screen while the reader scrolled back
+   * for context. As a real row it gets the list's own stable keying (id),
+   * dynamic measurement, and end-anchored following: an arriving row follows
+   * the tail for a reader at the bottom and does NOT yank a scrolled-back
+   * reader. Virtual-list only - the preview surface (no virtual list) never
+   * renders it. Interactive state inside the row must live in a store, not
+   * component state: scrolling far enough away unmounts the row.
+   */
+  trailingRow?: { id: string; content: ReactNode };
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
   onAnnounceViewChange?: (summary: string) => void;
@@ -261,6 +276,7 @@ export function TranscriptBody({
   listRef,
   onMeasurementsChange,
   trailingContent,
+  trailingRow,
   viewId,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
@@ -354,6 +370,11 @@ export function TranscriptBody({
     return row;
   };
 
+  // The trailing row is index rows.length when present: one synthetic row
+  // past every transcript row, keyed by its own stable id so the list's
+  // append-following and measurement treat it like any other row.
+  const isTrailingRowIndex = (index: number) => trailingRow !== undefined && index === rows.length;
+
   const list = (
     <section
       ref={focusFallbackRef}
@@ -366,10 +387,18 @@ export function TranscriptBody({
         ref={listRef}
         dynamic
         anchorToEnd
-        count={rows.length}
+        count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
-        getItemKey={(index) => rowAt(index).id}
-        renderRow={(index) => renderRow(rowAt(index), index)}
+        getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
+        renderRow={(index) =>
+          isTrailingRowIndex(index) && trailingRow ? (
+            <div data-testid="transcript-row" data-row-id={trailingRow.id}>
+              {trailingRow.content}
+            </div>
+          ) : (
+            renderRow(rowAt(index), index)
+          )
+        }
         onChange={() => {
           try {
             onMeasurementsChange?.();

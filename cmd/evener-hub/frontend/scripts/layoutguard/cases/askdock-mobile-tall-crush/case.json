@@ -1,6 +1,6 @@
 {
   "name": "askdock-mobile-tall-crush",
-  "description": "ask dock on a phone: inline bold option labels (no chip pills) never overlap their detail text and wrap inside the card however long they are, and a tall batch must stay inside the pane (capped + internally scrollable) instead of squeezing the transcript to zero and clipping under the pane's overflow:hidden",
+  "description": "ask dock on a phone, as the transcript's trailing row: inline bold option labels (no chip pills) never overlap their detail text and wrap inside the card however long or unbroken they are; the dock sizes to its content with no internal scroll; the tall batch extends the transcript's own scroll region without changing any pane allocation",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -8,9 +8,9 @@
     "panes/session/composer/askDock/askdock.module.css"
   ],
   "mutation": {
-    "declaration": "askdock.module.css: .dock { max-height: 100%; overflow-y: auto } (containment/scroll contract)",
-    "verified": "2026-08-22",
+    "declaration": "askquestioncard.module.css: .option { overflow-wrap: break-word } - reverting it lets the harness's unbroken-token label escape the card horizontally (assertion B)",
+    "verified": "2026-09-03",
     "expect": "fail",
-    "note": "Re-verified after the ask-dialog UX rework replaced chip pills with inline-flow bold labels: removing the dock containment pair lets a tall batch escape the pane. The label assertions (no overlap, no horizontal escape) are structural to the inline-flow .option layout and have no single removable declaration that breaks them."
+    "note": "The previous mutation target (askdock.module.css's .dock containment pair) was removed with the footer-anchored design: the dock is the transcript's trailing row now, so containment comes from the transcript scroller, not the dock. The label assertions stay structural to the inline-flow .option layout; the unbroken-token label is what makes this declaration's removal observable."
   }
 }

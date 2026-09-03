@@ -187,12 +187,23 @@ test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
-test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
+// The dock is the transcript's trailing virtual row now (Session.tsx passes
+// it as TranscriptBody's trailingRow): it must size to its content so the
+// list's measureElement can measure it - a max-height or overflow of its own
+// would clip the batch behind an internal scrollbar and lie to the
+// measurement, and any flex-basis sizing belongs to a footer slot it no
+// longer occupies. It centers on the transcript's 76rem reading measure
+// (turnblock.module.css's --session-measure).
+test("the dock sizes to its content as a transcript row, with no internal scroll boundary", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 100%");
-  expect(css).toContain("overflow-y: auto");
+  const rule = css.match(/\.dock\s*\{([^}]*)\}/);
+  expect(rule, "askdock.module.css must declare a .dock rule").not.toBeNull();
+  const body = rule![1]!;
+  expect(body).toContain("max-width: 76rem");
+  expect(body).toContain("margin-inline: auto");
+  expect(body).not.toContain("max-height");
+  expect(body).not.toContain("overflow");
+  expect(body).not.toContain("flex:");
 });
 
 test("renders the pending question's header and question text once acked", async () => {

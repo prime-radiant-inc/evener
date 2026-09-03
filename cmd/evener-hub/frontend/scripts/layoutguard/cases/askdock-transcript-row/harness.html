@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdock transcript trailing row layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--surface-0); color: var(--ink-hi); font-family: var(--font-sans); }
+  .fixture { width: 100%; height: 100vh; padding: 16px; }
+  /* Plain transcript rows above the dock row. */
+  .turnBlock { height: 300px; }
+  /* Adjustable question content: window.measure probes short vs tall. */
+  .questionContent { height: 180px; }
+  /* The composer's footer placeholder: with a question pending the real
+   * composer hides its input row, leaving the liveness line and chips. */
+  .composerPlaceholder { height: 42px; display: flex; align-items: center; }
+</style>
+</head>
+<body>
+<!-- Mirrors Session.tsx's pane structure after the questions widget moved
+     into the transcript: the dock is the LAST ROW of the transcript's
+     scroll region (real .body from panescaffold.module.css), not a footer
+     surface. The transcript alone owns scrolling; the dock sizes to its
+     content and centers on the 76rem reading measure
+     (askdock.module.css's .dock). -->
+<main class="fixture">
+  <section class="pane" data-pane>
+    <header class="header">Active session</header>
+    <div class="body" data-pane-body id="transcript">
+      <div class="turnBlock">turn one</div>
+      <div class="turnBlock">turn two</div>
+      <div class="turnBlock" id="lastTurn">turn three</div>
+      <div class="dock" data-ask-response-dock>
+        <div class="anchor" role="status">Answer the agent’s questions.</div>
+        <div class="batch"><div class="questionContent">Questions and choices</div></div>
+      </div>
+    </div>
+    <footer class="footer" data-pane-footer>
+      <div class="composerPlaceholder" data-status-footer>Session status</div>
+    </footer>
+  </section>
+</main>
+<script>
+function rect(el) {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
+}
+function snapshot() {
+  const pane = document.querySelector("[data-pane]");
+  const body = document.querySelector("[data-pane-body]");
+  const footer = document.querySelector("[data-pane-footer]");
+  const dock = document.querySelector("[data-ask-response-dock]");
+  const lastTurn = document.getElementById("lastTurn");
+  return {
+    pane: rect(pane),
+    body: { ...rect(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, overflowY: getComputedStyle(body).overflowY, scrollbarWidth: body.offsetWidth - body.clientWidth },
+    footer: rect(footer),
+    dock: { ...rect(dock), scrollHeight: dock.scrollHeight, clientHeight: dock.clientHeight, overflowY: getComputedStyle(dock).overflowY },
+    lastTurn: rect(lastTurn),
+  };
+}
+window.measure = function () {
+  const content = document.querySelector(".questionContent");
+  const short = snapshot();
+  content.style.height = "1200px";
+  const tall = snapshot();
+  return {
+    viewportHeight: window.innerHeight,
+    viewportWidth: window.innerWidth,
+    documentHeight: document.documentElement.scrollHeight,
+    short,
+    tall,
+  };
+};
+</script>
+</body>
+</html>

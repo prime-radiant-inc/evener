@@ -11,9 +11,12 @@ it" for the endpoints, "Driving the web UI with superpowers-chrome:browsing" for
 `/auth` recipe and selector map. Two facts this card is built on, because they invert what
 it used to say:
 
-- The answering surface is the **composer's ask dock**
-  (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`), not a form inside the
-  transcript. The transcript's own `ask_user` row is deliberately read-only and says so
+- The answering surface is the **ask dock**
+  (`cmd/evener-hub/frontend/src/panes/session/composer/askDock/`), mounted as the
+  **transcript's trailing row** while a question is pending (`Session.tsx` passes it as
+  `TranscriptBody`'s `trailingRow`) — it scrolls with the transcript content, and the
+  composer's own input row stays `hidden`/`inert` meanwhile. The transcript's own
+  historical `ask_user` row is deliberately read-only and says so
   (`panes/session/transcript/tools/askUser.tsx:16-21`, `:105`).
 - Every `[data-ask-card]` / `[data-ask-option]` / `.ask-question-header` /
   `[data-ask-note-toggle]` / `[data-ask-send-btn]` / `.ask-settled-line` / `.agent-question`

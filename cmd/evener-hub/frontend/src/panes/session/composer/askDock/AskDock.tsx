@@ -26,22 +26,27 @@
 // enabled, an unanswered question composes as skipped) since there is
 // nowhere else to walk.
 //
-// Mount expectations for whoever wires this into Composer.tsx's tree (T2,
-// at merge - see that file's own header, "T3/T4 render inside Composer's
-// own tree"):
+// Mount expectations (Session.tsx wires this in as TranscriptBody's
+// trailingRow - the transcript's last virtual row, so the answering surface
+// scrolls with the content instead of covering the footer):
 //   - <AskDock ref={ref} /> - `ref` matches Composer/SessionChrome's own
 //     established prop-name convention (a plain prop, not React's ref -
 //     fine under this project's React 19).
+//   - All interactive state lives in askDockStore, NOT component state: the
+//     virtual list unmounts this row when the reader scrolls far enough
+//     away, and remounts it on return - answers, notes, and the active tab
+//     must survive that, and they do.
 //   - Answer text follows the same durable send path as the main composer.
 //     Network outcomes are owned by the outbox/recovery surfaces and never
 //     restore text into the main composer.
 //   - This component does NOT hide/inert the plain composer surface or
 //     own its mode-switch status announcement ("Message composer ready.")
-//     - that is the composer's own surface to show/hide, and T2 owns it.
-//     Call the exported useAskDockPending(ref) hook to decide whether to
-//     hide/inert the plain composer for a given ref; this component's own
-//     internal status region only announces ENTERING ask-response mode
-//     (there is content to hide FOR, once this returns non-null).
+//     - that is the composer's own surface to show/hide, and Composer.tsx
+//     owns it. Call the exported useAskDockPending(ref) hook to decide
+//     whether to hide/inert the plain composer for a given ref; this
+//     component's own internal status region only announces ENTERING
+//     ask-response mode (there is content to hide FOR, once this returns
+//     non-null).
 //   - Failure feedback for a local durable-enqueue error is a toast (the
 //     wave's decided convention, T1's loadOlder reference implementation);
 //     network outcomes are rendered by recovery state, not an inline banner.

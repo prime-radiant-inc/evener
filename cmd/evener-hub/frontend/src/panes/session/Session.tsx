@@ -35,6 +35,7 @@ import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
+import { AskDock, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -170,6 +171,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+  // While any question batch is pending, the answering surface is the
+  // transcript's trailing row below (a scrollable part of the content, not
+  // the footer-anchored composer replacement it used to be). Read
+  // unconditionally with the rest of this component's hooks, ahead of the
+  // !model early return, per the rules of hooks; the composer reads the same
+  // seam to hide its own input row meanwhile.
+  const askPending = useAskDockPending(ref);
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -310,6 +318,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
+        // The pending-questions dock is the transcript's last row while any
+        // batch is pending: it scrolls with the content (a reader scrolling
+        // back for context scrolls it away), its answer state lives in
+        // askDockStore so the virtual list unmounting the row loses nothing,
+        // and the list's end-anchoring surfaces a new question for a reader
+        // at the bottom without yanking one who scrolled up. Passed only
+        // while pending so no empty zero-height row pads the list otherwise.
+        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
       />
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>

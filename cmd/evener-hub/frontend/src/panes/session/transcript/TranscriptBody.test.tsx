@@ -976,3 +976,56 @@ describe("TranscriptBody", () => {
     expect(screen.queryAllByTestId("intent-group")).toHaveLength(2);
   });
 });
+
+describe("trailingRow", () => {
+  test("renders the trailing row as the last virtual transcript row on the live surface", () => {
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(2);
+    const last = rows.at(-1);
+    expect(last?.getAttribute("data-row-id")).toBe("ask-dock");
+    const sentinel = screen.getByTestId("trailing-sentinel");
+    expect(last?.contains(sentinel)).toBe(true);
+  });
+
+  test("a rerender keeps the trailing row's identity stable and after every transcript row", () => {
+    const { rerender } = render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
+    rerender(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
+  });
+
+  test("omitting trailingRow renders exactly the transcript rows", () => {
+    render(
+      <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:no-trailing" />,
+    );
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.getAttribute("data-row-id")).toBe("turn_1");
+  });
+});

@@ -411,16 +411,20 @@ function currentWorkEvener({ task = false, goal = false }: { task?: boolean; goa
   };
 }
 
-test("while ask_pending is open, the AskDock replacement surface is exposed and the message textbox is hidden", async () => {
+test("while ask_pending is open, the message textbox is hidden and the dock is not the composer's surface", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
     evener: currentWorkEvener({ task: true, goal: true }),
   });
 
-  expect(screen.getByText("Answer the agent’s questions.")).toBeTruthy();
-  expect(screen.getByText("Ship now?")).toBeTruthy();
+  // The answering surface moved to the transcript's trailing row (Session.tsx
+  // passes AskDock as TranscriptBody's trailingRow; AskDock.test.tsx and
+  // Session.test.tsx prove that half). The composer keeps its own half of the
+  // contract: hiding the input row while a question is pending.
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
   expect(screen.queryByTestId("current-work")).toBeNull();
+  expect(screen.queryByText("Answer the agent’s questions.")).toBeNull();
+  expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
 test("renders current work directly before the compose card", async () => {
