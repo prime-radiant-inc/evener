@@ -2075,17 +2075,6 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		}
 	}
 	a.Note = stringArg(args, "note")
-	if a.Operation == "create" {
-		for _, f := range []struct {
-			key string
-			hi  int
-			lo  int
-		}{{"after_seconds", 86400, 60}, {"repeat_seconds", 3600, 60}} {
-			if raw, present := args[f.key]; present && raw != nil && watchIntegerValue(raw) == 0 {
-				return watchArgs{}, fmt.Errorf("invalid_request: %s must be between %d and %d", f.key, f.lo, f.hi)
-			}
-		}
-	}
 	events, err := stringArrayArg(args, "events")
 	if err != nil {
 		return watchArgs{}, err
@@ -2144,10 +2133,11 @@ func normalizeWatchArgsForOperation(a *watchArgs) {
 	}
 }
 
-// watchTriggerFieldNames lists the arguments that select what a created watch
-// fires on, in the DefJobWatch property order. They are meaningful only for
-// operation="create"; list/inspect/clear take only watch_id, so a trigger field
-// beside them was previously parsed and then silently ignored.
+// watchTriggerFieldNames lists the create-only arguments in the DefJobWatch
+// property order: the fields that select what a created watch fires on, plus
+// note, which is the timer's payload rather than a trigger. They are meaningful
+// only for operation="create"; list/inspect/clear take only watch_id, so one of
+// these beside them was previously parsed and then silently ignored.
 var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter", "after_seconds", "repeat_seconds", "note"}
 
 // rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
