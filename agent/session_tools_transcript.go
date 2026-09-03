@@ -233,6 +233,7 @@ type readSessionTranscriptArgs struct {
 func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Definition: tool.DefReadTranscript(), ReadOnly: true,
+		NormalizeArgs: normalizeRetainedReadArgsForValidation,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			return execReadTranscript(deps, args)

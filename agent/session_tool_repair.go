@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strconv"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -119,6 +120,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
+		finalErrorArgs := args
 		// Scalar repair can turn provider-materialized strings such as
 		// expand_turn="0" into their neutral numeric forms. Normalize those
 		// newly typed defaults before the final schema gate and dispatch.
@@ -126,6 +128,16 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			var normalizedChanges []repair.Change
 			healed, normalizedChanges = normalizeRetainedReadArgs(healed)
 			retainedReadChanges = append(retainedReadChanges, normalizedChanges...)
+			if len(normalizedChanges) > 0 {
+				// finalErrorArgs starts from the first-pass normalized form, so
+				// only carry over fields deleted by second-pass retained-read
+				// normalization. Generic repair coercions stay unapplied.
+				finalErrorArgs = make(map[string]any, len(args))
+				maps.Copy(finalErrorArgs, args)
+				for _, change := range normalizedChanges {
+					delete(finalErrorArgs, change.Field)
+				}
+			}
 		}
 		if err2 := t.Schema.Validate(healed); err2 != nil {
 			// Retained-read normalization was already applied to args. Preserve
@@ -134,7 +146,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			// deliberately unrecorded.
 			if len(retainedReadChanges) > 0 {
 				res.Changes = append(res.Changes, retainedReadChanges...)
-				if b, marshalErr := json.Marshal(args); marshalErr == nil {
+				if b, marshalErr := json.Marshal(finalErrorArgs); marshalErr == nil {
 					res.Call.Arguments = b
 				}
 			}
@@ -197,6 +209,44 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 		}
 	}
 	return normalized, changes
+}
+
+// normalizeRetainedReadArgsForValidation extends the typed retained-default
+// normalization just enough for provider stringified zero defaults to pass the
+// registry schema gate. It is used only by read_transcript's registered-tool
+// pre-validation hook; preparation retains scalar coercion and its telemetry.
+func normalizeRetainedReadArgsForValidation(args map[string]any) map[string]any {
+	normalized, _ := normalizeRetainedReadArgs(args)
+	ref := strings.TrimSpace(stringArg(normalized, "transcript_ref"))
+	if !strings.HasPrefix(ref, "job:") && !strings.HasPrefix(ref, "artifact:") {
+		return normalized
+	}
+	copyNeeded := true
+	remove := func(field string) {
+		if copyNeeded {
+			copyNeeded = false
+			copyArgs := make(map[string]any, len(normalized))
+			maps.Copy(copyArgs, normalized)
+			normalized = copyArgs
+		}
+		delete(normalized, field)
+	}
+	if value, present := normalized["expand_turn"]; present && isNeutralRetainedStringInteger(value) {
+		remove("expand_turn")
+	}
+	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) && stringArg(normalized, "output_match") == "" {
+		remove("context_lines")
+	}
+	return normalized
+}
+
+func isNeutralRetainedStringInteger(value any) bool {
+	s, ok := value.(string)
+	if !ok {
+		return false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return err == nil && n == 0
 }
 
 func isNeutralRetainedInteger(value any) bool {
