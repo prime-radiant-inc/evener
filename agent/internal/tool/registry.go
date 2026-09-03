@@ -25,7 +25,7 @@ import (
 
 const toolIntentDescription = "Describe what you expect to learn or accomplish from this tool call, using a verb-first gerund. Make the expected outcome clear to the user and your future self; e.g. \"Reading config to identify the active profile\" or \"Searching handlers to locate request routing.\""
 
-// maxToolArgumentBytes caps the size of a tool call's raw argument payload
+// MaxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB
 // blob through JSON unmarshaling and schema validation for no useful reason.
 // This must stay above agent/jobs.go's maxPersistedStructuredResultJSONBytes
@@ -35,7 +35,10 @@ const toolIntentDescription = "Describe what you expect to learn or accomplish f
 // before it ever reached that graceful path. (Cross-package constant:
 // agent/internal/tool cannot import agent to derive this by reference, so
 // keep the two values in sync by comment.)
-const maxToolArgumentBytes = 2 * 1024 * 1024
+const MaxToolArgumentBytes = 2 * 1024 * 1024
+
+// Keep the unexported spelling for package-local callers and tests.
+const maxToolArgumentBytes = MaxToolArgumentBytes
 
 // ctxIntentKey is the context key carrying a tool call's `intent` argument
 // past the registry's strip point (see ExecuteCall): handlers that want it —

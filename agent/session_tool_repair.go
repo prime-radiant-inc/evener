@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
@@ -14,6 +16,12 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/llm"
 )
+
+// maxCommunicateOutputJSONDepth bounds the nested JSON value accepted when a
+// provider double-encodes the default communicate output object. The raw
+// argument cap bounds bytes; this separate structural bound keeps a compact
+// deeply nested value from consuming disproportionate parser resources.
+const maxCommunicateOutputJSONDepth = 64
 
 // prepareResult is the outcome of the pre-dispatch repair step. When PrevalErr
 // is non-empty, execTool returns it as the tool's error result WITHOUT calling
@@ -103,10 +111,16 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	// call that still fails never emits a ToolCallRepaired event whose
 	// Arguments bytes were never applied.
 	var fillChanges []repair.Change
+	promotedOutputString := false
 	if envelope, ok := communicateEnvelopeFor(t, resultToolName); ok {
 		filled := make(map[string]any, len(args))
 		maps.Copy(filled, args)
-		fillChanges = fillCommunicateEnvelope(envelope, filled)
+		var err error
+		fillChanges, promotedOutputString, err = repairDefaultCommunicateEnvelope(envelope, filled, res.Call.Arguments)
+		if err != nil {
+			res.PrevalErr = communicateOutputStringObjectError(err.Error())
+			return res
+		}
 		args = filled
 	}
 
@@ -151,6 +165,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				}
 			}
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
+			if promotedOutputString {
+				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
+			}
 			return res
 		}
 		args = healed
@@ -169,6 +186,118 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 	return res
+}
+
+// repairDefaultCommunicateEnvelope applies the documented defaults for the one
+// canonical communicate output contract. The caller obtains envelope only from
+// communicateEnvelopeFor, but this function repeats the equality guard so no
+// future caller can accidentally apply a default-contract repair to a custom
+// result schema.
+func repairDefaultCommunicateEnvelope(envelope, args map[string]any, rawArguments []byte) ([]repair.Change, bool, error) {
+	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
+		return nil, false, nil
+	}
+
+	var changes []repair.Change
+	if raw, present := args["output"]; !present || raw == nil {
+		args["output"] = map[string]any{}
+		changes = append(changes, repair.Change{Kind: repair.ChangeSynthesize, Field: "output", Detail: "synthesized default envelope"})
+	} else if encoded, ok := raw.(string); ok {
+		decoded, err := decodeDefaultCommunicateOutputString(encoded, rawArguments)
+		if err != nil {
+			return nil, false, err
+		}
+		args["output"] = decoded
+		changes = append(changes, repair.Change{Kind: repair.ChangePromoteJSONObject, Field: "output", Detail: "promoted JSON object string"})
+	}
+
+	changes = append(changes, fillCommunicateEnvelope(envelope, args)...)
+	if _, present := args["message"]; !present {
+		if output, ok := args["output"].(map[string]any); ok {
+			if message, ok := output["message"].(string); ok {
+				args["message"] = message
+				changes = append(changes, repair.Change{Kind: repair.ChangeCopy, Field: "message", Detail: "copied output.message"})
+			}
+		}
+	}
+	for _, change := range changes {
+		if change.Kind == repair.ChangePromoteJSONObject {
+			return changes, true, nil
+		}
+	}
+	return changes, false, nil
+}
+
+func decodeDefaultCommunicateOutputString(encoded string, rawArguments []byte) (map[string]any, error) {
+	if len(rawArguments) > tool.MaxToolArgumentBytes || len(encoded) > tool.MaxToolArgumentBytes {
+		return nil, fmt.Errorf("exceeds the %d byte argument limit", tool.MaxToolArgumentBytes)
+	}
+	if !utf8.Valid(rawArguments) || !utf8.ValidString(encoded) {
+		return nil, errors.New("is not valid UTF-8")
+	}
+	if err := withinJSONDepth(encoded, maxCommunicateOutputJSONDepth); err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, errors.New("is not valid JSON")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("contains trailing content")
+		}
+		return nil, errors.New("contains trailing invalid content")
+	}
+	output, ok := decoded.(map[string]any)
+	if !ok {
+		return nil, errors.New("does not decode to an object")
+	}
+	return output, nil
+}
+
+// withinJSONDepth counts object and array nesting without interpreting values.
+// json.Decoder remains the authority on JSON syntax; this pass only rejects an
+// otherwise bounded input that exceeds the named structural limit.
+func withinJSONDepth(s string, maxDepth int) error {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			if inString {
+				escaped = !escaped
+			}
+			continue
+		case '"':
+			if !escaped {
+				inString = !inString
+			}
+			escaped = false
+			continue
+		default:
+			escaped = false
+		}
+		if inString {
+			continue
+		}
+		switch s[i] {
+		case '{', '[':
+			depth++
+			if depth > maxDepth {
+				return fmt.Errorf("exceeds the maximum JSON depth of %d", maxDepth)
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
+}
+
+func communicateOutputStringObjectError(reason string) string {
+	return "communicate: output is a JSON-looking string and must be passed as an object, not a quoted string; " + reason
 }
 
 // normalizeRetainedReadArgs removes only the semantically empty retained-output

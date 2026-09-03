@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -266,15 +267,15 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
 
 // communicateEnvelopeFor reports whether t is the session's result tool with
-// its default output envelope, returning that envelope schema when it is.
+// the exact canonical default output envelope, returning that envelope schema
+// when it is.
 // This is the single owner of the fill's two gates (issue #627):
 //   - identity: only the result tool gets the fill. A same-shaped schema on
 //     any other registered tool (an MCP or plugin tool) must keep failing
 //     loudly on keys the model was required to choose.
-//   - exact shape: properties and required must each be precisely
-//     defaultEnvelopeKeys — a custom output schema (a delegate result_schema
-//     installed via WithCommunicateOutputSchema, or a WithAllowedDecisions
-//     superset) keeps failing loudly.
+//   - exact schema: equality with DefCommunicateNamed's canonical output
+//     schema. Same-key schemas can carry stricter types, enums, descriptions,
+//     or other constraints, so key-name comparison is not sufficient.
 //
 // Returning the envelope it validated (rather than a bool the caller
 // re-derives) is what keeps the check and the fill from diverging.
@@ -284,32 +285,26 @@ func communicateEnvelopeFor(t *tool.RegisteredTool, resultToolName string) (map[
 	}
 	props, _ := t.Definition.Parameters["properties"].(map[string]any)
 	envelope, _ := props["output"].(map[string]any)
-	outProps, _ := envelope["properties"].(map[string]any)
-	if outProps == nil {
-		return nil, false
-	}
-	required := communicateSchemaStringSlice(envelope["required"])
-	if !stringSetsEqual(outProps, required, defaultEnvelopeKeys...) {
+	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
 		return nil, false
 	}
 	return envelope, true
 }
 
 // usesDefaultCommunicateOutputEnvelope reports whether def's `output` property
-// is exactly the default envelope DefCommunicateNamed builds: properties and
-// required are each precisely {message, data, artifacts} — no more, no fewer.
-// A superset (WithAllowedDecisions adds an enum-constrained `decision`) or a
-// differently-shaped schema is a custom envelope, whose required keys the
-// model was expected to choose.
+// equals the complete canonical output schema DefCommunicateNamed builds. A
+// superset, a same-key schema with a stricter enum, or any other variation is a
+// custom envelope whose fields must remain exact.
 func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
-	outProps, _ := output["properties"].(map[string]any)
-	if outProps == nil {
-		return false
-	}
-	required := communicateSchemaStringSlice(output["required"])
-	return stringSetsEqual(outProps, required, defaultEnvelopeKeys...)
+	return isCanonicalDefaultCommunicateOutputEnvelope(output)
+}
+
+func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
+	canonicalProps, _ := tool.DefCommunicateNamed("communicate").Parameters["properties"].(map[string]any)
+	canonicalOutput, _ := canonicalProps["output"].(map[string]any)
+	return reflect.DeepEqual(output, canonicalOutput)
 }
 
 // stringSetsEqual reports whether the schema's property names and required
@@ -353,6 +348,9 @@ func communicateSchemaStringSlice(v any) []string {
 // envelope — the default one — may be passed here; a custom output schema
 // must keep failing loudly on keys the model was required to choose.
 func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
+	if !isCanonicalDefaultCommunicateOutputEnvelope(envelope) {
+		return nil
+	}
 	raw, isMap := args["output"].(map[string]any)
 	if !isMap {
 		return nil
@@ -372,7 +370,7 @@ func fillCommunicateEnvelope(envelope, args map[string]any) []repair.Change {
 			continue
 		}
 		raw[key] = v
-		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output", Detail: "filled " + key})
+		changes = append(changes, repair.Change{Kind: repair.ChangeFillRequired, Field: "output." + key, Detail: "filled default"})
 	}
 	return changes
 }
