@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
@@ -1177,11 +1178,8 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 		{
 			name: "provisioning the sandbox",
 			step: "provisioning the sandbox",
-			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
-				deps.provisionSandbox = func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error {
-					interrupt()
-					return nil
-				}
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				provisionServeScratchThatMustBeDisposed(t, deps, interrupt)
 			},
 		},
 		{
@@ -1244,5 +1242,59 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 				t.Error("bound a listener for a startup an interrupt had already ended")
 			}
 		})
+	}
+}
+
+// provisionServeScratchThatMustBeDisposed gives the environment the owned
+// session scratch a sandboxed startup provisions — a write-blocked off policy
+// takes that path without needing a kernel backend this host may not have —
+// runs then, and holds the startup to disposing of it. Nothing releases the
+// directory or the flock lease under it until a session owns the environment
+// and its Close does, so every way out before that hand-off owes them.
+func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
+	t.Helper()
+	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+		if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+			return err
+		}
+		scratch := env.SessionScratchDir()
+		// Registered before the assertion so it runs after it: a failing test
+		// must not leave the scratch behind either.
+		t.Cleanup(env.DisposeSandboxScratch)
+		t.Cleanup(func() {
+			if scratch == "" {
+				t.Error("provisioning left no session scratch to dispose")
+				return
+			}
+			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
+			}
+		})
+		then()
+		return nil
+	}
+}
+
+// A session that was never built never takes the environment over, so the
+// startup that provisioned its scratch is the one that owes its disposal.
+func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	provisionServeScratchThatMustBeDisposed(t, &deps, func() {})
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		return nil, errors.New("no session today")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a startup that has no session")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
 	}
 }

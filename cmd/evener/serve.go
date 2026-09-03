@@ -531,7 +531,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := deps.provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the flock lease that
+		// keeps the crashed-scratch sweeper off it, and nothing releases
+		// either until a session owns this environment and its Close does.
+		// Every way out between here and that hand-off has to dispose of them,
+		// or an interrupted startup leaks a directory and a lease per attempt.
 		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeSandboxScratch()
 			return err
 		}
 	}
@@ -557,6 +563,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
+			// The session that would have owned the scratch was never built.
+			env.DisposeSandboxScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
