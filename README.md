@@ -63,12 +63,15 @@ On first use, Evener creates:
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
   canonical project path) and ends with a 10-character base62 suffix.
-- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` for standalone user skills.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` for standalone user skills,
+  discovered automatically.
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/plugins` for user plugins.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/commands` for user-global slash
+  commands, discovered automatically.
 
-The user skill and plugin directories are extension roots; installing Evener
-does not automatically enable their contents. Add standalone skill paths to
-`skills_dirs` and plugin paths to `plugin_dirs` in
+The user skill and plugin directories are extension roots. Standalone user
+skills and user-global commands are enabled automatically. Add additional
+standalone skill paths to `skills_dirs` and plugin paths to `plugin_dirs` in
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml`, or pass them with the
 corresponding CLI flags for a single run. Plugin-contained skills live under
 that plugin and become available through the plugin path.

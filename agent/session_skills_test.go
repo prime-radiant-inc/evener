@@ -532,3 +532,90 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")
 	}
 }
+
+func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "automatic-user")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const body = "automatic user skill sentinel"
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: automatic-user\ndescription: automatic user skill\n---\n"+body+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if _, ok := sess.skills["automatic-user"]; !ok {
+		t.Fatal("automatic user skill was not discovered")
+	}
+	got, ok := sess.expandSlashCommand(context.Background(), "/automatic-user")
+	if !ok || !strings.Contains(got, body) {
+		t.Fatalf("slash skill expansion = %q, %v; want body %q", got, ok, body)
+	}
+}
+
+func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "same-name")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: user\n---\nuser body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile user skill: %v", err)
+	}
+
+	extraDir := t.TempDir()
+	extraSkillDir := filepath.Join(extraDir, "same-name")
+	if err := os.MkdirAll(extraSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll configured skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extraSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: configured\n---\nconfigured body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile configured skill: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{SkillsDirs: []string{extraDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if got := sess.skills["same-name"].Description; got != "configured" {
+		t.Fatalf("skill description = %q, want configured", got)
+	}
+}
+
+func TestProjectSkillShadowsAutomaticUserSkill(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	project := t.TempDir()
+	markGitRoot(t, project)
+	writeSkillMD(t, project, "same-name", "---\nname: same-name\ndescription: project\n---\nproject body\n")
+
+	userSkillDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "skills", "same-name")
+	if err := os.MkdirAll(userSkillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("---\nname: same-name\ndescription: user\n---\nuser body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile user skill: %v", err)
+	}
+
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if got := sess.skills["same-name"].Description; got != "project" {
+		t.Fatalf("skill description = %q, want project", got)
+	}
+}

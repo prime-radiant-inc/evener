@@ -39,6 +39,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/userdirs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1286,7 +1287,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	if embedded, err := skill.EmbeddedSkills(); err == nil {
 		maps.Copy(s.skills, embedded)
 	}
-	// filesystem shadows embedded
+	// The automatic user directory is above embedded skills but below project
+	// skills and explicitly configured directories. Discover it separately so
+	// DiscoverSkills' project walk can shadow it.
+	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
+		skill.ScanSkillsDir(userSkillsDir, s.skills)
+	}
 	maps.Copy(s.skills, skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...))
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
