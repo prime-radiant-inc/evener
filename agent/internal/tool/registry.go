@@ -391,7 +391,9 @@ type RegisteredTool struct {
 	// whose top-level description is presentation metadata, never by name alone.
 	OmitDescriptionFromSemanticIdentity bool
 	// ApplyBuiltInSemanticDefaults is set only for core registrations whose
-	// handlers own the documented shell/job_stop/ask_user neutral defaults.
+	// handlers own the documented shell/job_stop/job_list/ask_user neutral
+	// defaults. read_transcript uses the same core-only policy through its
+	// registered NormalizeArgs hook.
 	ApplyBuiltInSemanticDefaults bool
 	generation                   uint64
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema

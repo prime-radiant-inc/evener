@@ -389,7 +389,7 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	if value, present := normalized["output_match"]; present && (value == nil || value == "") {
 		remove("output_match")
 	}
-	if value, present := normalized["context_lines"]; present && (value == nil || (isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "")) {
+	if value, present := normalized["context_lines"]; present && (isNeutralRetainedInteger(value) || isNeutralRetainedStringInteger(value)) {
 		remove("context_lines")
 	}
 	if jobRef {
@@ -433,12 +433,7 @@ func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any
 		remove("expand_turn")
 	}
 	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) {
-		if stringArg(normalized, "output_match") == "" {
-			remove("context_lines")
-		} else {
-			copyForWrite()
-			normalized["context_lines"] = float64(0)
-		}
+		remove("context_lines")
 	}
 	return normalized, nil
 }

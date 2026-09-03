@@ -261,6 +261,101 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 	})
 }
 
+func TestSemanticBreaker_CoreRuntimeDefaultsGroupEquivalentFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		params   map[string]any
+		args     []string
+	}{
+		{"job stop max wait", "job_stop", DefJobStop().Parameters, []string{`{"target":"job_same"}`, `{"target":"job_same","max_wait_ms":0}`, `{"target":"job_same"}`}},
+		{"job stop include children", "job_stop", DefJobStop().Parameters, []string{`{"target":"job_same"}`, `{"target":"job_same","include_children":false}`, `{"target":"job_same"}`}},
+		{"job list include nested", "job_list", DefJobList().Parameters, []string{`{}`, `{"include_nested":false}`, `{}`}},
+		{"job list include descendants", "job_list", DefJobList().Parameters, []string{`{}`, `{"include_descendants":false}`, `{}`}},
+		{"job list limit", "job_list", DefJobList().Parameters, []string{`{}`, `{"limit":50}`, `{}`}},
+		{"job list offset", "job_list", DefJobList().Parameters, []string{`{}`, `{"offset":0}`, `{}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry()
+			calls := 0
+			registerSemanticReviewTool(t, r, tc.toolName, tc.params, func(map[string]any) (any, error) {
+				calls++
+				return nil, errors.New("invalid_request: unavailable")
+			})
+			r.MarkRegisteredToolsCoreSemanticMetadata()
+			callerArgs := map[string]any{}
+			if err := json.Unmarshal([]byte(tc.args[0]), &callerArgs); err != nil {
+				t.Fatal(err)
+			}
+			before, err := json.Marshal(callerArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = r.semanticSignature(tc.toolName, callerArgs)
+			after, err := json.Marshal(callerArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("semantic defaults mutated caller args: before=%s after=%s", before, after)
+			}
+			var first, second ExecResult
+			for i, args := range tc.args {
+				result := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("%s-%d", tc.name, i), tc.toolName, args))
+				if i == 0 {
+					first = result
+				}
+				if i == 1 {
+					second = result
+				}
+				if i == 2 && (!strings.Contains(result.Output, "semantic failure loop") || calls != 2 || result.BreakerSemanticSignature != first.BreakerSemanticSignature) {
+					t.Fatalf("equivalent defaults evaded semantic breaker: calls=%d first=%#v second=%#v parked=%#v", calls, first, second, result)
+				}
+			}
+			if first.BreakerExactSignature == second.BreakerExactSignature {
+				t.Fatalf("default variants unexpectedly shared exact identity: %#v %#v", first, second)
+			}
+		})
+	}
+}
+
+func TestSemanticBreaker_CoreRuntimeNonDefaultsRemainDistinct(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		params   map[string]any
+		args     []string
+	}{
+		{"job stop max wait", "job_stop", DefJobStop().Parameters, []string{`{"target":"job_same"}`, `{"target":"job_same","max_wait_ms":1}`, `{"target":"job_same"}`}},
+		{"job stop include children", "job_stop", DefJobStop().Parameters, []string{`{"target":"job_same"}`, `{"target":"job_same","include_children":true}`, `{"target":"job_same"}`}},
+		{"job list include nested", "job_list", DefJobList().Parameters, []string{`{}`, `{"include_nested":true}`, `{}`}},
+		{"job list include descendants", "job_list", DefJobList().Parameters, []string{`{}`, `{"include_descendants":true}`, `{}`}},
+		{"job list limit", "job_list", DefJobList().Parameters, []string{`{}`, `{"limit":49}`, `{}`}},
+		{"job list offset", "job_list", DefJobList().Parameters, []string{`{}`, `{"offset":1}`, `{}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry()
+			calls := 0
+			registerSemanticReviewTool(t, r, tc.toolName, tc.params, func(map[string]any) (any, error) {
+				calls++
+				return nil, errors.New("invalid_request: unavailable")
+			})
+			r.MarkRegisteredToolsCoreSemanticMetadata()
+			for i, args := range tc.args {
+				result := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("%s-%d", tc.name, i), tc.toolName, args))
+				if strings.Contains(result.Output, "semantic failure loop") {
+					t.Fatalf("non-default variant was grouped with omission: %#v", result)
+				}
+			}
+			if calls != 3 {
+				t.Fatalf("calls=%d, want non-default variant to execute", calls)
+			}
+		})
+	}
+}
+
 func TestSemanticBreaker_CustomReplacementDoesNotInheritBuiltInDefaults(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -269,22 +364,32 @@ func TestSemanticBreaker_CustomReplacementDoesNotInheritBuiltInDefaults(t *testi
 	}{
 		{"shell", DefShell().Parameters, []string{`{"command":"false"}`, `{"command":"false","mode":"foreground"}`, `{"command":"false","intent":"retry"}`}},
 		{"job_stop", DefJobStop().Parameters, []string{`{"target":"same"}`, `{"target":"same","max_wait_ms":0}`, `{"target":"same","intent":"retry"}`}},
+		{"job_stop_include_children", DefJobStop().Parameters, []string{`{"target":"same"}`, `{"target":"same","include_children":false}`, `{"target":"same","intent":"retry"}`}},
+		{"job_list", DefJobList().Parameters, []string{`{}`, `{"include_nested":false}`, `{}`}},
+		{"job_list_include_descendants", DefJobList().Parameters, []string{`{}`, `{"include_descendants":false}`, `{}`}},
+		{"job_list_limit", DefJobList().Parameters, []string{`{}`, `{"limit":50}`, `{}`}},
+		{"job_list_offset", DefJobList().Parameters, []string{`{}`, `{"offset":0}`, `{}`}},
+		{"read_transcript", DefReadTranscript().Parameters, []string{`{"transcript_ref":"job:same","output_match":"ready"}`, `{"transcript_ref":"job:same","output_match":"ready","context_lines":0}`, `{"transcript_ref":"job:same","output_match":"ready"}`}},
 		{"ask_user", DefAskUser().Parameters, []string{`{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]}],"intent":"first"}`, `{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}],"multi_select":false}],"intent":"second"}`, `{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]}],"intent":"third"}`}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRegistry()
 			calls := 0
-			if tc.name == "shell" {
-				registerSemanticReviewTool(t, r, "shell", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
-				r.MarkRegisteredToolsCoreSemanticMetadata()
+			baseName := tc.name
+			if strings.HasPrefix(baseName, "job_stop") {
+				baseName = "job_stop"
+			} else if strings.HasPrefix(baseName, "job_list") {
+				baseName = "job_list"
 			}
-			registerSemanticReviewTool(t, r, tc.name, tc.params, func(map[string]any) (any, error) {
+			registerSemanticReviewTool(t, r, baseName, tc.params, func(map[string]any) (any, error) { return nil, nil })
+			r.MarkRegisteredToolsCoreSemanticMetadata()
+			registerSemanticReviewTool(t, r, baseName, tc.params, func(map[string]any) (any, error) {
 				calls++
 				return nil, errors.New("custom failure")
 			})
 			for i, args := range tc.args {
-				res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("custom-%s-%d", tc.name, i), tc.name, args))
+				res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("custom-%s-%d", tc.name, i), baseName, args))
 				if strings.Contains(res.Output, "semantic failure loop") {
 					t.Fatalf("custom %s inherited built-in default grouping: %#v", tc.name, res)
 				}

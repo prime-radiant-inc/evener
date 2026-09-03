@@ -122,6 +122,25 @@ func canonicalSemanticArgs(name string, args map[string]any, applyBuiltInDefault
 		if _, present := out["max_wait_ms"]; !present {
 			out["max_wait_ms"] = float64(0)
 		}
+		if _, present := out["include_children"]; !present {
+			out["include_children"] = false
+		}
+	case "job_list":
+		// These are applied by jobListFilterFromArgs when callers omit them.
+		// They remain here, behind the core-registration metadata, because a
+		// replacement tool with the same name may give omission different meaning.
+		if _, present := out["include_nested"]; !present {
+			out["include_nested"] = false
+		}
+		if _, present := out["include_descendants"]; !present {
+			out["include_descendants"] = false
+		}
+		if _, present := out["limit"]; !present {
+			out["limit"] = float64(50)
+		}
+		if _, present := out["offset"]; !present {
+			out["offset"] = float64(0)
+		}
 	case "ask_user":
 		canonicalAskUserDefaults(out)
 	}

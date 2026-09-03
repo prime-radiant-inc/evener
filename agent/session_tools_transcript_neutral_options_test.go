@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -236,6 +237,61 @@ func TestRegistryExecuteCallNormalizesStringifiedSearchContextZero(t *testing.T)
 		if !result.IsError {
 			t.Fatalf("nonzero string context_lines=%q succeeded: %#v", value, result)
 		}
+	}
+}
+
+func TestCoreReadTranscriptSearchContextZeroNormalizesBeforeSemanticBreaker(t *testing.T) {
+	for _, ref := range []string{"job:retained-search", "artifact:retained-search"} {
+		t.Run(ref, func(t *testing.T) {
+			reg := tool.NewRegistry()
+			registered := readTranscriptTool(nil)
+			calls := 0
+			seen := make([]map[string]any, 0, 2)
+			registered.Exec = func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+				calls++
+				copyArgs := make(map[string]any, len(args))
+				maps.Copy(copyArgs, args)
+				seen = append(seen, copyArgs)
+				return nil, errors.New("invalid_request: retained search unavailable")
+			}
+			if err := reg.Register(registered); err != nil {
+				t.Fatalf("register read_transcript: %v", err)
+			}
+			reg.MarkRegisteredToolsCoreSemanticMetadata()
+
+			variants := []map[string]any{
+				{"transcript_ref": ref, "output_match": "ready"},
+				{"transcript_ref": ref, "output_match": "ready", "context_lines": float64(0)},
+				{"transcript_ref": ref, "output_match": "ready", "context_lines": "0"},
+			}
+			for i, args := range variants {
+				result := executeReadTranscriptFromRegistry(t, reg, fmt.Sprintf("search-zero-%d", i), args)
+				if i == 2 && (!strings.Contains(result.Output, "semantic failure loop") || calls != 2 || result.BreakerSemanticSignature == "") {
+					t.Fatalf("context_lines=0 evaded semantic breaker: calls=%d result=%#v", calls, result)
+				}
+			}
+			for i, args := range seen {
+				if _, present := args["context_lines"]; present {
+					t.Fatalf("executor call %d received neutral context_lines: %#v", i+1, args)
+				}
+			}
+
+			positive := map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": float64(1)}
+			normalized, _ := normalizeRetainedReadArgs(positive)
+			if got := normalized["context_lines"]; got != float64(1) {
+				t.Fatalf("positive context_lines normalized to %#v, want 1", got)
+			}
+			if got := positive["context_lines"]; got != float64(1) {
+				t.Fatalf("normalization mutated caller map: %#v", positive)
+			}
+			positiveResult := executeReadTranscriptFromRegistry(t, reg, "search-positive", positive)
+			if strings.Contains(positiveResult.Output, "semantic failure loop") || calls != 3 {
+				t.Fatalf("positive context_lines grouped with omission: calls=%d result=%#v", calls, positiveResult)
+			}
+			if got := seen[len(seen)-1]["context_lines"]; got != float64(1) {
+				t.Fatalf("executor context_lines=%#v, want positive value", got)
+			}
+		})
 	}
 }
 
@@ -589,7 +645,7 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 			t.Fatal("nonzero job expand_turn succeeded")
 		}
 		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
-		assertReadRepairChanges(t, repaired, "job-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "job-string-zeros", "coerce_type:expand_turn:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "job-null-search-context", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "job-null-output-match", "normalize_default:output_match:")
 	})
@@ -623,7 +679,7 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 			t.Fatal("nonzero artifact expand_turn succeeded")
 		}
 		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
-		assertReadRepairChanges(t, repaired, "artifact-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "artifact-string-zeros", "coerce_type:expand_turn:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "artifact-null-search-context", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "artifact-null-output-match", "normalize_default:output_match:")
 	})
@@ -709,10 +765,12 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
 		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
 		{name: "job empty and defaults", ref: "job:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}},
+		{name: "job search zero context", ref: "job:abc", args: map[string]any{"output_match": "match", "context_lines": float64(0)}, wantPresent: []string{"output_match"}},
 		{name: "job meaningful", ref: "job:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "artifact absent", ref: "artifact:abc", args: map[string]any{}},
 		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format"}},
 		{name: "artifact empty and defaults", ref: "artifact:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: []string{"format"}},
+		{name: "artifact search zero context", ref: "artifact:abc", args: map[string]any{"output_match": "match", "context_lines": "0"}, wantPresent: []string{"output_match"}},
 		{name: "artifact meaningful", ref: "artifact:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 	}
 	for _, tc := range tests {
