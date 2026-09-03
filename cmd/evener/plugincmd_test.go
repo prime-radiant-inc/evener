@@ -252,8 +252,8 @@ func (m *task3EffectiveListManager) SeedDefaultMarketplaces(context.Context) (bo
 	return false, nil
 }
 
-func (m *task3EffectiveListManager) ResolveForLaunch(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
-	return m.resolver.ResolveForLaunch(dirs, selected)
+func (m *task3EffectiveListManager) ResolveForLaunch(ctx context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	return m.resolver.ResolveForLaunch(ctx, dirs, selected)
 }
 
 func writeTask3Plugin(t *testing.T, dir, name string) {

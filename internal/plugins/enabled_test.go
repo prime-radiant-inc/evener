@@ -24,7 +24,7 @@ func TestEnabledPluginDirs_FiltersDisabledAndBroken(t *testing.T) {
 	}
 
 	// enabled → included
-	dirs := m.EnabledPluginDirs(nil)
+	dirs := m.EnabledPluginDirs(context.Background(), nil)
 	if len(dirs) != 1 || dirs[0] != entry.InstallPath {
 		t.Fatalf("EnabledPluginDirs = %v, want [%s]", dirs, entry.InstallPath)
 	}
@@ -33,7 +33,7 @@ func TestEnabledPluginDirs_FiltersDisabledAndBroken(t *testing.T) {
 	if err := m.SetEnabled(context.Background(), "widget", name, false); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
-	if dirs := m.EnabledPluginDirs(nil); len(dirs) != 0 {
+	if dirs := m.EnabledPluginDirs(context.Background(), nil); len(dirs) != 0 {
 		t.Fatalf("disabled plugin still returned: %v", dirs)
 	}
 }
@@ -52,7 +52,7 @@ func TestEnabledPluginDirs_ExplicitFirstAndDeduped(t *testing.T) {
 	explicitDir := t.TempDir()
 	writePlugin(t, explicitDir, "widget", nil) // from validate_test.go
 
-	dirs := m.EnabledPluginDirs([]string{explicitDir})
+	dirs := m.EnabledPluginDirs(context.Background(), []string{explicitDir})
 	if len(dirs) != 1 || dirs[0] != explicitDir {
 		t.Fatalf("EnabledPluginDirs=%v, want [%s] (explicit wins over registry %s)", dirs, explicitDir, entry.InstallPath)
 	}
@@ -68,7 +68,7 @@ func TestEnabledPluginDirs_WarnsOnDuplicateExplicit(t *testing.T) {
 	var warn bytes.Buffer
 	m.Stderr = &warn
 
-	dirs := m.EnabledPluginDirs([]string{a, b})
+	dirs := m.EnabledPluginDirs(context.Background(), []string{a, b})
 	if len(dirs) != 1 || dirs[0] != a {
 		t.Fatalf("EnabledPluginDirs=%v, want [%s] (first wins)", dirs, a)
 	}
@@ -96,7 +96,7 @@ func TestEnabledPluginDirs_RendersResolverDiagnostics(t *testing.T) {
 	var warn bytes.Buffer
 	m.Stderr = &warn
 
-	if dirs := m.EnabledPluginDirs([]string{invalid}); len(dirs) != 0 {
+	if dirs := m.EnabledPluginDirs(context.Background(), []string{invalid}); len(dirs) != 0 {
 		t.Fatalf("EnabledPluginDirs = %v, want no valid directories", dirs)
 	}
 	got := warn.String()
@@ -119,7 +119,7 @@ func TestEnabledPluginDirs_WarnsOnUnresolvedStoreRoot(t *testing.T) {
 	var warn bytes.Buffer
 	m.Stderr = &warn
 
-	dirs := m.EnabledPluginDirs([]string{explicit})
+	dirs := m.EnabledPluginDirs(context.Background(), []string{explicit})
 	if len(dirs) != 1 || dirs[0] != explicit {
 		t.Fatalf("EnabledPluginDirs = %v, want [%s]", dirs, explicit)
 	}

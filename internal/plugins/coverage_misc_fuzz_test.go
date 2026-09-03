@@ -227,7 +227,7 @@ func fuzzRegistryEdges(t *testing.T) {
 	if got := listOrWarn(m); got != nil || warnings.Len() == 0 {
 		t.Fatalf("listOrWarn = %#v, %q", got, warnings.String())
 	}
-	if got := m.EnabledPluginDirs([]string{filepath.Join(root, "missing")}); len(got) != 0 {
+	if got := m.EnabledPluginDirs(context.Background(), []string{filepath.Join(root, "missing")}); len(got) != 0 {
 		t.Fatalf("enabled = %#v", got)
 	}
 }

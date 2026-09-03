@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"fmt"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
@@ -11,8 +12,8 @@ var enabledLoad = agentplugin.Load
 // EnabledPluginDirs is the compatibility wrapper for callers that only need
 // the effective directory set. The resolver owns loading, ordering, and
 // deduplication; this wrapper preserves the existing fail-soft warnings.
-func (m *Manager) EnabledPluginDirs(explicit []string) []string {
-	resolution, err := m.ResolveForLaunch(explicit, nil)
+func (m *Manager) EnabledPluginDirs(ctx context.Context, explicit []string) []string {
+	resolution, err := m.ResolveForLaunch(ctx, explicit, nil)
 	for _, diagnostic := range resolution.Diagnostics {
 		if diagnostic.Source == LaunchPluginSourceInstalled && diagnostic.Message != "" &&
 			isRegistryDuplicateOfExplicit(resolution, diagnostic) {

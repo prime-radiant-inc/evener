@@ -62,7 +62,7 @@ func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	root := t.TempDir()
 	var order []string
 	deps := defaultServeDeps()
-	deps.resolvePlugins = func(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.resolvePlugins = func(_ context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
 		order = append(order, "resolve")
 		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
 			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
@@ -87,7 +87,7 @@ func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
-	deps.resolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.resolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
 	}
 	var got []string
@@ -124,7 +124,7 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 		t.Fatalf("SaveRegistry(enabled): %v", err)
 	}
 	selected := []string{"alpha"}
-	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(nil, &selected); err != nil {
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(context.Background(), nil, &selected); err != nil {
 		t.Fatalf("hub validation ResolveForLaunch: %v", err)
 	}
 	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{

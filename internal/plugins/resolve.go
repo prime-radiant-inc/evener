@@ -69,9 +69,9 @@ type LaunchPluginResolution struct {
 // ResolveForLaunch enumerates explicit plugin directories followed by globally
 // enabled installed plugins. It loads each candidate with the same loader used
 // by session startup, retaining invalid candidates as structured diagnostics.
-func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
+func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
-		path, warnings, err := m.materializeBundledPlugin(name)
+		path, warnings, err := m.materializeBundledPlugin(ctx, name)
 		return bundledCandidate{loadPath: path, path: path, warnings: warnings}, err
 	})
 }
@@ -90,10 +90,10 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 // fails is reported as a diagnostic on the inventory it returns rather than as
 // an error that would throw the inventory away; the marked directory stays in
 // the store until a later launch's sweep reclaims it.
-func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
+func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
-		dest, staging, warnings, err := m.prepareBundledStore(name, false)
+		dest, staging, warnings, err := m.prepareBundledStore(ctx, name, false)
 		if err != nil {
 			return bundledCandidate{path: dest, warnings: warnings}, err
 		}
@@ -352,8 +352,8 @@ func newBundledStaging(store, base, digest string, release func()) (*bundledStag
 // destination holding anything else is set aside rather than adopted, and the
 // publish goes ahead into the name it freed. It reports the published path and
 // anything the caller should hear about getting there.
-func (m *Manager) materializeBundledPlugin(name string) (string, []string, error) {
-	dest, staging, warnings, err := m.prepareBundledStore(name, true)
+func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (string, []string, error) {
+	dest, staging, warnings, err := m.prepareBundledStore(ctx, name, true)
 	if err != nil {
 		return "", warnings, err
 	}
@@ -405,7 +405,7 @@ func (m *Manager) materializeBundledPlugin(name string) (string, []string, error
 // fail identically on a store neither can write. reclaim asks for the
 // abandoned-staging sweep: a launch asks on every call, including the calls
 // that adopt a published copy, and a preview never does.
-func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundledStaging, []string, error) {
+func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim bool) (string, *bundledStaging, []string, error) {
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
 		return "", nil, nil, err
@@ -451,7 +451,7 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	// classification it acts on: without the lock two launches both classify a
 	// mismatched destination, and the second sets aside the copy the first
 	// published while deleting the copy the first preserved.
-	release, err := acquireLock(context.Background(), m.lockPath(), 30*time.Second)
+	release, err := acquireLock(ctx, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}

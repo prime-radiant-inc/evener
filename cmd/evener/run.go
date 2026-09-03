@@ -91,8 +91,8 @@ var (
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		return sess.DrainJobTree(ctx)
 	}
-	runResolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
+	runResolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager("").ResolveForLaunch(ctx, explicit, enabled)
 	}
 )
 
@@ -119,7 +119,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
-	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
+	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
 	if err != nil && cfg.enabledPlugins != nil {
 		return fmt.Errorf("resolve plugins: %w", err)
 	}

@@ -244,7 +244,7 @@ func TestPluginPreviewMissingChildUsesProjectLayerPluginDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve after creating cwd: %v", err)
 	}
-	realResolution, err := plugins.NewManager(pluginRoot).ResolveForLaunch(realResolved.Effective.PluginDirs, realResolved.Effective.EnabledPlugins)
+	realResolution, err := plugins.NewManager(pluginRoot).ResolveForLaunch(context.Background(), realResolved.Effective.PluginDirs, realResolved.Effective.EnabledPlugins)
 	if err != nil {
 		t.Fatalf("ResolveForLaunch after creating cwd: %v", err)
 	}

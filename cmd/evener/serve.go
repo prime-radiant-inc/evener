@@ -108,7 +108,7 @@ type serveDeps struct {
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
 	seedMarketplaces func() error
-	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	resolvePlugins   func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
@@ -319,11 +319,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
-		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-			return pluginManager.ResolveForLaunch(explicit, enabled)
+		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
+	// context.Background: the signal-derived process context is not built
+	// until the server starts, and plugins resolve while flags are still
+	// being read.
+	resolvedPlugins, resolveErr := resolvePlugins(context.Background(), []string(pluginDirs), enabledPlugins.Value())
 	if resolveErr != nil && enabledPlugins.Value() != nil {
 		return fmt.Errorf("resolve plugins: %w", resolveErr)
 	}

@@ -3,6 +3,7 @@
 package plugins
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/internal/bundled"
@@ -32,7 +34,7 @@ func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = os.Chmod(store, 0o755) })
 
-	preview, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	preview, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +45,7 @@ func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) 
 		t.Errorf("preview Diagnostics = %+v, want one bundled diagnostic", preview.Diagnostics)
 	}
 
-	launch, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	launch, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +106,7 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			dest, staging, _, err := m.prepareBundledStore("coordinator-workflow", true)
+			dest, staging, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,7 +172,7 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 	}
 	t.Cleanup(func() { enabledLoad = load })
 
-	res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		// The inventory is what the caller asked for and it is complete; a
 		// failure to clean up after it is a warning about the store, not a
@@ -221,7 +223,7 @@ func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) 
 		var wg sync.WaitGroup
 		for i := range publishers {
 			wg.Go(func() {
-				paths[i], _, errs[i] = m.materializeBundledPlugin("coordinator-workflow")
+				paths[i], _, errs[i] = m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 			})
 		}
 		wg.Wait()
@@ -274,7 +276,7 @@ func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 	previous := syscall.Umask(0o200)
 	t.Cleanup(func() { syscall.Umask(previous) })
 
-	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +307,7 @@ func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 // without anything in it being read.
 func TestBundledStore_SetsAsideADestinationHoldingAFIFO(t *testing.T) {
 	m := NewManager(t.TempDir())
-	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +315,7 @@ func TestBundledStore_SetsAsideADestinationHoldingAFIFO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,5 +331,59 @@ func TestBundledStore_SetsAsideADestinationHoldingAFIFO(t *testing.T) {
 	info, err := os.Lstat(filepath.Join(published+conflictSuffix, "pipe"))
 	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 		t.Errorf("set-aside entry mode = %v (err %v), want the FIFO preserved", info, err)
+	}
+}
+
+// Readying the store waits for the store lock, so a caller that has given up
+// has to be able to stop that wait. The hub hands its request context down for
+// exactly this: a client that disconnected, or a TUI whose own deadline
+// passed, must not leave a handler parked on a lock some install is holding
+// for as long as the lock timeout allows.
+func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(context.Context, *Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(ctx context.Context, m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(ctx context.Context, m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			// Somebody else is holding the store lock, the way an install does.
+			release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			start := time.Now()
+			res, err := test.resolve(ctx, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if waited := time.Since(start); waited > 5*time.Second {
+				t.Errorf("returned after %v, want it to stop waiting when the context did", waited)
+			}
+			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
+				!strings.Contains(res.Diagnostics[0].Message, context.Canceled.Error()) {
+				t.Fatalf("Diagnostics = %+v, want one bundled diagnostic reporting the cancellation", res.Diagnostics)
+			}
+			if err := res.ValidateSelection(); err == nil {
+				t.Error("selected a bundled plugin that was never staged")
+			}
+		})
 	}
 }

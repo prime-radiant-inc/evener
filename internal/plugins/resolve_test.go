@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -30,7 +31,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				writePlugin(t, a, "alpha", nil)
 				writePlugin(t, b, "beta", nil)
 
-				all, err := m.ResolveForLaunch([]string{a, b}, nil)
+				all, err := m.ResolveForLaunch(context.Background(), []string{a, b}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -38,7 +39,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				assertStrings(t, all.SelectedDirs, []string{a, b})
 
 				none := []string{}
-				empty, err := m.ResolveForLaunch([]string{a, b}, &none)
+				empty, err := m.ResolveForLaunch(context.Background(), []string{a, b}, &none)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -48,7 +49,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				}
 
 				names := []string{"beta", "alpha"}
-				one, err := m.ResolveForLaunch([]string{a, b}, &names)
+				one, err := m.ResolveForLaunch(context.Background(), []string{a, b}, &names)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -74,7 +75,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 					"alpha@m": {{InstallPath: alpha, Version: "1", Enabled: true}},
 				})
 
-				got, err := m.ResolveForLaunch([]string{explicit}, nil)
+				got, err := m.ResolveForLaunch(context.Background(), []string{explicit}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -98,7 +99,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 					"good@m":     {{InstallPath: good, Version: "2", Enabled: true}},
 				})
 
-				got, err := m.ResolveForLaunch(nil, nil)
+				got, err := m.ResolveForLaunch(context.Background(), nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -117,7 +118,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				os.MkdirAll(invalid, 0o755)
 				writePlugin(t, first, "dup", nil)
 				writePlugin(t, second, "dup", nil)
-				got, err := m.ResolveForLaunch([]string{invalid, first, second}, nil)
+				got, err := m.ResolveForLaunch(context.Background(), []string{invalid, first, second}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -141,7 +142,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				writePlugin(t, valid, "valid", nil)
 				writePlugin(t, invalid, "selected", map[string]string{"agents/broken.md": "not frontmatter"})
 				names := []string{"unknown", "selected", "valid"}
-				got, err := m.ResolveForLaunch([]string{valid, invalid}, &names)
+				got, err := m.ResolveForLaunch(context.Background(), []string{valid, invalid}, &names)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -167,7 +168,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				saveTestRegistry(t, m, map[string][]InstallEntry{
 					"installed@market": {{InstallPath: installedDir, Version: "9.9.9", Enabled: true}},
 				})
-				got, err := m.ResolveForLaunch([]string{dir}, nil)
+				got, err := m.ResolveForLaunch(context.Background(), []string{dir}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -197,7 +198,7 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 				if err := os.WriteFile(m.registryPath(), []byte("{"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				got, err := m.ResolveForLaunch([]string{dir}, nil)
+				got, err := m.ResolveForLaunch(context.Background(), []string{dir}, nil)
 				if err == nil {
 					t.Fatal("ResolveForLaunch error = nil")
 				}
@@ -281,7 +282,7 @@ func writeTestPluginFile(t *testing.T, root, rel, body string) {
 // a launch names it; it is materialized under the store root and selected.
 func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 	m := NewManager(t.TempDir())
-	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +302,7 @@ func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 		t.Errorf("materialized plugin has no manifest: %v", err)
 	}
 	// Not requested: bundled plugins stay out of the inventory.
-	quiet, err := m.ResolveForLaunch(nil, nil)
+	quiet, err := m.ResolveForLaunch(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +320,7 @@ func TestMaterializeBundledPlugin_PublishesContentAddressedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(m.Root, "bundled", "coordinator-workflow-"+digest)
-	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +347,7 @@ func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{".", "..", "", "a/b", "../coordinator-workflow", "/coordinator-workflow"} {
-		if path, _, err := m.materializeBundledPlugin(name); err == nil {
+		if path, _, err := m.materializeBundledPlugin(context.Background(), name); err == nil {
 			t.Errorf("materializeBundledPlugin(%q) = %s, want an error", name, path)
 		}
 	}
@@ -357,7 +358,7 @@ func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
 
 func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	m := NewManager(t.TempDir())
-	first, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	first, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +369,7 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	second, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +400,7 @@ func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range workers {
 		wg.Go(func() {
-			paths[i], _, errs[i] = m.materializeBundledPlugin("coordinator-workflow")
+			paths[i], _, errs[i] = m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 		})
 	}
 	wg.Wait()
@@ -432,7 +433,7 @@ func TestPreviewForLaunch_PublishesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +471,7 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 		if err := os.WriteFile(dest, []byte("not a plugin"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+		res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -484,7 +485,7 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 
 	t.Run("a published copy is the one preview describes", func(t *testing.T) {
 		m := NewManager(t.TempDir())
-		published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+		published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -499,7 +500,7 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 		}
 		t.Cleanup(func() { enabledLoad = load })
 
-		res, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+		res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -526,13 +527,13 @@ func TestBundledStore_CreatesMissingParentsPrivately(t *testing.T) {
 		{
 			name: "preview",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 		{
 			name: "launch",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 	}
@@ -568,14 +569,14 @@ func TestPreviewForLaunch_ReclaimsNothing(t *testing.T) {
 	}
 	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	if _, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+	if _, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(staging); err != nil {
 		t.Fatalf("preview reclaimed abandoned staging: %v", err)
 	}
 
-	if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+	if _, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(staging); !os.IsNotExist(err) {
@@ -612,13 +613,13 @@ func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
 		{
 			name: "preview",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 		{
 			name: "launch",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 	}
@@ -697,7 +698,7 @@ func TestMaterializeBundledPlugin_RejectsAForeignDestination(t *testing.T) {
 				t.Fatal(err)
 			}
 			plant(t, dest)
-			path, _, err := m.materializeBundledPlugin("coordinator-workflow")
+			path, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 			if err == nil {
 				t.Fatalf("materializeBundledPlugin = %s, want an error for a %s at the destination", path, name)
 			}
@@ -727,7 +728,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		m := NewManager(t.TempDir())
 		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 		staging := plantStaging(t, m, true)
-		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(staging); !os.IsNotExist(err) {
@@ -738,7 +739,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 	t.Run("staging in flight is left alone", func(t *testing.T) {
 		m := NewManager(t.TempDir())
 		staging := plantStaging(t, m, true)
-		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(staging); err != nil {
@@ -754,7 +755,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(keep); err != nil {
@@ -772,7 +773,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		if err := os.WriteFile(stray, []byte("not staging"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(stray); err != nil {
@@ -787,7 +788,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 // never reclaimed.
 func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing.T) {
 	m := NewManager(t.TempDir())
-	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +801,7 @@ func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing
 	}
 	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	again, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	again, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +829,7 @@ func TestBundledPluginsAreNamedAfterTheirDirectory(t *testing.T) {
 			continue
 		}
 		m := NewManager(t.TempDir())
-		path, _, err := m.materializeBundledPlugin(entry.Name())
+		path, _, err := m.materializeBundledPlugin(context.Background(), entry.Name())
 		if err != nil {
 			t.Fatalf("materialize %s: %v", entry.Name(), err)
 		}
@@ -874,20 +875,20 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 		{
 			name: "preview",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 		{
 			name: "launch",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 	}
 	for _, resolver := range resolvers {
 		t.Run(resolver.name+" adopts the published copy", func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+			published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -931,13 +932,13 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		{
 			name: "preview",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 		{
 			name: "launch",
 			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+				return m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 			},
 		},
 	}
@@ -975,7 +976,7 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 	// the plugin keeps working without anybody deleting anything.
 	t.Run("a stray file in a published copy heals on the next launch", func(t *testing.T) {
 		m := NewManager(t.TempDir())
-		first, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+		first, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -987,7 +988,7 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		again, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+		again, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1011,13 +1012,13 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		m := NewManager(t.TempDir())
 		dest := m.bundledPluginPath("coordinator-workflow", digest)
 		writePlugin(t, dest, "coordinator-workflow", map[string]string{"first.md": "first"})
-		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		if _, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(dest, "second.md"), []byte("second"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		if _, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1044,11 +1045,11 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		m := NewManager(t.TempDir())
 		dest := m.bundledPluginPath("coordinator-workflow", digest)
 		writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
-		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		if _, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 			t.Fatal(err)
 		}
 		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
-		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		if _, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(filepath.Join(dest+conflictSuffix, "theirs.md")); err != nil {
@@ -1064,7 +1065,7 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 // real copy published in its place.
 func TestBundledStore_SetsAsideADestinationHoldingASymlink(t *testing.T) {
 	m := NewManager(t.TempDir())
-	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1086,7 +1087,7 @@ func TestBundledStore_SetsAsideADestinationHoldingASymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}

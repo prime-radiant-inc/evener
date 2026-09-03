@@ -140,7 +140,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
-	pluginResolution, pluginErr := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
+	pluginResolution, pluginErr := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(ctx, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
 	if pluginErr != nil {
 		if spawnResolved.Effective.EnabledPlugins != nil {
 			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())

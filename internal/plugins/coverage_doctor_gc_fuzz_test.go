@@ -221,7 +221,7 @@ func coverageEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabledLoad = func(string) (agentplugin.Instance, error) { return agentplugin.Instance{}, errors.New("boom") }
-	m.EnabledPluginDirs(nil)
+	m.EnabledPluginDirs(context.Background(), nil)
 	if !strings.Contains(stderr.String(), "skipping broken plugin") {
 		t.Fatalf("warning = %q", stderr.String())
 	}

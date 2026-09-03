@@ -58,7 +58,6 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 // commands, and session state are never touched, and it fails the way a launch
 // would on a store neither can write.
 func (c *hubPluginsController) Preview(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
-	_ = ctx // retained in the controller API for parity with other RPC reads
 	var overrides launchconfig.Layer
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
@@ -86,7 +85,7 @@ func (c *hubPluginsController) Preview(ctx context.Context, params appwire.Plugi
 		}
 		resolved = fullResolved
 	}
-	resolution, err := c.mgr.PreviewForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
+	resolution, err := c.mgr.PreviewForLaunch(ctx, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
 	if err != nil {
 		return appwire.PluginPreviewResponse{}, err
 	}

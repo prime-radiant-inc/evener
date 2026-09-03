@@ -36,7 +36,7 @@ func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 		runEnsureUserConfigDirs = oldEnsure
 		runSeedMarketplaces = oldSeed
 	})
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		order = append(order, "resolve")
 		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
 	}
@@ -67,7 +67,7 @@ func TestRunPassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	oldResolve := runResolvePlugins
 	oldProvision := runProvisionSandbox
 	t.Cleanup(func() { runResolvePlugins = oldResolve; runProvisionSandbox = oldProvision })
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
 	}
 	var got []string
@@ -101,7 +101,7 @@ func TestRunResumeRestoresRecordedPluginDirs(t *testing.T) {
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
 	fresh := []string{"/plugins/fresh"}
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
 	}
 	var got []string
@@ -177,7 +177,7 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
 	fresh := []string{"/plugins/fresh-alpha", "/plugins/fresh-beta"}
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
 	}
 	var restored schema.SessionMeta
@@ -266,7 +266,7 @@ func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
 		runRestoreSession = oldRestore
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{}, nil
 	}
 	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {

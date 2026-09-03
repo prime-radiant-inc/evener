@@ -165,7 +165,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			})
 			dispatchRPCPass6(t, server, appwire.MethodEvenerPluginRemove, ref)
 			dispatchRPCPass6(t, server, appwire.MethodEvenerMarketplaceRemove, appwire.MarketplaceNameParams{Name: "acme"})
-			_, _ = hubCommandList(hubcore.WebConfig{PluginRoot: cfg.PluginRoot})
+			_, _ = hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: cfg.PluginRoot})
 		}
 	})
 }

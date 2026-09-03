@@ -35,7 +35,7 @@ type pluginManager interface {
 }
 
 type pluginLaunchResolver interface {
-	ResolveForLaunch([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	ResolveForLaunch(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 }
 
 var newPluginManager = func() pluginManager { return plugins.NewManager("") }
@@ -368,7 +368,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			if !ok {
 				return errors.New("plugin manager does not support effective listing")
 			}
-			resolution, err := resolver.ResolveForLaunch([]string(pluginDirs), nil)
+			resolution, err := resolver.ResolveForLaunch(context.Background(), []string(pluginDirs), nil)
 			if renderErr := renderEffectivePluginList(stdout, resolution, *asJSON); renderErr != nil {
 				return renderErr
 			}
