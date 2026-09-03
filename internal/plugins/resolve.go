@@ -251,6 +251,14 @@ func (m *Manager) resolveForLaunch(ctx context.Context, explicitDirs []string, e
 	if rootErr == nil {
 		items, err := m.List()
 		if err != nil {
+			// A caller that has left hears that it left, not a registry
+			// failure: this one is fail-soft to every caller — the hub
+			// launches on it when nothing was explicitly selected — so
+			// answering with it would start a session for a client that has
+			// gone.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nothingForACallerThatLeft(ctxErr)
+			}
 			return resolution, err
 		}
 		for _, item := range items {

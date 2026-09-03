@@ -1315,3 +1315,34 @@ func TestResolveForLaunch_StopsForACallerThatLeftWhileLoading(t *testing.T) {
 		t.Errorf("resolved %+v for a caller that had given up", res)
 	}
 }
+
+// A caller that left and a registry that cannot be read arrive together. What
+// the caller hears is that it left: a registry failure is fail-soft to every
+// caller — the hub launches on one when nothing was explicitly selected — so
+// answering with it would spawn a session for a client that has gone.
+func TestResolveForLaunch_AnswersACancellationRatherThanARegistryFailure(t *testing.T) {
+	explicit := t.TempDir()
+	writePlugin(t, explicit, "alpha", nil)
+	m := NewManager(t.TempDir())
+	if err := os.WriteFile(m.registryPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancelled while the inventory is being built, so the registry read that
+	// follows is the first thing to fail after it.
+	load := enabledLoad
+	t.Cleanup(func() { enabledLoad = load })
+	enabledLoad = func(dir string) (agentplugin.Instance, error) {
+		cancel()
+		return load(dir)
+	}
+
+	res, err := m.ResolveForLaunch(ctx, []string{explicit}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want the cancellation", err)
+	}
+	if len(res.Candidates) != 0 || len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
+		t.Errorf("resolved %+v for a caller that had given up", res)
+	}
+}
