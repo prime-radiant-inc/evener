@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -444,7 +445,7 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("Strict = %v, want false because job_watch has conditional optional arguments", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every"} {
+	for _, p := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every", "after_seconds", "repeat_seconds", "note"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
@@ -471,6 +472,33 @@ func TestDefJobWatchOptionalTriggerFieldsAreNullable(t *testing.T) {
 				t.Fatalf("%s type = %#v, want null", name, typeValues)
 			}
 		})
+	}
+}
+
+func TestDefJobWatch_TimerProperties(t *testing.T) {
+	def := DefJobWatch(nil)
+	props := def.Parameters["properties"].(map[string]any)
+	for _, p := range []string{"after_seconds", "repeat_seconds", "note"} {
+		prop, ok := props[p].(map[string]any)
+		if !ok {
+			t.Fatalf("missing property %q", p)
+		}
+		types, _ := prop["type"].([]string)
+		if len(types) != 2 || types[1] != "null" {
+			t.Errorf("%s type = %v, want nullable", p, prop["type"])
+		}
+	}
+	source := props["source"].(map[string]any)
+	if types, _ := source["type"].([]string); len(types) != 2 || types[1] != "null" {
+		t.Errorf("source must be nullable now that timers default it: %v", source["type"])
+	}
+	if !strings.HasPrefix(def.Description, "Wake yourself later:") {
+		t.Errorf("description must lead with the timer: %q", def.Description[:60])
+	}
+	for _, want := range []string{"after_seconds:600", "job_status", "clear and create", "(60 to 86400)", "(60 to 3600)"} {
+		if !strings.Contains(def.Description, want) && !strings.Contains(fmt.Sprint(props), want) {
+			t.Errorf("description or properties lack %q", want)
+		}
 	}
 }
 

@@ -332,8 +332,14 @@ type watchResult struct {
 	Events             []string
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
-	Send               *watchSendArgs
-	ReplacedExisting   bool
+	// TimerSeconds, OneShot, and Note describe a timer watch; a timer reports
+	// its interval in seconds and leaves ProgressIntervalMS zero so the result
+	// speaks in the units the model asked in.
+	TimerSeconds     int
+	OneShot          bool
+	Note             string
+	Send             *watchSendArgs
+	ReplacedExisting bool
 	// Fired reports that an output_match attach scan found a level match in the
 	// running target's already-retained output and fired once at attach (spec
 	// §7.1). Only a fresh concrete-running output_match install can set this;
@@ -1862,6 +1868,10 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 	if !cfg.stableReceiver {
 		send = cloneWatchSendArgs(cfg.send)
 	}
+	progressIntervalMS := cfg.progressIntervalMS
+	if cfg.timer {
+		progressIntervalMS = 0
+	}
 	return watchResult{
 		WatchID:            cfg.watchID,
 		Source:             cfg.sourcePublic,
@@ -1870,7 +1880,10 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		OutputMatch:        cfg.outputMatch,
 		Events:             append([]string(nil), cfg.events...),
 		EventFilter:        cloneWatchEventFilter(cfg.eventFilter),
-		ProgressIntervalMS: cfg.progressIntervalMS,
+		ProgressIntervalMS: progressIntervalMS,
+		TimerSeconds:       cfg.timerSeconds,
+		OneShot:            cfg.oneShot,
+		Note:               cfg.note,
 		Send:               send,
 		ReplacedExisting:   replacedExisting,
 	}
@@ -2316,8 +2329,16 @@ func watchConditionSummary(cfg *watchConfig) string {
 	if cfg.outputMatch != "" {
 		parts = append(parts, "output_match: "+limitWatchText(cfg.outputMatch, watchTriggerMaxChars))
 	}
-	if cfg.progressIntervalMS > 0 {
+	switch {
+	case cfg.timer && cfg.oneShot:
+		parts = append(parts, fmt.Sprintf("after_seconds: %d", cfg.timerSeconds))
+	case cfg.timer:
+		parts = append(parts, fmt.Sprintf("repeat_seconds: %d", cfg.timerSeconds))
+	case cfg.progressIntervalMS > 0:
 		parts = append(parts, fmt.Sprintf("progress_interval_ms: %d", cfg.progressIntervalMS))
+	}
+	if cfg.timer && cfg.note != "" {
+		parts = append(parts, "note: "+limitWatchText(cfg.note, watchTriggerMaxChars))
 	}
 	if cfg.wildcardEvents {
 		parts = append(parts, "events: [*]")

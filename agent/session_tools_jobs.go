@@ -1547,6 +1547,9 @@ type jobWatchToolResult struct {
 	Events             []string                 `json:"events,omitempty"`
 	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
 	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
+	AfterSeconds       int                      `json:"after_seconds,omitempty"`
+	RepeatSeconds      int                      `json:"repeat_seconds,omitempty"`
+	Note               string                   `json:"note,omitempty"`
 	Send               *jobWatchToolSendArgs    `json:"send,omitempty"`
 	// replaced_existing and fired serialize explicitly even when false: the
 	// contract's install example shows replaced_existing:false, and §7.1
@@ -1718,10 +1721,16 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
 		ProgressIntervalMS: res.ProgressIntervalMS,
+		Note:               res.Note,
 		ReplacedExisting:   res.ReplacedExisting,
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+	}
+	if res.OneShot {
+		out.AfterSeconds = res.TimerSeconds
+	} else {
+		out.RepeatSeconds = res.TimerSeconds
 	}
 	if res.EventFilter != nil {
 		out.EventFilter = &jobWatchToolEventFilter{
@@ -1789,8 +1798,16 @@ func formatJobWatch(out jobWatchToolResult) string {
 		}
 		cond = append(cond, events)
 	}
-	if out.ProgressIntervalMS > 0 {
-		cond = append(cond, fmt.Sprintf("every %dms", out.ProgressIntervalMS))
+	switch {
+	case out.AfterSeconds > 0:
+		cond = append(cond, fmt.Sprintf("after %ds", out.AfterSeconds))
+	case out.RepeatSeconds > 0:
+		cond = append(cond, fmt.Sprintf("every %ds", out.RepeatSeconds))
+	case out.ProgressIntervalMS > 0:
+		cond = append(cond, fmt.Sprintf("progress_interval_ms %dms", out.ProgressIntervalMS))
+	}
+	if out.Note != "" {
+		cond = append(cond, "note: "+out.Note)
 	}
 	if len(cond) > 0 {
 		parts = append(parts, strings.Join(cond, " "))
