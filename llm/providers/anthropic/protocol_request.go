@@ -99,11 +99,8 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 // always-on adaptive rows included: no Claude row lists an off effort level,
 // so there is no value that says "off" here, and keeping the always-on body
 // would switch thinking on against the user's stated intent. An unset shape
-// sends nothing. A budget the output ceiling cannot fit is reduced to fit —
-// the completion contract requires max_tokens to strictly exceed
-// budget_tokens, so a budget equal to the ceiling (ReasoningBudget maps
-// max/xhigh onto exactly the 131072-token cap of rows like kimi-for-coding
-// k3) is a request this adapter could never send.
+// sends nothing. A budget the output ceiling cannot fit is reduced to fit
+// (fitThinkingBudgetToOutputCeiling).
 func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) {
 	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
 		return
@@ -140,30 +137,24 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 	}
 }
 
-// minimumThinkingBudgetTokens is the smallest thinking.budget_tokens
-// Anthropic documents accepting; llm.ReasoningBudget's minimal row encodes
-// the same floor (#714).
-const minimumThinkingBudgetTokens = 1024
-
 // fitThinkingBudgetToOutputCeiling reduces an effort-derived thinking budget
 // so the completion contract — max_tokens must strictly exceed budget_tokens
 // — can hold for a request this adapter itself derived. The ceiling is the
 // smallest positive output bound the request carries: the max_tokens already
 // on the body (caller allocation or the fallback) and the row's
 // max_output_tokens, the same inputs ReconcileOutputField min's into the
-// final max_tokens. A budget that would have to drop below Anthropic's
-// documented thinking minimum to fit is returned unchanged, so the
-// completion contract reports the unsatisfiable request instead of sending a
-// wire-rejectable budget.
+// final max_tokens. ReasoningBudget's table maps max/xhigh onto exactly the
+// 131072-token cap of rows like kimi-for-coding k3, so without this clamp the
+// max effort tier could never produce a sendable request. A budget that
+// would have to drop below Anthropic's documented thinking minimum to fit is
+// returned unchanged, so the completion contract reports the unsatisfiable
+// request instead of sending a wire-rejectable budget.
 func fitThinkingBudgetToOutputCeiling(budget int, maxTokens any, outputCap *int) int {
 	ceiling := requestutil.MinPositiveInt(
 		requestutil.PositiveInt(maxTokens),
 		requestutil.PositivePointerInt(outputCap),
 	)
-	if ceiling <= 0 || budget < ceiling {
-		return budget
-	}
-	if fitted := ceiling - 1; fitted >= minimumThinkingBudgetTokens {
+	if fitted := ceiling - 1; budget >= ceiling && fitted >= llm.MinimumThinkingBudgetTokens {
 		return fitted
 	}
 	return budget
