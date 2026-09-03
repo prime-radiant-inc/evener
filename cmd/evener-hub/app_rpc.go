@@ -99,6 +99,56 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
+// listItemTurns returns a packed item-mode page when the source has item
+// candidates or when its legacy turn page contains data. A legacy source with
+// no data or a ListTurns error is left for the caller's saved-transcript
+// fallback; candidate and packing errors are terminal just as they are for a
+// native ItemCandidateSource.
+func listItemTurns(
+	ctx context.Context,
+	source appsource.Source,
+	params appwire.ThreadTurnsListParams,
+) (appwire.ThreadTurnsListResponse, bool, error) {
+	var live appwire.ThreadTurnsListResponse
+	var candidates transcriptItemCandidateResult
+	var err error
+	if _, native := source.(appsource.ItemCandidateSource); native {
+		candidates, err = sourceItemCandidateResultForList(ctx, source, params, live)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+	} else {
+		live, err = source.ListTurns(ctx, params)
+		if err != nil || len(live.Data) == 0 {
+			return live, false, err
+		}
+		candidates, err = sourceItemCandidateResultForList(ctx, source, params, live)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, true, err
+		}
+	}
+
+	meta, metaErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false})
+	packed, packErr := packThreadTurnsItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		if metaErr == nil {
+			thread := appwire.Thread{
+				ID:        meta.Thread.ID,
+				SessionID: meta.Thread.SessionID,
+				CWD:       meta.Thread.CWD,
+				Turns:     response.Data,
+			}
+			thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(thread))
+			response.Data = thread.Turns
+		}
+		response.PageUnit = appwire.TranscriptPageUnitItem
+		return response, nil
+	})
+	if packErr != nil {
+		return appwire.ThreadTurnsListResponse{}, true, packErr
+	}
+	return packed, true, nil
+}
+
 func blockedUnknownMutationError(clientMutationID string, err error) error {
 	return appwire.WireError{
 		Code:    appwire.CodeInternalError,
@@ -237,6 +287,9 @@ func registerThreadHandlers(
 		return hubThreadList(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if err := appwire.ValidateThreadReadParams(params); err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {
@@ -265,22 +318,67 @@ func registerThreadHandlers(
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp := read.response
+		liveItemTurnsEmpty := params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns && len(resp.Thread.Turns) == 0
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
 		}
-		// A live daemon's turns carry sha-addressed tool-result descriptors with
-		// no route on them (the daemon does not serve the bytes; this hub does),
-		// so the route is stamped here before the file-backed pass adds any
-		// /doc/image descriptors of its own.
-		resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
-		annotateThreadProjects([]appwire.Thread{resp.Thread})
-		// Window any turns the source itself didn't (Codex thread/read and the
-		// past-merge return the full transcript); a daemon read already set
-		// OlderCursor, so this is a no-op there.
-		if params.TurnLimit > 0 && resp.OlderCursor == "" {
-			resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
+		if params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns {
+			usedPastItemPage := false
+			if liveItemTurnsEmpty && len(resp.Thread.Turns) > 0 {
+				past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
+				if pastErr != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, pastErr
+				}
+				if ok {
+					resp.Thread.Turns = past.Thread.Turns
+					resp.OlderCursor = past.OlderCursor
+					resp.PageUnit = appwire.TranscriptPageUnitItem
+					resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+					annotateThreadProjects([]appwire.Thread{resp.Thread})
+					usedPastItemPage = true
+				}
+			}
+			if !usedPastItemPage {
+				candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)
+				if !read.hasItemCandidates {
+					var candidateErr error
+					candidates, candidateErr = sourceItemCandidateResultForRead(ctx, source, params, resp)
+					if candidateErr != nil {
+						read.finish(false)
+						return appwire.ThreadReadResponse{}, candidateErr
+					}
+				}
+				packed, packErr := packThreadReadItemCandidates(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
+					// A live daemon's turns carry sha-addressed tool-result descriptors
+					// with no route on them (the daemon does not serve the bytes; this
+					// hub does), so route stamping stays inside the final packer.
+					response.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(response.Thread))
+					annotateThreadProjects([]appwire.Thread{response.Thread})
+					return response, nil
+				})
+				if packErr != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, packErr
+				}
+				resp = packed
+			}
+		} else {
+			// A live daemon's turns carry sha-addressed tool-result descriptors with
+			// no route on them (the daemon does not serve the bytes; this hub does),
+			// so the route is stamped here before the file-backed pass adds any
+			// /doc/image descriptors of its own.
+			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+			annotateThreadProjects([]appwire.Thread{resp.Thread})
+			// Window any turns the source itself didn't (Codex thread/read and the
+			// past-merge return the full transcript); a daemon read already set
+			// OlderCursor, so this is a no-op there.
+			if params.TurnLimit > 0 && resp.OlderCursor == "" {
+				resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
+			}
 		}
 		read.response = resp
 		if read.handoff != nil {
@@ -325,6 +423,9 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
 		source, srcErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
@@ -334,7 +435,18 @@ func registerThreadHandlers(
 		var live appwire.ThreadTurnsListResponse
 		var liveErr error
 		if srcErr == nil {
-			live, liveErr = source.ListTurns(ctx, params)
+			if params.PageUnit == appwire.TranscriptPageUnitItem {
+				var handled bool
+				live, handled, liveErr = listItemTurns(ctx, source, params)
+				if handled {
+					if liveErr != nil {
+						return appwire.ThreadTurnsListResponse{}, liveErr
+					}
+					return live, nil
+				}
+			} else {
+				live, liveErr = source.ListTurns(ctx, params)
+			}
 			if liveErr == nil && len(live.Data) > 0 {
 				if meta, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}); err == nil {
 					// File-backed output-image enrichment is intentionally page-local

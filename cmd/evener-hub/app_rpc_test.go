@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/selfupdate"
@@ -49,6 +50,267 @@ func TestHubRPCPluginPreviewRoute(t *testing.T) {
 	}
 	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
 		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
+func TestHubRPCItemReadAndListUseFinalPacker(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:item-packing", Incarnation: "rpc-item-packing", ProjectionVersion: 1}
+	turns, err := appitempaging.RegroupTurnFragments(testItemCandidates(45))
+	if err != nil {
+		t.Fatalf("group fixture: %v", err)
+	}
+	olderCursor, err := appitempaging.EncodeCursor(identity, appwire.ThreadItemPosition{Entry: 0, Item: 0})
+	if err != nil {
+		t.Fatalf("encode fixture cursor: %v", err)
+	}
+	thread := appwire.Thread{
+		ID:        "item-packing",
+		SessionID: "item-packing",
+		Source:    "codex",
+		CWD:       "/tmp/item-packing",
+		Evener:    appwire.EvenerThread{Ref: "codex:item-packing"},
+		Turns:     turns,
+	}
+	source := &itemPackingRPCSource{
+		read: appwire.ThreadReadResponse{
+			Thread:      thread,
+			PageUnit:    appwire.TranscriptPageUnitItem,
+			OlderCursor: olderCursor,
+		},
+		list: appwire.ThreadTurnsListResponse{
+			Data:       turns,
+			PageUnit:   appwire.TranscriptPageUnitItem,
+			NextCursor: olderCursor,
+		},
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(45), OlderCursor: olderCursor},
+			Identity:   identity,
+			Exhausted:  false,
+		},
+		listCandidates: func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			return appsource.ItemCandidateResult{
+				Candidates: appitempaging.TranscriptItemWindow{Candidates: testItemCandidates(45), OlderCursor: olderCursor},
+				Identity:   identity,
+				Exhausted:  false,
+			}, nil
+		},
+		rejectLegacyItemList: true,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readRaw, err := json.Marshal(appwire.ThreadReadParams{
+		Ref:          "codex:item-packing",
+		IncludeTurns: true,
+		PageUnit:     appwire.TranscriptPageUnitItem,
+		ItemLimit:    40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: readRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("item thread/read response = %T", readValue)
+	}
+	if got := len(flattenTestItems(read.Thread.Turns)); got != 40 {
+		t.Fatalf("item thread/read count = %d, want 40", got)
+	}
+
+	listRaw, err := json.Marshal(appwire.ThreadTurnsListParams{
+		Ref:       "codex:item-packing",
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(2),
+		Method: appwire.MethodThreadTurnsList,
+		Params: listRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("item thread/turns/list response = %T", listValue)
+	}
+	if got := len(flattenTestItems(list.Data)); got != 40 {
+		t.Fatalf("item thread/turns/list count = %d, want 40", got)
+	}
+	if read.OlderCursor == "" || list.NextCursor == "" {
+		t.Fatal("item pages did not retain an opaque older cursor")
+	}
+	if source.candidateReadCalls != 0 || source.candidateListCalls != 1 {
+		t.Fatalf("candidate source calls = read %d/list %d, want read 0/list 1", source.candidateReadCalls, source.candidateListCalls)
+	}
+}
+
+type itemPackingRPCSource struct {
+	relayLifecycleSource
+	read                 appwire.ThreadReadResponse
+	list                 appwire.ThreadTurnsListResponse
+	readCandidates       appsource.ItemCandidateResult
+	listCandidates       func(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error)
+	candidateReadCalls   int
+	candidateListCalls   int
+	rejectLegacyItemList bool
+}
+
+func (s *itemPackingRPCSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return s.read, nil
+}
+
+func (*itemPackingRPCSource) RelayOnThreadRead() bool { return false }
+
+func (s *itemPackingRPCSource) ListTurns(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if s.rejectLegacyItemList && params.PageUnit == appwire.TranscriptPageUnitItem {
+		return appwire.ThreadTurnsListResponse{}, errors.New("legacy item list path must not be called")
+	}
+	return s.list, nil
+}
+
+func (s *itemPackingRPCSource) ReadItemCandidates(context.Context, appwire.ThreadReadParams) (appsource.ItemCandidateResult, error) {
+	s.candidateReadCalls++
+	return s.readCandidates, nil
+}
+
+func (s *itemPackingRPCSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+	s.candidateListCalls++
+	if s.listCandidates != nil {
+		return s.listCandidates(ctx, params)
+	}
+	return s.readCandidates, nil
+}
+
+func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "codex:byte-packing", Incarnation: "rpc-byte-packing", ProjectionVersion: 1}
+	candidates := testItemCandidates(2)
+	for i := range candidates {
+		candidates[i].Item.Text = strings.Repeat("x", 600_000)
+	}
+	turns, err := appitempaging.RegroupTurnFragments(candidates)
+	if err != nil {
+		t.Fatalf("group response-derived candidates: %v", err)
+	}
+	sourceCursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode source cursor: %v", err)
+	}
+	all := appsource.ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates, OlderCursor: sourceCursor},
+		Identity:   identity,
+		Exhausted:  false,
+	}
+	thread := appwire.Thread{
+		ID:     "byte-packing",
+		Source: "codex",
+		Evener: appwire.EvenerThread{Ref: identity.ThreadRef},
+		Turns:  turns,
+	}
+	source := &itemPackingRPCSource{
+		read:                 appwire.ThreadReadResponse{Thread: thread, PageUnit: appwire.TranscriptPageUnitItem, OlderCursor: sourceCursor},
+		readCandidates:       all,
+		rejectLegacyItemList: true,
+		listCandidates: func(_ context.Context, params appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+			if params.Cursor == "" {
+				return all, nil
+			}
+			before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+			if err != nil {
+				return appsource.ItemCandidateResult{}, err
+			}
+			selected, hasOlder, err := appitempaging.SelectCandidates(candidates, &before, params.ItemLimit)
+			if err != nil {
+				return appsource.ItemCandidateResult{}, err
+			}
+			window := appitempaging.TranscriptItemWindow{Candidates: selected}
+			if hasOlder && len(selected) > 0 {
+				window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+				if err != nil {
+					return appsource.ItemCandidateResult{}, err
+				}
+			}
+			return appsource.ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+
+	readRaw, err := json.Marshal(appwire.ThreadReadParams{
+		Ref:          identity.ThreadRef,
+		IncludeTurns: true,
+		PageUnit:     appwire.TranscriptPageUnitItem,
+		ItemLimit:    40,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: readRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/read: %v", err)
+	}
+	read, ok := readValue.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("item thread/read response = %T", readValue)
+	}
+	readItems := flattenTestItems(read.Thread.Turns)
+	if len(readItems) != 1 || readItems[0].ID != "item-01" {
+		t.Fatalf("byte-trimmed read items = %+v, want only newest item-01", readItems)
+	}
+	if read.OlderCursor == "" {
+		t.Fatal("byte-trimmed read omitted excluded-item cursor")
+	}
+	before, err := appitempaging.DecodeCursor(read.OlderCursor, identity)
+	if err != nil {
+		t.Fatalf("decode response-derived rebased cursor: %v", err)
+	}
+	if before != candidates[1].Position {
+		t.Fatalf("response-derived rebased cursor = %+v, want oldest returned position %+v", before, candidates[1].Position)
+	}
+
+	listRaw, err := json.Marshal(appwire.ThreadTurnsListParams{
+		Ref:       identity.ThreadRef,
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+		Cursor:    read.OlderCursor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listValue, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(2),
+		Method: appwire.MethodThreadTurnsList,
+		Params: listRaw,
+	})
+	if err != nil {
+		t.Fatalf("item thread/turns/list: %v", err)
+	}
+	list, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("item thread/turns/list response = %T", listValue)
+	}
+	listItems := flattenTestItems(list.Data)
+	if len(listItems) != 1 || listItems[0].ID != "item-00" || list.NextCursor != "" {
+		t.Fatalf("older byte-trimmed items = %+v, cursor=%q, want only item-00 with no cursor", listItems, list.NextCursor)
+	}
+	if source.candidateReadCalls != 0 || source.candidateListCalls != 1 {
+		t.Fatalf("candidate source calls = read %d/list %d, want read 0/list 1", source.candidateReadCalls, source.candidateListCalls)
 	}
 }
 

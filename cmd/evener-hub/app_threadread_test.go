@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1314,6 +1315,121 @@ func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	if !reflect.DeepEqual(projected, []int{30}) {
 		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [30]", projected)
 	}
+}
+
+func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {
+	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, found, err := pastThreadReadResponse(ctx, cfg, appwire.ThreadReadParams{
+		Ref:          "local:" + sessionID,
+		IncludeTurns: true,
+		PageUnit:     appwire.TranscriptPageUnitItem,
+		ItemLimit:    1,
+	})
+	if !found {
+		t.Fatal("past item read did not find seeded session")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("past item read error = %v, want context.Canceled", err)
+	}
+}
+
+func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	params := appwire.ThreadReadParams{
+		Ref:          "local:" + entry.Meta.ID,
+		IncludeTurns: true,
+		PageUnit:     appwire.TranscriptPageUnitItem,
+		ItemLimit:    40,
+	}
+	latest, found, err := pastThreadReadResponse(context.Background(), cfg, params)
+	if err != nil || !found {
+		t.Fatalf("past item read = (%+v, %v, %v)", latest, found, err)
+	}
+	if latest.PageUnit != appwire.TranscriptPageUnitItem {
+		t.Fatalf("pageUnit=%q, want item", latest.PageUnit)
+	}
+	if latest.OlderCursor == "" {
+		t.Fatal("latest item page has no opaque older cursor")
+	}
+	if len(latest.Thread.Turns) != 2 || len(latest.Thread.Turns[0].Items) != 35 || len(latest.Thread.Turns[1].Items) != 5 {
+		t.Fatalf("latest turn fragments = %+v, want 35 items and 5 items", latest.Thread.Turns)
+	}
+	if got := latest.Thread.Turns[0].Items[0].Text; got != "item-05" {
+		t.Fatalf("latest first fragment item=%q, want item-05", got)
+	}
+	if got := latest.Thread.Turns[1].Items[0].Text; got != "item-40" {
+		t.Fatalf("latest second fragment first item=%q, want item-40", got)
+	}
+	if !latest.Thread.Turns[0].HasEarlierItems || latest.Thread.Turns[0].HasLaterItems || latest.Thread.Turns[1].HasEarlierItems || latest.Thread.Turns[1].HasLaterItems {
+		t.Fatalf("fragment completeness = first(%v,%v) second(%v,%v), want first earlier and no later on final", latest.Thread.Turns[0].HasEarlierItems, latest.Thread.Turns[0].HasLaterItems, latest.Thread.Turns[1].HasEarlierItems, latest.Thread.Turns[1].HasLaterItems)
+	}
+
+	older, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+		Ref:       params.Ref,
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: 40,
+		Cursor:    latest.OlderCursor,
+	})
+	if err != nil || !found {
+		t.Fatalf("past older item page = (%+v, %v, %v)", older, found, err)
+	}
+	if older.PageUnit != appwire.TranscriptPageUnitItem || len(older.Data) != 1 || len(older.Data[0].Items) != 5 {
+		t.Fatalf("older item page = %+v, want one five-item fragment", older)
+	}
+	if got := older.Data[0].Items[0].Text; got != "item-00" {
+		t.Fatalf("older first item=%q, want item-00", got)
+	}
+	if older.Data[0].HasEarlierItems || !older.Data[0].HasLaterItems {
+		t.Fatalf("older completeness=(%v,%v), want no earlier and later", older.Data[0].HasEarlierItems, older.Data[0].HasLaterItems)
+	}
+}
+
+func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-item-paging-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5", TurnCount: 2,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	for turnIndex, count := range []int{40, 5} {
+		parts := make([]llm.ContentPart, 0, count)
+		for i := range count {
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: fmt.Sprintf("item-%02d", turnIndex*40+i)})
+		}
+		if err := writer.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := index.Find(sessionID)
+	if !ok {
+		t.Fatal("past item-paging entry not found")
+	}
+	return hubcore.WebConfig{Past: index}, entry
 }
 
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {
