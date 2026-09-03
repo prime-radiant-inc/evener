@@ -29,6 +29,7 @@ const maxCommunicateOutputJSONDepth = 64
 type prepareResult struct {
 	Call      llm.ToolCallData
 	Changes   []repair.Change
+	Lifetime  tool.PrevalidationSnapshot
 	PrevalErr string
 	Boundary  string
 	Err       error

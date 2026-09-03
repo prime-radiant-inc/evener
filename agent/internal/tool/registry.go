@@ -401,6 +401,18 @@ type RegisteredTool struct {
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
 
+// PrevalidationSnapshot is an immutable registry observation captured before
+// session-level repair. Its contents are intentionally opaque: callers may
+// carry it to FinalizePrevalidationFailure, but cannot forge or alter the
+// lifetime it represents.
+type PrevalidationSnapshot struct {
+	registry   *Registry
+	name       string
+	lifetime   uint64
+	registered *RegisteredTool
+	limit      schema.ToolOutputLimit
+}
+
 // toolMiddleware is called after argument validation but before tool execution.
 // Return a non-nil error to block execution (the error message is returned to the LLM).
 type toolMiddleware func(ctx context.Context, toolName string, args map[string]any) error
@@ -421,11 +433,15 @@ type Registry struct {
 	semanticBreaker *semanticFailureLedger
 	telemetryKey    [32]byte
 	nextGeneration  uint64
+	// lifetimes retains a name's current semantic lifetime even while absent.
+	// Its entries are tombstones as well as registered generations: an old
+	// unknown call must not match a name that was registered then removed.
+	lifetimes map[string]uint64
 }
 
 // NewRegistry returns an empty Registry ready for tool registration.
 func NewRegistry() *Registry {
-	r := &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger(), semanticBreaker: newSemanticFailureLedger()}
+	r := &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger(), semanticBreaker: newSemanticFailureLedger(), lifetimes: map[string]uint64{}}
 	if _, err := rand.Read(r.telemetryKey[:]); err != nil {
 		panic("tool telemetry key: " + err.Error())
 	}
@@ -470,8 +486,7 @@ func (r *Registry) MarkRegisteredToolsCoreSemanticMetadata() {
 	for name, registered := range r.tools {
 		// This changes the semantic identity policy. Treat it like a replacement so
 		// failures classified under the old policy cannot affect the new one.
-		r.nextGeneration++
-		registered.generation = r.nextGeneration
+		registered.generation = r.advanceLifetimeLocked(name)
 		registered.OmitDescriptionFromSemanticIdentity = true
 		registered.ApplyBuiltInSemanticDefaults = true
 		r.tools[name] = registered
@@ -516,7 +531,14 @@ func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature 
 	// clear a new lifetime between the generation check and this judgement.
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.isCurrentOrAbsentLocked(name, generation) {
+	return r.semanticParkLocked(name, callID, semanticSignature, exactSignature, generation, judged)
+}
+
+// semanticParkLocked requires r.mu to be read-locked. Keeping the lifetime
+// check and semantic-ledger read under that lock prevents a transition between
+// deciding to park and observing the failure history.
+func (r *Registry) semanticParkLocked(name, callID, semanticSignature, exactSignature string, lifetime uint64, judged bool) (ExecResult, bool) {
+	if !judged || !r.isCurrentOrAbsentLocked(name, lifetime) {
 		return ExecResult{}, false
 	}
 	if count, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); count >= breakerThreshold {
@@ -538,6 +560,13 @@ func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, 
 	// successor's fresh lifetime.
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.finalizeBreakerLocked(res, name, rawArgs, exactSignature, semanticSignature, generation, judged, humanBypassed, boundaryOverride)
+}
+
+// finalizeBreakerLocked requires r.mu to be read-locked. Ledger operations
+// therefore occur after lifetime validation while still excluding every
+// registry write transition (registry lock, then ledger lock).
+func (r *Registry) finalizeBreakerLocked(res ExecResult, name string, rawArgs []byte, exactSignature, semanticSignature string, generation uint64, judged, humanBypassed bool, boundaryOverride string) ExecResult {
 	if !r.isCurrentOrAbsentLocked(name, generation) {
 		return res
 	}
@@ -609,7 +638,33 @@ func (r *Registry) Clone() *Registry {
 	}
 	out.middleware = append([]toolMiddleware(nil), r.middleware...)
 	out.nextGeneration = r.nextGeneration
+	if len(r.lifetimes) > 0 {
+		out.lifetimes = make(map[string]uint64, len(r.lifetimes))
+		maps.Copy(out.lifetimes, r.lifetimes)
+	}
 	return out
+}
+
+// SnapshotPrevalidation captures the registered tool (if any) and the opaque
+// semantic lifetime that repair observed. Session callers must pass the token
+// back to FinalizePrevalidationFailure rather than re-resolving the tool after
+// a hook or other concurrent registry transition.
+func (r *Registry) SnapshotPrevalidation(name string) (*RegisteredTool, PrevalidationSnapshot) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	snapshot := PrevalidationSnapshot{
+		registry: r,
+		name:     name,
+		lifetime: r.lifetimeLocked(name),
+		limit:    defaultToolLimit(name),
+	}
+	registered, found := r.tools[name]
+	if !found {
+		return nil, snapshot
+	}
+	snapshot.limit = registered.Limit
+	snapshot.registered = &registered
+	return &registered, snapshot
 }
 
 // Use appends a middleware to the tool execution pipeline.
@@ -676,8 +731,7 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if r.tools == nil {
 		r.tools = map[string]RegisteredTool{}
 	}
-	r.nextGeneration++
-	t.generation = r.nextGeneration
+	t.generation = r.advanceLifetimeLocked(t.Definition.Name)
 	r.tools[t.Definition.Name] = t
 	r.breaker.clearTool(t.Definition.Name)
 	r.semanticBreaker.clearTool(t.Definition.Name)
@@ -714,6 +768,7 @@ func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultTool
 	for name := range r.tools {
 		if !allowed[name] {
 			delete(r.tools, name)
+			r.advanceLifetimeLocked(name)
 			r.breaker.clearTool(name)
 			r.semanticBreaker.clearTool(name)
 		}
@@ -724,7 +779,10 @@ func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultTool
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	if _, found := r.tools[name]; found {
+		delete(r.tools, name)
+		r.advanceLifetimeLocked(name)
+	}
 	r.breaker.clearTool(name)
 	r.semanticBreaker.clearTool(name)
 }
@@ -766,7 +824,10 @@ func (r *Registry) RequiresOutputRecovery(names []string) bool {
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	if _, found := r.tools[name]; found {
+		delete(r.tools, name)
+		r.advanceLifetimeLocked(name)
+	}
 	r.breaker.clearTool(name)
 	r.semanticBreaker.clearTool(name)
 }
@@ -849,7 +910,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
 	r.mu.RLock()
 	t, ok := r.tools[name]
-	currentGeneration := t.generation
+	currentGeneration := r.lifetimeLocked(name)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			fingerprint, boundary := r.breaker.semanticMetadata(name, call.Arguments)
@@ -989,15 +1050,34 @@ func (r *Registry) isCurrentGenerationLocked(name string, generation uint64) boo
 	return ok && registered.generation == generation
 }
 
-// Generation zero is the unknown-tool lifetime. It remains eligible only while
-// the name is absent: Register takes the write lock and clears its ledgers, so
-// an unknown call that finalizes after registration cannot repopulate them.
-func (r *Registry) isCurrentOrAbsentLocked(name string, generation uint64) bool {
-	if generation == 0 {
-		_, registered := r.tools[name]
-		return !registered
+func (r *Registry) lifetimeLocked(name string) uint64 {
+	return r.lifetimes[name]
+}
+
+// advanceLifetimeLocked rotates a name's semantic identity and leaves a
+// tombstone behind when the tool becomes absent. It must be called with r.mu
+// write-locked. nextGeneration is a registry-wide allocator so values are
+// never reused, including after cloning a registry with live tombstones.
+func (r *Registry) advanceLifetimeLocked(name string) uint64 {
+	r.nextGeneration++
+	if r.lifetimes == nil {
+		r.lifetimes = make(map[string]uint64)
 	}
-	return r.isCurrentGenerationLocked(name, generation)
+	r.lifetimes[name] = r.nextGeneration
+	return r.nextGeneration
+}
+
+// isCurrentOrAbsentLocked accepts a lifetime only when it is still the exact
+// current identity for name. Absent names use their persistent tombstone epoch
+// rather than the former reusable generation zero.
+func (r *Registry) isCurrentOrAbsentLocked(name string, lifetime uint64) bool {
+	if r.lifetimeLocked(name) != lifetime {
+		return false
+	}
+	if registered, ok := r.tools[name]; ok {
+		return registered.generation == lifetime
+	}
+	return true
 }
 
 func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signature string) {
@@ -1008,35 +1088,42 @@ func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signat
 	}
 }
 
-// FinalizePrevalidationFailure records a session-level validation failure in the
-// same breaker ledgers as ExecuteCall, without dispatching the tool. Session
-// repair runs before registry execution, so these failures would otherwise be
-// invisible to loop protection and tool-call-end telemetry.
-func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.ToolCallData, message, boundary string, err error) ExecResult {
+// FinalizePrevalidationFailure records a session-level validation failure in
+// the same breaker ledgers as ExecuteCall, without dispatching the tool. The
+// immutable snapshot must have been captured before repair; a stale snapshot
+// returns its original validation error but cannot alter successor telemetry,
+// signatures, or breaker state.
+func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, message, boundary string, err error) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
 		callID = "call_" + shortHash(call.Arguments)
 	}
 
+	lim := snapshot.limit
+	if lim.MaxChars == 0 {
+		lim = defaultToolLimit(name)
+	}
+	res := truncateResult(name, callID, message, true, lim)
+	res.PrevalOnly = true
+	res.Err = err
+
+	// Hold the registry read lock from lifetime validation through every ledger
+	// read/write. Register, Remove, Restrict, and semantic-policy transitions
+	// take its write lock before clearing ledgers, so this has no check-then-
+	// finalize window and preserves registry -> ledger lock order.
 	r.mu.RLock()
-	t, found := r.tools[name]
-	generation := t.generation
-	lim := defaultToolLimit(name)
-	if found {
-		lim = t.Limit
+	defer r.mu.RUnlock()
+	if snapshot.registry != r || snapshot.name != name || !r.isCurrentOrAbsentLocked(name, snapshot.lifetime) {
+		return res
 	}
 
 	humanBypassed := breakerBypassed(ctx)
 	judged := !humanBypassed && name != "model_list"
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
-	var semanticRegistered *RegisteredTool
-	if found {
-		semanticRegistered = &t
-	}
-	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, semanticRegistered)
+	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, snapshot.registered)
 	if boundary == "" {
-		boundary = prevalidationBoundary(name, call.Arguments, found)
+		boundary = prevalidationBoundary(name, call.Arguments, snapshot.registered != nil)
 	}
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
@@ -1049,24 +1136,18 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 			res.BreakerExactSignature = exactSignature
 			res.BreakerSemanticSignature = fingerprint
 			res.PrevalOnly = true
-			r.mu.RUnlock()
 			return res
 		}
 	} else if humanBypassed {
 		r.breaker.clearFailures(name, call.Arguments)
 	}
-	r.mu.RUnlock()
 	if judged {
-		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, generation, judged); blocked {
+		if res, blocked := r.semanticParkLocked(name, callID, semanticSignature, exactSignature, snapshot.lifetime, judged); blocked {
 			res.PrevalOnly = true
 			return res
 		}
 	}
-
-	res := truncateResult(name, callID, message, true, lim)
-	res.PrevalOnly = true
-	res.Err = err
-	return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, generation, judged, humanBypassed, boundary)
+	return r.finalizeBreakerLocked(res, name, call.Arguments, exactSignature, semanticSignature, snapshot.lifetime, judged, humanBypassed, boundary)
 }
 
 func prevalidationBoundary(name string, rawArgs []byte, registered bool) string {

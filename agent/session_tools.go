@@ -664,7 +664,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
-	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	registered, lifetime := s.reg.SnapshotPrevalidation(call.Name)
+	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	prep.Lifetime = lifetime
 	call = prep.Call
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
@@ -777,7 +779,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 	var res tool.ExecResult
 	if prep.PrevalErr != "" {
-		res = s.reg.FinalizePrevalidationFailure(ctx, call, prep.PrevalErr, prep.Boundary, prep.Err)
+		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 	}
