@@ -452,12 +452,23 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 	// taken from it. Anything else, including a read that failed because a
 	// concurrent publisher was moving a conflicting destination aside as this
 	// walked it, falls through to the locked look, which is the one entitled
-	// to an opinion. A caller that owes the store its sweep skips the
-	// shortcut: the sweep needs the lock too.
-	if !reclaim {
-		if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
-			return dest, nil, nil, nil
+	// to an opinion.
+	if state, err := classifyBundledDestination(dest, digest); err == nil && state == bundledDestinationPublished {
+		// A launch owes the store its sweep, but only when the store has
+		// something to sweep, and the scan that answers that needs no lock.
+		// Taking one on every launch would park a routine one behind an
+		// auto-upgrade holding the store lock across git fetches.
+		if reclaim && len(m.abandonedStaging(store)) > 0 {
+			// Housekeeping for a launch that is otherwise done, so a lock this
+			// cannot get is left to the next launch rather than failing this
+			// one. Whether the orphans are really abandoned is decided again
+			// under the lock.
+			if release, lockErr := acquireLock(ctx, m.lockPath(), 30*time.Second); lockErr == nil {
+				m.reclaimAbandonedStaging(store)
+				release()
+			}
 		}
+		return dest, nil, nil, nil
 	}
 	// Everything from here writes to the store, or decides what to write, and
 	// that is one sequence with the classification it acts on: without the
@@ -599,17 +610,19 @@ func setAsideBundledConflict(dest string) (bool, string, error) {
 	return true, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
 }
 
-// reclaimAbandonedStaging removes staging directories orphaned by a publish
-// that was killed before its rename. Staging lives in the store so the rename
-// stays on one filesystem, so nothing else would ever collect them. Only this
-// code's own staging is swept: a real directory, wearing the prefix, holding
-// the marker a publish writes before it copies anything. Anything else at that
-// name is someone else's data, however old it is.
-func (m *Manager) reclaimAbandonedStaging(dir string) {
+// abandonedStaging names the staging directories in dir a publish left behind
+// when it was killed before its rename. Staging lives in the store so the
+// rename stays on one filesystem, so nothing else would ever collect them.
+// Only this code's own staging counts: a real directory, wearing the prefix,
+// holding the marker a publish writes before it copies anything, and old
+// enough that no publish in flight could still be filling it. Anything else at
+// that name is someone else's data, however old it is.
+func (m *Manager) abandonedStaging(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return nil
 	}
+	var abandoned []string
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
 			continue
@@ -622,6 +635,17 @@ func (m *Manager) reclaimAbandonedStaging(dir string) {
 		if err != nil || m.now().Sub(info.ModTime()) < abandonedStaging {
 			continue
 		}
+		abandoned = append(abandoned, staging)
+	}
+	return abandoned
+}
+
+// reclaimAbandonedStaging removes them, reading the store again so the decision
+// it acts on is the one it made under the lock its caller holds: that lock is
+// what tells staging nobody will come back for from staging a slow publisher
+// is still filling.
+func (m *Manager) reclaimAbandonedStaging(dir string) {
+	for _, staging := range m.abandonedStaging(dir) {
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
 		_ = os.RemoveAll(staging)
 	}

@@ -394,29 +394,83 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 // the destination until its copy is in place. So the sweep runs under that
 // lock or not at all: a launch that cannot take it reclaims nothing.
 func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
-	m := NewManager(t.TempDir())
-	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
-	if err := os.MkdirAll(staging, 0o755); err != nil {
-		t.Fatal(err)
+	// Both ways a launch meets the store: publishing a copy, and adopting one
+	// that is already there. The second reaches the sweep only because it
+	// found something to sweep, and it is still not allowed to sweep unlocked.
+	tests := map[string]func(t *testing.T, m *Manager){
+		"publishing": func(*testing.T, *Manager) {},
+		"adopting a published copy": func(t *testing.T, m *Manager) {
+			t.Helper()
+			if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+				t.Fatal(err)
+			}
+		},
 	}
-	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+	for name, publish := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			publish(t, m)
+			staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+			if err := os.MkdirAll(staging, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	// Somebody else holds the lock, so this launch never gets to look.
+			// Somebody else holds the lock, so this launch never gets to look.
+			release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(staging); err != nil {
+				t.Fatalf("staging was swept without holding the store lock: %v", err)
+			}
+		})
+	}
+}
+
+// A launch that only has to adopt a copy already published must not queue
+// behind whatever else is touching the store. Hub start runs the auto-upgrade
+// pass, which holds the store lock across git fetches; a launch that took the
+// lock for housekeeping it has no housekeeping for would wait that out, or
+// fail, for nothing. With no abandoned staging to reclaim there is nothing to
+// take the lock for, and the launch reads its copy and goes.
+func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheStoreLock(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Somebody else is holding the store lock, the way an auto-upgrade does.
 	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
-	if _, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"}); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := m.ResolveForLaunch(ctx, nil, &[]string{"coordinator-workflow"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(staging); err != nil {
-		t.Fatalf("staging was swept without holding the store lock: %v", err)
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("a launch could not adopt a published copy while the store lock was held: %v", err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != published {
+		t.Fatalf("SelectedDirs = %v, want the published copy at %s", res.SelectedDirs, published)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Errorf("adopting took %v, want it not to wait on the lock at all", waited)
 	}
 }
