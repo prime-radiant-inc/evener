@@ -658,9 +658,9 @@ func setAsideBundledConflict(dest string) ([]string, error) {
 // when it was killed before its rename. Staging lives in the store so the
 // rename stays on one filesystem, so nothing else would ever collect them.
 // Only this code's own staging counts: a real directory, wearing the prefix,
-// holding the marker a publish writes before it copies anything, and old
-// enough that no publish in flight could still be filling it. Anything else at
-// that name is someone else's data, however old it is.
+// holding as a regular file the marker a publish writes before it copies
+// anything, and old enough that no publish in flight could still be filling
+// it. Anything else at that name is someone else's data, however old it is.
 func (m *Manager) abandonedStaging(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -672,7 +672,11 @@ func (m *Manager) abandonedStaging(dir string) []string {
 			continue
 		}
 		staging := filepath.Join(dir, entry.Name())
-		if _, err := os.Lstat(filepath.Join(staging, stagingMarker)); err != nil {
+		// The marker is the proof, so it has to be the file this code writes:
+		// a directory or a symlink wearing that name is somebody else's
+		// arrangement, and a symlink is not even about anything in the store.
+		marker, err := os.Lstat(filepath.Join(staging, stagingMarker))
+		if err != nil || !marker.Mode().IsRegular() {
 			continue
 		}
 		info, err := entry.Info()

@@ -527,3 +527,49 @@ func TestMaterializeBundledPlugin_GivesUpQuicklyOnTheSweepLock(t *testing.T) {
 		t.Errorf("the orphan it could not take the lock for is gone: %v", err)
 	}
 }
+
+// The marker is the whole proof that a staging directory is this code's to
+// delete, so it has to be the file this code writes. A symlink wearing the
+// marker's name is somebody else's arrangement, and what it points at is not
+// even in the store; a directory with that name is not a marker either. The
+// sweep leaves both alone, however old they get.
+func TestMaterializeBundledPlugin_LeavesStagingWhoseMarkerIsNotAFile(t *testing.T) {
+	plant := map[string]func(t *testing.T, marker string){
+		"a symlink": func(t *testing.T, marker string) {
+			target := filepath.Join(t.TempDir(), "not-the-marker")
+			if err := os.WriteFile(target, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, marker); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a directory": func(t *testing.T, marker string) {
+			if err := os.Mkdir(marker, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, plantMarker := range plant {
+		t.Run(name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-foreign")
+			if err := os.MkdirAll(staging, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			plantMarker(t, filepath.Join(staging, stagingMarker))
+			keep := filepath.Join(staging, "someone-elses-data")
+			if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+			if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(keep); err != nil {
+				t.Fatalf("the sweep took a directory whose marker it never wrote: %v", err)
+			}
+		})
+	}
+}
