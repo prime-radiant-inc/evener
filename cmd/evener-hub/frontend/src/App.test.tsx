@@ -322,9 +322,7 @@ test("AppShell's injected v1 handshake selects navigation through AppWire", asyn
   });
 
   render(<AppShell client={client} />);
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest" }]));
 
   expect(navigationStore.getState().mode).toBe("v1");
   expect(calls).toEqual([{ resource: "manifest" }]);

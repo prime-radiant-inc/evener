@@ -1159,6 +1159,195 @@ test("pending read stays bound to the representation sent across a same-generati
   expect(navigationStore.getState().mode).toBe("v2");
 });
 
+test("different-generation downgrade restarts every loaded resource in v1 and publishes the v1 result", async () => {
+  const nextGeneration = "generation_v1_reconnect";
+  const initialCapability = { ...capability(), readVersions: [1, 2] };
+  const reconnectCapability = capability(nextGeneration);
+  let reconnecting = false;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (!reconnecting) return reconnectV2Response(params);
+    if (params.resource === "manifest")
+      return wire(emptyManifest({ generation_id: nextGeneration }), "ok", '"manifest-v1-next"', 1, nextGeneration);
+    if (params.resource === "section")
+      return wire(
+        { sessions: [{ ref: "local:downgraded", children: [] }], remaining: 0, truncated: false },
+        "ok",
+        '"section-v1-next"',
+        2,
+        nextGeneration,
+      );
+    throw new Error(`unexpected reconnect resource ${params.resource}`);
+  });
+  initNavigation(client, initialCapability);
+  await flush();
+  await navigationStore.getState().loadSection("live");
+  const callsBeforeReconnect = client.calls.length;
+
+  reconnecting = true;
+  client.emitStateChange("reconnecting");
+  client.emitReady(initialize(reconnectCapability));
+  await flush();
+
+  expect(client.calls.slice(callsBeforeReconnect)).toEqual([
+    { method: "evener/navigation/read", params: { resource: "manifest" } },
+    {
+      method: "evener/navigation/read",
+      params: { resource: "section", section: "live", offset: 0, limit: 50 },
+    },
+  ]);
+  const state = navigationStore.getState();
+  const section = state.resources.get(keyID(reconnectSectionKey));
+  expect(state.capability).toEqual(reconnectCapability);
+  expect(state.mode).toBe("v1");
+  expect(state.clientGenerationID).toBe(nextGeneration);
+  expect(state.lastSequence).toBe(0);
+  expect(state.manifest).toMatchObject({
+    generationID: nextGeneration,
+    loadedRevision: 1,
+    stale: false,
+    error: null,
+  });
+  expect(section).toMatchObject({
+    generationID: nextGeneration,
+    loadedRevision: 2,
+    stale: false,
+    error: null,
+  });
+  expect(section?.version).toEqual({ generationId: nextGeneration, revision: 2, etag: '"section-v1-next"' });
+  expect(selectGlobalRows(state).map((session) => session.ref)).toEqual(["local:downgraded"]);
+  await flush();
+  expect(client.calls).toHaveLength(callsBeforeReconnect + 2);
+});
+
+test("different-generation upgrade restarts every loaded resource in v2 and keeps last-good data provisional", async () => {
+  const nextGeneration = "generation_v2_reconnect";
+  const initialCapability = capability();
+  const reconnectCapability = { ...capability(nextGeneration), readVersions: [1, 2] };
+  const nextManifest = deferred<NavigationReadResponse>();
+  const nextSection = deferred<NavigationReadResponse>();
+  let reconnecting = false;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (!reconnecting) {
+      if (params.resource === "manifest") return wire(emptyManifest());
+      if (params.resource === "section")
+        return wire({ sessions: [{ ref: "local:last-good", children: [] }], remaining: 0, truncated: false });
+    }
+    if (params.resource === "manifest") return nextManifest.promise;
+    if (params.resource === "section") return nextSection.promise;
+    throw new Error(`unexpected reconnect resource ${params.resource}`);
+  });
+  initNavigation(client, initialCapability);
+  await flush();
+  const installed = await navigationStore.getState().loadSection("live");
+  const lastGoodData = installed.data;
+  const callsBeforeReconnect = client.calls.length;
+  const publications: Array<{
+    mode: string;
+    clientGenerationID: string;
+    resourceGenerationID: string | undefined;
+    version: unknown;
+    data: unknown;
+  }> = [];
+  const unsubscribe = navigationStore.subscribe((state) => {
+    const section = state.resources.get(keyID(reconnectSectionKey));
+    if (section)
+      publications.push({
+        mode: state.mode,
+        clientGenerationID: state.clientGenerationID,
+        resourceGenerationID: section.generationID,
+        version: section.version,
+        data: section.data,
+      });
+  });
+
+  reconnecting = true;
+  client.emitStateChange("reconnecting");
+  client.emitReady(initialize(reconnectCapability));
+  unsubscribe();
+
+  expect(client.calls.slice(callsBeforeReconnect)).toEqual([
+    {
+      method: "evener/navigation/read",
+      params: { resource: "manifest", representationVersion: 2 },
+    },
+    {
+      method: "evener/navigation/read",
+      params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+    },
+  ]);
+  expect(publications.length).toBeGreaterThan(0);
+  for (const publication of publications) {
+    expect(publication).toEqual({
+      mode: "v2",
+      clientGenerationID: nextGeneration,
+      resourceGenerationID: nextGeneration,
+      version: undefined,
+      data: lastGoodData,
+    });
+  }
+  const provisional = navigationStore.getState().resources.get(keyID(reconnectSectionKey));
+  expect(provisional).toMatchObject({
+    generationID: nextGeneration,
+    loadedRevision: null,
+    targetRevision: null,
+    etag: null,
+    stale: true,
+    loading: true,
+    error: null,
+    data: lastGoodData,
+  });
+  expect(provisional?.version).toBeUndefined();
+
+  nextManifest.resolve({
+    status: "ok",
+    representation: "snapshot",
+    generationId: nextGeneration,
+    revision: 1,
+    etag: '"manifest-v2-next"',
+    data: {
+      metadata: emptyManifest({ generation_id: nextGeneration, revision: 1 }),
+      entities: [],
+      containers: [
+        {
+          key: navigationRootContainerKey(reconnectManifestKey, "manifest"),
+          owner: { kind: "resource_root", slot: "manifest" },
+          children: [],
+        },
+      ],
+    },
+  });
+  nextSection.resolve({
+    status: "ok",
+    representation: "snapshot",
+    generationId: nextGeneration,
+    revision: 2,
+    etag: '"section-v2-next"',
+    data: reconnectSessionSnapshot(
+      reconnectSectionKey,
+      { generation_id: nextGeneration, revision: 2, offset: 0, limit: 50, remaining: 0, truncated: false },
+      "sessions",
+    ),
+  });
+  await flush();
+
+  const state = navigationStore.getState();
+  const section = state.resources.get(keyID(reconnectSectionKey));
+  expect(state.capability).toEqual(reconnectCapability);
+  expect(state.mode).toBe("v2");
+  expect(state.clientGenerationID).toBe(nextGeneration);
+  expect(section).toMatchObject({ generationID: nextGeneration, loadedRevision: 2, stale: false, error: null });
+  expect(section?.normalized?.version).toEqual({
+    generationId: nextGeneration,
+    revision: 2,
+    etag: '"section-v2-next"',
+  });
+  expect(selectGlobalRows(state).map((session) => session.ref)).toEqual(["x"]);
+  await flush();
+  expect(client.calls).toHaveLength(callsBeforeReconnect + 2);
+});
+
 test("same-generation higher-sequence reconnect advances and forces every loaded v2 base exactly once", async () => {
   const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
   const reconnectCapability = { ...initialCapability, sequence: 5 };

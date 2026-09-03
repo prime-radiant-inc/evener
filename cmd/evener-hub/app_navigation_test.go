@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -301,6 +302,118 @@ func TestHubNavigationReadNormalizesPagingAndRejectsInvalidCombinations(t *testi
 			_, err := dispatchNavigationReadRaw(t, server, raw)
 			assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
 		})
+	}
+}
+
+func TestHubNavigationReadRejectsIncompleteBaseBeforeService(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, nil)
+
+	for name, raw := range map[string]string{
+		"revision omitted": `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","etag":"e"}}`,
+		"revision null":    `{"resource":"manifest","representationVersion":2,"base":{"generationId":"g","revision":null,"etag":"e"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := dispatchNavigationReadRaw(t, server, raw)
+			assertNavigationWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+		})
+	}
+}
+
+func TestHubNavigationInvalidParamsDoNotExposeRequestContent(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	registerNavigationReadHandler(server, nil)
+
+	for _, test := range []struct {
+		name     string
+		sentinel string
+		raw      string
+	}{
+		{
+			name:     "decode failure",
+			sentinel: "decode-private-sentinel",
+			raw:      `{"resource":"manifest","decode-private-sentinel":true}`,
+		},
+		{
+			name:     "semantic validation failure",
+			sentinel: "validation-private-sentinel",
+			raw:      `{"resource":"validation-private-sentinel"}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := dispatchNavigationReadRaw(t, server, test.raw)
+			if err == nil {
+				t.Fatal("error = nil, want invalid params")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+			}
+			if wire.Code != appwire.CodeInvalidParams || wire.Message != "invalid navigation params" {
+				t.Fatalf("wire error = %+v, want stable invalid params code/message", wire)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok || data.EvenerErrorInfo != appwire.ErrorInvalidParams {
+				t.Fatalf("wire data = %#v, want invalid params error info", wire.Data)
+			}
+			encoded, marshalErr := json.Marshal(wire)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if bytes.Contains(encoded, []byte(test.sentinel)) || strings.Contains(wire.Message, test.sentinel) {
+				t.Fatalf("serialized wire error exposed sentinel %q: %s", test.sentinel, encoded)
+			}
+		})
+	}
+}
+
+func TestHubNavigationInternalErrorsAreLoggedAndRedacted(t *testing.T) {
+	const sentinel = "NAV_PRIVATE_SENTINEL::/private/navigation/path::local:secret-ref::secret-key"
+	var logs []string
+	source := newTestNavigationSource(testNavigationNow())
+	source.err = errors.New("capture failed at " + sentinel)
+	server := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "test",
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	})
+	registerNavigationReadHandler(server, newTestNavigationService(t, source))
+
+	_, err := dispatchNavigationReadResult(t, server, appwire.NavigationReadParams{Resource: "manifest"})
+	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Message != "navigation read failed" {
+		t.Errorf("wire message = %q, want fixed redacted message", wire.Message)
+	}
+	encoded, marshalErr := json.Marshal(wire)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const wantWire = `{"code":-32603,"message":"navigation read failed","data":{"evenerErrorInfo":"internal"}}`
+	if string(encoded) != wantWire {
+		t.Errorf("serialized wire error = %s, want %s", encoded, wantWire)
+	}
+	if bytes.Contains(encoded, []byte(sentinel)) {
+		t.Errorf("serialized wire error exposed sentinel %q: %s", sentinel, encoded)
+	}
+	data, marshalErr := json.Marshal(wire.Data)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	const wantData = `{"evenerErrorInfo":"internal"}`
+	if string(data) != wantData {
+		t.Errorf("serialized wire error data = %s, want %s", data, wantData)
+	}
+	if bytes.Contains(data, []byte(sentinel)) {
+		t.Errorf("serialized wire error data exposed sentinel %q: %s", sentinel, data)
+	}
+	joinedLogs := strings.Join(logs, "\n")
+	if !strings.Contains(joinedLogs, "navigation read failed:") || !strings.Contains(joinedLogs, sentinel) {
+		t.Errorf("server diagnostics did not retain internal error details: %q", logs)
 	}
 }
 
