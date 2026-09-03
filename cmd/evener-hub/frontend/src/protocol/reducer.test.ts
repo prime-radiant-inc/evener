@@ -2311,6 +2311,51 @@ test("reload merges a tool CALL and its RESULT (separate turns, same callId) int
   expect(model.turns).toHaveLength(1);
 });
 
+test("reload merges a tool RESULT's raw state into the CALL item (hydration preserves structured raw)", () => {
+  const delegateRaw = { id: "dlg_42", type: "delegate", status: "running", task: "do work" };
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            argumentsJson: JSON.stringify({ target: "dlg_42" }),
+            startedAt: 1,
+            status: "inProgress",
+          },
+        ],
+      },
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_result_2_0",
+            type: "commandExecution",
+            toolName: "job_status",
+            callId: "call_B",
+            output: JSON.stringify(delegateRaw),
+            raw: delegateRaw,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 0);
+  const items = model.turns.flatMap((t) => t.items).filter((i) => i.callId === "call_B");
+  expect(items).toHaveLength(1);
+  expect(items[0]?.raw).toEqual(delegateRaw); // raw from the RESULT survives the merge
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();

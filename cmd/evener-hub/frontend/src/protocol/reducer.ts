@@ -509,6 +509,7 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
             completedAt: result.completedAt,
             status: result.status,
             outputImages: result.outputImages ?? item.outputImages,
+            raw: result.raw ?? item.raw,
           });
           continue;
         }
