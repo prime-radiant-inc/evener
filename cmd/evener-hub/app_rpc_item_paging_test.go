@@ -22,7 +22,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-func TestHubRPCItemListNativeAndLegacyParity(t *testing.T) {
+func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 	const ref = "codex:item-list-parity"
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         ref,
@@ -557,6 +557,7 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 }
 
 func TestHubRPCItemTurnsListRequiresCursorBeforeSourceLookup(t *testing.T) {
+	const wantMessage = "cursor is required for item-mode thread/turns/list"
 	server := newHubAppServer(hubcore.WebConfig{}, appsource.NewRegistry())
 	_, err := server.Router().Dispatch(t.Context(), appwire.Request{
 		ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList,
@@ -564,8 +565,9 @@ func TestHubRPCItemTurnsListRequiresCursorBeforeSourceLookup(t *testing.T) {
 			Ref: "local:missing", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 4,
 		}),
 	})
-	if err == nil || err.Error() != "cursor is required for item-mode thread/turns/list" {
-		t.Fatalf("empty item cursor hub validation = %v, want stable invalid-params error before lookup", err)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || wireErr.Message != wantMessage {
+		t.Fatalf("empty item cursor hub validation = %T %v, want code %d message %q before lookup", err, err, appwire.CodeInvalidParams, wantMessage)
 	}
 }
 

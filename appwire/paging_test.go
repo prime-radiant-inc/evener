@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -201,10 +202,19 @@ func TestThreadItemModeValidation(t *testing.T) {
 }
 
 func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
+	const wantCursorMessage = "cursor is required for item-mode thread/turns/list"
 	err := ValidateThreadTurnsListParams(ThreadTurnsListParams{PageUnit: TranscriptPageUnitItem, ItemLimit: 4})
-	if err == nil || err.Error() != "cursor is required for item-mode thread/turns/list" {
-		t.Fatalf("empty item cursor validation = %v, want stable invalid-params error", err)
+	var wireErr WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != CodeInvalidParams || wireErr.Message != wantCursorMessage {
+		t.Fatalf("empty item cursor validation = %T %v, want code %d message %q", err, err, CodeInvalidParams, wantCursorMessage)
 	}
+
+	const wantLimitMessage = "itemLimit must be between 1 and 40"
+	err = ValidateThreadTurnsListParams(ThreadTurnsListParams{PageUnit: TranscriptPageUnitItem, ItemLimit: TranscriptItemPageLimit + 1})
+	if !errors.As(err, &wireErr) || wireErr.Code != CodeInvalidParams || wireErr.Message != wantLimitMessage {
+		t.Fatalf("empty cursor over-limit validation = %T %v, want code %d message %q", err, err, CodeInvalidParams, wantLimitMessage)
+	}
+
 	if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{PageUnit: TranscriptPageUnitItem, ItemLimit: 4, Cursor: "opaque"}); err != nil {
 		t.Fatalf("opaque item cursor validation: %v", err)
 	}
