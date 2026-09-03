@@ -34,8 +34,12 @@ conflict detection.
   ⌘/Ctrl+K (palette), ⌘/Ctrl+I (focus composer), ⌘/Ctrl+J (needs-you cycle).
   Guards: `event.defaultPrevented`, Mod required, and for I/J only,
   `paletteStore.open` plus a `[aria-modal="true"]` ancestor check. K/I/J fire
-  even while typing in inputs; the palette is not a `[role=dialog]`, so it
-  needs the store check.
+  even while typing in inputs. The palette renders through the Dialog widget
+  (`CommandPalette.tsx:206` → `widgets/dialog/OverlayPanel.tsx:126-127`, which
+  sets `role="dialog"` and `aria-modal="true"`), so it belongs to the same
+  overlay family as Settings; the `paletteStore.open` check covers window-level
+  keydowns whose target falls outside the panel (e.g. focus not inside the
+  palette), not a missing role.
 - `src/shell/rail/RailHost.tsx:57-69` — ⌘/Ctrl+B sidebar toggle. Unlike
   AppShell, it *does* suppress in editable targets.
 - `src/panes/settings/Settings.tsx:184-192` — bubble-phase Escape closes the
@@ -71,7 +75,12 @@ the wire methods `evener/settings/transcriptDisplay/{get,patch}` plus a
 `.../changed` server push for cross-window sync
 (`src/protocol/types.gen.ts:2118-2120, 2295-2297`), with a store shape of
 local override + hub default + revision-stamped effective resolution. This is
-the template to clone as `evener/settings/keybindings/{get,patch,changed}`.
+the template to clone as `evener/settings/keybindings/{get,patch,changed}` —
+with one scoping decision Phase 2 must make explicit: transcriptDisplay stores
+hub-level *defaults*, while keybinding remappings are personal. The Phase 2
+design must state whether bindings are per-user (and what "user" means for the
+hub) or hub-shared, rather than inheriting the shared-default semantics by
+accident.
 
 **KeyHint.** `src/widgets/keyhint/index.tsx` renders `<kbd>` runs and owns the
 ⌘/Ctrl platform split, but it is render-only; every call site hardcodes its
@@ -117,9 +126,17 @@ stack, binding registry, and when-clause evaluation ourselves (~200 lines,
 zustand-backed). Rationale:
 
 - tinykeys has the best grammar (sequences, `$mod`, optional modifiers, regex
-  keys), the smallest footprint (1 KB gz), default input-field suppression,
-  and `parseKeybinding()` for overlay rendering and user-binding round-trips.
-  `createKeybindingsHandler` gives an attach-anywhere, testable matcher.
+  keys), the smallest footprint (1 KB gz), and `parseKeybinding()` for overlay
+  rendering and user-binding round-trips. `createKeybindingsHandler` gives an
+  attach-anywhere, testable matcher. Its default input-field suppression is a
+  starting point, not a policy: today's Mod+K/I/J chords deliberately fire from
+  editable targets, and FocusScope must handle Tab while an input has focus.
+  The registry must carry a **per-binding editable-target policy** (an
+  `allowInEditable`-style flag), with matcher-level suppression disabled or
+  overridden where a binding requires it. Phase 2 migration tests must cover
+  Mod+K/I/J fired from inputs and FocusScope Tab cycling from text fields.
+  The dispatcher must also ignore `event.isComposing` keydowns so Enter or
+  single-character bindings cannot fire mid-IME-confirmation.
 - The scope requirement — bindings active only for what is on screen, with
   stacking — matches dockview panel visibility and route state, which no
   library models. hotkeys-js and react-hotkeys-hook scopes are flat named
@@ -217,11 +234,16 @@ Ctrl+Shift+P in Firefox (private window — this is why VSCode-web falls back
 to F1), ⌘Shift+N, ⌘Shift+T, F11, Alt+F4, Ctrl+Alt+Del, Escape in fullscreen.
 
 **Use with care** (overridable via preventDefault, only when focus context
-justifies it): ⌘F, ⌘S, ⌘P, ⌘K (Chrome search), ⌘L, ⌘D, ⌘R, ⌘+/-/0, F12 /
-⌘⌥I, ⌘Shift+[ / ⌘Shift+] (Safari tab switching [UNVERIFIED]; Chrome Mac
-uses ⌘⌥←/→). Bare Alt on Windows/Linux raises browser menus.
+justifies it): ⌘F, ⌘S, ⌘P, ⌘K (Chrome search), ⌘R, ⌘+/-/0, F12 / ⌘⌥I,
+⌘Shift+[ / ⌘Shift+] (Safari tab switching [UNVERIFIED]; Chrome Mac uses
+⌘⌥←/→). Bare Alt on Windows/Linux raises browser menus. Browser-chrome
+chords such as ⌘L (address bar) and ⌘D (bookmark) are not reliably
+interceptable across browsers — delivery and preventDefault behavior vary —
+so treat them as unavailable rather than overridable.
 
-Any remap UI must validate user chords against a per-platform blocklist.
+Any remap UI must validate user chords against a per-platform blocklist — and,
+better, against a tested allowlist of chords known to dispatch reliably, so
+the UI can never accept a binding the browser will never deliver.
 
 ## User remapping precedents
 
@@ -237,7 +259,12 @@ server-persisted via the hub — closer to VSCode/Gmail than to GitHub. The
 pragmatic scope for Phase 2: JSON-serializable `{key, command, when?}` rules
 over command ids, validated against the platform blocklist, with conflict
 detection, cloned onto the `evener/settings/transcriptDisplay` get/patch/
-changed template. A full settings-UI binding editor (click-to-record) is
+changed template. The persisted format needs strict, versioned validation: a
+schema version field, command ids checked against the live registry (unknown
+or stale rules rejected at load and at patch time, never dispatched by
+string), and `when` as a structured, non-executable predicate grammar — not
+evaluated JavaScript. Without this, persisted settings become an injection or
+crash surface. A full settings-UI binding editor (click-to-record) is
 Phase 4 scope; Phase 2 can ship patch-via-API plus a read-only settings
 section.
 
@@ -253,10 +280,11 @@ section.
    the composer surface, behind capability gating. Binding a hotkey to one
    must go through that gating, not around it.
 4. **macOS swallowed keyups** forbid any "⌘+letter held" state tracking.
-5. **Overlay family decision.** The palette is not a real dialog and needs a
-   bespoke guard case. The cheatsheet overlay must join a defined overlay
-   family (aria-modal + FocusScope, like Dialog/Sheet) so the guard matrix
-   does not grow a third bespoke case.
+5. **Overlay family decision.** The palette already joins the Dialog/
+   OverlayPanel family (`role="dialog"`, `aria-modal="true"`); the cheatsheet
+   overlay must do the same so the guard matrix stays one rule
+   (`[aria-modal="true"]` ancestor) plus the palette's store check, rather
+   than growing a third bespoke case.
 6. **Alpha dependency risk** if we ever adopt TanStack Hotkeys; mitigated by
    the tinykeys-first recommendation.
 
@@ -280,7 +308,7 @@ section.
 ## Sources
 
 Library data: registry.npmjs.org, github.com/{jamiebuilds/tinykeys,
-jaywcjlove/hotkeys-js, ccampbell/mousetrap, JohannesKlauss/react-keymap-hook,
+jaywcjlove/hotkeys-js, ccampbell/mousetrap, JohannesKlauss/react-hotkeys-hook,
 github/hotkey, TanStack/hotkeys, timc1/kbar, pacocoursey/cmdk},
 tanstack.com/hotkeys docs, react-spectrum.adobe.com, bundlephobia.com — all
 fetched 2026-09-03.
