@@ -231,6 +231,72 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 	}
 }
 
+// TestConditionFireBudget_FailedTeardownRearmsTheBreaker pins the once-only
+// latch against a durable teardown that does not persist. The failed teardown
+// rolls the watch back into the live set still over budget, so the latch must
+// be re-armed: left set, no later condition fire reports a crossing and the
+// watch delivers past its budget forever.
+func TestConditionFireBudget_FailedTeardownRearmsTheBreaker(t *testing.T) {
+	jm := newTestJM(t)
+	// The failing append is installed before the watched job exists, so the
+	// job's own output pump never races the test over jm.appendEvents.
+	var mu sync.Mutex
+	teardownFails := true
+	teardownErr := errors.New("budget teardown append failed")
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(evs []jobstore.Event) error {
+		mu.Lock()
+		fails := teardownFails
+		mu.Unlock()
+		for _, ev := range evs {
+			if fails && ev.Kind == jobstore.EventWatchCleared {
+				return teardownErr
+			}
+		}
+		return realAppendEvents(evs)
+	}
+
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	res, err := jm.configureWatch(watchArgs{Operation: "create", Source: rec.JobID, Target: rec.JobID, OutputMatch: "hit"})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+
+	var offset int64
+	fire := func() {
+		chunk := []byte("hit\n")
+		offset += int64(len(chunk))
+		jm.feedJobOutput(rec.JobID, chunk, offset)
+	}
+	for i := 1; i <= watchDeliveryBudget; i++ {
+		fire()
+	}
+	jm.mu.Lock()
+	_, _, live := jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if !live {
+		t.Fatal("a teardown that did not persist still dropped the watch from the live set")
+	}
+
+	mu.Lock()
+	teardownFails = false
+	mu.Unlock()
+	fire()
+	jm.mu.Lock()
+	_, _, live = jm.watchConfigByIDLocked(res.WatchID)
+	jm.mu.Unlock()
+	if live {
+		t.Fatal("the condition fire after a failed teardown did not retry the over-budget auto-clear")
+	}
+	history := jm.recentWatchSummaries()
+	if len(history) == 0 || history[0].ID != res.WatchID || history[0].EndReason != "budget_exhausted" {
+		t.Fatalf("watch history = %+v, want %s ended budget_exhausted", history, res.WatchID)
+	}
+}
+
 // TestConditionFireBudget_UnfiredWatchExcuseFollowsConditionFires pins which
 // counter excuses a watched job from the undisposed-background-job
 // announcement. The excuse is "this watch has not matched yet", plus a handoff

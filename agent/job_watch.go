@@ -1750,12 +1750,28 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		jm.rearmWatchBudgetBreaker(cfg)
 		return jobNotification{}, false
 	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
 	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+}
+
+// rearmWatchBudgetBreaker clears the once-only budget latch after a teardown
+// that did not persist. The rollback leaves the watch live and still over
+// budget, so the latch has to come off with the rejecting marks: held set, no
+// later condition fire would report a crossing and nothing would ever retry the
+// auto-clear. Only the failed-teardown path calls this; a teardown that lands
+// detaches the config and the latch goes with it.
+func (jm *jobManager) rearmWatchBudgetBreaker(cfg *watchConfig) {
+	if cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg.budgetTripped = false
 }
 
 // autoClearWatchOverBudget is the standalone wrapper for attach scans and watch
