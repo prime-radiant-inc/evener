@@ -42,6 +42,13 @@ var newPluginManager = func() pluginManager { return plugins.NewManager("") }
 var parsePluginMarketplaceSource = parseMarketplaceSourceArg
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// Saying how the command works reaches nothing under the config root, so
+	// it answers before the guard below and leaves no root behind: a user with
+	// unmigrated data can still read the usage.
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		printPluginUsage(stderr)
+		return nil
+	}
 	// Before anything that can create the user config root: seeding writes
 	// into it and every store path below hangs off it, and the legacy-data
 	// guard inside EnsureUserConfigDirs reads an existing root as already
@@ -53,14 +60,10 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
 	// mutates store state) and must not trigger first-run seeding the way
 	// every other verb does.
-	if len(args) == 0 || args[0] != "doctor" {
+	if args[0] != "doctor" {
 		if _, err := newPluginManager().SeedDefaultMarketplaces(context.Background()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
-	}
-	if len(args) == 0 {
-		printPluginUsage(stderr)
-		return nil
 	}
 
 	switch args[0] {
@@ -73,9 +76,6 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runPluginCheckNow(args[1:], stdout, stderr)
 	case "doctor":
 		return runPluginDoctor(args[1:], stdout, stderr)
-	case "help", "-h", "--help":
-		printPluginUsage(stderr)
-		return nil
 	default:
 		printPluginUsage(stderr)
 		return fmt.Errorf("unknown plugin command %q", args[0])

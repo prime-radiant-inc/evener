@@ -582,26 +582,49 @@ func TestPluginGc_JSON(t *testing.T) {
 }
 
 // Nothing may create the user config root before the legacy-data guard has
-// looked at it, and every plugin verb works under that root: seeding writes
-// known_marketplaces.json into it, and the registry and store paths hang off
-// it. A guard that runs second reads its own target as already migrated and
-// leaves a user's <config>/serf — configuration and credentials — stranded.
+// looked at it, and every plugin verb works under that root: first-run seeding
+// writes known_marketplaces.json into it, and the registry and store paths
+// hang off it. A guard that runs second reads its own target as already
+// migrated and leaves a user's <config>/serf — configuration and credentials —
+// stranded. Saying how the command works reaches none of that, so usage
+// answers without the guard and without a root.
 func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
-	home := t.TempDir()
-	config := filepath.Join(home, ".config")
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", config)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		args []string
+		// wantErr is empty for the answers that never reach the store.
+		wantErr string
+	}{
+		{name: "list reaches the store", args: []string{"list"}, wantErr: "legacy Serf data"},
+		{name: "--help does not", args: []string{"--help"}},
+		{name: "no arguments does not", args: nil},
 	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+				t.Fatal(err)
+			}
 
-	var stdout, stderr bytes.Buffer
-	err := runPlugin([]string{"list"}, nil, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "legacy Serf data") {
-		t.Fatalf("plugin list error = %v, want the legacy-data guard to stop the command", err)
-	}
-	if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the config root was created before the guard ran: stat err = %v", err)
+			var stdout, stderr bytes.Buffer
+			err := runPlugin(test.args, nil, &stdout, &stderr)
+			switch {
+			case test.wantErr != "":
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("plugin %v error = %v, want %q", test.args, err, test.wantErr)
+				}
+			case err != nil:
+				t.Fatalf("plugin %v error = %v, want the usage text", test.args, err)
+			case !strings.Contains(stderr.String(), "Usage: evener plugin"):
+				t.Fatalf("plugin %v stderr = %q, want the usage text", test.args, stderr.String())
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the config root was created: stat err = %v", err)
+			}
+		})
 	}
 }
