@@ -93,7 +93,7 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
 		dest, staging, warnings, err := m.prepareBundledStore(name, false)
 		if err != nil {
-			return bundledCandidate{}, err
+			return bundledCandidate{path: dest, warnings: warnings}, err
 		}
 		if staging == nil {
 			return bundledCandidate{loadPath: dest, path: dest, warnings: warnings}, nil
@@ -104,7 +104,7 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		defer staging.release()
 		scratch = append(scratch, staging.dir)
 		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
-			return bundledCandidate{}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
+			return bundledCandidate{path: dest, warnings: warnings}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
 		return bundledCandidate{loadPath: staging.payload, path: dest, warnings: warnings}, nil
 	})
@@ -245,14 +245,19 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 				// manifest name; the two agree for every bundled plugin, and
 				// TestBundledPluginsAreNamedAfterTheirDirectory keeps it that
 				// way.
-				if candidate, err := bundledPath(name); err == nil {
-					for _, warning := range candidate.warnings {
-						resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
-							Name: name, Path: candidate.path, Message: warning, Source: LaunchPluginSourceBundled,
-						})
-					}
+				candidate, err := bundledPath(name)
+				// Readying the store can move somebody's directory aside and
+				// then fail at the next step. What it moved is theirs, so they
+				// hear where it went whether or not the plugin resolved.
+				for _, warning := range candidate.warnings {
+					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+						Name: name, Path: candidate.path, Message: warning, Source: LaunchPluginSourceBundled,
+					})
+				}
+				switch {
+				case err == nil:
 					add(candidate.loadPath, candidate.path, LaunchPluginSourceBundled, "", "", name)
-				} else if !errors.Is(err, fs.ErrNotExist) {
+				case !errors.Is(err, fs.ErrNotExist):
 					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
 					})

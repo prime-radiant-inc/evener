@@ -242,3 +242,49 @@ func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) 
 		}
 	}
 }
+
+// Readying the store can move somebody's directory aside and then fail at the
+// next step. What was moved is theirs and they have to be told where it went,
+// so the warning survives the failure that follows it rather than being
+// dropped with the candidate that never resolved.
+func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through directory modes")
+	}
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(t.TempDir())
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+	// A umask that denies the owner write leaves the store writable (it is
+	// already there) but every directory staging creates unwritable, so the
+	// set-aside succeeds and the staging that follows it cannot be marked.
+	previous := syscall.Umask(0o200)
+	t.Cleanup(func() { syscall.Umask(previous) })
+
+	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err == nil {
+		t.Errorf("selected a bundled plugin the store could not stage: %+v", res.Candidates)
+	}
+	aside := dest + conflictSuffix
+	var setAside, failure bool
+	for _, diagnostic := range res.Diagnostics {
+		if diagnostic.Source != LaunchPluginSourceBundled {
+			continue
+		}
+		setAside = setAside || strings.Contains(diagnostic.Message, aside)
+		failure = failure || strings.Contains(diagnostic.Message, "stage bundled plugin")
+	}
+	if !setAside || !failure {
+		t.Fatalf("Diagnostics = %+v, want both the set-aside naming %s and the staging failure", res.Diagnostics, aside)
+	}
+	if content, err := os.ReadFile(filepath.Join(aside, "theirs.md")); err != nil || string(content) != "someone else's data" {
+		t.Errorf("set-aside content = %q (err %v), want what was moved preserved", content, err)
+	}
+}
