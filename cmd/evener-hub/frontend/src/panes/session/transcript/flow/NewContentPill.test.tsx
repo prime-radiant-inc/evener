@@ -28,6 +28,27 @@ test("renders nothing when count is 0 and not needsYou", () => {
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
 
+test("renders the plain jump-to-latest form when visible with count 0 - scrolled back, nothing new yet", () => {
+  render(<NewContentPill visible count={0} needsYou={false} onClick={() => {}} />);
+  const pill = screen.getByTestId("new-content-pill");
+  expect(pill.textContent!.toLowerCase()).toContain("latest");
+  // No numeric badge in the plain form - there is nothing to count.
+  expect(pill.textContent).not.toMatch(/\d/);
+});
+
+test("visible with count 0 and needsYou reads 'needs you' (an awaiting flip can land after the reader scrolled away)", () => {
+  render(<NewContentPill visible count={0} needsYou={true} onClick={() => {}} />);
+  const pill = screen.getByTestId("new-content-pill");
+  expect(pill.textContent!.toLowerCase()).toContain("needs you");
+});
+
+test("visible still shows the count form once new items arrive", () => {
+  render(<NewContentPill visible count={3} needsYou={false} onClick={() => {}} />);
+  const pill = screen.getByTestId("new-content-pill");
+  expect(pill.textContent).toContain("3");
+  expect(pill.textContent!.toLowerCase()).toContain("new");
+});
+
 test("renders nothing when count is 0 even if needsYou is (defensively) true", () => {
   render(<NewContentPill count={0} needsYou={true} onClick={() => {}} />);
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
@@ -85,11 +106,14 @@ test("caps a very large count via Badge's own 99+ display, without the pill inve
 // itemsView:"", no items array; see reducer.test.ts's own failed-turn
 // coverage and useTranscriptScroll.test.ts's matching wire-true tests) -
 // an unseen failure is itself the news, independent of whether any item
-// ever rendered for that turn. Unlike needsYou (which the hook only ever
-// sets true alongside a nonzero pillCount - see pillNeedsYou's own "&&
-// pillCount > 0" gate - so count=0+needsYou=true can't reach this
-// component from the real hook, hence that case staying (defensively)
-// null below), count=0+error=true is a REAL, reachable combination.
+// ever rendered for that turn. count=0+error=true is therefore a REAL,
+// reachable combination - and so is count=0+needsYou=true now that the
+// pill is a scroll-position affordance (visible while scrolled back even
+// with nothing new): the hook gates needsYou on pill visibility, not on a
+// nonzero count, so an awaiting flip that lands after the reader scrolled
+// away reaches here. needsYou WITHOUT visible and count 0 remains the one
+// combination the real hook never produces - that case stays (defensively)
+// null below.
 test("renders the pill when count is 0 but error is true - an itemless failed turn is itself the news", () => {
   render(<NewContentPill count={0} needsYou={false} error={true} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");

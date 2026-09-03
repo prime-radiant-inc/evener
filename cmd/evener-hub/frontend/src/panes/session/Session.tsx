@@ -301,6 +301,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         liveOverlay={
           <NewContentPill
             count={flow.pillCount}
+            visible={flow.pillVisible}
             needsYou={flow.pillNeedsYou}
             error={flow.pillError}
             pillArrowDirection={flow.pillArrowDirection}
