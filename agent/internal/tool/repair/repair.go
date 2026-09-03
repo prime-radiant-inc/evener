@@ -14,12 +14,15 @@ import (
 type ChangeKind string
 
 const (
-	ChangeAlias            ChangeKind = "alias"
-	ChangeCoerceType       ChangeKind = "coerce_type"
-	ChangeDropUnknown      ChangeKind = "drop_unknown"
-	ChangeUnicodeRepair    ChangeKind = "unicode_repair"
-	ChangeFillRequired     ChangeKind = "fill_required"
-	ChangeNormalizeDefault ChangeKind = "normalize_default"
+	ChangeAlias             ChangeKind = "alias"
+	ChangeCoerceType        ChangeKind = "coerce_type"
+	ChangeDropUnknown       ChangeKind = "drop_unknown"
+	ChangeUnicodeRepair     ChangeKind = "unicode_repair"
+	ChangeFillRequired      ChangeKind = "fill_required"
+	ChangeNormalizeDefault  ChangeKind = "normalize_default"
+	ChangeSynthesize        ChangeKind = "synthesize"
+	ChangeCopy              ChangeKind = "copy"
+	ChangePromoteJSONObject ChangeKind = "promote_json_object"
 )
 
 // Change records one repair for telemetry. Field is the affected key ("" for a
