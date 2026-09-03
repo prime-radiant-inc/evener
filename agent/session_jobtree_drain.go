@@ -164,6 +164,30 @@ func (jm *jobManager) hasRunningDrainJob() bool {
 	return false
 }
 
+// ManagedJobsFinalizedForTest reports whether none of this session's own
+// managed jobs is still inside finalization: the running map is clear of them,
+// which — because armFinalizedJob (jobs.go) appends the durable
+// EventJobNotificationPending BEFORE it deletes the running entry — means every
+// completion this drain owes the model is already recorded as a pending owner
+// notification.
+//
+// Test-only seam. cmd/evener's drain tests hold the drain until the shell they
+// launched has completed, and a completion that is merely RECORDED terminal is
+// not that state: until armFinalizedJob deletes the running entry, the job is
+// still in the running map, backgroundDrainState reads the background set off
+// that map alone, and so a drain starting in the window counts a finished shell
+// as a live undisposed background job — arming the announcement ladder on work
+// that was already committed. The residue after the delete needs no barrier:
+// the NotifyPending record written before it is what both the sole-reason test
+// and subtreeHasLiveTerminalDrainWork count, so a drain that starts there waits
+// for the notification instead of announcing.
+func (s *Session) ManagedJobsFinalizedForTest() bool {
+	if s == nil || s.jobManager == nil {
+		return false
+	}
+	return !s.jobManager.hasRunningDrainJob()
+}
+
 // treeHasOutstandingWork reports whether this session or any live descendant in
 // its managed-job subtree still owes drain work: an outstanding managed job, a
 // pending job notification, a pending caller-targeted watch send, a pending

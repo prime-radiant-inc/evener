@@ -172,17 +172,24 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 }
 
 // awaitDurableJobCompletion waits until every managed job the session started
-// has committed a terminal record. That is the state the drain has to start
-// from, and the executor's own completion event does not establish it: runShell
-// calls SignalName from the wait goroutine BEFORE it hands the result to
-// finalizeShellWhenDone (agent/job_shell.go), so waitReturned closes while the
-// terminal record is still uncommitted and no owner notification exists yet.
+// has committed a terminal record AND been released by the job manager. That is
+// the state the drain has to start from, and the executor's own completion event
+// does not establish it: runShell calls SignalName from the wait goroutine
+// BEFORE it hands the result to finalizeShellWhenDone (agent/job_shell.go), so
+// waitReturned closes while the terminal record is still uncommitted and no
+// owner notification exists yet.
 //
 // A drain that starts inside that window sees a job that is merely running. It
 // parks, arms the undisposed-background-job ladder on the pass that found it,
 // and on the next recheck tick announces to the model instead of delivering the
 // completion — and an announcement turn's reply is housekeeping the drain
 // discards, so the drain returns "" and the run prints its pre-drain answer.
+//
+// The terminal record alone does not close that window: it is committed before
+// armFinalizedJob runs, and the job stays in the job manager's running map
+// through the whole of it, so the drain still sees a live background shell.
+// ManagedJobsFinalizedForTest is the other half — the running entry is deleted
+// only after the durable owner notification has been appended.
 func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
 	t.Helper()
 	// TRIPWIRE: finalization is one goroutine hop and one store append past a
@@ -194,11 +201,11 @@ func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
 		if err != nil {
 			t.Fatalf("read job activity tree: %v", err)
 		}
-		if done {
+		if done && sess.ManagedJobsFinalizedForTest() {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("managed job never committed a terminal record before the drain started")
+			t.Fatal("managed job never finished finalizing before the drain started")
 		}
 		time.Sleep(time.Millisecond)
 	}
