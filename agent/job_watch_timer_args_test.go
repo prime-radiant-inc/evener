@@ -81,6 +81,12 @@ func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Target: "caller", ProgressIntervalMS: 1000}); err != nil {
 		t.Fatalf("internal target-only progress call must stay allowed: %v", err)
 	}
+	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Note: "check the queue"}); err != nil {
+		t.Fatalf("valid repeating self timer rejected: %v", err)
+	}
+	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600}); err != nil {
+		t.Fatalf("valid one-shot self timer rejected: %v", err)
+	}
 }
 
 func TestNormalizeWatchArgs_TimerBoundsRejectNotClamp(t *testing.T) {
@@ -91,11 +97,20 @@ func TestNormalizeWatchArgs_TimerBoundsRejectNotClamp(t *testing.T) {
 	}{
 		{watchArgs{AfterSeconds: 59}, "after_seconds must be between 60 and 86400"},
 		{watchArgs{AfterSeconds: 86401}, "after_seconds must be between 60 and 86400"},
+		{watchArgs{RepeatSeconds: 59}, "repeat_seconds must be between 60 and 3600"},
 		{watchArgs{RepeatSeconds: 3601}, "repeat_seconds must be between 60 and 3600"},
 	} {
 		err := normalizeWatchArgs(&tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v: err = %v, want %q", tc.args, err, tc.want)
+		}
+	}
+	// The bounds are inclusive at both ends.
+	for _, edge := range []watchArgs{
+		{AfterSeconds: 60}, {AfterSeconds: 86400}, {RepeatSeconds: 60}, {RepeatSeconds: 3600},
+	} {
+		if err := normalizeWatchArgs(&edge); err != nil {
+			t.Errorf("%+v: err = %v, want the edge of the range accepted", edge, err)
 		}
 	}
 	ok := watchArgs{RepeatSeconds: 300, Note: strings.Repeat("n", 3000)}
@@ -110,10 +125,25 @@ func TestNormalizeWatchArgs_TimerBoundsRejectNotClamp(t *testing.T) {
 	}
 }
 
-func TestWatchIntArg_PresentZeroOnCreateIsRejectedByBounds(t *testing.T) {
+// TestWatchIntArg_MaterializedZeroOnCreateReadsAsAbsent pins the timer fields to
+// the contract progress_interval_ms already keeps: providers materialize every
+// optional property, so a 0 or null time field on a create that arms some other
+// trigger is not a timer and must not be refused.
+func TestWatchIntArg_MaterializedZeroOnCreateReadsAsAbsent(t *testing.T) {
 	t.Parallel()
-	_, err := watchArgsFromToolArgs(map[string]any{"operation": "create", "after_seconds": float64(0)})
-	if err == nil || !strings.Contains(err.Error(), "after_seconds must be between") {
-		t.Fatalf("after_seconds:0 on create: err = %v, want bounds rejection", err)
+	a, err := watchArgsFromToolArgs(map[string]any{
+		"operation": "create", "source": "self", "events": []any{"assistant.tool"},
+		"after_seconds": float64(0), "repeat_seconds": nil, "note": "",
+	})
+	if err != nil {
+		t.Fatalf("materialized neutral timer fields on create: %v", err)
+	}
+	if a.AfterSeconds != 0 || a.RepeatSeconds != 0 || watchArgsIsTimer(a) {
+		t.Fatalf("args = %+v, want both time fields zero and not a timer", a)
+	}
+	// A zero time field arms nothing, so it cannot stand in for the source.
+	_, err = watchArgsFromToolArgs(map[string]any{"operation": "create", "after_seconds": float64(0)})
+	if err == nil || !strings.Contains(err.Error(), "source is required") {
+		t.Fatalf("after_seconds:0 with no source: err = %v, want source is required", err)
 	}
 }
