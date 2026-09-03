@@ -42,6 +42,14 @@ var newPluginManager = func() pluginManager { return plugins.NewManager("") }
 var parsePluginMarketplaceSource = parseMarketplaceSourceArg
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// Before anything that can create the user config root: seeding writes
+	// into it and every store path below hangs off it, and the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		return err
+	}
 	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
 	// mutates store state) and must not trigger first-run seeding the way
 	// every other verb does.

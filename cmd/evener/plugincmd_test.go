@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -577,5 +578,30 @@ func TestPluginGc_JSON(t *testing.T) {
 	}
 	if got := strings.TrimSpace(out.String()); got != "[]" {
 		t.Fatalf("gc --json with nothing to remove = %q, want []", got)
+	}
+}
+
+// Nothing may create the user config root before the legacy-data guard has
+// looked at it, and every plugin verb works under that root: seeding writes
+// known_marketplaces.json into it, and the registry and store paths hang off
+// it. A guard that runs second reads its own target as already migrated and
+// leaves a user's <config>/serf — configuration and credentials — stranded.
+func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runPlugin([]string{"list"}, nil, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "legacy Serf data") {
+		t.Fatalf("plugin list error = %v, want the legacy-data guard to stop the command", err)
+	}
+	if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the config root was created before the guard ran: stat err = %v", err)
 	}
 }
