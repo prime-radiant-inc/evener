@@ -52,6 +52,9 @@ const (
 	// watchDeliveryBudget caps model-facing deliveries per watch config before the
 	// circuit breaker auto-clears it (spec §4 F1). Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// maxLiveTimers caps timers per job manager; with the 60-second floor it
+	// bounds a session to eight timer wakes a minute.
+	maxLiveTimers = 8
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
 	// watch send may descend from before the breaker drops it as a runaway. The
 	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
@@ -146,6 +149,10 @@ type watchKey struct {
 	SendTo             string
 	ReceiverSessionID  string
 	ReceiverDelegateID string
+	// Slot is the watch id for a timer and empty for every other watch, so
+	// each timer create is its own key and never replaces or no-ops against
+	// another watch on the same target. It is compared exactly everywhere.
+	Slot string
 }
 
 type watchConfig struct {
@@ -172,10 +179,19 @@ type watchConfig struct {
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
 	progressIntervalMS int
-	events             []string
-	eventKinds         map[events.EventKind]bool
-	wildcardEvents     bool
-	eventFilter        *watchEventFilter
+	// slot mirrors watchKey.Slot so config-side key predicates compare it.
+	slot string
+	// timer marks a watch created with after_seconds or repeat_seconds; its
+	// progressIntervalMS is timerSeconds*1000. oneShot ends the watch after
+	// its first fire. note rides every fire's block.
+	timer          bool
+	oneShot        bool
+	timerSeconds   int
+	note           string
+	events         []string
+	eventKinds     map[events.EventKind]bool
+	wildcardEvents bool
+	eventFilter    *watchEventFilter
 	// every-Nth throttle: set from `every` + the single events[0] when every > 0.
 	triggerKind       events.EventKind
 	triggerEvery      int
@@ -496,7 +512,7 @@ func (jm *jobManager) watchSendDeliveredLocked(deliveryID string) bool {
 // config. configureWatch routes install validation through it.
 // Event-arg shape (validateWatchEventArgs) and session-target shape are validated by
 // the caller.
-func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
+func (jm *jobManager) validateWatchConfig(a watchArgs, slot string) (*watchConfig, error) {
 	if !watchArgsHasCondition(a) {
 		return nil, errors.New("invalid_request: nothing to watch")
 	}
@@ -505,7 +521,7 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 			return nil, err
 		}
 	}
-	cfg, err := newWatchConfig(a, jm.now())
+	cfg, err := newWatchConfig(a, jm.now(), slot)
 	if err != nil {
 		return nil, err
 	}
@@ -573,12 +589,19 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.ReceiverSendInternal {
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
+	// A timer's id is minted before the key so the key's Slot, the config's
+	// slot, and the config's watchID are all the same id.
+	slot := ""
+	if watchArgsIsTimer(a) {
+		slot = jobstore.NewWatchID()
+	}
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
 		Target:             a.Target,
 		SendTo:             sendTo,
 		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
+		Slot:               slot,
 	}
 	if a.Clear && jm.hasWatchClearState(key) {
 		return jm.clearWatch(key)
@@ -636,7 +659,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
 	}
-	cfg, err := jm.validateWatchConfig(a)
+	cfg, err := jm.validateWatchConfig(a, key.Slot)
 	if err != nil {
 		return watchResult{}, err
 	}
@@ -654,6 +677,10 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 			jm.mu.Unlock()
 			return watchResult{}, watchTargetNotFoundError(key.Target)
 		}
+	}
+	if cfg.timer && jm.liveTimerCountLocked() >= maxLiveTimers {
+		jm.mu.Unlock()
+		return watchResult{}, fmt.Errorf("invalid_request: too many timers (%d live); clear one first", maxLiveTimers)
 	}
 	existing := jm.watches[key]
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
@@ -1039,11 +1066,14 @@ func isWatchSessionTarget(target string) bool {
 	}
 }
 
-func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
+func newWatchConfig(a watchArgs, createdAt time.Time, slot string) (*watchConfig, error) {
 	applyStableReceiverWatchSend(&a)
 	sourceDelegateID := stableWatchSourceID(a)
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
-	watchID := jobstore.NewWatchID()
+	watchID := slot
+	if watchID == "" {
+		watchID = jobstore.NewWatchID()
+	}
 	cfg := &watchConfig{
 		id:                 watchID,
 		watchID:            watchID,
@@ -1056,6 +1086,11 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
+		slot:               slot,
+		timer:              watchArgsIsTimer(a),
+		oneShot:            a.AfterSeconds > 0,
+		timerSeconds:       max(a.AfterSeconds, a.RepeatSeconds),
+		note:               a.Note,
 		events:             canonicalWatchEvents(a.Events),
 		eventKinds:         eventKinds,
 		wildcardEvents:     wildcardEvents,
@@ -1066,6 +1101,9 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		sourceDelegateID:   sourceDelegateID,
 		sourceGeneration:   a.SourceGeneration,
 		stableReceiver:     a.StableReceiver,
+	}
+	if cfg.timer {
+		cfg.progressIntervalMS = cfg.timerSeconds * 1000
 	}
 	// every is valid only with exactly one event kind (enforced by validation).
 	if a.Every > 0 && len(a.Events) == 1 {
@@ -1570,6 +1608,9 @@ func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnap
 }
 
 func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
+	if candidate.Slot != request.Slot {
+		return false
+	}
 	if candidate.VisibleSessionID != request.VisibleSessionID || candidate.Target != request.Target {
 		return false
 	}
@@ -1726,6 +1767,17 @@ func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
 		}
 	}
 	return false
+}
+
+// liveTimerCountLocked counts installed timer watches. Caller holds jm.mu.
+func (jm *jobManager) liveTimerCountLocked() int {
+	n := 0
+	for _, cfg := range jm.watches {
+		if cfg.timer {
+			n++
+		}
+	}
+	return n
 }
 
 func (jm *jobManager) watchConfigByIDLocked(watchID string) (watchKey, *watchConfig, bool) {
@@ -2759,7 +2811,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
 	// the send through the durable rail with a fresh generation and cloned send.
 	// The scan reuses the config's own matcher so output_match compiles once.
-	cfg, err := newWatchConfig(a, jm.now())
+	cfg, err := newWatchConfig(a, jm.now(), key.Slot)
 	if err != nil {
 		return watchResult{}, err
 	}
@@ -4185,6 +4237,11 @@ func watchSendTerminalSnapshotMatchingKeyLocked(cfg *watchConfig, key watchKey, 
 }
 
 func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bool {
+	// A durable send key carries no slot, and only send-rail configs reach
+	// here, so a timer key never matches a pending send.
+	if key.Slot != "" {
+		return false
+	}
 	if pending.VisibleSessionID != key.VisibleSessionID || pending.WatchTarget != key.Target {
 		return false
 	}
@@ -4198,6 +4255,9 @@ func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bo
 
 func watchConfigMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 	if cfg == nil || cfg.target != key.Target {
+		return false
+	}
+	if cfg.slot != key.Slot {
 		return false
 	}
 	if !watchConfigReceiverMatchesWatchKey(cfg, key) {

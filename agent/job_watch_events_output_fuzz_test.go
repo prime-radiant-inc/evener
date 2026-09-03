@@ -65,7 +65,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			jm.feedJobOutput("missing", nil, 0)
 		case 5:
 			rec := createWatchOutputJob(t, jm)
-			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +74,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			jm.feedJobOutput(rec.JobID, []byte("hit\n"), 4)
 		case 6:
 			rec := createWatchOutputJob(t, jm)
-			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal("missing output did not fail attach preparation")
 			}
 		case 7:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -96,7 +96,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal("failed attach preparation fired")
 			}
 		case 8:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,7 +161,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatalf("session notify decision = %+v", dec)
 			}
 		case 16:
-			cfg, err := newWatchConfig(watchArgs{Target: "*", Events: []string{"communicate"}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "*", Events: []string{"communicate"}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -172,7 +172,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			jm.feedJobOutput("job_x", []byte("later"), 10)
 			jm.feedJobOutput("job_x", []byte("earlier"), 5)
 		case 18:
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -193,7 +193,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			}
 		case 20:
 			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now())
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}

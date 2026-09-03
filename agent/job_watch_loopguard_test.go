@@ -378,7 +378,7 @@ func TestProgressTickDeliversSameWatchProvenanceClassified(t *testing.T) {
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}
