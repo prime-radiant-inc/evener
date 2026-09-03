@@ -310,51 +310,6 @@ func decodeIDList(raw []any) ([]int, error) {
 	return ids, nil
 }
 
-// validateUpdateIDs rejects update entries whose target — or any task their
-// depends_on names — does not exist in the pre-add store state. The model
-// composed the call before any new IDs existed, so an update can neither
-// target nor depend on this call's adds; the same error covers "never
-// existed" and "not yet created" (the model cannot distinguish them and
-// shouldn't need to). Without the depends_on check the store would validate
-// post-add and accept a guessed new ID — exactly the ID-guessing the
-// pre-add target rule exists to prevent.
-//
-// This is handler-side policy over a store API that cannot express the
-// pre-add transaction: the semantic rule (the model cannot know new IDs)
-// belongs here, not in the store. If a second mutation caller appears, hoist
-// the whole combined batch into a store-level ApplyBatch(adds, updates) that
-// validates updates against the pre-add state under one lock and returns one
-// snapshot — until then the double validation (updateLocked re-rejects the
-// same unknown IDs) is the price of exactly one caller.
-//
-// Only load-bearing when the call also adds: updateLocked enforces the same
-// rejections (identical errors, nothing applied) when there are no adds, so
-// callers gate on len(adds) > 0 and skip the duplicated pass.
-func validateUpdateIDs(store *taskpkg.TaskStore, updates []taskpkg.TaskUpdate) error {
-	if len(updates) == 0 {
-		return nil
-	}
-	tasks := store.View()
-	known := make(map[int]struct{}, len(tasks))
-	for _, t := range tasks {
-		known[t.ID] = struct{}{}
-	}
-	for _, u := range updates {
-		if _, ok := known[u.ID]; !ok {
-			return fmt.Errorf("unknown task ID %d", u.ID)
-		}
-		if u.DependsOn == nil {
-			continue
-		}
-		for _, dep := range *u.DependsOn {
-			if _, ok := known[dep]; !ok {
-				return fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
-			}
-		}
-	}
-	return nil
-}
-
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -376,24 +331,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			return mutateAndPublishTaskStore(store, func(epoch, revision uint64) (any, error) {
-				// Validate update IDs against the PRE-ADD state when this
-				// call also adds: the model composed the call before any new
-				// IDs existed, so an update can never legitimately target or
-				// depend on this call's adds. (Without adds, updateLocked
-				// enforces the same rejections itself.)
-				if len(adds) > 0 {
-					if err := validateUpdateIDs(store, updates); err != nil {
-						return nil, err
-					}
-				}
-				var added []taskpkg.Task
-				if len(adds) > 0 {
-					added, err = store.Append(adds)
+				if len(updates) == 0 {
+					added, err := store.Append(adds)
 					if err != nil {
 						return nil, err
 					}
-				}
-				if len(updates) == 0 {
 					// Adds only: terse acknowledgement. The current task is
 					// announced via a separate SYSTEM-REMINDER steering message
 					// when the agent actually transitions one to in_progress,
@@ -407,7 +349,15 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						State:  tasks,
 					}, nil
 				}
-				mutation, err := store.UpdateWithSnapshot(updates)
+				var mutation taskpkg.TaskUpdateSnapshot
+				if len(adds) == 0 {
+					// Keep update-only validation order and snapshot behavior exactly
+					// as before; ApplyBatch is needed only where additions and
+					// updates must commit together.
+					mutation, err = store.UpdateWithSnapshot(updates)
+				} else {
+					mutation, err = store.ApplyBatch(adds, updates)
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -415,10 +365,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// Classify each ID from the final status the store applied, so
 				// duplicate entries cannot steer a task that ended completed or
 				// suppress auto-advance after the final state is known. Note:
-				// mutation.Before is the POST-ADD pre-update state, but every
-				// update target pre-existed the call (validateUpdateIDs), so its
-				// Before status equals its pre-call status — adds never touch
-				// existing tasks' statuses.
+				// mutation.Before is the pre-combined-batch state. ApplyBatch
+				// enforces that every update target pre-existed the call, so its
+				// status is the caller's true pre-call status.
 				previous := make(map[int]taskpkg.TaskStatus, len(mutation.Before))
 				for _, task := range mutation.Before {
 					previous[task.ID] = task.Status
@@ -465,13 +414,13 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				if !completedAny && manuallyStartedID == 0 {
 					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
 					return tool.StateResult{
-						Output: formatMutationAck(len(added), updates),
+						Output: formatMutationAck(len(adds), updates),
 						State:  taskToolStateSnapshot(mutation.After, started),
 					}, nil
 				}
 
 				var msg strings.Builder
-				msg.WriteString(formatMutationAck(len(added), updates))
+				msg.WriteString(formatMutationAck(len(adds), updates))
 				msg.WriteString(" ")
 				finalTasks := mutation.After
 

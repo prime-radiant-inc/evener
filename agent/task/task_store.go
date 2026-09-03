@@ -312,12 +312,19 @@ func (s *TaskStore) Load() error {
 
 // save writes the task list to disk atomically.
 func (s *TaskStore) save() error {
+	return s.saveTasks(s.tasks)
+}
+
+// saveTasks writes a supplied task snapshot atomically without changing the
+// in-memory store. It lets a combined mutation persist its fully validated
+// staged state before committing that state under the data lock.
+func (s *TaskStore) saveTasks(tasks []Task) error {
 	dir := filepath.Dir(s.path)
 	if err := s.fs.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create tasks dir: %w", err)
 	}
 
-	data, err := json.MarshalIndent(s.tasks, "", "  ")
+	data, err := json.MarshalIndent(tasks, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal tasks: %w", err)
 	}
@@ -423,7 +430,18 @@ func hasCycle(adj map[int][]int) bool {
 func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	added, err := s.appendLocked(items)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.save(); err != nil {
+		return added, fmt.Errorf("save: %w", err)
+	}
+	return added, nil
+}
 
+// appendLocked adds tasks to s.tasks but does not save. Callers must hold s.mu.
+func (s *TaskStore) appendLocked(items []TaskInput) ([]Task, error) {
 	savedNextID := s.nextID
 
 	// Build all tasks first without committing to s.tasks.
@@ -469,10 +487,6 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 	}
 
 	s.tasks = append(s.tasks, added...)
-
-	if err := s.save(); err != nil {
-		return added, fmt.Errorf("save: %w", err)
-	}
 	return added, nil
 }
 
@@ -613,6 +627,9 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 	if err := s.updateLocked(updates); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
+	if err := s.save(); err != nil {
+		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
+	}
 	return TaskUpdateSnapshot{
 		Before: before,
 		After:  cloneTasks(s.tasks),
@@ -744,5 +761,63 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		}
 	}
 
-	return s.save()
+	return nil
+}
+
+// ApplyBatch atomically applies additions and updates as one task-list
+// mutation. Updates are validated against the pre-add task set, so callers
+// cannot target or depend on a same-call addition they could not have known.
+// All validation and timestamped work happens on a staged store; exactly one
+// durable save succeeds before the staged state replaces the in-memory state.
+func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpdateSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.validateUpdateIDsLocked(updates); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
+	before := cloneTasks(s.tasks)
+	staged := TaskStore{
+		tasks:  cloneTasks(s.tasks),
+		nextID: s.nextID,
+		now:    s.now,
+		fs:     s.fs,
+		path:   s.path,
+	}
+	if _, err := staged.appendLocked(adds); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
+	if err := staged.updateLocked(updates); err != nil {
+		return TaskUpdateSnapshot{}, err
+	}
+	if err := s.saveTasks(staged.tasks); err != nil {
+		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
+	}
+	s.tasks = staged.tasks
+	s.nextID = staged.nextID
+	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks)}, nil
+}
+
+// validateUpdateIDsLocked enforces the task_list contract that updates in a
+// combined add+update call may only refer to tasks present before the call.
+// Callers must hold s.mu.
+func (s *TaskStore) validateUpdateIDsLocked(updates []TaskUpdate) error {
+	known := make(map[int]struct{}, len(s.tasks))
+	for _, task := range s.tasks {
+		known[task.ID] = struct{}{}
+	}
+	for _, update := range updates {
+		if _, ok := known[update.ID]; !ok {
+			return fmt.Errorf("unknown task ID %d", update.ID)
+		}
+		if update.DependsOn == nil {
+			continue
+		}
+		for _, depID := range *update.DependsOn {
+			if _, ok := known[depID]; !ok {
+				return fmt.Errorf("task %d depends on unknown task %d", update.ID, depID)
+			}
+		}
+	}
+	return nil
 }
