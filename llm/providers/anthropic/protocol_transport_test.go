@@ -184,6 +184,57 @@ func TestProtocolCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing
 	}
 }
 
+// TestProtocolCompletionClampsEffortBudgetUnderTransportMaxTokensConstant
+// pins the transport-overlay interaction roborev flagged on 312ce22: the
+// transport's body constants run after the body builder and override the
+// max_tokens it left there, and the completion finalizer then enforces
+// max_tokens > budget_tokens against the overlaid value — so a row-level
+// max_tokens constant must bound the effort-derived thinking budget too.
+func TestProtocolCompletionClampsEffortBudgetUnderTransportMaxTokensConstant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*Protocol, llm.Request, registry.Resolved) error
+	}{
+		{"complete", messagesJSON, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			_, err := p.Complete(context.Background(), req, res)
+			return err
+		}},
+		{"stream", messagesSSE, func(p *Protocol, req llm.Request, res registry.Resolved) error {
+			stream, err := p.Stream(context.Background(), req, res)
+			if err != nil {
+				return err
+			}
+			for event := range stream.Events() {
+				if event.Type == llm.StreamEventError {
+					return event.Err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, tc.body })
+			res := protoLive(srv)
+			res.Caps.ThinkingShape = new("budget+effort")
+			res.Caps.MaxOutputTokens = new(131072)
+			res.Transport.Body = map[string]any{"max_tokens": 8192}
+			req := protoReq("high") // a 32768-token table budget over the 8192 constant
+			req.MaxTokens = new(131072)
+			if err := tc.run(&Protocol{Client: srv.Client()}, req, res); err != nil {
+				t.Fatal(err)
+			}
+			thinking, _ := got.body["thinking"].(map[string]any)
+			if budget := intFromAny(thinking["budget_tokens"]); budget != 8191 {
+				t.Fatalf("wire budget_tokens = %d, want 8191 under the transport's 8192 constant: %v", budget, got.body)
+			}
+			if mt := intFromAny(got.body["max_tokens"]); mt != 8192 {
+				t.Fatalf("wire max_tokens = %d, want the 8192 transport constant: %v", mt, got.body)
+			}
+		})
+	}
+}
+
 func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
 	srv, got := protoServer(t, func(r *http.Request) (int, string) {
 		switch {
