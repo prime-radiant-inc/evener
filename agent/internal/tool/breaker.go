@@ -594,8 +594,7 @@ func semanticErrorClassFor(err error, output string) string {
 // finalizeBreaker passes this value directly into telemetryComponent, so neither
 // this prose nor an unsalted digest leaves the process.
 func genericExecutionClass(output string) string {
-	line := TruncateRunes(firstNonBlankLine(output), 256)
-	line = stripPresentationTraceSuffix(line)
+	line := stripPresentationTraceSuffix(firstNonBlankLine(output))
 	line = strings.ToLower(collapseWhitespace(strings.TrimSpace(line)))
 	line = replaceDigitRuns(line, "#")
 	line = TruncateRunes(line, 200)
@@ -610,18 +609,21 @@ func genericExecutionClass(output string) string {
 // remain semantic identity rather than being mistaken for presentation noise.
 func stripPresentationTraceSuffix(line string) string {
 	trimmed := strings.TrimSpace(line)
-	lower := strings.ToLower(trimmed)
 	const marker = " [trace "
-	start := strings.LastIndex(lower, marker)
-	if start < 0 || !strings.HasSuffix(lower, "]") {
+	if !strings.HasSuffix(trimmed, "]") {
 		return line
 	}
-	token := lower[start+len(marker) : len(lower)-1]
+	open := strings.LastIndexByte(trimmed, '[')
+	start := open - 1
+	if start < 0 || open+len(marker)-1 > len(trimmed) || !strings.EqualFold(trimmed[start:open+len(marker)-1], marker) {
+		return line
+	}
+	token := trimmed[open+len(marker)-1 : len(trimmed)-1]
 	if token == "" || len(token) > 64 {
 		return line
 	}
-	for _, r := range token {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' && r != ':' {
+	for _, b := range []byte(token) {
+		if (b < 'A' || b > 'Z') && (b < 'a' || b > 'z') && (b < '0' || b > '9') && b != '_' && b != '-' && b != '.' && b != ':' {
 			return line
 		}
 	}
