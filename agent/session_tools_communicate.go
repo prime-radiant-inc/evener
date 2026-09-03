@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -263,7 +262,6 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 
 // defaultEnvelopeKeys are the output-envelope keys the default communicate
 // schema declares — and the only keys the documented-defaults fill may add.
-// Kept as one constant so the shape predicate and the fill cannot drift apart.
 var defaultEnvelopeKeys = []string{"message", "data", "artifacts"}
 
 // canonicalDefaultCommunicateOutputSchema is constructed once because every
@@ -313,40 +311,6 @@ func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
 
 func isCanonicalDefaultCommunicateOutputEnvelope(output map[string]any) bool {
 	return reflect.DeepEqual(output, canonicalDefaultCommunicateOutputSchema)
-}
-
-// stringSetsEqual reports whether the schema's property names and required
-// names are each exactly the wanted set (as sets: same members, same count).
-func stringSetsEqual(props map[string]any, required []string, want ...string) bool {
-	if len(props) != len(want) || len(required) != len(want) {
-		return false
-	}
-	for _, name := range want {
-		if _, ok := props[name]; !ok {
-			return false
-		}
-		if !slices.Contains(required, name) {
-			return false
-		}
-	}
-	return true
-}
-
-func communicateSchemaStringSlice(v any) []string {
-	switch x := v.(type) {
-	case []string:
-		return append([]string(nil), x...)
-	case []any:
-		out := make([]string, 0, len(x))
-		for _, item := range x {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
 }
 
 // fillCommunicateEnvelope fills a present default-envelope `output` object's

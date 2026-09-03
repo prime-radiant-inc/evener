@@ -1745,6 +1745,9 @@ func repairChangePhrase(raw string) string {
 	case "unicode_repair":
 		return "fixed an invalid character in the arguments"
 	case "fill_required":
+		if fieldKey, ok := strings.CutPrefix(field, "output."); ok && fieldDetail(parts) == "filled default" && fieldKey != "" {
+			return fmt.Sprintf("filled the required %q key", fieldKey)
+		}
 		if key, ok := strings.CutPrefix(fieldDetail(parts), "filled "); ok && key != "" {
 			return fmt.Sprintf("filled the required %q key", key)
 		}

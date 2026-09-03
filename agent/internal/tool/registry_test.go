@@ -343,7 +343,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes+1))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes+1))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",
@@ -352,7 +352,7 @@ func TestToolRegistry_OversizedArguments_IsReturnedToModel(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error")
 	}
-	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), maxToolArgumentBytes)
+	wantMsg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
 	if res.Output != wantMsg {
 		t.Fatalf("output = %q, want %q", res.Output, wantMsg)
 	}
@@ -374,7 +374,7 @@ func TestToolRegistry_ArgumentsAtSizeCapBoundary_NotRejectedByCap(t *testing.T) 
 	// Exactly at the cap: must not be rejected by the size gate. It's not
 	// valid JSON either, so it falls through to the existing "invalid tool
 	// arguments JSON" path - this test only confirms the size gate didn't fire.
-	arguments := json.RawMessage(strings.Repeat("a", maxToolArgumentBytes))
+	arguments := json.RawMessage(strings.Repeat("a", MaxToolArgumentBytes))
 	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
 		ID:        "c1",
 		Name:      "t",

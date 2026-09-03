@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -202,12 +201,6 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		if usesDefaultCommunicateOutputEnvelope(def) {
 			t.Fatalf("custom schema recognized as default: %#v", def)
 		}
-	}
-	if got := communicateSchemaStringSlice([]any{"message", 1, "data"}); len(got) != 2 || !slices.Contains(got, "data") {
-		t.Fatalf("schema string normalization = %#v", got)
-	}
-	if got := communicateSchemaStringSlice(42); got != nil {
-		t.Fatalf("unexpected schema strings = %#v", got)
 	}
 
 	return stoolCommunicateTrace{
