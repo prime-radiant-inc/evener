@@ -240,25 +240,28 @@ func TestConditionFireBudget_CrossingLatchesOnceAcrossASkippedBudget(t *testing.
 // TestConditionFireBudget_EveryFireGoesThroughOneHelper scans the source for it.
 func TestNoteConditionFireLocked_LatchesOnceAtTheBudget(t *testing.T) {
 	t.Parallel()
-	if noteConditionFireLocked(nil) {
-		t.Fatal("a nil config reported a budget crossing")
+	if accepted, crossed := noteConditionFireLocked(nil); accepted || crossed {
+		t.Fatalf("a nil config = accepted:%t crossed:%t, want neither", accepted, crossed)
 	}
 
 	cfg := &watchConfig{}
 	for fire := 1; fire < watchDeliveryBudget; fire++ {
-		if noteConditionFireLocked(cfg) {
-			t.Fatalf("condition fire %d crossed the budget early", fire)
+		accepted, crossed := noteConditionFireLocked(cfg)
+		if !accepted || crossed {
+			t.Fatalf("condition fire %d = accepted:%t crossed:%t, want an accepted fire inside the budget", fire, accepted, crossed)
 		}
 	}
-	if !noteConditionFireLocked(cfg) {
-		t.Fatalf("condition fire %d did not cross the budget", cfg.conditionFires)
+	if accepted, crossed := noteConditionFireLocked(cfg); !accepted || !crossed {
+		t.Fatalf("the budget-th fire = accepted:%t crossed:%t, want the crossing match accepted and reported", accepted, crossed)
 	}
-	if noteConditionFireLocked(cfg) {
-		t.Fatalf("condition fire %d crossed the budget a second time", cfg.conditionFires)
+	// Past the latch the breaker refuses the match outright: it neither counts
+	// it nor reports a second crossing, so the caller builds nothing from it.
+	if accepted, crossed := noteConditionFireLocked(cfg); accepted || crossed {
+		t.Fatalf("a fire past the latch = accepted:%t crossed:%t, want it refused and silent", accepted, crossed)
 	}
-	if cfg.conditionFires != watchDeliveryBudget+1 || !cfg.budgetTripped {
+	if cfg.conditionFires != watchDeliveryBudget || !cfg.budgetTripped {
 		t.Fatalf("conditionFires = %d, budgetTripped = %v; want %d fires and a latched breaker",
-			cfg.conditionFires, cfg.budgetTripped, watchDeliveryBudget+1)
+			cfg.conditionFires, cfg.budgetTripped, watchDeliveryBudget)
 	}
 	if cfg.deliveries != 0 {
 		t.Fatalf("deliveries = %d; counting a fire must not count a delivery", cfg.deliveries)
@@ -355,7 +358,7 @@ func TestConditionFireBudget_RollbackRearmsTheLatchInOneCriticalSection(t *testi
 	jm.watches[key] = cfg
 	rollbackWatchBudgetTeardownLocked(jm, targets, cfg)
 	rejecting, tripped := cfg.rejectingDelivery, cfg.budgetTripped
-	crossed := noteConditionFireLocked(cfg)
+	_, crossed := noteConditionFireLocked(cfg)
 	jm.mu.Unlock()
 
 	if rejecting || tripped {
@@ -625,5 +628,65 @@ func TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone(t *testi
 	if live || !rejecting || parked || pending != 0 {
 		t.Fatalf("after a clear won the key = live:%t rejecting:%t parked:%t pending:%d, want the clear's own dropped-and-rejecting config, untouched by the budget teardown",
 			live, rejecting, parked, pending)
+	}
+}
+
+// TestConditionFireBudget_MatchDuringTeardownIsRefused pins the breaker against
+// a match that lands while the teardown it scheduled is still persisting. The
+// config is not detached until that durable append returns, so it is still in
+// jm.watches and still matching; rejectingDelivery stops the SEND rail at the
+// delivery gate, but a no-send watch's notification has no such gate and went
+// straight out. The latch is the answer on both rails: once budgetTripped is
+// set, the match site refuses the match instead of building anything from it.
+//
+// The append seam puts the extra match in exactly that window.
+func TestConditionFireBudget_MatchDuringTeardownIsRefused(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	installWatchBelowValidation(t, jm, watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}})
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil {
+		t.Fatal("watch config not installed")
+	}
+
+	realAppendEvents := jm.appendEvents
+	inFlight := false
+	jm.appendEvents = func(batch []jobstore.Event) error {
+		for _, event := range batch {
+			if event.Kind != jobstore.EventWatchCleared || inFlight {
+				continue
+			}
+			inFlight = true
+			// The teardown detaches only after this append returns, so the watch
+			// is still live and still matching right here.
+			onSessionEventKD(jm, events.EventCommunicate, nil)
+		}
+		return realAppendEvents(batch)
+	}
+	for range watchDeliveryBudget {
+		onSessionEventKD(jm, events.EventCommunicate, nil)
+	}
+	jm.appendEvents = realAppendEvents
+	if !inFlight {
+		t.Fatal("the in-flight match never ran; the budget teardown did not persist a cleared event")
+	}
+
+	fired := 0
+	for _, notification := range notified {
+		if strings.HasPrefix(notification.Reason, "event: ") {
+			fired++
+		}
+	}
+	jm.mu.Lock()
+	fires, deliveries, live := cfg.conditionFires, cfg.deliveries, jm.watches[key] == cfg
+	jm.mu.Unlock()
+	if fired != watchDeliveryBudget || fires != watchDeliveryBudget || deliveries != watchDeliveryBudget || live {
+		t.Fatalf("a match inside the teardown window = notifications:%d conditionFires:%d deliveries:%d live:%t, want %d/%d/%d and an auto-cleared watch",
+			fired, fires, deliveries, live, watchDeliveryBudget, watchDeliveryBudget, watchDeliveryBudget)
 	}
 }
