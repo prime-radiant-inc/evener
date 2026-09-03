@@ -883,9 +883,10 @@ func validateWatchEventArgs(a watchArgs) error {
 }
 
 func validateWatchTriggerShape(a watchArgs) error {
-	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
-		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
-	}
+	// The timer rules run first. A request that named a timer field is answered
+	// in its own terms: told which OTHER field it conflicts with, rather than
+	// pointed at the timer field it already used by the progress-trigger hint
+	// below, which exists for requests that named no timer field at all.
 	if watchArgsIsTimer(a) {
 		if a.Source != "self" {
 			return errors.New("invalid_request: timers apply to source self; delegates and jobs wake you when they finish")
@@ -917,6 +918,9 @@ func validateWatchTriggerShape(a watchArgs) error {
 		}
 	} else if a.Note != "" {
 		return errors.New("invalid_request: note applies to timers")
+	}
+	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
+		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
 	}
 	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: session event watches use events/event_filter/every; progress_interval_ms is for periodic progress watches")
