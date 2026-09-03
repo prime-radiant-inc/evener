@@ -633,10 +633,10 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 		t.Fatalf("make test-web-browser: %v\n%s", err, output)
 	}
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("successful browser output has %d nonempty lines, want 4 verdicts; output = %q", len(lines), output)
+	if len(lines) != 5 {
+		t.Fatalf("successful browser output has %d nonempty lines, want 5 verdicts; output = %q", len(lines), output)
 	}
-	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard"} {
+	for index, guard := range []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard"} {
 		fields := strings.Fields(lines[index])
 		if len(fields) != 2 || fields[0] != "PASS" || fields[1] != "web-"+guard {
 			t.Errorf("browser verdict %d fields = %q, want PASS for %s", index, fields, guard)

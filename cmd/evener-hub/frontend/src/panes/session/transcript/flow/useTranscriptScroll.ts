@@ -754,6 +754,15 @@ export function useTranscriptScroll({
         wasAtBottomRef.current = true;
         setAwayFromBottom(false);
       } else {
+        // The pre-jump measurement is authoritative for the reader's CURRENT
+        // position: they are away from the bottom. Write that into both
+        // trackers before requesting the jump - the DOM can move without a
+        // scroll event (content growth above the viewport, measurement
+        // corrections), leaving the trackers stale at at-bottom, and a stale
+        // at-bottom would let an append in the landing window auto-stick and
+        // would hide the pill the moment clearPill() runs below.
+        wasAtBottomRef.current = false;
+        setAwayFromBottom(true);
         // scrollToIndex engages the virtualizer's own machinery (scrollState
         // -> measurement during the scroll, the reconcile loop, and the
         // anchorToEnd pinning that holds the end across later
