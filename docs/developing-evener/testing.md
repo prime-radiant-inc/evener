@@ -401,10 +401,10 @@ exists to protect. Wiring real enforcement into CI needs the durations sourced
 from the gate's own run instead of a second one. Deciding how to do that is an
 open follow-up (kata b6rv).
 
-## The Three Browser Guards, and Why There Are Three
+## The Five Browser Guards, and Why There Are Five
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Three checks in
+of frontend defect is structurally invisible to `vitest`. Five checks in
 `cmd/evener-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
@@ -412,17 +412,27 @@ of frontend defect is structurally invisible to `vitest`. Three checks in
   files, no build. Right for "does this CSS rule still hold its box".
 - **`npm run overflowguard`** renders the REAL Session pane through the REAL
   reducer and asserts nothing inside it scrolls sideways, at four widths.
+- **`npm run shellguard`** renders the production AppShell (rail + workspace)
+  with a scripted tall sidebar tree and asserts the PAGE never grows taller
+  than the viewport — the rail's own body is the scroll container, not the
+  document.
 - **`npm run spawnguard`** renders the real Spawn pane through its staging and
   breakpoint path, asserting the responsive form remains usable at three widths.
+- **`npm run transcriptscrollguard`** renders the real transcript through the
+  real virtualization stack and drives NATIVE scroll events: the
+  jump-to-latest pill must appear on a scroll away from the bottom, and
+  clicking it must land at the true bottom of the settled geometry and stay
+  there.
 
-The first two checks cover static geometry and the Session pane; the third
-covers the Spawn pane, which has a separate responsive layout and failure modes.
-The second exists because the first could not have caught the bug that
-prompted it. Hand-authored markup freezes whatever was current when the case
-was written, so restoring the old glyph would have left the guard green while
-the app broke. All three are owned by `make test-web-browser`, which is required
-by the CI web job and remains separate from `make lint` and `make test` because
-it needs Chrome.
+The first covers static geometry; the next three cover the Session pane, the
+AppShell, and the Spawn pane, each with its own responsive layout and failure
+modes; the fifth covers scroll behavior, which only exists inside a real
+virtualization engine with real measurements. The second exists because the
+first could not have caught the bug that prompted it. Hand-authored markup
+freezes whatever was current when the case was written, so restoring the old
+glyph would have left the guard green while the app broke. All five are owned
+by `make test-web-browser`, which is required by the CI web job and remains
+separate from `make lint` and `make test` because it needs Chrome.
 
 Three traps, each of which produced a false-green here. They are listed in the
 order they were found, because each was hiding the next.
