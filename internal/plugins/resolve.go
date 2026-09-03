@@ -199,6 +199,11 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 			})
 			return
 		}
+		// Keyed by the manifest name the loader reports, which is what the
+		// requested names below are matched against. A bundled plugin is
+		// requested by its embedded directory name, and
+		// TestBundledPluginsAreNamedAfterTheirDirectory pins that the two are
+		// the same string for every plugin this ships.
 		seen[name] = true
 
 		version := instance.Manifest.Version
