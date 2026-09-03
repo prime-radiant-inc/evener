@@ -180,10 +180,7 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 		return current, false
 	}
 	if overlap == len(fingerprints) {
-		if len(fingerprints) == len(previousTail) {
-			return previous, true
-		}
-		return current, false
+		return previous, true
 	}
 	last := fingerprints[len(fingerprints)-1].Position
 	if last.Entry < previous.LastPosition.Entry || (last.Entry == previous.LastPosition.Entry && last.Item <= previous.LastPosition.Item) {

@@ -203,7 +203,6 @@ func codexItemCandidates(turns []codexTurn) ([]appitempaging.TranscriptItemCandi
 			position := appwire.ThreadItemPosition{Entry: uint64(entryOrdinal), Item: uint32(itemOrdinal)}
 			item := turn.Items[itemOrdinal]
 			item.TurnID = turn.ID
-			item.TranscriptEntryIndex = entryOrdinal
 			item.Position = &position
 			item.TranscriptKey = codexTranscriptItemKey(turn.ID, position)
 			turn.Items[itemOrdinal] = item

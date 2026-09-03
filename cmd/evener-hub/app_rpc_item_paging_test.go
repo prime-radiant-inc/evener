@@ -515,6 +515,42 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 	if live.candidateReadCalls != 0 {
 		t.Fatalf("live-empty saved fallback candidate reads = %d, want response/past-derived path", live.candidateReadCalls)
 	}
+	initialIDs := map[string]bool{}
+	minInitialEntry := ^uint64(0)
+	for _, item := range items {
+		initialIDs[item.ID] = true
+		if item.Position == nil {
+			t.Fatalf("live-empty saved fallback item %q has no position", item.ID)
+		}
+		if item.Position.Entry < minInitialEntry {
+			minInitialEntry = item.Position.Entry
+		}
+	}
+	listValue, err := server.Router().Dispatch(t.Context(), appwire.Request{
+		ID: appwire.NewIntID(2), Method: appwire.MethodThreadTurnsList,
+		Params: mustJSON(t, appwire.ThreadTurnsListParams{
+			Ref: params.Ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: response.OlderCursor,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("saved turns/list continuation: %v", err)
+	}
+	listResponse, ok := listValue.(appwire.ThreadTurnsListResponse)
+	if !ok {
+		t.Fatalf("saved turns/list continuation = %T, want ThreadTurnsListResponse", listValue)
+	}
+	olderItems := flattenTestItems(listResponse.Data)
+	if len(olderItems) == 0 {
+		t.Fatal("saved turns/list continuation returned no older items")
+	}
+	for _, item := range olderItems {
+		if initialIDs[item.ID] {
+			t.Fatalf("saved turns/list continuation repeated initial item %q", item.ID)
+		}
+		if item.Position == nil || item.Position.Entry >= minInitialEntry {
+			t.Fatalf("saved turns/list item %q position = %+v, want before initial entry %d", item.ID, item.Position, minInitialEntry)
+		}
+	}
 }
 
 type localEmptyItemRPCSource struct {

@@ -136,6 +136,42 @@ func TestCodexItemPagingMaterializesNativePagesChronologically(t *testing.T) {
 	}
 }
 
+func TestCodexItemCandidatesOmitUnavailableTranscriptEntryIndex(t *testing.T) {
+	rawItems := func(t *testing.T, ids ...string) []json.RawMessage {
+		t.Helper()
+		items := make([]json.RawMessage, len(ids))
+		for i, id := range ids {
+			raw, err := json.Marshal(map[string]any{"type": "agentMessage", "id": id, "text": id})
+			if err != nil {
+				t.Fatalf("marshal Codex item: %v", err)
+			}
+			items[i] = raw
+		}
+		return items
+	}
+	turns := []codexTurn{
+		{ID: "turn_1", Items: rawItems(t, "item_1a", "item_1b")},
+		{ID: "turn_2", Items: rawItems(t, "item_2a")},
+	}
+
+	candidates, err := codexItemCandidates(turns)
+	if err != nil {
+		t.Fatalf("codex item candidates: %v", err)
+	}
+	wantEntries := []uint64{0, 0, 1}
+	if len(candidates) != len(wantEntries) {
+		t.Fatalf("candidate count = %d, want %d", len(candidates), len(wantEntries))
+	}
+	for i, candidate := range candidates {
+		if candidate.Position.Entry != wantEntries[i] {
+			t.Fatalf("candidate %d position entry = %d, want stable ordinal %d", i, candidate.Position.Entry, wantEntries[i])
+		}
+		if candidate.Item.TranscriptEntryIndex != 0 {
+			t.Fatalf("candidate %d transcript entry index = %d, want omitted/unavailable", i, candidate.Item.TranscriptEntryIndex)
+		}
+	}
+}
+
 func TestCodexItemPagingCycleErrorDoesNotLeakNativeCursor(t *testing.T) {
 	const secret = "codex-secret-cursor"
 	fixture := &codexItemFixture{pages: map[string]codexItemPage{

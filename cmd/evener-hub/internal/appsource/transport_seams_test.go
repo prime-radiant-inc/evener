@@ -547,6 +547,47 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 		PageUnit:    appwire.TranscriptPageUnitItem,
 		OlderCursor: "daemon-native-cursor",
 	}
+	continuitySource := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, httpServer.Client())
+	bounded, err := continuitySource.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	}, partialResponse)
+	if err != nil {
+		t.Fatalf("seed bounded candidate tail: %v", err)
+	}
+	if len(bounded.Candidates.Candidates) != 40 || bounded.Candidates.Candidates[0].Item.ID != "item-01" || bounded.Candidates.Candidates[39].Item.ID != "item-40" {
+		t.Fatalf("bounded candidate tail = %+v, want item-01..item-40", bounded.Candidates.Candidates)
+	}
+	oldCursor, err := appitempaging.EncodeCursor(bounded.Identity, bounded.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode bounded candidate cursor: %v", err)
+	}
+	suffixResponse := partialResponse
+	suffixResponse.Thread.Turns = []appwire.Turn{{
+		ID: "turn-1", Items: items[21:], ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
+	}}
+	suffix, err := continuitySource.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 20,
+	}, suffixResponse)
+	if err != nil {
+		t.Fatalf("observe bounded suffix: %v", err)
+	}
+	if len(suffix.Candidates.Candidates) != 20 || suffix.Candidates.Candidates[0].Item.ID != "item-21" || suffix.Candidates.Candidates[19].Item.ID != "item-40" {
+		t.Fatalf("bounded suffix = %+v, want item-21..item-40", suffix.Candidates.Candidates)
+	}
+	if suffix.Identity != bounded.Identity {
+		t.Fatalf("bounded suffix identity = %+v, want unchanged %+v", suffix.Identity, bounded.Identity)
+	}
+	continued, err := continuitySource.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: oldCursor,
+	})
+	if err != nil {
+		t.Fatalf("continue with original bounded cursor: %v", err)
+	}
+	if len(continued.Candidates.Candidates) != 1 || continued.Candidates.Candidates[0].Item.ID != "item-00" {
+		t.Fatalf("original bounded cursor result = %+v, want item-00", continued.Candidates.Candidates)
+	}
 	partial, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
 	}, partialResponse)
