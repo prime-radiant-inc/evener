@@ -152,6 +152,16 @@ func TestS3Cov_UsesDefaultCommunicateOutputEnvelope(t *testing.T) {
 	}
 }
 
+func BenchmarkUsesDefaultCommunicateOutputEnvelope(b *testing.B) {
+	def := tool.DefCommunicateNamed("communicate")
+	b.ReportAllocs()
+	for b.Loop() {
+		if !usesDefaultCommunicateOutputEnvelope(def) {
+			b.Fatal("canonical default envelope was not recognized")
+		}
+	}
+}
+
 func TestS3Cov_PredictionMessage(t *testing.T) {
 	t.Parallel()
 	pinnedLight := predictionMessage(false, lowPressurePredict-0.1)

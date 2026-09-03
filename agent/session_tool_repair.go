@@ -164,8 +164,9 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 					res.Call.Arguments = b
 				}
 			}
-			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
-			if promotedOutputString {
+			offendingPath := offendingField(err2)
+			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingPath, offendingKeyword(err2))
+			if promotedOutputString && isCommunicateOutputSchemaPath(offendingPath) {
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
 			return res
@@ -298,6 +299,10 @@ func withinJSONDepth(s string, maxDepth int) error {
 
 func communicateOutputStringObjectError(reason string) string {
 	return "communicate: output is a JSON-looking string and must be passed as an object, not a quoted string; " + reason
+}
+
+func isCommunicateOutputSchemaPath(path string) bool {
+	return path == "output" || strings.HasPrefix(path, "output/")
 }
 
 // normalizeRetainedReadArgs removes only the semantically empty retained-output
