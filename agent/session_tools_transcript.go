@@ -172,6 +172,14 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	if call.Name != "read_session_transcript" && result.ToolName != "read_session_transcript" {
 		return "", false
 	}
+	// A prevalidation-only result may carry rejected raw arguments (including
+	// unknown tool calls). Do not derive API-log identity from those bytes: the
+	// raw validator is the presentation-free boundary that tells projection
+	// whether decoding them is safe. Valid canceled API-log calls are not
+	// prevalidation-only and retain the usual private-evidence placeholder.
+	if result.PrevalOnly && tool.ValidateRawArguments(call.Arguments) != nil {
+		return "", false
+	}
 
 	var resultIdentity apiLogTranscriptResultIdentity
 	resultIsAPILog := json.Unmarshal([]byte(result.Output), &resultIdentity) == nil && resultIdentity.Source == apiLogSource
