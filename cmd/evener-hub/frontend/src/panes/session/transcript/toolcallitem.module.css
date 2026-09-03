@@ -64,23 +64,60 @@
   flex: 1 1 100%;
 }
 
-/* data-intent-trailing marks an intent-only row whose trailing affordance
- * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up the
- * full-width basis the rule above assigns, so trigger and control share line
- * 1, the trigger's own grow springing the control to the line's end.
- *
- * flex-basis 0, NOT auto: .row is flex-wrap:wrap, so line-breaking is decided
- * on flex BASE SIZES before shrink is considered. With basis auto the trigger's
- * base size resolves to the intent text's max-content (one long unwrapped
- * line), and an intent wider than (column - control) claims that full
- * width - pushing the trailing control (the delegate row's "open" widget)
- * onto its own second line (the regression a layoutguard case pins). Basis 0
- * starts the trigger at zero width: the intent wraps INSIDE it as the
- * trigger's grow absorbs the remaining space, and the control stays on line
- * 1. The trigger still grows to fill (flex-grow 1), so a short intent's
- * control still springs to the line's end unchanged. */
-.row[data-intent-trailing="true"] .trigger {
-  flex: 1 1 0;
+.intentTriggerContent {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
+  pointer-events: none;
+}
+
+/* One semantic disclosure button still owns the full intent-only line,
+ * including the chevron after Open. Its visible siblings ignore pointer input;
+ * the Open slot opts back in below and already stopPropagates. */
+.intentOverlayTrigger {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* data-intent-trailing marks an intent-only row whose trailing Open affordance
+ * rides the disclosure line (ToolRow.tsx's grammar). The visible content is a
+ * sibling of the overlay trigger so its valid DOM order can be text, Open,
+ * chevron. flex: 0 1 auto, NOT flex: 1 1 0: the control belongs immediately
+ * AFTER the intent text, and growing this content springs it to the line's far
+ * end. The max-width reserves Open, the 14px chevron, and both column gaps:
+ * flex line-breaking uses hypothetical main sizes (the base size CLAMPED by
+ * max-width), so a long intent wraps INSIDE this content and all three items
+ * share line 1 (delegate-open-widget-inline pins both regressions). */
+.row[data-intent-trailing="true"] .intentTriggerContent {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--space-2) - var(--space-2));
+}
+
+/* data-intent-trailing is also set when ONLY the two-level body chevron
+ * shares the intent line (ToolRow.tsx's bodyTriggerOnIntentLine; the intent
+ * row then renders the PLAIN trigger, not the overlay). That trigger must not
+ * keep the [data-intent] rule's flex: 1 1 100% - a full-width basis wraps the
+ * body chevron onto its own line. Same mechanism as the content rule above:
+ * constrained basis, and a max-width reserving the 14px chevron plus the gap.
+ * The overlay trigger is absolute (out of flow), so :not() excludes it from a
+ * rule it would otherwise match. */
+.row[data-intent-trailing="true"] > .trigger:not(.intentOverlayTrigger) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 14px - var(--space-2));
+}
+
+/* When the body chevron ALSO rides an intent line that carries Open, the
+ * reservation grows by its 14px and one more column gap. */
+.row[data-intent-trailing="true"][data-body-trigger-intent="true"] .intentTriggerContent {
+  max-width: calc(100% - var(--tap-min, 28px) - 14px - 14px - var(--space-2) - var(--space-2) - var(--space-2));
 }
 
 .summaryLine {
@@ -319,15 +356,15 @@
  * full. */
 .clamped {
   display: flex;
-  /* Center, not the default stretch: the trailing affordance (the 28px "Open
-   * beside" IconButton) is the line's tallest item, and under stretch the
-   * head/tail text spans fill that height with their text top-aligned while
-   * the button sits align-self:center - measured 4.5px of downward offset
-   * between the icon's center and the text's center. Centering every item
-   * puts the text and the button on one axis; with no trailing control the
-   * items are all one text line and centering is invisible. */
+  /* Center, not the default stretch: keeps the text spans and the trailing
+   * affordance on one axis when their heights differ. */
   align-items: center;
-  overflow: hidden;
+  /* clip with a margin, NOT hidden: the open affordance's touch target
+   * (openbutton.module.css's .inline) overhangs the line box by design, and
+   * a hard clip would amputate its hit area. The head/tail spans keep their
+   * own overflow:hidden + ellipsis, so text clipping is unchanged. */
+  overflow: clip;
+  overflow-clip-margin: 16px;
   white-space: nowrap;
 }
 
@@ -369,6 +406,8 @@
  * baseline-aligned with the rationale like every other line-mate; the row's
  * own column-gap separates it from the trigger. */
 .intentTrailing {
+  position: relative;
+  z-index: var(--z-raised);
   display: inline-flex;
   flex: none;
 }
@@ -433,6 +472,22 @@
  * prevent the button from adding 8px to the row's width. */
 .bodyTrigger .chevron {
   margin-left: 0;
+}
+
+.row[data-intent-trailing="true"] > .chevron {
+  position: relative;
+  flex: none;
+  margin-left: 0;
+  pointer-events: none;
+}
+
+/* The two-level body chevron can share the intent line with the absolute
+ * overlay trigger (bodyTriggerOnIntentLine). Without its own raised layer -
+ * the same one .intentTrailing gets - the overlay swallows its clicks and
+ * toggles the wrong disclosure (roborev). */
+.row[data-intent-trailing="true"] > .bodyTrigger {
+  position: relative;
+  z-index: var(--z-raised);
 }
 
 /* The expanded body: hairline-framed, --surface-1, no heavy fill. */

@@ -685,18 +685,29 @@ test("an intent-only row trails its affordance on the disclosure line, not a lin
   // Exactly one rendering, in the intent-line slot, outside the trigger.
   expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
   expect(screen.getByTestId("tool-row-intent-trailing").contains(button)).toBe(true);
-  expect(screen.getByTestId("tool-row-trigger").contains(button)).toBe(false);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const intent = screen.getByTestId("tool-row-intent");
+  const chevron = screen.getByTestId("tool-row-chevron");
+  expect(trigger.contains(button)).toBe(false);
+  expect(trigger.contains(chevron)).toBe(false);
+  // Valid sibling controls in binding visual order: intent text, Open,
+  // aria-hidden chevron. The overlay trigger still owns disclosure semantics.
+  expect(intent.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(button.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(chevron.getAttribute("aria-hidden")).toBe("true");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   // No second line at all: nothing renders a summary element or summaryLine.
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(row.getAttribute("data-intent-trailing")).toBe("true");
-  // The stylesheet keeps trigger and control on one line: the trigger gives
-  // up the full-width flex basis an intent-bearing row otherwise assigns, and
-  // uses a ZERO basis (not auto) so the intent wraps inside the trigger
-  // instead of the control wrapping to its own line - the regression a
-  // layoutguard geometry case (delegate-open-widget-inline) pins, since
-  // jsdom computes no cascade and can't see the wrap.
+  // The stylesheet keeps visible intent content, control, and chevron on one
+  // line: the content's max-width reserves both trailing items and both gaps,
+  // flex line-breaking is decided on hypothetical main sizes (the base size
+  // CLAMPED by max-width), so a long intent wraps inside the trigger instead
+  // of the control wrapping to its own line - the regression a layoutguard
+  // geometry case (delegate-open-widget-inline) pins, since jsdom computes
+  // no cascade and can't see the wrap.
   const css = rowCss();
-  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.trigger\s*\{[^}]*flex:\s*1 1 0/);
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\] \.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
 });
 
 // Without an affordance an intent-only row changes shape not at all: no
@@ -1639,4 +1650,76 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
   const bodyTriggerOpen = screen.getByTestId("tool-row-body-trigger");
   const chevronOpen = bodyTriggerOpen.querySelector("[data-open]");
   expect(chevronOpen?.getAttribute("data-open")).toBe("true");
+});
+
+// --- the intent-trailing control and the clamp's clip ------------------------
+
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "toolcallitem.module.css"), "utf8");
+
+test("the intent-trailing content reserves Open and chevron instead of growing past them", () => {
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*flex:\s*0 1 auto/);
+  expect(css).toMatch(
+    /\.row\[data-intent-trailing="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width:\s*calc\(100% - var\(--tap-min, 28px\) - 14px - var\(--space-2\) - var\(--space-2\)\)/,
+  );
+});
+
+test("the collapsed summary line clips with a margin, so the open control's hit area survives", () => {
+  expect(css).toMatch(/\.clamped\s*\{[^}]*overflow:\s*clip/);
+  expect(css).toMatch(/\.clamped\s*\{[^}]*overflow-clip-margin:\s*16px/);
+});
+
+test("the intent-only overlay trigger describes itself with the row's status", () => {
+  // The overlay branch renders the visible status as a SIBLING of the trigger
+  // (valid DOM order text/Open/chevron); aria-describedby keeps the state
+  // ("Working", "Needs you") announced on focus, as it was when the trigger
+  // contained the status.
+  render(
+    <ToolRow
+      summary=""
+      intent="Delegate on the parser"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      status={<span>Working</span>}
+      trailing={<button type="button" aria-label="Open transcript" />}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const status = screen.getByTestId("tool-row-status");
+  expect(status.id).not.toBe("");
+  expect(trigger.getAttribute("aria-describedby")).toBe(status.id);
+});
+
+test("the body-trigger-on-intent-line row marks itself, and the stylesheet constrains the plain trigger", () => {
+  // Two-level row with the summary hidden and the body expanded: the body
+  // chevron rides the intent line. The plain trigger must keep a constrained
+  // basis - the [data-intent] rule's flex: 1 1 100% would wrap the chevron
+  // onto its own line - and the Open-plus-chevron reservation widens by one
+  // more chevron and gap when both ride the line.
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  expect(row.getAttribute("data-body-trigger-intent")).toBe("true");
+  expect(css).toMatch(
+    /\.row\[data-intent-trailing="true"\]\s*>\s*\.trigger:not\(\.intentOverlayTrigger\)\s*\{[^}]*flex:\s*0 1 auto/,
+  );
+  expect(css).toMatch(/\[data-body-trigger-intent="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width/);
+});
+
+test("a body chevron sharing the intent line is raised above the overlay trigger", () => {
+  // Without its own layer the absolute overlay swallows the body trigger's
+  // clicks and toggles the wrong disclosure (roborev).
+  expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s*>\s*\.bodyTrigger\s*\{[^}]*z-index:\s*var\(--z-raised\)/);
 });

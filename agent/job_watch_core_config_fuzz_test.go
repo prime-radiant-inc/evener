@@ -41,13 +41,16 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 			t.Fatalf("stored-only configure error = %v", err)
 		}
 
-		// Settlement is the production accounting edge. Starting one below the
-		// cap forces exactly this delivery to cross the budget and invoke teardown.
-		cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, jm.now())
+		// Settlement is the production accounting edge. The breaker latches on
+		// condition fires, which a send watch counts at snapshot time, so a config
+		// whose fires already sit at the cap forces exactly this settle to cross
+		// the budget and invoke teardown.
+		cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, jm.now(), "")
 		if err != nil {
 			t.Fatalf("new budget config: %v", err)
 		}
 		cfg.deliveries = watchDeliveryBudget - 1
+		cfg.conditionFires = watchDeliveryBudget
 		key := jobstore.WatchSendKey{VisibleSessionID: jm.sessionID, WatchID: cfg.watchID, WatchTarget: cfg.target, ResolvedWatchedIdentity: jm.sessionID, WatchGeneration: cfg.generation}
 		state := jobstore.WatchSendState{Key: key, DeliveryID: "wd_core", UpdateSeq: 1}
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
@@ -92,7 +95,7 @@ func jwccManager(t *testing.T) *jobManager {
 
 func jwccDetached(t *testing.T, jm *jobManager, target string) *watchConfig {
 	t.Helper()
-	cfg, err := newWatchConfig(watchArgs{Target: target, Events: []string{"job.notification"}}, jm.now())
+	cfg, err := newWatchConfig(watchArgs{Target: target, Events: []string{"job.notification"}}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("new detached config: %v", err)
 	}
@@ -240,7 +243,7 @@ func jwccExerciseInterleavingSeams(t *testing.T) {
 	// winner rather than overwriting it.
 	winnerJM := jwccManager(t)
 	jwccDetached(t, winnerJM, runtimeMessageAliasCaller)
-	winner, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}, winnerJM.now())
+	winner, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}}, winnerJM.now(), "")
 	if err != nil {
 		t.Fatalf("new winner config: %v", err)
 	}

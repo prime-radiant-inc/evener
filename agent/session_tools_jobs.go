@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -146,6 +147,9 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 	a, err := watchArgsFromToolArgs(args)
 	if err != nil {
 		return "", err
+	}
+	if a.Operation == "create" && watchArgsIsTimer(a) && s.cfg.TurnEndsProcess {
+		return "", errors.New("invalid_request: timers need a session that outlives the turn")
 	}
 	var res watchResult
 	switch a.Operation {
@@ -1320,7 +1324,11 @@ type watchListEntry struct {
 
 // recentWatchEntry is one watch that has left the active set, surfaced by job_list's
 // bounded recent_watches ring so a fired-then-removed watch stays legible. end_reason
-// is one of auto_removed_terminal, cleared, replaced, budget_exhausted.
+// is one of auto_removed_terminal, cleared, replaced, budget_exhausted, fired (a
+// one-shot timer retired by its only fire), job_manager_closed — the whole set
+// recordWatchEndedLocked writes. runtime_lost, the reason a restart stamps on the
+// durable watch_cleared events of the watches it could not restore, never appears
+// here: those watches end in the store before this in-memory ring exists.
 type recentWatchEntry struct {
 	ID         string `json:"id"`
 	Source     string `json:"source"`
@@ -1545,6 +1553,9 @@ type jobWatchToolResult struct {
 	Events             []string                 `json:"events,omitempty"`
 	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
 	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
+	AfterSeconds       int                      `json:"after_seconds,omitempty"`
+	RepeatSeconds      int                      `json:"repeat_seconds,omitempty"`
+	Note               string                   `json:"note,omitempty"`
 	Send               *jobWatchToolSendArgs    `json:"send,omitempty"`
 	// replaced_existing and fired serialize explicitly even when false: the
 	// contract's install example shows replaced_existing:false, and §7.1
@@ -1716,10 +1727,16 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
 		ProgressIntervalMS: res.ProgressIntervalMS,
+		Note:               res.Note,
 		ReplacedExisting:   res.ReplacedExisting,
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+	}
+	if res.OneShot {
+		out.AfterSeconds = res.TimerSeconds
+	} else {
+		out.RepeatSeconds = res.TimerSeconds
 	}
 	if res.EventFilter != nil {
 		out.EventFilter = &jobWatchToolEventFilter{
@@ -1787,8 +1804,18 @@ func formatJobWatch(out jobWatchToolResult) string {
 		}
 		cond = append(cond, events)
 	}
-	if out.ProgressIntervalMS > 0 {
-		cond = append(cond, fmt.Sprintf("every %dms", out.ProgressIntervalMS))
+	switch {
+	case out.AfterSeconds > 0:
+		cond = append(cond, fmt.Sprintf("after %ds", out.AfterSeconds))
+	case out.RepeatSeconds > 0:
+		cond = append(cond, fmt.Sprintf("every %ds", out.RepeatSeconds))
+	case out.ProgressIntervalMS > 0:
+		cond = append(cond, fmt.Sprintf("progress_interval_ms %dms", out.ProgressIntervalMS))
+	}
+	// A note is only admitted alongside after_seconds or repeat_seconds, so a
+	// bare check cannot label a non-timer watch.
+	if out.Note != "" {
+		cond = append(cond, "note: "+out.Note)
 	}
 	if len(cond) > 0 {
 		parts = append(parts, strings.Join(cond, " "))
@@ -2011,6 +2038,53 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	return statuses, nil
 }
 
+// watchIntArg reads an integer job_watch argument strictly: absent or null is
+// (0, false, nil); an int or an integral, finite float64 is its value; anything
+// else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
+// numbers over as float64, so silently truncating would hide a model error.
+// The only numeric bound here is what int can hold; a field with a documented
+// maximum (the timer seconds) enforces it in normalizeWatchArgs instead.
+func watchIntArg(args map[string]any, key string) (int, bool, error) {
+	// float64 cannot represent math.MaxInt exactly - it rounds up to 2^63 - so
+	// the upper bound is exclusive, which keeps every float64 that reaches the
+	// int conversion below in range. math.MinInt is exactly representable and
+	// stays inclusive.
+	const aboveMaxInt = float64(math.MaxInt) + 1
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, false, nil
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v >= aboveMaxInt || v < math.MinInt {
+			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+		}
+		return int(v), true, nil
+	default:
+		return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
+	}
+}
+
+// watchStringArg reads an optional string job_watch argument. Absent and null
+// both mean "not named" and read as empty. A present value of another type is
+// rejected rather than coerced: for source, empty is not a neutral value — a
+// create that names no source and asks for a timer becomes a self timer — so
+// coercion would silently build a watch on something other than what was asked
+// for.
+func watchStringArg(args map[string]any, key string) (string, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return "", nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid_request: %s must be a string", key)
+	}
+	return text, nil
+}
+
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	operation := strings.TrimSpace(stringArg(args, "operation"))
 	if operation == "" {
@@ -2028,29 +2102,48 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if _, ok := args["receiver_delegate_id"]; ok {
 		return watchArgs{}, errors.New("invalid_request: job_watch derives its receiver from the watcher session")
 	}
+	source, err := watchStringArg(args, "source")
+	if err != nil {
+		return watchArgs{}, err
+	}
 	a := watchArgs{
 		Operation:   operation,
 		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
-		Source:      strings.TrimSpace(stringArg(args, "source")),
+		Source:      strings.TrimSpace(source),
 		OutputMatch: stringArg(args, "output_match"),
 	}
-	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
-		a.ProgressIntervalMS = n
+	for _, field := range []struct {
+		key string
+		dst *int
+	}{
+		{"progress_interval_ms", &a.ProgressIntervalMS},
+		{"every", &a.Every},
+		{"after_seconds", &a.AfterSeconds},
+		{"repeat_seconds", &a.RepeatSeconds},
+	} {
+		n, ok, err := watchIntArg(args, field.key)
+		if err != nil {
+			return watchArgs{}, err
+		}
+		if ok {
+			*field.dst = n
+		}
 	}
+	a.Note = stringArg(args, "note")
 	events, err := stringArrayArg(args, "events")
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.Events = events
-	if n, ok := shellIntArg(args, "every"); ok {
-		a.Every = n
-	}
 	eventFilter, err := watchEventFilterArg(args)
 	if err != nil {
 		return watchArgs{}, err
 	}
 	a.EventFilter = eventFilter
 	normalizeWatchArgsForOperation(&a)
+	if a.Operation == "create" && a.Source == "" && watchArgsIsTimer(a) {
+		a.Source = "self"
+	}
 	missingWatchID := false
 	switch a.Operation {
 	case "create":
@@ -2095,11 +2188,12 @@ func normalizeWatchArgsForOperation(a *watchArgs) {
 	}
 }
 
-// watchTriggerFieldNames lists the arguments that select what a created watch
-// fires on, in the DefJobWatch property order. They are meaningful only for
-// operation="create"; list/inspect/clear take only watch_id, so a trigger field
-// beside them was previously parsed and then silently ignored.
-var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter"}
+// watchTriggerFieldNames lists the create-only arguments in the DefJobWatch
+// property order: the fields that select what a created watch fires on, plus
+// note, which is the timer's payload rather than a trigger. They are meaningful
+// only for operation="create"; list/inspect/clear take only watch_id, so one of
+// these beside them was previously parsed and then silently ignored.
+var watchTriggerFieldNames = []string{"output_match", "progress_interval_ms", "events", "every", "event_filter", "after_seconds", "repeat_seconds", "note"}
 
 // rejectWatchTriggerFieldsOnNonCreate returns an invalid_request naming every
 // trigger field the call actually supplied alongside a non-create operation.
@@ -2151,6 +2245,13 @@ func watchTriggerArgumentIsNeutral(name string, value any, a watchArgs) bool {
 		return a.ProgressIntervalMS == 0 && watchIntegerValue(value) == 0
 	case "every":
 		return (a.Every == 0 || a.Every == 1) && (watchIntegerValue(value) == 0 || watchIntegerValue(value) == 1)
+	case "after_seconds":
+		return a.AfterSeconds == 0 && watchIntegerValue(value) == 0
+	case "repeat_seconds":
+		return a.RepeatSeconds == 0 && watchIntegerValue(value) == 0
+	case "note":
+		s, ok := value.(string)
+		return ok && s == ""
 	default:
 		return false
 	}

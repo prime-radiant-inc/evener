@@ -250,7 +250,7 @@ func TestRememberWatchLineageEviction(t *testing.T) {
 			Target: key.Target,
 			Events: []string{"assistant.tool"},
 			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "m"},
-		}, jm.now())
+		}, jm.now(), "")
 		if err != nil {
 			t.Fatalf("newWatchConfig: %v", err)
 		}
@@ -284,7 +284,7 @@ func TestClearReceiverWatchByIDTerminalFlushLookup(t *testing.T) {
 		ReceiverSessionID:  "recv_session",
 		ReceiverDelegateID: "dlg_recv",
 		Send:               &watchSendArgs{To: runtimeMessageAliasCaller, Message: "m"},
-	}, jm.now())
+	}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)
 	}

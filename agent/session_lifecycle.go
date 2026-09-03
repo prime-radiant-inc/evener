@@ -1972,6 +1972,9 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		if n.isWatch() {
+			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
+				continue // the timer was cleared after this tick was built
+			}
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue
 		}
@@ -2000,6 +2003,22 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
 	survivors = append(survivors, durableSurvivors...)
 	return survivors, nil, injected
+}
+
+// timerWatchIsLive reports whether the timer with this id is still installed.
+// A timer's key is reconstructible from its id because its slot is the id, so
+// this is one map lookup under jm.mu, taken with pendingJobNotifsMu released.
+// With no manager to ask it fails OPEN: this answer only ever decides a drop,
+// and delivering a tick whose timer cannot be checked beats losing it.
+func (s *Session) timerWatchIsLive(watchID string) bool {
+	jm := s.jobManager
+	if jm == nil {
+		return true
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.watches[key] != nil
 }
 
 // classifyDurableNotifications is the pure durable-notification classification

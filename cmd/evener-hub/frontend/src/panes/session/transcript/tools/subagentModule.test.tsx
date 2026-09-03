@@ -265,7 +265,7 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
     />,
   );
   const button = screen.getByRole("button", { name: "Open transcript" });
-  expect(button.textContent).toContain("open");
+  expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   expect(button.querySelector("svg")).toBeTruthy();
   expect(button.getAttribute("aria-label")).toBe("Open transcript");
   await user.click(button);

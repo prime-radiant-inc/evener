@@ -217,8 +217,10 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	if !jm.fireProgressTick(budgetKey, budgetCfg) {
 		t.Fatal("budget progress tick returned false")
 	}
-	if rwlpLiveWatchExists(jm, budget.WatchID) {
-		t.Fatalf("budget-exhausted watch %q remained live", budget.WatchID)
+	// A periodic tick counts its delivery but is not a condition fire, so it
+	// never trips the circuit breaker: the watch is still live at the budget.
+	if !rwlpLiveWatchExists(jm, budget.WatchID) {
+		t.Fatalf("watch %q was auto-cleared by a periodic tick at the budget", budget.WatchID)
 	}
 	// Generic manager views must have stable ordering across repeated reads.
 	firstView := jm.watchListToolResult()
