@@ -542,6 +542,8 @@ type jobNotification struct {
 	// Timer fields (in-memory only). WatchID identifies the firing timer so
 	// the session can fold repeated ticks; Fires is how many folded into this
 	// entry; Note, IntervalSeconds, and Terminal carry what the block needs.
+	// Only the timer fire path stamps WatchID, and the session drops a
+	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
 	WatchID         string
 	Fires           int
 	Note            string
