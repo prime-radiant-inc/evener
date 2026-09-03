@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func TestFormatJobWatch_TimerCreateTextShowsIntervalAndNote(t *testing.T) {
@@ -33,5 +35,66 @@ func TestWatchConditionSummary_Timers(t *testing.T) {
 	}
 	if got := watchConditionSummary(&watchConfig{progressIntervalMS: 1000}); got != "progress_interval_ms: 1000" {
 		t.Fatalf("job progress summary changed: %q", got)
+	}
+}
+
+// TestMarshalWatchResult_TimerFieldsSurviveConfigToToolResult crosses both hops a
+// timer takes on its way to the model: watchResultFromConfig reads the config's
+// seconds and drops the derived progressIntervalMS, and marshalWatchResult routes
+// those seconds into after_seconds or repeat_seconds by oneShot.
+func TestMarshalWatchResult_TimerFieldsSurviveConfigToToolResult(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name               string
+		cfg                *watchConfig
+		afterSeconds       int
+		repeatSeconds      int
+		note               string
+		progressIntervalMS int
+	}{
+		{
+			name:          "repeat timer",
+			cfg:           &watchConfig{timer: true, timerSeconds: 300, progressIntervalMS: 300000, note: "n"},
+			repeatSeconds: 300,
+			note:          "n",
+		},
+		{
+			name:         "one-shot timer",
+			cfg:          &watchConfig{timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600000},
+			afterSeconds: 600,
+		},
+		{
+			name:               "job progress watch",
+			cfg:                &watchConfig{progressIntervalMS: 1000},
+			progressIntervalMS: 1000,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			value, err := marshalWatchResult(watchResultFromConfig(tc.cfg, false), 0)
+			if err != nil {
+				t.Fatalf("marshalWatchResult: %v", err)
+			}
+			state, ok := value.(tool.StateResult)
+			if !ok {
+				t.Fatalf("value = %T, want tool.StateResult", value)
+			}
+			out, ok := state.State.(jobWatchToolResult)
+			if !ok {
+				t.Fatalf("state = %T, want jobWatchToolResult", state.State)
+			}
+			if out.AfterSeconds != tc.afterSeconds {
+				t.Errorf("after_seconds = %d, want %d", out.AfterSeconds, tc.afterSeconds)
+			}
+			if out.RepeatSeconds != tc.repeatSeconds {
+				t.Errorf("repeat_seconds = %d, want %d", out.RepeatSeconds, tc.repeatSeconds)
+			}
+			if out.Note != tc.note {
+				t.Errorf("note = %q, want %q", out.Note, tc.note)
+			}
+			if out.ProgressIntervalMS != tc.progressIntervalMS {
+				t.Errorf("progress_interval_ms = %d, want %d", out.ProgressIntervalMS, tc.progressIntervalMS)
+			}
+		})
 	}
 }
