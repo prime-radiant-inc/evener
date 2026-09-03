@@ -28,7 +28,7 @@ func registerSemanticReviewTool(t *testing.T, r *Registry, name string, params m
 func TestSemanticBreaker_RegisteredDefaultsAndLongTargets(t *testing.T) {
 	r := NewRegistry()
 	registerSemanticReviewTool(t, r, "exec_command", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
-	r.MarkRegisteredToolsPresentationDescriptions()
+	r.MarkRegisteredToolsCoreSemanticMetadata()
 	if omitted, explicit := r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp"}, DefShell().Parameters), r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp", "mode": "foreground"}, DefShell().Parameters); omitted != explicit {
 		t.Fatalf("runtime foreground default differs: %q != %q", omitted, explicit)
 	}
@@ -58,7 +58,7 @@ func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
 	}
 	r := NewRegistry()
 	registerSemanticReviewTool(t, r, "shell", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
-	r.MarkRegisteredToolsPresentationDescriptions()
+	r.MarkRegisteredToolsCoreSemanticMetadata()
 	if first, second := r.semanticSignature("shell", map[string]any{"command": "false", "description": "first narration"}, DefShell().Parameters), r.semanticSignature("shell", map[string]any{"command": "false", "description": "second narration"}, DefShell().Parameters); first != second {
 		t.Fatalf("built-in presentation descriptions changed semantic identity: %q != %q", first, second)
 	}
@@ -225,7 +225,7 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 			calls++
 			return nil, errors.New("invalid_request: target unavailable")
 		})
-		r.MarkRegisteredToolsPresentationDescriptions()
+		r.MarkRegisteredToolsCoreSemanticMetadata()
 		variants := []string{
 			`{"target":"job_same","intent":"first"}`,
 			`{"target":"job_same","max_wait_ms":0,"intent":"second"}`,
@@ -246,7 +246,7 @@ func TestSemanticBreaker_RecursiveAndHandlerDefaultsAreEquivalent(t *testing.T) 
 			calls++
 			return nil, errors.New("invalid_request: user channel unavailable")
 		})
-		r.MarkRegisteredToolsPresentationDescriptions()
+		r.MarkRegisteredToolsCoreSemanticMetadata()
 		question := func(multi string, i int) string {
 			return fmt.Sprintf(`{"questions":[{"question":"Choose","options":[{"label":"A","detail":"a"},{"label":"B","detail":"b"}]%s}],"intent":"variant %d"}`, multi, i)
 		}
@@ -273,6 +273,10 @@ func TestSemanticBreaker_CustomReplacementDoesNotInheritBuiltInDefaults(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRegistry()
 			calls := 0
+			if tc.name == "shell" {
+				registerSemanticReviewTool(t, r, "shell", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
+				r.MarkRegisteredToolsCoreSemanticMetadata()
+			}
 			registerSemanticReviewTool(t, r, tc.name, tc.params, func(map[string]any) (any, error) {
 				calls++
 				return nil, errors.New("custom failure")

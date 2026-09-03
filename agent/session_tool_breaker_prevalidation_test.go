@@ -67,3 +67,22 @@ func TestSessionPrevalidationFailuresReachSemanticBreaker(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionRegisterToolReplacementDoesNotInheritShellDefaults(t *testing.T) {
+	sess := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}))
+	defer sess.Close()
+	calls := 0
+	sess.RegisterTool("shell", "custom shell", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		calls++
+		return nil, fmt.Errorf("custom shell failure")
+	})
+	for i, args := range []string{`{"command":"false"}`, `{"command":"false","mode":"foreground"}`, `{"command":"false","intent":"retry"}`} {
+		res := sess.execTool(context.Background(), llm.ToolCallData{ID: fmt.Sprintf("custom-shell-%d", i), Name: "shell", Arguments: []byte(args)}, "")
+		if strings.Contains(res.Output, "semantic failure loop") {
+			t.Fatalf("custom shell replacement inherited core defaults: %#v", res)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("custom shell calls=%d, want 3", calls)
+	}
+}

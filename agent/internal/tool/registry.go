@@ -434,10 +434,10 @@ func (r *Registry) semanticSignature(name string, args map[string]any, parameter
 	return name + ":" + hex.EncodeToString(h.Sum(nil)[:8])
 }
 
-// MarkRegisteredToolsPresentationDescriptions records that the tools currently
-// registered by the core bootstrap use top-level descriptions as narration.
-// Later replacement registrations retain their own (false by default) policy.
-func (r *Registry) MarkRegisteredToolsPresentationDescriptions() {
+// MarkRegisteredToolsCoreSemanticMetadata records that the tools currently
+// registered by core bootstrap use narrated descriptions and built-in runtime
+// defaults. Later replacement registrations retain false-by-default policies.
+func (r *Registry) MarkRegisteredToolsCoreSemanticMetadata() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for name, registered := range r.tools {
