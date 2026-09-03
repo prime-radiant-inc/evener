@@ -365,7 +365,6 @@ func semanticFailureNudgeText(boundary string) string {
 func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, fingerprint, attempts, boundary)
-	fmt.Fprintf(&b, "\n\nPrior attempts: %d semantically equivalent failures at %s.", attempts, boundary)
 	b.WriteString("\n\nTake a materially different valid action: ")
 	if name == "read_transcript" {
 		b.WriteString("use a transcript_ref compatible with the selected mode; for job: and artifact: refs, omit session-only range and expand_turn fields.")
@@ -566,8 +565,8 @@ func errorClass(output string) string {
 
 // FailureClasser lets an executor expose a stable machine-facing failure class
 // without putting presentation text into semantic loop identity. Built-in
-// typed families also have stable classes; otherwise untyped executor errors
-// intentionally share a coarse class rather than deriving identity from prose.
+// typed families also have stable classes; generic executor errors have no
+// stable class and are excluded from semantic breaker history.
 type FailureClasser interface {
 	FailureClass() string
 }
@@ -591,11 +590,12 @@ func semanticErrorClassFor(err error, output string) string {
 	case errors.Is(err, fs.ErrPermission):
 		return "permission_denied"
 	}
-	// Unstructured errors have no trustworthy machine-facing category. Keep
-	// their semantic identity deliberately coarse rather than deriving it from
-	// rendered presentation text; executors that need distinct categories must
-	// implement FailureClasser.
-	return "untyped"
+	// Unstructured errors have no trustworthy machine-facing category. Do not
+	// derive one from rendered presentation text or collapse every such error
+	// into a coarse shared class: either choice can falsely park a semantically
+	// equivalent call. Exact-call protection still applies; executors that need
+	// semantic protection must expose FailureClasser.
+	return ""
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the

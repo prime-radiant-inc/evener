@@ -489,7 +489,7 @@ func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters 
 	return r.semanticSignatureFromRawFor(name, raw, parameters, nil)
 }
 
-func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, lim schema.ToolOutputLimit, generation uint64, judged bool) (ExecResult, bool) {
+func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, generation uint64, judged bool) (ExecResult, bool) {
 	if !judged {
 		return ExecResult{}, false
 	}
@@ -502,7 +502,10 @@ func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature 
 		return ExecResult{}, false
 	}
 	if count, boundary, fingerprint := r.semanticBreaker.check(semanticSignature); count >= breakerThreshold {
-		res := truncateResult(name, callID, semanticFailureParkText(name, fingerprint, boundary, count), true, lim)
+		// A parked result is breaker control information, not executor output.
+		// Its stable prefix and remediation must remain model-visible even when
+		// the registered executor uses a small tail-truncation limit.
+		res := truncateResult(name, callID, semanticFailureParkText(name, fingerprint, boundary, count), true, defaultToolLimit(name))
 		res.BreakerExactSignature = exactSignature
 		res.BreakerSemanticSignature = fingerprint
 		return res, true
@@ -543,9 +546,11 @@ func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, 
 		if boundaryOverride != "" {
 			boundary, class = boundaryOverride, boundaryOverride
 		}
-		semanticFingerprint, semanticFailStreak = r.semanticBreaker.record(semanticSignature, r.telemetryComponent("semantic-error-class", class), boundary)
-		semanticBoundary = boundary
-		res.BreakerSemanticSignature = semanticFingerprint
+		if class != "" {
+			semanticFingerprint, semanticFailStreak = r.semanticBreaker.record(semanticSignature, r.telemetryComponent("semantic-error-class", class), boundary)
+			semanticBoundary = boundary
+			res.BreakerSemanticSignature = semanticFingerprint
+		}
 	} else {
 		r.semanticBreaker.clear(semanticSignature)
 	}
@@ -859,11 +864,11 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	finish := func(res ExecResult) ExecResult {
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, "")
 	}
-	park := func(lim schema.ToolOutputLimit) (ExecResult, bool) {
-		return r.semanticPark(name, callID, semanticSignature, exactSignature, lim, currentGeneration, judged)
+	park := func() (ExecResult, bool) {
+		return r.semanticPark(name, callID, semanticSignature, exactSignature, currentGeneration, judged)
 	}
 	if !ok {
-		if res, blocked := park(defaultToolLimit(name)); blocked {
+		if res, blocked := park(); blocked {
 			return res
 		}
 		msg := "unknown tool: " + name
@@ -871,7 +876,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	}
 
 	if len(call.Arguments) > maxToolArgumentBytes {
-		if res, blocked := park(t.Limit); blocked {
+		if res, blocked := park(); blocked {
 			return res
 		}
 		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
@@ -881,7 +886,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
-			if res, blocked := park(t.Limit); blocked {
+			if res, blocked := park(); blocked {
 				return res
 			}
 			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
@@ -897,7 +902,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
 		if err != nil {
-			if res, blocked := park(t.Limit); blocked {
+			if res, blocked := park(); blocked {
 				return res
 			}
 			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
@@ -908,7 +913,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
-			if res, blocked := park(t.Limit); blocked {
+			if res, blocked := park(); blocked {
 				return res
 			}
 			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
@@ -918,14 +923,14 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	semanticSignature = r.semanticSignatureFor(name, args, t.Definition.Parameters, &t)
 
 	if err := t.Schema.Validate(args); err != nil {
-		if res, blocked := park(t.Limit); blocked {
+		if res, blocked := park(); blocked {
 			return res
 		}
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
 		return finish(truncateResult(name, callID, msg, true, t.Limit))
 	}
 
-	if res, blocked := park(t.Limit); blocked {
+	if res, blocked := park(); blocked {
 		return res
 	}
 	r.mu.RLock()
@@ -933,7 +938,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RUnlock()
 	for _, mw := range mws {
 		if err := mw(ctx, name, args); err != nil {
-			if res, blocked := park(t.Limit); blocked {
+			if res, blocked := park(); blocked {
 				return res
 			}
 			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
@@ -1025,7 +1030,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 			if fingerprint != "" {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, recordedBoundary)
 			}
-			res := truncateResult(name, callID, message, true, lim)
+			res := truncateResult(name, callID, message, true, defaultToolLimit(name))
 			res.BreakerExactSignature = exactSignature
 			res.BreakerSemanticSignature = fingerprint
 			res.PrevalOnly = true
@@ -1037,7 +1042,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	}
 	r.mu.RUnlock()
 	if judged {
-		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, lim, generation, judged); blocked {
+		if res, blocked := r.semanticPark(name, callID, semanticSignature, exactSignature, generation, judged); blocked {
 			res.PrevalOnly = true
 			return res
 		}

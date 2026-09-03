@@ -485,8 +485,6 @@ func TestSemanticBreaker_DispatchUsesOneRegistrationSnapshot(t *testing.T) {
 	}
 	close(release)
 	res := <-result
-	args := map[string]any{"description": "old"}
-	_ = args
 	if res.BreakerExactSignature != "" || res.BreakerSemanticSignature != "" || res.BreakerBypassed || oldCalls != 1 || newCalls != 0 {
 		t.Fatalf("stale dispatch published replacement ledger state: result=%#v old=%d new=%d", res, oldCalls, newCalls)
 	}

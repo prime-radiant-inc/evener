@@ -428,8 +428,11 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 
 	for i := 1; i <= 3; i++ {
 		res := r.ExecuteCall(ctx, env, call)
-		if strings.HasPrefix(res.Output, "evener did not execute this call:") {
-			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
+		if strings.HasPrefix(res.FullOutput, parkPrefix) {
+			t.Fatalf("call %d was parked on a truncation-banner class: %#v", i, res)
 		}
+	}
+	if calls != 3 {
+		t.Fatalf("different large failures executed %d times, want 3", calls)
 	}
 }
