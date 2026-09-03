@@ -623,8 +623,8 @@ export function decodeNavigationResponse(
     )
       throw schemaError("delta");
     return { status: "delta", version: current, base: wire.base, delta: wire.data };
-  } catch {
-    throw new NavigationBaseInvalidError();
+  } catch (cause) {
+    throw new NavigationBaseInvalidError(cause);
   }
 }
 

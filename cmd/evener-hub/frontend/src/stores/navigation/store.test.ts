@@ -2203,7 +2203,7 @@ test("strict invalid delta recovery retains the installed graph and converges th
   expect(Object.isFrozen(recovered?.normalized?.version)).toBe(true);
 });
 
-test("loading and error-only state preserve selected graph and rail model identity", async () => {
+test("loading and malformed-response error state preserve selected graph and rail model identity", async () => {
   const manifestKey = { kind: "manifest" } as const;
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   const sessionKey = `${navigationViewScope(sectionKey)}/entity/${"7".repeat(64)}`;
@@ -2304,10 +2304,22 @@ test("loading and error-only state preserve selected graph and rail model identi
   expect(loading?.normalized?.graph).toBe(installedGraph);
   expect(loading?.normalized && selectRailModel(loading.normalized)).toBe(installedModel);
 
-  refresh.reject(new Error("refresh failed"));
+  refresh.resolve({
+    status: "ok",
+    representation: "snapshot",
+    generationId: generation,
+    revision: 2,
+    etag: "section-2",
+    data: {},
+  } as NavigationReadResponse);
   await flush();
   const failed = navigationStore.getState().resources.get(keyID(sectionKey));
-  expect(failed?.error).toBeTruthy();
+  const failure = failed?.error;
+  expect(failure).toBeInstanceOf(Error);
+  if (!(failure instanceof Error)) throw new Error("expected malformed response error");
+  expect(failure).toMatchObject({ message: "navigation protocol: invalid v2 response" });
+  expect(failure).toBe(navigationStore.getState().protocolError);
+  expect(failure.cause).toBeInstanceOf(Error);
   expect(failed?.data).toBe(installedData);
   expect(failed?.normalized?.graph).toBe(installedGraph);
   expect(failed?.normalized && selectRailModel(failed.normalized)).toBe(installedModel);

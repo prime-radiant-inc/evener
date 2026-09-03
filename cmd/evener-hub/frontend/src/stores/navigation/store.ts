@@ -199,8 +199,8 @@ function coordinateManifestState(state: ResourceState, epoch: number): void {
   void fanOutManifestResources(state.data, epoch).catch(() => undefined);
 }
 class NavigationProtocolError extends Error {
-  constructor(message: string) {
-    super(`navigation protocol: ${message}`);
+  constructor(message: string, options?: ErrorOptions) {
+    super(`navigation protocol: ${message}`, options);
   }
 }
 type RecordValue = Record<string, unknown>;
@@ -415,7 +415,7 @@ function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationReq
         decoded = decodeNavigationResponse(k, base, response);
       } catch (cause) {
         if (cause instanceof NavigationBaseInvalidError) throw cause;
-        throw new NavigationProtocolError("invalid v2 response");
+        throw new NavigationProtocolError("invalid v2 response", { cause });
       }
       const state = navigationStore.getState();
       const previous = (k.kind === "manifest" ? state.manifest : state.resources.get(keyID(k)))?.normalized ?? null;

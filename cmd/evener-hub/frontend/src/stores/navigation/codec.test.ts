@@ -169,6 +169,33 @@ test("requires exact echoed base for delta", () => {
   ).toThrow(NavigationBaseInvalidError);
 });
 
+test("invalid delta preserves the underlying decoder cause", () => {
+  const cause = new TypeError("decoder sentinel");
+  const delta = {
+    get upsertedEntities(): never {
+      throw cause;
+    },
+    removedEntityKeys: [],
+    upsertedContainers: [],
+    removedContainerKeys: [],
+  };
+  let thrown: unknown;
+  try {
+    decodeNavigationResponse(key, base, {
+      status: "ok",
+      representation: "delta",
+      ...base,
+      base,
+      data: delta,
+    });
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(NavigationBaseInvalidError);
+  expect((thrown as NavigationBaseInvalidError).cause).toBe(cause);
+});
+
 test.each([
   {
     status: "not_modified",

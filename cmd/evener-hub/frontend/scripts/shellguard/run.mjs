@@ -147,13 +147,6 @@ function assertDeltaRenders(result) {
     failures.push(`changed observer row ${changed} was not visible before the delta`);
   }
   if ((result.counts?.[changed] ?? 0) < 1) failures.push("changed navigation row did not render");
-  for (const id of visibleRowIDs) {
-    if (id !== changed && (result.counts?.[id] ?? 0) !== 0) {
-      failures.push(`unchanged row ${id} rendered ${result.counts[id]} time(s)`);
-    }
-  }
-  // Preserve the prior stronger check too: a post-clear render from a row
-  // outside the retained visible set is not silently ignored.
   for (const [id, count] of Object.entries(result.counts ?? {})) {
     if (id !== changed && count !== 0) failures.push(`unchanged row ${id} rendered ${count} time(s)`);
   }

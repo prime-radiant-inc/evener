@@ -5,8 +5,8 @@ import type { DecodedNavigationResponse, NormalizedResource } from "./codec";
 const NAVIGATION_UNAVAILABLE_CODE = -32014;
 
 export class NavigationBaseInvalidError extends Error {
-  constructor() {
-    super("navigation protocol: invalid installed base");
+  constructor(cause?: unknown) {
+    super("navigation protocol: invalid installed base", { cause });
   }
 }
 

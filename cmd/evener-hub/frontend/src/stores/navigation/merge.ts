@@ -158,7 +158,7 @@ export function applyDelta(
       graph,
       version: cloneAndDeepFreezeJSON(version),
     });
-  } catch {
-    throw new NavigationBaseInvalidError();
+  } catch (cause) {
+    throw new NavigationBaseInvalidError(cause);
   }
 }

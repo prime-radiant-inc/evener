@@ -1,7 +1,12 @@
 import { expect, test } from "vitest";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
-import { navigationOwnedContainerKey, navigationRootContainerKey, navigationViewScope } from "./types";
+import {
+  NavigationBaseInvalidError,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+} from "./types";
 
 const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
 const version1 = { generationId: "g", revision: 1, etag: "tag-1" };
@@ -107,6 +112,30 @@ test("equal delta upserts preserve entity container map and graph identity", () 
   expect(after.graph.containers).toBe(before.graph.containers);
   expect(after.graph.entities.get(entityKey)).toBe(entity);
   expect(after.graph.containers.get(containerKey)).toBe(before.graph.containers.get(containerKey));
+});
+
+test("invalid delta preserves the underlying merge cause", () => {
+  const cause = new TypeError("merge sentinel");
+  let thrown: unknown;
+  try {
+    applyDelta(
+      make([scopedKey("1")]),
+      {
+        get upsertedEntities(): never {
+          throw cause;
+        },
+        removedEntityKeys: [],
+        upsertedContainers: [],
+        removedContainerKeys: [],
+      },
+      version2,
+    );
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(NavigationBaseInvalidError);
+  expect((thrown as NavigationBaseInvalidError).cause).toBe(cause);
 });
 
 test("one changed entity clones only the entity map", () => {
