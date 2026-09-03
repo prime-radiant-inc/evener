@@ -511,9 +511,6 @@ func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature 
 }
 
 func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, exactSignature, semanticSignature string, generation uint64, judged, humanBypassed bool, boundaryOverride string) ExecResult {
-	res.BreakerExactSignature = exactSignature
-	res.BreakerSemanticSignature = semanticSignature
-	res.BreakerBypassed = humanBypassed
 	// All ledger mutation is ordered under r.mu after the current-generation
 	// validation. Register/Remove take the write lock and clear both ledgers, so
 	// an in-flight result from an older registration cannot be recorded into its
@@ -523,6 +520,9 @@ func (r *Registry) finalizeBreaker(res ExecResult, name string, rawArgs []byte, 
 	if !r.isCurrentOrAbsentLocked(name, generation) {
 		return res
 	}
+	res.BreakerExactSignature = exactSignature
+	res.BreakerSemanticSignature = semanticSignature
+	res.BreakerBypassed = humanBypassed
 	if humanBypassed {
 		r.semanticBreaker.clear(semanticSignature)
 		return res

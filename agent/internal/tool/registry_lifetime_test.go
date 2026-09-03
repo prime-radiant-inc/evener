@@ -104,7 +104,7 @@ func TestBreakerLifetime_InFlightOldFailuresDoNotContaminateReplacement(t *testi
 	close(release)
 	wg.Wait()
 	for _, res := range oldResults {
-		if !res.IsError || strings.HasPrefix(res.Output, wantFailurePark("race_tool")) {
+		if !res.IsError || strings.HasPrefix(res.Output, wantFailurePark("race_tool")) || res.BreakerExactSignature != "" || res.BreakerSemanticSignature != "" || res.BreakerBypassed {
 			t.Fatalf("old in-flight result must return but not finalize a replacement lifetime: %#v", res)
 		}
 	}
