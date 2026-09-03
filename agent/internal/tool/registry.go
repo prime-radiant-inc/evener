@@ -361,7 +361,7 @@ type RegisteredTool struct {
 	OmitIntent bool
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
-	NormalizeArgs func(map[string]any) map[string]any
+	NormalizeArgs func(map[string]any) (map[string]any, error)
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -679,7 +679,11 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		args = normalized
 	}
 	if t.NormalizeArgs != nil {
-		args = t.NormalizeArgs(args)
+		normalized, err := t.NormalizeArgs(args)
+		if err != nil {
+			return truncateResult(name, callID, err.Error(), true, t.Limit)
+		}
+		args = normalized
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
