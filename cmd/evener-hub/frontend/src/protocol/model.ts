@@ -14,6 +14,7 @@ import type {
   SandboxEscalationRequested,
   TaskAggregate,
   ThreadCapabilities,
+  ThreadItemPosition,
   ThreadStatus,
 } from "./types.gen";
 
@@ -36,6 +37,10 @@ export interface ItemImage {
 export interface ItemModel {
   id: string;
   turnId: string;
+  // Stable identity across historical/live projections. Display ids can be
+  // minted differently for the same persisted transcript item.
+  transcriptKey?: string;
+  position?: ThreadItemPosition;
   // The item's 1-based position in the parent transcript's ENTRY list (wire
   // ThreadItem.transcriptEntryIndex), counting every entry - user, assistant,
   // checkpoint - not just the ones that opened a turn. This is the only field

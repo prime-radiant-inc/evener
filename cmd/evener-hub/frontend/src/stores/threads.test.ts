@@ -1567,7 +1567,8 @@ describe("useThreadsStore.ensureThread", () => {
         itemsView: "full",
         subscribe: true,
         replaceSubscription: false,
-        turnLimit: 40,
+        pageUnit: "item",
+        itemLimit: 40,
       });
       return readResponse("ref_a");
     });
@@ -3518,7 +3519,8 @@ describe("reconnect resubscribe", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
@@ -5633,7 +5635,8 @@ describe("useThreadsStore.watchThread", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
 
@@ -5695,7 +5698,8 @@ describe("useThreadsStore.watchThread", () => {
         itemsView: "full",
         subscribe: true,
         replaceSubscription: false,
-        turnLimit: 40,
+        pageUnit: "item",
+        itemLimit: 40,
       });
       return readResponse("ref_a");
     });
@@ -5916,7 +5920,8 @@ describe("useThreadsStore.watchThread", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
   });
 
@@ -6402,12 +6407,22 @@ describe("useThreadsStore.watchThread", () => {
 describe("useThreadsStore.loadOlderTurns", () => {
   test("fetches the older page via thread/turns/list using the model's olderCursor, prepends it, and advances the cursor", async () => {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => ({
-      thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
-      olderCursor: "cursor_1",
-    }));
+    fake.on("thread/read", (params) => {
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      expect(params).not.toHaveProperty("turnLimit");
+      return {
+        thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
+        olderCursor: "cursor_1",
+      };
+    });
     fake.on("thread/turns/list", (params) => {
-      expect(params).toEqual({ ref: "ref_a", cursor: "cursor_1", itemsView: "full", limit: 30 });
+      expect(params).toEqual({
+        ref: "ref_a",
+        cursor: "cursor_1",
+        itemsView: "full",
+        pageUnit: "item",
+        itemLimit: 40,
+      });
       return {
         data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
         nextCursor: "cursor_0",
@@ -6420,6 +6435,126 @@ describe("useThreadsStore.loadOlderTurns", () => {
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.turns.map((t) => t.id)).toEqual(["turn_1", "turn_2"]);
     expect(model?.olderCursor).toBe("cursor_0");
+  });
+
+  test("a stale item cursor triggers one fresh subscribed read and does not surface an older-page error", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      return {
+        thread: testThread("ref_a", {
+          turns: [{ id: reads === 1 ? "old-turn" : "fresh-turn", status: "completed", itemsView: "full", items: [] }],
+        }),
+        olderCursor: reads === 1 ? "stale-cursor" : "fresh-cursor",
+      };
+    });
+    fake.on("thread/turns/list", () => {
+      throw new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await expect(threadsStore.getState().loadOlderTurns("ref_a")).resolves.toBeUndefined();
+
+    expect(reads).toBe(2);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["fresh-turn"]);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("fresh-cursor");
+  });
+
+  test("an ordinary older-page failure rejects so the inline retry UI can surface it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    const failure = new Error("list failed");
+    fake.on("thread/turns/list", () => {
+      throw failure;
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await expect(threadsStore.getState().loadOlderTurns("ref_a")).rejects.toBe(failure);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
+  test("a live notification arriving while an older page is in flight survives the merge", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await flushUntil(() => resolvePage !== undefined);
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "live-turn", status: "inProgress", itemsView: "" },
+      },
+    });
+    resolvePage({
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "cursor_0",
+      pageUnit: "item",
+    });
+    await loading;
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["older-turn", "live-turn"]);
+  });
+
+  test("a reconnect hydration rejects a pre-cut older-page completion", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: readCount === 1 ? "before-reconnect" : "after-reconnect",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: readCount === 1 ? "cursor_1" : "cursor_2",
+      };
+    });
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await flushUntil(() => resolvePage !== undefined);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(
+      () => readCount === 2 && threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "after-reconnect",
+    );
+    resolvePage({
+      data: [{ id: "stale-older", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "cursor_0",
+    });
+    await loading;
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["after-reconnect"]);
   });
 
   test("is a no-op when the tracked model has no olderCursor (nothing more to load)", async () => {
