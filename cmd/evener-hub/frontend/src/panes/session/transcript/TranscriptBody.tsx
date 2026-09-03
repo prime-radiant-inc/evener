@@ -313,7 +313,9 @@ export function TranscriptBody({
     viewKey: configFingerprint(config),
     listRef,
     anchorEntries: transcriptAnchorEntriesForRows(rows),
-    renderedRowCount: rows.length,
+    // Include the synthetic trailing row: following-bottom view restores
+    // target renderedRowCount - 1, which is the trailing row when present.
+    renderedRowCount: rows.length + (trailingRow === undefined ? 0 : 1),
     focusFallback: () => focusFallbackRef.current?.focus(),
     announce: onAnnounceViewChange,
   });

@@ -215,8 +215,16 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     loadOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    renderedRowCount: renderRows.length,
+    // The pending-questions dock is a real virtual row (trailingRow below),
+    // so every end-targeted scroll path - initial positioning, append-follow,
+    // jump-to-bottom - must count it or it lands one row short, leaving the
+    // answering surface below the viewport.
+    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
     sourceTurnRowIndexes,
+    // ...and its activation is new content: an ask_user item completing
+    // changes no turn/item shape, so without this signal a scrolled-away
+    // reader would get no pill while the composer's input hides itself.
+    askDockPending: askPending,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since

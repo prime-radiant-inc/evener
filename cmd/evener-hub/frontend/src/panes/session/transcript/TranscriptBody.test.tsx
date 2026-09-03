@@ -12,6 +12,7 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
+import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
 
@@ -1027,5 +1028,35 @@ describe("trailingRow", () => {
     const rows = screen.getAllByTestId("transcript-row");
     expect(rows).toHaveLength(1);
     expect(rows[0]?.getAttribute("data-row-id")).toBe("turn_1");
+  });
+});
+
+describe("trailingRow scroll coordination", () => {
+  test("the view registration's rendered row count includes the trailing row", () => {
+    const realRegistration = flowModule.useTranscriptViewRegistration;
+    const capturedCounts: Array<number | undefined> = [];
+    const spy = vi
+      .spyOn(flowModule, "useTranscriptViewRegistration")
+      .mockImplementation((options: Parameters<typeof realRegistration>[0]) => {
+        capturedCounts.push(options.renderedRowCount);
+        return realRegistration(options);
+      });
+    try {
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-count"
+          trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel" /> }}
+        />,
+      );
+      // One turn row + the synthetic trailing row: following-bottom view
+      // restores scroll to renderedRowCount - 1, so the count must cover the
+      // trailing row or a pending ask's dock restores one row short.
+      expect(capturedCounts.at(-1)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

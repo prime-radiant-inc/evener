@@ -295,33 +295,36 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
 export function AskDock({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
+  const pendingGreeted = useAskDockStore((s) => s.byRef.get(sessionRef)?.pendingGreeted ?? false);
   const toasts = useToasts();
   const dockRef = useRef<HTMLDivElement>(null);
-  const wasEmptyRef = useRef(true);
 
-  // Auto-focuses the first answer control the moment the dock activates
-  // (empty -> non-empty) - edge-triggered on batches.length so a LATER
+  // Auto-focuses the first answer control the moment a pending set
+  // activates (no batches -> some batches). The edge lives in askDockStore
+  // (pendingGreeted), not a component ref: the dock is the transcript's
+  // trailing virtual row, so scrolling far away unmounts it and scrolling
+  // back remounts it, and a component-level edge would treat every remount
+  // as a fresh activation and steal focus from wherever the reader moved
+  // it. The store edge also keeps the older contracts intact: a LATER
   // ask_user call that only grows an already-open batch, or that mints a
   // sibling batch while another is sending, never steals focus from an
-  // answer already in progress (test-ask-card.js: "a later ask_user call
-  // that adds more questions does not steal focus from an answer input
-  // currently being edited"). No ref threads down into AskQuestionCard for
-  // this - querying the dock's own root for the first focusable control is
-  // simpler and this is a one-time, edge-triggered action, not an ongoing
-  // focus-management relationship. Scoped to [data-ask-question] (the
-  // question card) so a multi-question batch's TAB BUTTONS - which sit
-  // before the card in DOM order (kata 99yf) - never win this query over
-  // the first actual answer control.
+  // answer already in progress (test-ask-card.js), and a fresh question
+  // after a fully resolved set re-activates the focus because the store
+  // resets the flag when the pending set empties. No ref threads down into
+  // AskQuestionCard for this - querying the dock's own root for the first
+  // focusable control is simpler and this is a one-time, edge-triggered
+  // action, not an ongoing focus-management relationship. Scoped to
+  // [data-ask-question] (the question card) so a multi-question batch's TAB
+  // BUTTONS - which sit before the card in DOM order (kata 99yf) - never
+  // win this query over the first actual answer control.
   useEffect(() => {
-    const isEmpty = batches.length === 0;
-    const wasEmpty = wasEmptyRef.current;
-    wasEmptyRef.current = isEmpty;
-    if (!wasEmpty || isEmpty) return;
+    if (batches.length === 0 || pendingGreeted) return;
+    askDockStore.getState().markPendingGreeted(sessionRef);
     const first = dockRef.current?.querySelector<HTMLElement>(
       '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
     );
     first?.focus();
-  }, [batches.length]);
+  }, [batches.length, pendingGreeted, sessionRef]);
 
   if (batches.length === 0) return null;
 

@@ -56,6 +56,21 @@ export interface UseTranscriptScrollOptions {
   renderedRowCount?: number;
   /** Source turn id to active transformed-row index. */
   sourceTurnRowIndexes?: ReadonlyMap<string, number>;
+  /**
+   * The session pane's pending-questions dock is a virtual row
+   * (TranscriptBody's trailingRow), and an in-progress ask_user item
+   * COMPLETING activates it without any turn/item shape change - neither
+   * itemCount nor firstTurnId nor failedTurns moves, so the content-changed
+   * effect never fires for it. This option carries the dock's own pending
+   * signal (askDockStore via Session.tsx's useAskDockPending) so the hook
+   * can treat its rising edge as new content: a reader who is not at the
+   * bottom gets the new-content pill (needs-you styling comes free -
+   * isAttentionWorthy reads the wire's askPending), and jumpToBottom lands
+   * on the dock row because renderedRowCount counts it (same PR's count
+   * fix). A reader at the bottom gets nothing: the end-anchored list
+   * already followed the appended row into view.
+   */
+  askDockPending?: boolean;
 }
 
 export interface ViewAnchorPosition {
@@ -553,6 +568,7 @@ export function useTranscriptScroll({
   anchorEntries,
   renderedRowCount: renderedRowCountInput,
   sourceTurnRowIndexes,
+  askDockPending = false,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -906,6 +922,22 @@ export function useTranscriptScroll({
   useLayoutEffect(() => {
     restoreViewAnchorAfterMeasurement();
   }, [viewKey, restoreViewAnchorAfterMeasurement]);
+
+  // The ask dock's rising edge (see the option's own doc comment): new
+  // answerable content appeared below without any transcript shape change.
+  // Declared AFTER the mount effect above so a ref change (which resets
+  // wasAtBottomRef to true for the fresh open) is already reflected when
+  // this edge evaluates, and a session OPENED with an already-pending ask
+  // never fires it - initial mount scrolls to the end, so the dock starts
+  // visible and there is nothing unseen to count.
+  const prevAskDockPendingRef = useRef(askDockPending);
+  useLayoutEffect(() => {
+    const wasPending = prevAskDockPendingRef.current;
+    prevAskDockPendingRef.current = askDockPending;
+    if (wasPending || !askDockPending) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [askDockPending]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

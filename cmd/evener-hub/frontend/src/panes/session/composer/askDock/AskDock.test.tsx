@@ -717,3 +717,52 @@ test("Mod+Enter is ignored while an IME composition is in progress", async () =>
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
 });
+
+// The dock is the transcript's trailing virtual row (Session.tsx), so
+// scrolling far away UNMOUNTs it and scrolling back remounts it. Activation
+// auto-focus must fire once per pending set, not once per mount: a remount
+// of an already-pending dock must leave focus wherever the reader put it
+// (roborev PR #854). The edge therefore lives in askDockStore, not in a
+// component ref that resets on every mount.
+test("a virtualized remount of an already-pending dock does not steal focus", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+
+  const first = render(<AskDock ref="ref_a" />);
+  // The initial activation contract is unchanged: first appearance focuses
+  // the first answer control.
+  const firstDock = document.querySelector("[data-ask-response-dock]");
+  expect(firstDock?.contains(document.activeElement)).toBe(true);
+  first.unmount();
+
+  // The reader has scrolled away and put focus elsewhere.
+  const elsewhere = render(
+    <button type="button" data-testid="elsewhere">
+      x
+    </button>,
+  );
+  elsewhere.getByTestId("elsewhere").focus();
+
+  render(<AskDock ref="ref_a" />);
+
+  expect(document.activeElement).toBe(elsewhere.getByTestId("elsewhere"));
+});
+
+test("a fresh pending set after a fully resolved one re-activates auto-focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  const first = render(<AskDock ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
+  first.unmount();
+
+  // A second, genuinely new question arrives after everything resolved.
+  startTurn(fake, "ref_a", "turn_2");
+  ackAskUserCall(fake, "ref_a", "turn_2", "item_2", "call_2");
+  render(<AskDock ref="ref_a" />);
+
+  const dock = document.querySelector("[data-ask-response-dock]");
+  await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+});

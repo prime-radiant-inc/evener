@@ -1548,3 +1548,78 @@ describe("no-model / not-yet-mounted safety", () => {
     expect(result.current.pillCount).toBe(0);
   });
 });
+
+describe("ask dock activation edge (roborev PR #854)", () => {
+  // The pending-questions dock is a virtual row now (TranscriptBody's
+  // trailingRow), and an in-progress ask_user item COMPLETING activates it
+  // without any turn/item shape change - neither itemCount nor firstTurnId
+  // nor failedTurns moves, so the content-changed effect never fires for
+  // it. Without a dedicated edge, the dock would appear invisibly below a
+  // scrolled-away reader while the composer's input row is hidden, leaving
+  // no visible path to the answer controls.
+  test("a dock activating while the reader is scrolled away surfaces the new-content pill as needs-you", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending,
+          renderedRowCount: rowCount,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, rowCount: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0);
+
+    // The item completes: the transcript's shape is unchanged, only the
+    // dock activates (and the wire's askPending flips, which is what makes
+    // the pill needs-you). The row count grows by the synthetic dock row.
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true, rowCount: 2 });
+
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillNeedsYou).toBe(true);
+
+    // The pill's jump lands on the dock row itself (the count fix's half).
+    act(() => result.current.jumpToBottom());
+    expect(scrollToIndex).toHaveBeenLastCalledWith(1, { align: "end" });
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a dock activating while the reader is at the bottom adds no pill", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending }) =>
+        useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure, askDockPending }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true });
+
+    // The end-anchored list already followed the appended row into view -
+    // a pill would claim there is something unseen when there is not.
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a session opened with an already-pending ask does not fire the edge", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        askDockPending: true,
+      }),
+    );
+    // Initial mount scrolls to the end (the dock row is visible) - nothing
+    // is unseen, so no pill.
+    expect(result.current.pillCount).toBe(0);
+  });
+});
