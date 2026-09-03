@@ -19,6 +19,8 @@ test("the button form is icon-only: named by label, tooltip defaults to the one 
   expect(button.textContent).toBe("");
   expect(button.getAttribute("title")).toBe("Open");
   expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  // The surfaces' geometry hook (dense rows cap the hit height at the row's).
+  expect(container.querySelector("[data-open-shell]")).toBeTruthy();
   fireEvent.click(button);
   expect(onClick).toHaveBeenCalledTimes(1);
 });

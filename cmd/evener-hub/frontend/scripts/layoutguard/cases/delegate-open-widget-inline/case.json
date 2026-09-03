@@ -1,6 +1,6 @@
 {
   "name": "delegate-open-widget-inline",
-  "description": "An intent-only tool row keeps visual order intent text → Open → chevron, with one overlay disclosure trigger and valid sibling controls. Open shares line 1, is measured adjacent to the TEXT edge (never a chevron-unioned edge), and precedes the chevron. Visible content is flex:0 1 auto with a max-width reserving Open, chevron, and both gaps: removing the reservation wraps the trailing items, while restoring flex-grow springs them away from the text.",
+  "description": "An intent-only tool row keeps visual order intent text → Open → chevron, with one overlay disclosure trigger and valid sibling controls. Open shares line 1, is measured adjacent to the TEXT edge (never a chevron-unioned edge), and precedes the chevron. Visible content is flex:0 1 auto with a max-width reserving Open, chevron, and both gaps: removing the reservation wraps the trailing items, while restoring flex-grow springs them away from the text. Combined fixtures add the two-level body trigger sharing the intent line (data-body-trigger-intent): the reservation widens by one chevron and gap, and the body trigger must be raised above the absolute overlay trigger or its clicks toggle the wrong disclosure.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",

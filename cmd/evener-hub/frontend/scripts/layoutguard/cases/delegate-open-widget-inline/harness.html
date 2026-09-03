@@ -83,9 +83,13 @@ const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="t
 
 // ToolRow.tsx's intent-only expandable branch: one overlay trigger owns the
 // disclosure while visible trigger content, Open, and chevron are siblings.
-function delegateRowHtml(id, intent) {
+// `combined` adds the two-level body trigger (bodyTriggerOnIntentLine): the
+// row marks itself data-body-trigger-intent and the body chevron rides LAST,
+// after the decorative chevron - and must be raised above the overlay or its
+// clicks toggle the wrong disclosure.
+function delegateRowHtml(id, intent, combined) {
   return `
-    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true">
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true"${combined ? ' data-body-trigger-intent="true"' : ""}>
       <button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>
       <span class="intentTriggerContent" id="trigger-content-${id}">
         <span class="intent" id="intent-${id}">
@@ -93,13 +97,14 @@ function delegateRowHtml(id, intent) {
         </span>
       </span>
       <span class="intentTrailing" id="trailing-${id}">
-        <span class="inline">
+        <span class="inline" data-open-shell>
           <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open">
             <span class="icon" aria-hidden="true">${OPEN_SVG}</span>
           </button>
         </span>
       </span>
       <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="false">${CHEVRON_SVG}</span>
+      ${combined ? `<button type="button" class="bodyTrigger" id="bodytrigger-${id}" aria-expanded="true" aria-label="${intent}"><span class="chevron" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span></button>` : ""}
     </div>`;
 }
 
@@ -113,6 +118,8 @@ const CONFIGS = [
   { key: "narrow-long",  width: 420, intent: LONG_INTENT,  shortIntent: false, label: "420px column, long intent (binding: must wrap inside the trigger)" },
   { key: "wide-short",   width: 880, intent: SHORT_INTENT, shortIntent: true,  label: "880px column, short intent" },
   { key: "wide-long",    width: 880, intent: LONG_INTENT,  shortIntent: false, label: "880px column, long intent (binding)" },
+  { key: "narrow-combined", width: 420, intent: LONG_INTENT, shortIntent: false, combined: true, label: "420px column, long intent + body trigger on the intent line (combined)" },
+  { key: "wide-combined",   width: 880, intent: SHORT_INTENT, shortIntent: true, combined: true, label: "880px column, short intent + body trigger on the intent line (combined)" },
 ];
 
 const root = document.querySelector(".fixtures");
@@ -125,7 +132,7 @@ for (const c of CONFIGS) {
   const box = document.createElement("div");
   box.className = "railBox";
   box.style.width = `${c.width}px`;
-  box.innerHTML = delegateRowHtml(c.key, c.intent);
+  box.innerHTML = delegateRowHtml(c.key, c.intent, c.combined === true);
   section.append(label, box);
   root.append(section);
 }
@@ -191,6 +198,16 @@ window.measure = () => {
     const chevronHit = document.elementFromPoint(chevron.left + chevron.width / 2, chevron.top + chevron.height / 2);
     const openElement = document.getElementById(`open-${c.key}`);
     const openHit = document.elementFromPoint(open.left + open.width / 2, open.top + open.height / 2);
+    // Combined fixtures only: the body chevron shares the line with the
+    // overlay trigger and must be raised above it, or its clicks toggle the
+    // wrong disclosure.
+    const bodyTriggerElement = document.getElementById(`bodytrigger-${c.key}`);
+    let bodyTriggerHitIsBodyTrigger;
+    if (bodyTriggerElement) {
+      const bt = box(bodyTriggerElement);
+      const bodyHit = document.elementFromPoint(bt.left + bt.width / 2, bt.top + bt.height / 2);
+      bodyTriggerHitIsBodyTrigger = Boolean(bodyHit && bodyTriggerElement.contains(bodyHit));
+    }
     return {
       id: c.key,
       label: c.label,
@@ -213,6 +230,7 @@ window.measure = () => {
       chevronLeftGap: chevron.left - open.right,
       chevronHitIsTrigger: Boolean(chevronHit && document.getElementById(`trigger-${c.key}`).contains(chevronHit)),
       openHitIsOpen: Boolean(openHit && openElement.contains(openHit)),
+      bodyTriggerHitIsBodyTrigger,
     };
   });
 };

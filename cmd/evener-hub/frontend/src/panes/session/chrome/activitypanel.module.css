@@ -30,10 +30,6 @@
 .panelColumn {
   min-width: 0;
   min-height: 0;
-  /* OpenButton's 28px hit box deliberately overhangs its 1em layout box.
-   * Half the complete target is the conservative maximum overhang, so the
-   * scrollport's first and last rows remain fully hittable at either edge. */
-  padding-block: calc(28px / 2);
   overflow-x: clip;
   overflow-y: auto;
 }
@@ -44,15 +40,38 @@
   gap: var(--space-1);
   min-width: 0;
   /* clip only the inline axis: overflow-x:hidden would compute the otherwise
-   * visible block axis to auto and clip Open's deliberate vertical overhang. */
+   * visible block axis to auto and clip anything riding the rows. */
   overflow-x: clip;
 }
 
-@media (max-width: 899px) {
-  .panelColumn {
-    padding-block: calc(var(--tap-min) / 2);
-  }
+/* Dense rows pitch (~23.5px) below even the 28px desktop hit size: any taller
+ * Open target would overhang into BOTH neighbors' targets, and where the
+ * boxes overlap the LATER row wins - a tap in a row's top band would open the
+ * row BELOW (roborev). On this dense surface the target keeps its hit WIDTH
+ * (28px, --tap-min on phone) but only the row's own height: the shell
+ * stretches to the row and the button to the shell. A missed tap lands on the
+ * row's own disclosure toggle, never a neighbor's Open. */
+.denseRow > [data-open-shell] {
+  height: auto;
+  margin-block: 0;
+  align-self: stretch;
+  align-items: stretch;
 }
+
+.denseRow > [data-open-shell] > button {
+  min-height: 0;
+  height: auto;
+  align-self: stretch;
+}
+
+/* Dense rows pitch (~23.5px) below even the 28px desktop hit size: any taller
+ * Open target would overhang into BOTH neighbors' targets, and where the
+ * boxes overlap the LATER row wins - a tap in a row's top band would open the
+ * row BELOW (roborev). On this dense surface the target keeps its hit WIDTH
+ * (28px, --tap-min on phone) but only the row's own height: the shell
+ * stretches to the row and the button to the shell. A missed tap lands on the
+ * row's own disclosure toggle, never a neighbor's Open. */
+
 
 .rowToggle {
   display: inline-flex;

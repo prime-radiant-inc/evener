@@ -42,6 +42,11 @@ export default function assert(measurement) {
     if (!f.openHitIsOpen) {
       failures.push(`#${f.id} (${f.label}): the Open center is not owned by its independent button hit target`);
     }
+    if (f.bodyTriggerHitIsBodyTrigger === false) {
+      failures.push(
+        `#${f.id} (${f.label}): the body chevron's center is not owned by the body trigger - the overlay trigger covers it, so its clicks toggle the wrong disclosure`,
+      );
+    }
     if (f.shortIntent) {
       const tolerance = f.columnGap + ADJACENCY_SLACK_PX;
       if (f.controlLeftGap > tolerance) {

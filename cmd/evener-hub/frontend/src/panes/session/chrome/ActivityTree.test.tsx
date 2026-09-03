@@ -434,6 +434,16 @@ describe("ActivityTree", () => {
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
   });
 
+  test("dense-row open targets keep hit width but never overhang the row, so neighbors' targets can't overlap", () => {
+    // A target taller than the ~23.5px row pitch would overlap both
+    // neighbors' targets; where boxes overlap the LATER row wins and a tap in
+    // a row's top band opens the row below (roborev). The shell stretches to
+    // the row and the button to the shell; width (28px / --tap-min) survives.
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*\{[^}]*margin-block:\s*0/);
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*\{[^}]*align-self:\s*stretch/);
+    expect(activityPanelCss).toMatch(/\.denseRow\s*>\s*\[data-open-shell\]\s*>\s*button\s*\{[^}]*min-height:\s*0/);
+  });
+
   test("clicking a row's title toggles its disclosure, never opens the transcript", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);

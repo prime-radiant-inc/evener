@@ -95,7 +95,10 @@ export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: Op
     onClick?.(event);
   }
   return (
-    <span className={CLASS.inline}>
+    // data-open-shell is the surfaces' hook for context-specific geometry
+    // (dense activity rows cap the hit HEIGHT at the row's so neighbors'
+    // targets never overlap - activitypanel.module.css).
+    <span className={CLASS.inline} data-open-shell>
       <IconButton
         label={label ?? "Open"}
         title="Open"
