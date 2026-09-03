@@ -3271,6 +3271,9 @@ type progressTickSnapshot struct {
 // (fire) and how it routes — a watch send (sendDelivery) or a notification that
 // counts a delivery (recordBudget), plus the notification job id. A periodic
 // tick is not a condition fire, so its delivery never counts against the budget.
+// endOneShot asks the caller to end a fired one-shot: set together with fire on
+// its first delivery, and alone when a previous end failed to persist and this
+// tick only retries the teardown.
 type progressTickDecision struct {
 	keepAlive    bool
 	fire         bool
@@ -3285,8 +3288,10 @@ type progressTickDecision struct {
 // how the surviving tick routes. It locks nothing and mutates nothing; the caller
 // performs the effects. A send tick and a budget-counted notification are mutually
 // exclusive. A gated-out tick neither fires nor keeps the goroutine alive; a
-// one-shot timer's tick fires and then ends the goroutine, so fire alone — not
-// keepAlive — decides whether this tick delivers.
+// one-shot timer's tick fires and then ends the goroutine, and a one-shot whose
+// end could not persist keeps the goroutine alive without firing until the
+// retry lands, so fire alone — not keepAlive — decides whether this tick
+// delivers.
 func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if snap.closing || !snap.stillRegistered {
 		return progressTickDecision{}
