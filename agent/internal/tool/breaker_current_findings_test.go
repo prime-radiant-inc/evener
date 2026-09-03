@@ -186,3 +186,98 @@ func TestFinalizePrevalidationFailure_NormalizedAskFormsShareSemanticIdentity(t 
 		t.Fatalf("distinct raw ask_user forms collapsed to %d exact identities, want %d", len(exact), len(raw))
 	}
 }
+
+func TestFinalizePrevalidationFailure_OversizeTrustedNormalizedArgsRetainCanonicalIdentity(t *testing.T) {
+	newAskRegistry := func(t *testing.T) *Registry {
+		t.Helper()
+		r := NewRegistry()
+		if err := r.Register(RegisteredTool{
+			Definition: DefAskUser(),
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "unexpected dispatch", nil
+			},
+		}); err != nil {
+			t.Fatalf("register ask_user: %v", err)
+		}
+		r.MarkRegisteredToolsCoreSemanticMetadata()
+		return r
+	}
+	normalized := func(t *testing.T, question string) json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"questions": []any{map[string]any{
+				"question": question,
+				"options":  []any{map[string]any{"label": "Only", "detail": "one"}},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("marshal trusted normalized arguments: %v", err)
+		}
+		if len(raw) <= maxToolArgumentBytes {
+			t.Fatalf("normalized fixture size = %d, want over %d", len(raw), maxToolArgumentBytes)
+		}
+		return raw
+	}
+	finalize := func(t *testing.T, r *Registry, id string, raw, semantic json.RawMessage) ExecResult {
+		t.Helper()
+		call := llm.ToolCallData{ID: id, Name: "ask_user", Arguments: raw}
+		_, snapshot := r.SnapshotPrevalidation(call.Name)
+		return r.FinalizePrevalidationFailure(context.Background(), snapshot, call, semantic, "schema validation failed", "schema_validation", errors.New("schema validation failed"))
+	}
+
+	t.Run("distinct normalized values do not use raw oversize marker", func(t *testing.T) {
+		r := newAskRegistry(t)
+		untrustedA := bytes.Repeat([]byte("a"), maxToolArgumentBytes+1)
+		untrustedB := bytes.Repeat([]byte("b"), maxToolArgumentBytes+1)
+		if one, two := r.semanticSignatureFromRaw("ask_user", untrustedA), r.semanticSignatureFromRaw("ask_user", untrustedB); one != two {
+			t.Fatalf("actual untrusted oversize calls lost their common sentinel: %q != %q", one, two)
+		}
+
+		seen := map[string]bool{}
+		for _, value := range []string{"A", "B", "C"} {
+			semantic := normalized(t, strings.Repeat(value, maxToolArgumentBytes))
+			res := finalize(t, r, "distinct-"+value, json.RawMessage(`{"question":"`+value+`"}`), semantic)
+			if strings.Contains(res.Output, "semantic failure loop") {
+				t.Fatalf("distinct normalized value %q falsely parked: %#v", value, res)
+			}
+			if res.BreakerSemanticSignature == "" || len(res.BreakerSemanticSignature) > 96 {
+				t.Fatalf("normalized value %q has unbounded identity: %q", value, res.BreakerSemanticSignature)
+			}
+			seen[res.BreakerSemanticSignature] = true
+		}
+		if len(seen) != 3 {
+			t.Fatalf("distinct trusted normalized values collapsed to %d identities, want 3", len(seen))
+		}
+	})
+
+	t.Run("equivalent normalized values still group", func(t *testing.T) {
+		r := newAskRegistry(t)
+		semantic := normalized(t, strings.Repeat("S", maxToolArgumentBytes))
+		raw := []json.RawMessage{
+			json.RawMessage(`{"question":"same"}`),
+			json.RawMessage(`{ "question":"same"}`),
+			json.RawMessage(`{"question": "same"}`),
+		}
+		results := make([]ExecResult, 0, len(raw))
+		for i, arguments := range raw {
+			res := finalize(t, r, "equivalent-"+string(rune('1'+i)), arguments, semantic)
+			results = append(results, res)
+			if i < 2 && strings.Contains(res.Output, "semantic failure loop") {
+				t.Fatalf("equivalent normalized failure %d parked early: %#v", i+1, res)
+			}
+		}
+		if !strings.Contains(results[2].Output, "semantic failure loop") {
+			t.Fatalf("third equivalent oversize normalized failure was not parked: %#v", results[2])
+		}
+		exact := map[string]bool{}
+		for i, res := range results {
+			exact[res.BreakerExactSignature] = true
+			if res.BreakerExactSignature == "" || res.BreakerSemanticSignature == "" || res.BreakerSemanticSignature != results[0].BreakerSemanticSignature {
+				t.Fatalf("equivalent failure %d identity = %q, want %q", i+1, res.BreakerSemanticSignature, results[0].BreakerSemanticSignature)
+			}
+		}
+		if len(exact) != len(raw) {
+			t.Fatalf("distinct raw calls collapsed to %d exact identities, want %d", len(exact), len(raw))
+		}
+	})
+}

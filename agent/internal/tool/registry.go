@@ -523,6 +523,20 @@ func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, register
 	return r.semanticSignatureFor(name, args, registered)
 }
 
+// semanticSignatureFromNormalizedFor canonicalizes trusted internal arguments
+// produced by json.Marshal after session-level normalization. Unlike untrusted
+// provider bytes, this representation may legitimately grow past the raw input
+// cap, so it must retain its argument identity rather than collapse to the raw
+// oversize sentinel. The result remains bounded and private through
+// semanticSignatureFor's session-keyed HMAC.
+func (r *Registry) semanticSignatureFromNormalizedFor(name string, normalized []byte, registered *RegisteredTool) string {
+	args := map[string]any{}
+	if !utf8.Valid(normalized) || (len(normalized) > 0 && json.Unmarshal(normalized, &args) != nil) {
+		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-normalized-json")
+	}
+	return r.semanticSignatureFor(name, args, registered)
+}
+
 func (r *Registry) semanticSignatureFromRaw(name string, raw []byte) string {
 	return r.semanticSignatureFromRawFor(name, raw, nil)
 }
@@ -1126,11 +1140,12 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 	humanBypassed := breakerBypassed(ctx)
 	judged := !humanBypassed && name != "model_list"
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
-	semanticRaw := call.Arguments
+	semanticSignature := ""
 	if len(semanticArgs) > 0 {
-		semanticRaw = semanticArgs
+		semanticSignature = r.semanticSignatureFromNormalizedFor(name, semanticArgs, snapshot.registered)
+	} else {
+		semanticSignature = r.semanticSignatureFromRawFor(name, call.Arguments, snapshot.registered)
 	}
-	semanticSignature := r.semanticSignatureFromRawFor(name, semanticRaw, snapshot.registered)
 	if boundary == "" {
 		boundary = prevalidationBoundary(name, call.Arguments, snapshot.registered != nil)
 	}
