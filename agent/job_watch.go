@@ -222,6 +222,9 @@ type watchConfig struct {
 	// latches here — the watch auto-clears on its watchDeliveryBudget-th
 	// condition fire (spec §4 F1) — so a watch that only ever ticks survives.
 	conditionFires int
+	// budgetTripped latches the breaker to one teardown per config, so a send
+	// watch settling several frames at or past the budget reports it just once.
+	budgetTripped bool
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -1669,15 +1672,17 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 // recordWatchDeliveryLocked increments the model-facing delivery count for cfg
 // and reports whether this delivery crossed the delivery budget. The budget
 // bounds CONDITION fires, not deliveries: every caller is a condition-fire site
-// that has already counted its match into conditionFires, while a periodic
-// progress tick counts only a delivery and never arrives here, so a watch that
-// merely ticks can never trip the breaker. A no-send watch counts its fire and
-// its delivery in one critical section, so it reports the crossing exactly
-// once, on its watchDeliveryBudget-th fire; a send watch counts the fire at
-// snapshot time and the delivery at settle, so a settle can observe the budget
-// more than once and autoClearWatchOverBudgetNotification's reverse key lookup
-// is what keeps the teardown to one. The caller must hold jm.mu. A true result
-// means the caller should schedule autoClearWatchOverBudget(cfg) AFTER
+// that has counted its match into conditionFires, while a periodic progress
+// tick counts only a delivery and never arrives here, so a watch that merely
+// ticks can never trip the breaker.
+//
+// The test is "at or past the budget", latched by budgetTripped to exactly one
+// true per cfg lifetime. Equality would be wrong for the send rail: a send
+// watch counts its fire when it SNAPSHOTS a frame and lands here when that
+// frame SETTLES, so two fires snapshotted before either settles walk
+// conditionFires from 49 to 51 and every later settle would compare a counter
+// that already stepped over the budget. The caller must hold jm.mu. A true
+// result means the caller should schedule autoClearWatchOverBudget(cfg) AFTER
 // releasing jm.mu (the auto-clear does durable I/O and re-takes jm.mu; it must
 // never run from inside an observation's critical section, spec §3).
 func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
@@ -1685,7 +1690,11 @@ func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget
 		return false
 	}
 	cfg.deliveries++
-	return cfg.conditionFires == watchDeliveryBudget
+	if cfg.conditionFires >= watchDeliveryBudget && !cfg.budgetTripped {
+		cfg.budgetTripped = true
+		return true
+	}
+	return false
 }
 
 // watchKeyForConfigLocked finds the live map key holding cfg. ok=false means cfg

@@ -32,13 +32,12 @@ import (
 //	   a cleared watch_id never reappears live (fresh ids are minted per install,
 //	   so a cleared id can never be reused).
 //	O3 (delivery budget): the budget is a circuit breaker on CONDITION fires. For
-//	   a watch with neither a progress interval nor a send rail — the shape whose
-//	   fire and delivery are counted in one critical section — no config's delivery
-//	   count ever exceeds watchDeliveryBudget and a LIVE watch is always strictly
-//	   under budget (spec §4 F1), so nothing at or over budget is left installed.
-//	   A periodic tick counts a delivery without being a fire, and a send counts
-//	   its fire at snapshot time but its delivery at settle, so neither shape
-//	   carries that tight bound.
+//	   a watch with no progress interval, no config's delivery count ever exceeds
+//	   watchDeliveryBudget and a LIVE watch is always strictly under budget — the
+//	   breaker auto-clears on the budget-th fire (spec §4 F1), so nothing at or
+//	   over budget is ever left installed. A periodic tick counts a delivery
+//	   without being a condition fire, so a watch carrying a progress interval may
+//	   sit at or over the budget and stay live.
 //	O4 (delivery matches the pure core): on a session-event op, the number of
 //	   no-send caller notifications the effectful onSessionEvent actually delivers
 //	   equals the number the pure evaluateWatchEvent core predicts for the same
@@ -520,12 +519,9 @@ type ws_watchSnap struct {
 	eventCount int
 	nextSeq    uint64
 	live       bool
-	// periodic and hasSend mark the two shapes whose deliveries the budget does
-	// not tightly bound: a progress timer counts deliveries that are not condition
-	// fires, and a send rail counts its fire and its delivery at different times
-	// (see O3).
+	// periodic marks a config whose progress timer counts deliveries that are not
+	// condition fires, which the budget deliberately does not bound (see O3).
 	periodic bool
-	hasSend  bool
 }
 
 func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, step int) {
@@ -570,11 +566,11 @@ func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, 
 		}
 	}
 
-	// O3: delivery budget. The breaker latches on the budget-th condition fire, so
-	// the tight bound holds only where a fire and its delivery are counted
-	// together: no progress interval, no send rail.
+	// O3: delivery budget. A periodic tick counts a delivery without being a
+	// condition fire, so the bound holds only for watches with no progress
+	// interval.
 	for _, s := range snaps {
-		if s.periodic || s.hasSend {
+		if s.periodic {
 			continue
 		}
 		if s.deliveries > watchDeliveryBudget {
@@ -641,6 +637,5 @@ func ws_snapConfig(cfg *watchConfig, live bool) ws_watchSnap {
 		nextSeq:    cfg.nextUpdateSeq,
 		live:       live,
 		periodic:   cfg.progressIntervalMS > 0,
-		hasSend:    cfg.send != nil,
 	}
 }
