@@ -313,6 +313,40 @@ func TestTemperatureSupported(t *testing.T) {
 				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
 			want: true,
 		},
+		{
+			// A pure catalog alias seeds its target's facts with alias
+			// provenance (claude-sonnet-4-5[1m] carries ContextWindow/Family
+			// = "alias"); the catalog target's facts vouch through it.
+			name: "alias-inherited catalog facts",
+			res: Resolved{Protocol: ProtocolAnthropic,
+				Provenance: func() map[string]string {
+					prov := row("row", "claude-alias")
+					prov["ContextWindow"] = "alias"
+					prov["Family"] = "alias"
+					return prov
+				}(),
+				Caps: Caps{Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			// An explicitly sourced Sampling=true is a deliberate positive
+			// assertion and vouches even on a custom row.
+			name: "explicit sampling true vouches",
+			res: Resolved{Protocol: ProtocolOpenAIResponses,
+				Provenance: func() map[string]string {
+					prov := row("row", "my-model")
+					prov["Sampling"] = LayerConfig + "/row"
+					return prov
+				}(),
+				Caps: Caps{Sampling: boolPtr(true), Fields: map[string]bool{"temperature": true}}},
+			want: true,
+		},
+		{
+			// Baseline sampling on a non-catalog row still reads as silence.
+			name: "inherited sampling value without explicit source does not vouch",
+			res: Resolved{Protocol: ProtocolOpenAIResponses, Provenance: row("row", "my-model"),
+				Caps: Caps{Sampling: boolPtr(true), Fields: map[string]bool{"temperature": true}}},
+		},
 	}
 	for _, tc := range cases {
 		if got := TemperatureSupported(tc.res); got != tc.want {
