@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestSemanticFailureBreaker_UntypedExecutionErrorsDoNotParkAcrossRawVariants(t *testing.T) {
+func TestSemanticFailureBreaker_StableUntypedExecutionErrorsParkAcrossRawVariants(t *testing.T) {
 	r := NewRegistry()
 	fake := registerSemanticBreakerFake(t, r, func(map[string]any, int) (any, error) {
 		return nil, errors.New("generic executor failure")
@@ -24,12 +24,35 @@ func TestSemanticFailureBreaker_UntypedExecutionErrorsDoNotParkAcrossRawVariants
 		`{"target":"job:one","intent":"third"}`,
 	} {
 		res := r.ExecuteCall(context.Background(), env, breakerCall(fmt.Sprintf("untyped-%d", i), "semantic_fake", raw))
+		if i < 2 && strings.HasPrefix(res.FullOutput, parkPrefix) {
+			t.Fatalf("untyped semantic variant %d parked early: %#v", i+1, res)
+		}
+		if i == 2 && !strings.HasPrefix(res.FullOutput, parkPrefix) {
+			t.Fatalf("stable untyped semantic variant did not park: %#v", res)
+		}
+	}
+	if fake.calls != 2 {
+		t.Fatalf("stable untyped semantic variants executed %d times, want 2", fake.calls)
+	}
+}
+
+func TestSemanticFailureBreaker_DistinctUntypedExecutionErrorsDoNotParkAcrossRawVariants(t *testing.T) {
+	r := NewRegistry()
+	fake := registerSemanticBreakerFake(t, r, func(_ map[string]any, calls int) (any, error) {
+		return nil, errors.New([]string{"backend alpha unavailable", "backend beta unavailable", "backend gamma unavailable"}[calls-1])
+	})
+	for i, raw := range []string{
+		`{"target":"job:one","intent":"first"}`,
+		`{"intent":"second","target":"job:one"}`,
+		`{"target":"job:one","intent":"third"}`,
+	} {
+		res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("untyped-distinct-%d", i), "semantic_fake", raw))
 		if strings.HasPrefix(res.FullOutput, parkPrefix) {
-			t.Fatalf("untyped semantic variant %d was parked: %#v", i+1, res)
+			t.Fatalf("distinct untyped semantic variant %d was parked: %#v", i+1, res)
 		}
 	}
 	if fake.calls != 3 {
-		t.Fatalf("untyped semantic variants executed %d times, want 3", fake.calls)
+		t.Fatalf("distinct untyped semantic variants executed %d times, want 3", fake.calls)
 	}
 }
 

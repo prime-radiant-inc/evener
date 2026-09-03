@@ -30,7 +30,7 @@ func TestSemanticBreaker_RegisteredDefaultsAndLongTargets(t *testing.T) {
 	r := NewRegistry()
 	registerSemanticReviewTool(t, r, "exec_command", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
 	r.MarkRegisteredToolsCoreSemanticMetadata()
-	if omitted, explicit := r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp"}, DefShell().Parameters), r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp", "mode": "foreground"}, DefShell().Parameters); omitted != explicit {
+	if omitted, explicit := r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp"}), r.semanticSignature("exec_command", map[string]any{"command": "false", "cwd": "/tmp", "mode": "foreground"}); omitted != explicit {
 		t.Fatalf("runtime foreground default differs: %q != %q", omitted, explicit)
 	}
 	long := strings.Repeat("a", 257)
@@ -46,7 +46,9 @@ func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
 			"mode": map[string]any{"type": "string", "default": "safe"},
 		},
 	}
-	if omitted, explicit := semanticCallSignatureWithDefaults("custom", map[string]any{}, custom), semanticCallSignatureWithDefaults("custom", map[string]any{"mode": "safe"}, custom); omitted == explicit {
+	r := NewRegistry()
+	registerSemanticReviewTool(t, r, "custom", custom, func(map[string]any) (any, error) { return nil, nil })
+	if omitted, explicit := r.semanticSignature("custom", map[string]any{}), r.semanticSignature("custom", map[string]any{"mode": "safe"}); omitted == explicit {
 		t.Fatalf("custom schema annotation collapsed omission with explicit behavior: %q", omitted)
 	}
 	image := map[string]any{"file_path": "scan.pdf", "intent": "extract invoice totals"}
@@ -57,10 +59,9 @@ func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
 	if first, second := semanticCallSignature("custom_description", map[string]any{"description": "analyze totals"}), semanticCallSignature("custom_description", map[string]any{"description": "find signatures"}); first == second {
 		t.Fatalf("custom behavior-driving descriptions were removed from semantic identity: %q", first)
 	}
-	r := NewRegistry()
 	registerSemanticReviewTool(t, r, "shell", DefShell().Parameters, func(map[string]any) (any, error) { return nil, nil })
 	r.MarkRegisteredToolsCoreSemanticMetadata()
-	if first, second := r.semanticSignature("shell", map[string]any{"command": "false", "description": "first narration"}, DefShell().Parameters), r.semanticSignature("shell", map[string]any{"command": "false", "description": "second narration"}, DefShell().Parameters); first != second {
+	if first, second := r.semanticSignature("shell", map[string]any{"command": "false", "description": "first narration"}), r.semanticSignature("shell", map[string]any{"command": "false", "description": "second narration"}); first != second {
 		t.Fatalf("built-in presentation descriptions changed semantic identity: %q != %q", first, second)
 	}
 }
@@ -359,8 +360,8 @@ func TestSemanticBreaker_TelemetryComponentsAreSessionKeyed(t *testing.T) {
 		one  string
 		two  string
 	}{
-		{"oversize marker", first.semanticSignatureFromRaw("write_file", oversize, nil), second.semanticSignatureFromRaw("write_file", oversize, nil)},
-		{"invalid JSON marker", first.semanticSignatureFromRaw("write_file", []byte(`{"target":`), nil), second.semanticSignatureFromRaw("write_file", []byte(`{"target":`), nil)},
+		{"oversize marker", first.semanticSignatureFromRaw("write_file", oversize), second.semanticSignatureFromRaw("write_file", oversize)},
+		{"invalid JSON marker", first.semanticSignatureFromRaw("write_file", []byte(`{"target":`)), second.semanticSignatureFromRaw("write_file", []byte(`{"target":`))},
 		{"error class", first.telemetryComponent("semantic-error-class", "unavailable"), second.telemetryComponent("semantic-error-class", "unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,7 +407,7 @@ func TestSemanticBreaker_AskUserDefaultsDoNotMutateArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = r.semanticSignature("ask_user", args, DefAskUser().Parameters)
+	_ = r.semanticSignature("ask_user", args)
 	after, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)

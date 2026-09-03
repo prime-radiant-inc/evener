@@ -421,20 +421,20 @@ func (r *Registry) telemetryExactSignature(name string, args []byte) string {
 	return name + ":" + hex.EncodeToString(sum[:8])
 }
 
-func (r *Registry) semanticSignature(name string, args map[string]any, parameters map[string]any) string {
+func (r *Registry) semanticSignature(name string, args map[string]any) string {
 	r.mu.RLock()
 	registered, ok := r.tools[name]
 	r.mu.RUnlock()
 	if !ok {
-		return r.semanticSignatureFor(name, args, parameters, nil)
+		return r.semanticSignatureFor(name, args, nil)
 	}
-	return r.semanticSignatureFor(name, args, parameters, &registered)
+	return r.semanticSignatureFor(name, args, &registered)
 }
 
-func (r *Registry) semanticSignatureFor(name string, args map[string]any, parameters map[string]any, registered *RegisteredTool) string {
+func (r *Registry) semanticSignatureFor(name string, args map[string]any, registered *RegisteredTool) string {
 	omitDescription := registered != nil && registered.OmitDescriptionFromSemanticIdentity
 	applyDefaults := registered != nil && registered.ApplyBuiltInSemanticDefaults
-	encoded, err := semanticCanonicalBytes(name, args, parameters, omitDescription, applyDefaults)
+	encoded, err := semanticCanonicalBytes(name, args, omitDescription, applyDefaults)
 	if err != nil {
 		encoded = []byte("unencodable")
 	}
@@ -474,7 +474,7 @@ func (r *Registry) telemetryComponent(domain, value string) string {
 	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
-func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, parameters map[string]any, registered *RegisteredTool) string {
+func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, registered *RegisteredTool) string {
 	if len(raw) > maxToolArgumentBytes {
 		return name + ":" + r.telemetryComponent("semantic-marker", "oversize")
 	}
@@ -482,11 +482,11 @@ func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, paramete
 	if len(raw) > 0 && json.Unmarshal(raw, &args) != nil {
 		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-json")
 	}
-	return r.semanticSignatureFor(name, args, parameters, registered)
+	return r.semanticSignatureFor(name, args, registered)
 }
 
-func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters map[string]any) string {
-	return r.semanticSignatureFromRawFor(name, raw, parameters, nil)
+func (r *Registry) semanticSignatureFromRaw(name string, raw []byte) string {
+	return r.semanticSignatureFromRawFor(name, raw, nil)
 }
 
 func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, generation uint64, judged bool) (ExecResult, bool) {
@@ -859,7 +859,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	if ok {
 		semanticRegistered = &t
 	}
-	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, nil, semanticRegistered)
+	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, semanticRegistered)
 	preNormalizationSignature := semanticSignature
 	finish := func(res ExecResult) ExecResult {
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, "")
@@ -908,7 +908,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
 		}
 		args = normalized
-		semanticSignature = r.semanticSignatureFor(name, args, t.Definition.Parameters, &t)
+		semanticSignature = r.semanticSignatureFor(name, args, &t)
 	}
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
@@ -920,7 +920,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 		args = normalized
 	}
-	semanticSignature = r.semanticSignatureFor(name, args, t.Definition.Parameters, &t)
+	semanticSignature = r.semanticSignatureFor(name, args, &t)
 
 	if err := t.Schema.Validate(args); err != nil {
 		if res, blocked := park(); blocked {
@@ -1005,10 +1005,8 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	r.mu.RLock()
 	t, found := r.tools[name]
 	generation := t.generation
-	parameters := map[string]any(nil)
 	lim := defaultToolLimit(name)
 	if found {
-		parameters = t.Definition.Parameters
 		lim = t.Limit
 	}
 
@@ -1019,7 +1017,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	if found {
 		semanticRegistered = &t
 	}
-	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, parameters, semanticRegistered)
+	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, semanticRegistered)
 	if boundary == "" {
 		boundary = prevalidationBoundary(name, call.Arguments, found)
 	}

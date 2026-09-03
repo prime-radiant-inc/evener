@@ -85,11 +85,7 @@ func signature(name string, args []byte) string {
 // explicit retained-output offset while inheriting a tool's own omission rules
 // (notably read_transcript's #827 neutral-default normalization).
 func semanticCallSignature(name string, args map[string]any) string {
-	return semanticCallSignatureWithDefaults(name, args, nil)
-}
-
-func semanticCallSignatureWithDefaults(name string, args map[string]any, parameters map[string]any) string {
-	encoded, err := semanticCanonicalBytes(name, args, parameters, false, false)
+	encoded, err := semanticCanonicalBytes(name, args, false, false)
 	if err != nil {
 		// Args have passed JSON parsing and schema validation, so this is a
 		// defensive fallback rather than a normal path. It remains bounded and
@@ -99,17 +95,16 @@ func semanticCallSignatureWithDefaults(name string, args map[string]any, paramet
 	return name + ":" + shortHash(encoded)
 }
 
-func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any, omitDescription, applyBuiltInDefaults bool) ([]byte, error) {
-	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters, applyBuiltInDefaults), "", name == "read_file", omitDescription))
+func semanticCanonicalBytes(name string, args map[string]any, omitDescription, applyBuiltInDefaults bool) ([]byte, error) {
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, applyBuiltInDefaults), "", name == "read_file", omitDescription))
 }
 
 // canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
 // handlers. JSON Schema annotations are descriptive contracts, not proof that a
 // custom or MCP executor treats omission like an explicit value.
-func canonicalSemanticArgs(name string, args map[string]any, parameters map[string]any, applyBuiltInDefaults bool) map[string]any {
+func canonicalSemanticArgs(name string, args map[string]any, applyBuiltInDefaults bool) map[string]any {
 	out := make(map[string]any, len(args)+1)
 	maps.Copy(out, args)
-	_ = parameters
 	if !applyBuiltInDefaults {
 		return out
 	}
@@ -590,12 +585,46 @@ func semanticErrorClassFor(err error, output string) string {
 	case errors.Is(err, fs.ErrPermission):
 		return "permission_denied"
 	}
-	// Unstructured errors have no trustworthy machine-facing category. Do not
-	// derive one from rendered presentation text or collapse every such error
-	// into a coarse shared class: either choice can falsely park a semantically
-	// equivalent call. Exact-call protection still applies; executors that need
-	// semantic protection must expose FailureClasser.
-	return ""
+	return genericExecutionClass(output)
+}
+
+// genericExecutionClass derives a bounded, internal-only class for untyped
+// executor failures. It deliberately recognizes only the terminal trace suffix
+// convention produced by existing tool backends; other words remain meaningful.
+// finalizeBreaker passes this value directly into telemetryComponent, so neither
+// this prose nor an unsalted digest leaves the process.
+func genericExecutionClass(output string) string {
+	line := TruncateRunes(firstNonBlankLine(output), 256)
+	line = stripPresentationTraceSuffix(line)
+	line = strings.ToLower(collapseWhitespace(strings.TrimSpace(line)))
+	line = replaceDigitRuns(line, "#")
+	line = TruncateRunes(line, 200)
+	if line == "" {
+		return ""
+	}
+	return "generic:" + line
+}
+
+// stripPresentationTraceSuffix removes only a bounded terminal "[trace token]"
+// marker. The token grammar is deliberately narrow so bracketed error details
+// remain semantic identity rather than being mistaken for presentation noise.
+func stripPresentationTraceSuffix(line string) string {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	const marker = " [trace "
+	start := strings.LastIndex(lower, marker)
+	if start < 0 || !strings.HasSuffix(lower, "]") {
+		return line
+	}
+	token := lower[start+len(marker) : len(lower)-1]
+	if token == "" || len(token) > 64 {
+		return line
+	}
+	for _, r := range token {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' && r != ':' {
+			return line
+		}
+	}
+	return strings.TrimSpace(line[:start])
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the
