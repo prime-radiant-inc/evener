@@ -249,6 +249,26 @@ func TestProtocolCountTokensDoesNotEnforceCompletionThinkingBudget(t *testing.T)
 	}
 }
 
+// TestProtocolCountTokensKeepsEffortBudgetUnclamped pins the count-tokens
+// counterpart of the completion clamp: the clamp exists to satisfy the
+// completion contract that max_tokens strictly exceeds budget_tokens, which
+// as ReasoningBudget produced it.
+func TestProtocolCountTokensKeepsEffortBudgetUnclamped(t *testing.T) {
+	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, `{"input_tokens":21}` })
+	res := protoLive(srv)
+	res.Caps.ThinkingShape = new("budget")
+	req := protoReq("high") // a 32768-token table budget over the 8192 admitted
+	req.MaxTokens = new(8192)
+	n, err := (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), req, res)
+	if err != nil || n != 21 {
+		t.Fatalf("CountTokens = %d, %v; want 21, nil", n, err)
+	}
+	thinking, _ := got.body["thinking"].(map[string]any)
+	if budget := intFromAny(thinking["budget_tokens"]); budget != llm.ReasoningBudget("high") {
+		t.Fatalf("count body budget_tokens = %d, want the unclamped effort budget %d", budget, llm.ReasoningBudget("high"))
+	}
+}
+
 // TestProtocolEndpointFamilies pins the api-log endpoint_family of each
 // operation; count_tokens and models must not inherit anthropic_messages.
 func TestProtocolEndpointFamilies(t *testing.T) {

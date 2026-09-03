@@ -73,7 +73,7 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 	if tools, ok := body["tools"].([]map[string]any); ok && len(tools) > 0 && ttl != "" {
 		tools[len(tools)-1]["cache_control"] = cacheMarker(ttl)
 	}
-	applyThinkingShape(body, req, caps)
+	applyThinkingShape(body, req, caps, enforceCompletionContract)
 	if ov, ok := req.ProviderOptions[registry.ProtocolAnthropic].(map[string]any); ok {
 		for k, v := range ov {
 			if k == "beta_headers" {
@@ -99,9 +99,11 @@ func buildProtocolBodyForOperation(req llm.Request, res registry.Resolved, enfor
 // always-on adaptive rows included: no Claude row lists an off effort level,
 // so there is no value that says "off" here, and keeping the always-on body
 // would switch thinking on against the user's stated intent. An unset shape
-// sends nothing. A budget the output ceiling cannot fit is reduced to fit
-// (fitThinkingBudgetToOutputCeiling).
-func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps) {
+// sends nothing. On the completion path a budget the output ceiling cannot
+// fit is reduced to fit (fitThinkingBudgetToOutputCeiling); a token-count
+// body keeps the effort-derived budget, since that path enforces no
+// completion contract and strips max_tokens as an output-side field.
+func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps, enforceCompletionContract bool) {
 	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
 		return
 	}
@@ -127,8 +129,10 @@ func applyThinkingShape(body map[string]any, req llm.Request, caps registry.Caps
 			return
 		}
 		budget := llm.ReasoningBudget(effort)
-		if budget > 0 {
+		if budget > 0 && enforceCompletionContract {
 			budget = fitThinkingBudgetToOutputCeiling(budget, body["max_tokens"], caps.MaxOutputTokens)
+		}
+		if budget > 0 {
 			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
 		}
 		if registry.StringValue(caps.ThinkingShape) == "budget+effort" {
