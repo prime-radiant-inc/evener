@@ -317,16 +317,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
 		return err
 	}
+	// Signal handling, installed before the first thing that can wait on
+	// something: resolving plugins takes the plugin store lock, which an
+	// install or an auto-upgrade can be holding across git fetches, and an
+	// interrupt has to end that wait rather than being ignored until the
+	// daemon reaches its listener.
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
 		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
 			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	// context.Background: the signal-derived process context is not built
-	// until the server starts, and plugins resolve while flags are still
-	// being read.
-	resolvedPlugins, resolveErr := resolvePlugins(context.Background(), []string(pluginDirs), enabledPlugins.Value())
+	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
 	if resolveErr != nil && enabledPlugins.Value() != nil {
 		return fmt.Errorf("resolve plugins: %w", resolveErr)
 	}
@@ -537,10 +542,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
-
-	// Signal handling.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {

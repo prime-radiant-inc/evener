@@ -1091,3 +1091,38 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 		})
 	}
 }
+
+// Resolving plugins can wait on the plugin store lock, so the wait has to be
+// one an interrupt ends. That means the signal-derived context exists before
+// plugin resolution rather than after it, when the daemon starts listening.
+func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
+	deps := defaultServeDeps()
+	var stopSignals context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		stopSignals = stop
+		return next, stop
+	}
+	var resolveCtx context.Context
+	deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+		resolveCtx = ctx
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+
+	err := runServeWithDeps([]string{"--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want the selection error that stops this startup", err)
+	}
+	if resolveCtx == nil {
+		t.Fatal("plugin resolution never ran")
+	}
+	if stopSignals == nil {
+		t.Fatal("the interrupt handler was not installed before plugin resolution")
+	}
+	stopSignals()
+	if resolveCtx.Err() == nil {
+		t.Error("plugin resolution ran on a context an interrupt cannot reach")
+	}
+}
