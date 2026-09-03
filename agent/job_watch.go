@@ -680,10 +680,12 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
 	}
-	// A timer's id is minted here, after every check that can reject the create,
-	// so a rejected create never takes one. It goes into the key's Slot and
-	// through validateWatchConfig into the config, so the key's Slot, the
-	// config's slot, and the config's watchID are all the same id.
+	// A timer's id is minted here, after the target, event, and shape checks
+	// that reject most creates. The live-timer cap check below can still
+	// reject after the mint; ids are stateless, so nothing is burned. The id
+	// goes into the key's Slot and through validateWatchConfig into the
+	// config, so the key's Slot, the config's slot, and the config's watchID
+	// are all the same id.
 	if !a.Clear && watchArgsIsTimer(a) {
 		key.Slot = jobstore.NewWatchID()
 	}
