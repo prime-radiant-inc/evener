@@ -845,8 +845,9 @@ Canonical behavior:
   `offset_bytes` selects a fixed 16 KiB raw page in lifetime coordinates, and
   `output_match` plus optional `context_lines` performs a bounded RE2 search of
   retained complete lines. Returned continuations advance either operation.
-- An explicit `format` cannot be combined with paging or search. `range` and
-  `expand_turn` are session-only. Search is retrospective evidence; use
+- An explicit job `format` other than `markdown` is rejected. Explicit
+  `format:"markdown"` is a neutral no-op in the default, paging, and search
+  views. `range` and `expand_turn` are session-only. Search is retrospective evidence; use
   `job_watch(output_match=...)` when a future match should wake the owner.
 - Reads are non-consuming and non-acknowledging.
 - The markdown envelope carries `transcript_ref`, `format`, `content_type`, the
