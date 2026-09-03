@@ -26,15 +26,15 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	now := time.Now()
 	message := ProviderFailureMessage(operation, body)
 	base := httpBaseError{
-		provider:      res.Instance,
-		protocol:      res.Protocol,
-		statusCode:    status,
-		message:       message,
-		rejectedParam: rejectedParameter(raw, message),
-		errorCode:     extractErrorCode(raw),
-		retryAfter:    retryDelayFromHeaders(headers, now),
-		rawResponse:   raw,
+		provider:    res.Instance,
+		protocol:    res.Protocol,
+		statusCode:  status,
+		message:     message,
+		errorCode:   extractErrorCode(raw),
+		retryAfter:  retryDelayFromHeaders(headers, now),
+		rawResponse: raw,
 	}
+	base.rejectedParam = rejectedParameter(raw, message, base.errorCode)
 	code := base.errorCode
 	switch {
 	case status == 413, code == "context_length_exceeded", code == "request_too_large":
@@ -85,15 +85,24 @@ func ErrorProtocol(err error) string {
 	return ""
 }
 
-// rejectedParameter extracts the parameter a provider rejection named: the
-// structured error.param takes precedence, with the spec §12 message patterns
-// as fallback. raw is the decoded provider body (any shape; non-maps yield
-// ""), message the failure message. One extraction shared by every error
-// construction path, so a rejection identified either way carries the name.
-func rejectedParameter(raw any, message string) string {
+// rejectedParameter extracts the parameter a provider *rejection* named: the
+// structured error.param, honored only when the error is actually a
+// parameter-rejection — its code is unknown_parameter/unsupported_parameter or
+// its message matches a spec §12 rejection pattern — with the message patterns
+// as fallback and confirmation. raw is the decoded provider body (any shape;
+// non-maps yield ""), message the failure message, errorCode the code the
+// classifier extracted. error.param alone must not read as rejection: it is a
+// general field, and providers also use it to point at the offending
+// parameter in invalid-value errors ("Invalid value for 'temperature': must
+// be between 0 and 2"), where dropping the parameter would be wrong. One
+// extraction shared by every error construction path, so a rejection
+// identified either way carries the name.
+func rejectedParameter(raw any, message, errorCode string) string {
 	if m, ok := raw.(map[string]any); ok {
 		if errObj, ok := m["error"].(map[string]any); ok {
-			if param, _ := errObj["param"].(string); param != "" {
+			param, _ := errObj["param"].(string)
+			if param != "" && (errorCode == "unknown_parameter" || errorCode == "unsupported_parameter" ||
+				parameterNameFromMessage(message) != "") {
 				return param
 			}
 		}

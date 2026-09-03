@@ -385,12 +385,13 @@ func RewriteErrorProvider(err error, provider string) error {
 // responses are further refined by message via classifyByMessage. Unrecognized
 // status codes yield a retryable UnknownHTTPError.
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {
+	code := extractErrorCode(raw)
 	base := httpBaseError{
 		provider:      strings.TrimSpace(provider),
 		statusCode:    statusCode,
 		message:       message,
-		rejectedParam: rejectedParameter(raw, message),
-		errorCode:     extractErrorCode(raw),
+		rejectedParam: rejectedParameter(raw, message, code),
+		errorCode:     code,
 		retryAfter:    retryAfter,
 		rawResponse:   raw,
 	}
