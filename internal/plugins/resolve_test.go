@@ -2,12 +2,16 @@ package plugins
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"primeradiant.com/evener/internal/bundled"
 )
 
 func TestResolveForLaunch_Contract(t *testing.T) {
@@ -425,5 +429,110 @@ func TestPreviewForLaunch_DoesNotWriteToTheStore(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(m.Root, "bundled")); !os.IsNotExist(err) {
 		t.Fatalf("preview wrote to the plugin store (stat err = %v)", err)
+	}
+}
+
+// A published copy is reused only when the destination is a real directory. A
+// file or a symlink there belongs to someone else: adopting it would load an
+// unrelated directory and report it as the bundled plugin.
+func TestMaterializeBundledPlugin_RejectsAForeignDestination(t *testing.T) {
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]func(t *testing.T, dest string){
+		"regular file": func(t *testing.T, dest string) {
+			if err := os.WriteFile(dest, []byte("not a plugin"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink to an unrelated plugin": func(t *testing.T, dest string) {
+			impostor := filepath.Join(t.TempDir(), "impostor")
+			writePlugin(t, impostor, "coordinator-workflow", nil)
+			if err := os.Symlink(impostor, dest); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, plant := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			dest := m.bundledPluginPath("coordinator-workflow", digest)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			plant(t, dest)
+			path, err := m.materializeBundledPlugin("coordinator-workflow")
+			if err == nil {
+				t.Fatalf("materializeBundledPlugin = %s, want an error for a %s at the destination", path, name)
+			}
+		})
+	}
+}
+
+// A publish killed between staging and rename leaves an orphan directory in
+// the store; the next publish reclaims it. Staging a live publisher may still
+// be filling is left alone.
+func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
+	plantStaging := func(t *testing.T, m *Manager) string {
+		t.Helper()
+		staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+		if err := os.MkdirAll(staging, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return staging
+	}
+
+	t.Run("abandoned staging is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+		staging := plantStaging(t, m)
+		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staging); !os.IsNotExist(err) {
+			t.Fatalf("abandoned staging survived a later publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("staging in flight is left alone", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		staging := plantStaging(t, m)
+		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staging); err != nil {
+			t.Fatalf("staging of a concurrent publish was reclaimed: %v", err)
+		}
+	})
+}
+
+// The resolver looks a bundled plugin up by its embedded directory name and
+// then keys the inventory by the manifest name the loader reports, so every
+// bundled plugin must carry the manifest name its directory promises.
+func TestBundledPluginsAreNamedAfterTheirDirectory(t *testing.T) {
+	entries, err := fs.ReadDir(bundled.Plugins(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no bundled plugins are embedded")
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		m := NewManager(t.TempDir())
+		path, err := m.materializeBundledPlugin(entry.Name())
+		if err != nil {
+			t.Fatalf("materialize %s: %v", entry.Name(), err)
+		}
+		instance, err := enabledLoad(path)
+		if err != nil {
+			t.Fatalf("load %s: %v", entry.Name(), err)
+		}
+		if instance.Manifest.Name != entry.Name() {
+			t.Errorf("bundled plugin %s declares manifest name %q, want %q", entry.Name(), instance.Manifest.Name, entry.Name())
+		}
 	}
 }

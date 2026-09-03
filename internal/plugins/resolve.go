@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/internal/bundled"
@@ -197,7 +198,11 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 			}
 			if !seen[name] {
 				// Bundled plugins join the inventory only by request, so an
-				// unremarkable launch never picks them up.
+				// unremarkable launch never picks them up. The lookup is by
+				// embedded directory name while add keys the inventory by
+				// manifest name; the two agree for every bundled plugin, and
+				// TestBundledPluginsAreNamedAfterTheirDirectory keeps it that
+				// way.
 				if loadPath, path, err := bundledPath(name); err == nil {
 					add(loadPath, path, LaunchPluginSourceBundled, "", "", name)
 				} else if !errors.Is(err, fs.ErrNotExist) {
@@ -216,6 +221,15 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 	return resolution, nil
 }
 
+// stagingPrefix names the private directory a publish copies into before
+// renaming it into place. abandonedStaging is how stale such a directory must
+// be before a later publish reclaims it: orders of magnitude longer than the
+// copy it names, so a publish in flight is never disturbed.
+const (
+	stagingPrefix    = ".stage-"
+	abandonedStaging = time.Hour
+)
+
 // materializeBundledPlugin publishes the bundled plugin named name under the
 // store root as <Root>/bundled/<name>-<digest>, where digest covers the
 // plugin's embedded contents. A published directory is immutable: it is never
@@ -229,13 +243,18 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 		return "", err
 	}
 	dest := m.bundledPluginPath(name, digest)
-	if _, err := os.Stat(dest); err == nil {
+	published, err := publishedBundledCopy(dest)
+	if err != nil {
+		return "", err
+	}
+	if published {
 		return dest, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", err
 	}
-	staging, err := os.MkdirTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".stage-")
+	m.reclaimAbandonedStaging(filepath.Dir(dest))
+	staging, err := os.MkdirTemp(filepath.Dir(dest), stagingPrefix+filepath.Base(dest)+"-")
 	if err != nil {
 		return "", fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
@@ -245,12 +264,51 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 	}
 	if err := os.Rename(staging, dest); err != nil {
 		_ = os.RemoveAll(staging)
-		if _, statErr := os.Stat(dest); statErr == nil {
+		if winner, statErr := publishedBundledCopy(dest); statErr == nil && winner {
 			return dest, nil
 		}
 		return "", fmt.Errorf("publish bundled plugin %s: %w", name, err)
 	}
 	return dest, nil
+}
+
+// publishedBundledCopy reports whether dest already holds a published copy.
+// Only a real directory counts: a file or a symlink there was not published by
+// this code, and loading through it would report an unrelated directory as the
+// bundled plugin.
+func publishedBundledCopy(dest string) (bool, error) {
+	info, err := os.Lstat(dest)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("bundled plugin path %s is not a directory", dest)
+	}
+	return true, nil
+}
+
+// reclaimAbandonedStaging removes staging directories orphaned by a publish
+// that was killed before its rename. Staging lives in the store so the rename
+// stays on one filesystem, so nothing else would ever collect them.
+func (m *Manager) reclaimAbandonedStaging(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), stagingPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || m.now().Sub(info.ModTime()) < abandonedStaging {
+			continue
+		}
+		// Best effort: a concurrent publisher may be reclaiming the same orphan.
+		_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
+	}
 }
 
 func (m *Manager) bundledPluginPath(name, digest string) string {
