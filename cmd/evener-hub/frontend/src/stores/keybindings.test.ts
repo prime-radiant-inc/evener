@@ -24,6 +24,12 @@ function overridesPayload(revision: number, rules: KeybindingsRule[]): Keybindin
   return { version: 1, revision, rules };
 }
 
+function defaultChordOf(bindingId: string): string {
+  const binding = keybindingsRegistry.getState().bindings.find((b) => b.id === bindingId);
+  if (binding === undefined) throw new Error(`test setup: no binding ${bindingId}`);
+  return serializeChord(binding.chord);
+}
+
 async function wireClient(client: FakeClient, supported: boolean): Promise<void> {
   connectionStore.getState().connect(client);
   connectionStore.setState({
@@ -268,5 +274,113 @@ describe("keybindings store: patch", () => {
       keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+M" }]),
     ).rejects.toThrow(/unavailable/);
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+  });
+});
+
+describe("keybindings store: reconcile resilience", () => {
+  test("dropping an override whose default chord was reclaimed degrades to a warning and restores every action", async () => {
+    // The reviewer's reproduction. Payload 1 is legal via freed-chord
+    // reclaim: palette.open moves away, rail.toggle claims its default chord.
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [
+        { action: ACTIONS.paletteOpen, chord: "Control+Y" },
+        { action: ACTIONS.railToggle, chord: paletteDefault },
+      ]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+
+    // Payload 2 drops palette.open's override: restoring its default needs
+    // the chord rail.toggle is holding. The reconcile must not throw.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(2, [{ action: ACTIONS.railToggle, chord: paletteDefault }]),
+    });
+
+    const state = keybindingsStore.getState();
+    expect(state.hubError).toBeNull();
+    expect(state.revision).toBe(2);
+    // The restore wins: the rule claiming the restored default's chord is
+    // skipped with a conflict warning, so BOTH actions fall back to their
+    // defaults and every action stays bound.
+    expect(state.warnings).toHaveLength(1);
+    expect(state.warnings[0]?.reason).toBe("conflict");
+    expect(state.warnings[0]?.rule).toEqual({ action: ACTIONS.railToggle, chord: paletteDefault });
+    expect(state.warnings[0]?.conflictWith).toBe(ACTIONS.paletteOpen);
+    expect(state.overrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([
+      ACTIONS.railToggle,
+      `${ACTIONS.railToggle}#mod-twin`,
+    ]);
+  });
+
+  test("a reconcile failure on the changed path sets hubError, keeps the revision retryable, and rolls back", async () => {
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    expect(keybindingsStore.getState().revision).toBe(1);
+
+    // Out-of-band wedge: a foreign binding squats palette.open's default
+    // chord, so restoring it (when the override is dropped) conflicts with a
+    // binding no rule can be reassigned to.
+    keybindingsRegistry
+      .getState()
+      .registerBinding({ id: "foreign", actionId: "foreign.action", chord: paletteDefault });
+
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(2, []),
+    });
+
+    const failed = keybindingsStore.getState();
+    // Nothing escaped the notification dispatch; the failure is surfaced.
+    expect(failed.hubError).not.toBeNull();
+    // The revision did NOT advance past a failed apply...
+    expect(failed.revision).toBe(1);
+    // ...and the registry rolled back to its last good state.
+    const paletteBindings = bindingsFor(ACTIONS.paletteOpen);
+    expect(paletteBindings.map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(serializeChord(paletteBindings[0]?.chord ?? [])).toBe("Control+P");
+
+    // Removing the wedge makes the SAME revision retryable (the stale guard
+    // did not eat it).
+    keybindingsRegistry.getState().unregisterBinding("foreign");
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(2, []),
+    });
+    const retried = keybindingsStore.getState();
+    expect(retried.hubError).toBeNull();
+    expect(retried.revision).toBe(2);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("resetKeybindingsStoreForTests is safe after a wedging attempt", async () => {
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    keybindingsRegistry
+      .getState()
+      .registerBinding({ id: "foreign", actionId: "foreign.action", chord: paletteDefault });
+
+    expect(() => resetKeybindingsStoreForTests()).not.toThrow();
+    expect(keybindingsStore.getState().revision).toBe(0);
+    expect(keybindingsStore.getState().overrides).toEqual([]);
   });
 });

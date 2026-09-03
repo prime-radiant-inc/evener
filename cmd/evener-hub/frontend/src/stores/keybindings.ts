@@ -17,7 +17,7 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { serializeChord } from "../keybindings/chord";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "../keybindings/overrides";
-import { keybindingsRegistry } from "../keybindings/registry";
+import { type Binding, keybindingsRegistry } from "../keybindings/registry";
 import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "../keybindings/validation";
 import { WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
@@ -87,12 +87,36 @@ function fromWireOverrides(value: unknown): KeybindingsOverrides | undefined {
   return value as KeybindingsOverrides;
 }
 
+/** Restores a bindings snapshot taken before a failed reconcile: unwinds
+ * every current binding and re-registers the snapshot in order, returning
+ * the registry to its last good state. Re-registering a previously-valid
+ * set cannot conflict. */
+function rollbackBindings(snapshot: readonly Binding[]): void {
+  const state = keybindingsRegistry.getState();
+  for (const binding of state.bindings) state.unregisterBinding(binding.id);
+  for (const binding of snapshot) {
+    state.registerBinding({
+      id: binding.id,
+      actionId: binding.actionId,
+      chord: binding.chord,
+      scope: binding.scope,
+      ...(binding.when === undefined ? {} : { when: binding.when }),
+      allowInEditable: binding.allowInEditable,
+      allowInModal: binding.allowInModal,
+      ignoreIfDefaultPrevented: binding.ignoreIfDefaultPrevented,
+    });
+  }
+}
+
 /** Reconciles the registry to the payload's effective overrides: validates,
  * strips the bindings of every action whose effective chord changed, then
  * re-establishes each (override or restored default). Two-phase so a payload
- * that moves a chord between actions never trips a transient conflict. */
+ * that moves a chord between actions never trips a transient conflict. The
+ * mutation is atomic: a throw rolls the registry back to its pre-reconcile
+ * state before propagating, so callers surface the failure with the last
+ * good bindings intact. */
 function applyOverrideRules(rules: readonly OverrideRule[]): void {
-  const validated = validateOverrideRules(rules, keybindingsRegistry);
+  const validated = validateOverrideRules(rules, keybindingsRegistry, undefined, new Set(appliedOverrides.keys()));
   const next = new Map<string, string | null>();
   for (const rule of validated.rules) {
     next.set(rule.action, rule.chord === null ? null : serializeChord(rule.chord));
@@ -105,13 +129,19 @@ function applyOverrideRules(rules: readonly OverrideRule[]): void {
     if (!next.has(action)) changedActions.add(action);
   }
   if (changedActions.size > 0) {
-    for (const action of changedActions) removeActionBindings(keybindingsRegistry, action);
-    for (const action of changedActions) {
-      if (next.has(action)) {
-        rebindAction(keybindingsRegistry, action, next.get(action) ?? null);
-      } else {
-        restoreDefaultBinding(keybindingsRegistry, action);
+    const snapshot = keybindingsRegistry.getState().bindings;
+    try {
+      for (const action of changedActions) removeActionBindings(keybindingsRegistry, action);
+      for (const action of changedActions) {
+        if (next.has(action)) {
+          rebindAction(keybindingsRegistry, action, next.get(action) ?? null);
+        } else {
+          restoreDefaultBinding(keybindingsRegistry, action);
+        }
       }
+    } catch (error) {
+      rollbackBindings(snapshot);
+      throw error;
     }
   }
   appliedOverrides.clear();
@@ -126,12 +156,16 @@ function applyOverrideRules(rules: readonly OverrideRule[]): void {
 }
 
 /** Applies a confirmed hub payload (get result, changed params, patch
- * response): stale revisions are ignored, the rest reconcile the registry. */
+ * response): stale revisions are ignored, the rest reconcile the registry.
+ * The revision advances ONLY after a successful reconcile: a failed apply
+ * leaves the previous revision in place so the payload stays retryable and
+ * a later `changed` with the same revision is not eaten by the stale guard. */
 function applyHubOverrides(payload: KeybindingsOverrides): void {
   const state = keybindingsStore.getState();
   if (payload.revision < state.revision) return;
-  keybindingsStore.setState({ revision: payload.revision });
   applyOverrideRules(payload.rules);
+  // A successful apply also supersedes any earlier apply failure's hubError.
+  keybindingsStore.setState({ revision: payload.revision, hubError: null });
 }
 
 function currentSupport(): "unknown" | "supported" | "unsupported" {
@@ -190,7 +224,14 @@ function onNotification(notification: AnyNotification): void {
   if (notification.method !== "evener/settings/keybindings/changed") return;
   const payload = fromWireOverrides(notification.params);
   if (payload === undefined) return;
-  applyHubOverrides(payload);
+  try {
+    applyHubOverrides(payload);
+  } catch (error) {
+    // Same posture as refreshFor: a reconcile failure surfaces as hubError
+    // (the registry has already rolled back to its last good state), never
+    // as an exception escaping the client's notification dispatch.
+    keybindingsStore.setState({ hubError: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 async function refreshFor(client: AppwireClientLike, epoch: number): Promise<void> {
@@ -333,9 +374,15 @@ export function resetKeybindingsStoreForTests(): void {
   refreshSerial += 1;
   patchSerial += 1;
   // Restore defaults for every applied override so the registry singleton
-  // cannot leak overrides into the next test.
+  // cannot leak overrides into the next test. A wedged registry (a foreign
+  // binding squatting a default chord) must not make reset itself throw.
   for (const action of appliedOverrides.keys()) {
-    restoreDefaultBinding(keybindingsRegistry, action);
+    try {
+      restoreDefaultBinding(keybindingsRegistry, action);
+    } catch {
+      // The next test rebuilds the registry from scratch; a failed restore
+      // here leaves the override binding in place, which that rebuild removes.
+    }
   }
   appliedOverrides.clear();
   keybindingsStore.setState({ ...initialState() });

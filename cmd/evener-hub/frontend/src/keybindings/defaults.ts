@@ -44,7 +44,7 @@
 
 import { ACTIONS } from "./actions";
 import { type KeySequence, parseChord, serializeChord, withOptionalModifier } from "./chord";
-import type { Binding, BindingInput, KeybindingsRegistry } from "./registry";
+import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export const SETTINGS_SCOPE = "settings";
 
@@ -181,4 +181,29 @@ export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, 
     }
   }
   return registered;
+}
+
+export interface DefaultChordInfo {
+  scope: string;
+  serialized: string;
+}
+
+/** The (scope, serialized chord) pairs registerDefaultBindingsForAction would
+ * register for the action, WITHOUT registering them: the validation layer
+ * simulates dropped-override restorations against these. Throws on an
+ * unknown action id. */
+export function defaultBindingChordsForAction(actionId: string): DefaultChordInfo[] {
+  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
+  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
+  const chords: DefaultChordInfo[] = [];
+  for (const input of inputs) {
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      chords.push({
+        scope: entry.scope ?? GLOBAL_SCOPE,
+        serialized: serializeChord(typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord),
+      });
+    }
+  }
+  return chords;
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
 import { serializeChord } from "./chord";
 import { registerDefaultBindings } from "./defaults";
+import { rebindAction } from "./overrides";
 import { createKeybindingsRegistry, type KeybindingsRegistry } from "./registry";
 import { validateOverrideRules } from "./validation";
 
@@ -215,5 +216,40 @@ describe("validateOverrideRules reserved chords", () => {
     );
     expect(result.warnings).toEqual([]);
     expect(result.rules).toHaveLength(1);
+  });
+});
+
+describe("validateOverrideRules dropped-override restorations", () => {
+  test("a rule claiming a chord a dropped override's restored default needs is skipped with a warning", () => {
+    const registry = withDefaults();
+    const reclaimed = defaultChord(registry, ACTIONS.paletteOpen);
+    // The live state the reviewer's payload 1 produces: palette.open moved
+    // away, rail.toggle claimed its freed default chord.
+    rebindAction(registry, ACTIONS.paletteOpen, "Control+Y");
+    rebindAction(registry, ACTIONS.railToggle, reclaimed);
+
+    // Payload 2 drops palette.open (its defaults must be restored) and keeps
+    // rail.toggle's claim on the chord the restore needs. The restore wins:
+    // the rule is skipped with a conflict warning so every action stays bound.
+    const result = validateOverrideRules(
+      [{ action: ACTIONS.railToggle, chord: reclaimed }],
+      registry,
+      "other",
+      new Set([ACTIONS.paletteOpen, ACTIONS.railToggle]),
+    );
+
+    expect(result.rules).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.reason).toBe("conflict");
+    expect(result.warnings[0]?.rule).toEqual({ action: ACTIONS.railToggle, chord: reclaimed });
+    expect(result.warnings[0]?.conflictWith).toBe(ACTIONS.paletteOpen);
+  });
+
+  test("a dropped override restores cleanly when its default chord was not reclaimed", () => {
+    const registry = withDefaults();
+    rebindAction(registry, ACTIONS.paletteOpen, "Control+Y");
+    const result = validateOverrideRules([], registry, "other", new Set([ACTIONS.paletteOpen]));
+    expect(result.rules).toEqual([]);
+    expect(result.warnings).toEqual([]);
   });
 });
