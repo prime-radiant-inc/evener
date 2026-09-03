@@ -3,17 +3,13 @@
 package plugins
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 type coverageDirEntry struct {
