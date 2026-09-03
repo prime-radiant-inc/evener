@@ -176,6 +176,21 @@ async function measureAt(cdpEndpoint, url, width) {
   }
 }
 
+async function verifyItemPaging(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 1024, height: 900 });
+    await navigateTo(page, url);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return await evaluate(send, "window.verifyItemPaging()\n");
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 async function waitForDynamicViewport(send) {
   await evaluate(
     send,
@@ -944,6 +959,19 @@ async function main() {
       );
     } finally {
       startupDeadline.clear();
+    }
+
+    const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);
+    if (
+      paging.duplicateItemIds.length !== 0 ||
+      paging.missingItemIds.length !== 0 ||
+      paging.toolRows !== 1 ||
+      Math.abs(paging.anchorDelta) > 1
+    ) {
+      failed++;
+      console.log(`atomic item paging ... FAIL - ${JSON.stringify(paging)}`);
+    } else {
+      console.log(`atomic item paging ... PASS - ${JSON.stringify(paging)}`);
     }
 
     const shortMenu = await verifyShortSessionMenu(
