@@ -176,10 +176,13 @@ function graphProjectResource(
   return normalizedResource(
     key,
     {
+      generation_id: "g1",
+      revision: 1,
       key: projectKey,
       current: { sessions: [session], remaining: 0 },
       recent: { sessions: [], remaining: 0 },
       archived: { sessions: [], remaining: 0 },
+      truncated: false,
     },
     {
       metadata: { current_remaining: 0, recent_remaining: 0, archived_remaining: 0 },
@@ -359,6 +362,66 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
     expect(loadProject).toHaveBeenCalledWith("p");
   });
+  test.each(["projects", "archived_projects", "test_runs"] as const)(
+    "hydrates a default-expanded project discovered on a later v2 %s catalog page exactly once",
+    async (catalog) => {
+      const projectKey = `${catalog}-late`;
+      const catalogKey = { kind: "catalog", catalog, offset: 1, limit: 100 } as const;
+      const projectSummary = {
+        key: projectKey,
+        name: `Late ${catalog}`,
+        session_count: 1,
+        default_expanded: true,
+      };
+      const summaryKey = scopedEntityKey(catalogKey, "1");
+      const catalogPage = normalizedResource(
+        catalogKey,
+        { projects: [projectSummary], remaining: 0 },
+        {
+          metadata: { remaining: 0 },
+          entities: [{ key: summaryKey, kind: "project", value: projectSummary }],
+          containers: [
+            {
+              key: navigationRootContainerKey(catalogKey, "projects"),
+              owner: { kind: "resource_root", slot: "projects" },
+              children: [summaryKey],
+            },
+          ],
+        },
+      );
+      const loaded = graphProjectResource(
+        projectKey,
+        "2",
+        "3",
+        summary({ ref: `local:${projectKey}`, session_id: projectKey, title: `Loaded ${catalog}` }),
+      );
+      const loadProject = vi.fn(async (_projectKey: string): Promise<ResourceState<NavigationProjectResource>> => {
+        navigationStore.setState((state) => ({
+          resources: new Map([...state.resources, [keyID(loaded.key), loaded as ResourceState]]),
+        }));
+        return loaded;
+      });
+      installState([catalogPage as ResourceState]);
+      navigationStore.setState({ mode: "v2", loadProject });
+
+      render(<Rail />);
+      await act(async () => undefined);
+
+      expect(loadProject).toHaveBeenCalledTimes(1);
+      expect(loadProject).toHaveBeenCalledWith(projectKey);
+      const model = adaptNavigationResources(navigationStore.getState());
+      const collection =
+        catalog === "projects"
+          ? model.projects
+          : catalog === "archived_projects"
+            ? model.archivedProjects
+            : model.testRuns;
+      expect(collection.find((project) => project.key === projectKey)).toMatchObject({
+        loaded: true,
+        sessions: [{ title: `Loaded ${catalog}` }],
+      });
+    },
+  );
   test("a settled gone v2 project stays unloaded and is not rehydrated", async () => {
     const catalog = catalogResource([{ key: "gone", name: "Gone", session_count: 1, default_expanded: true }]);
     const stale = graphProjectResource("gone", "4", "5", summary({ ref: "local:gone", title: "Deleted" }));

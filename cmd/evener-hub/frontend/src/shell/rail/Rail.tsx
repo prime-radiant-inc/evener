@@ -923,7 +923,7 @@ function NavigationRail({
     }
   }, [loadProjectRoot, resources]);
   useEffect(() => {
-    if (navigationMode !== "v1") return;
+    if (navigationMode !== "v1" && navigationMode !== "v2") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
@@ -936,6 +936,8 @@ function NavigationRail({
         project.loaded === true ||
         project.resourceError !== undefined ||
         (project.session_count ?? 0) === 0 ||
+        resourceState(navigationStore.getState(), { kind: "project", projectKey: project.key })?.normalized
+          ?.presence === "gone" ||
         rootLoadsInFlight.current.has(project.key)
       )
         continue;
