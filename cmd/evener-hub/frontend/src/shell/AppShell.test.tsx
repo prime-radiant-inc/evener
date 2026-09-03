@@ -1014,6 +1014,50 @@ test("a deep-link lookup starts exactly once when navigation mode becomes v2", a
   ]);
 });
 
+test("a direct route with a settled gone v2 location replaces unrelated state with welcome without another lookup", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
+  const ref = "local:deleted-direct";
+  const key = { kind: "location", ref } as const;
+  const lookupLocation = vi.fn().mockResolvedValue(undefined);
+  navigationStore.setState({
+    mode: "v2",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: null,
+          normalized: {
+            key,
+            graph: { metadata: {}, entities: new Map(), containers: new Map() },
+            version: { generationId: "generation_test", revision: 2, etag: '"gone"' },
+            presence: "gone",
+          },
+          loadedRevision: 2,
+          targetRevision: null,
+          forceToken: 0,
+          etag: '"gone"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+    lookupLocation,
+  });
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("welcome"));
+  await act(async () => undefined);
+
+  expect(paneFor(ref)).toBeUndefined();
+  expect(paneFor("local:unrelated")).toBeUndefined();
+  expect(lookupLocation).not.toHaveBeenCalled();
+});
+
 test("a nested location opens its explicit owner without loading a project", async () => {
   const child = "local:collapsed-child";
   const client = navClient();

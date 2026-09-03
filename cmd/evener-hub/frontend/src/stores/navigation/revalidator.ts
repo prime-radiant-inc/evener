@@ -205,7 +205,8 @@ export class NavigationRevalidator {
     const e = this.entry(key);
     e.request = request as NavigationRequest;
     if (e.promise) return e.promise as Promise<ResourceState<T>>;
-    if (!e.state.stale && e.state.data !== null) return Promise.resolve(e.state as ResourceState<T>);
+    if (!e.state.stale && (e.state.data !== null || e.state.normalized?.presence === "gone"))
+      return Promise.resolve(e.state as ResourceState<T>);
     return this.start(e) as Promise<ResourceState<T>>;
   }
   track<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): void {

@@ -119,7 +119,7 @@ export interface NavigationResponse<T = unknown> {
   generationID: string;
   revision: number;
   etag: string;
-  data?: T;
+  data?: T | null;
   v2?: DecodedNavigationResponse;
   normalized?: NormalizedResource;
 }

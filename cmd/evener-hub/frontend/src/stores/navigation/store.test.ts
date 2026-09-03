@@ -889,10 +889,14 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
   );
   await flush();
   const gone = navigationStore.getState().resources.get(keyID(sectionKey));
+  expect(gone?.data).toBeNull();
   expect(gone?.normalized?.presence).toBe("gone");
   expect(gone?.normalized?.graph.entities.size).toBe(0);
   expect(gone?.normalized?.version).toEqual({ generationId: generation, revision: 2, etag: "section-2" });
   expect(selectGlobalRows()).toEqual([]);
+
+  expect(await navigationStore.getState().loadSection("live")).toBe(gone);
+  expect(sectionCalls).toBe(2);
 
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -916,6 +920,7 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
   );
   await flush();
   const reappeared = navigationStore.getState().resources.get(keyID(sectionKey));
+  expect(reappeared?.data).not.toBeNull();
   expect(reappeared?.normalized?.presence).toBe("present");
   expect(reappeared?.normalized?.graph.entities.size).toBe(1);
   expect(reappeared?.normalized?.version).toEqual({ generationId: generation, revision: 3, etag: "section-3" });

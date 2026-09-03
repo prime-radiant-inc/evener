@@ -359,6 +359,30 @@ describe("resource-backed Rail", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
     expect(loadProject).toHaveBeenCalledWith("p");
   });
+  test("a settled gone v2 project stays unloaded and is not rehydrated", async () => {
+    const catalog = catalogResource([{ key: "gone", name: "Gone", session_count: 1, default_expanded: true }]);
+    const stale = graphProjectResource("gone", "4", "5", summary({ ref: "local:gone", title: "Deleted" }));
+    const gone = {
+      ...stale,
+      normalized: { ...stale.normalized!, presence: "gone" as const },
+    };
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    installState([catalog, gone]);
+    navigationStore.setState({ mode: "v2", loadProject });
+
+    render(<Rail />);
+    await act(async () => undefined);
+
+    expect(
+      adaptNavigationResources(navigationStore.getState()).projects.find((project) => project.key === "gone"),
+    ).toMatchObject({
+      loaded: false,
+      sessions: [],
+    });
+    expect(loadProject).not.toHaveBeenCalled();
+    expect(screen.queryByText("Deleted")).toBeNull();
+  });
+
   test("renders a loaded root's bounded overflow as a canonical page descriptor", () => {
     const loadProjectPage = vi.fn();
     const row = summary({ ref: "local:current", title: "Current", state: "active" });
@@ -730,6 +754,34 @@ describe("resource-backed Rail", () => {
     if (!pinnedSection) throw new Error("pinned section missing");
     expect(within(pinnedSection).getByText("First pin")).toBeTruthy();
   });
+  test("a settled gone v2 location consumes reveal without another lookup", async () => {
+    const key = { kind: "location", ref: "local:gone-reveal" } as const;
+    const present = normalizedResource(key, null, {
+      metadata: {},
+      entities: [],
+      containers: [
+        {
+          key: navigationRootContainerKey(key, "session"),
+          owner: { kind: "resource_root", slot: "session" },
+          children: [],
+        },
+      ],
+    });
+    const gone = { ...present, data: null, normalized: { ...present.normalized!, presence: "gone" as const } };
+    const lookupLocation = vi.fn().mockResolvedValue(gone);
+    const consumed = vi.fn();
+    installState([gone as ResourceState]);
+    navigationStore.setState({ mode: "v2", lookupLocation });
+
+    const view = render(<Rail revealTarget="local:gone-reveal" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    view.rerender(<Rail revealTarget="local:gone-reveal" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+
+    expect(lookupLocation).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledTimes(1);
+  });
+
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);
     installState([

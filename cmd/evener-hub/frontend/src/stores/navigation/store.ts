@@ -478,14 +478,16 @@ function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationReq
       if (decoded.status !== "not_modified" && !normalized)
         throw new NavigationProtocolError("not_modified has no cached resource");
       const materialized =
-        decoded.status === "not_modified" || !normalized ? undefined : (materializeNavigationResource(normalized) as T);
+        decoded.status === "not_modified" || decoded.status === "gone" || !normalized
+          ? undefined
+          : (materializeNavigationResource(normalized) as T);
       if (materialized !== undefined) assertNavigationPageProgress(k, materialized);
       return {
         status: decoded.status === "not_modified" ? 304 : 200,
         generationID: generationId,
         revision,
         etag: responseEtag,
-        data: materialized,
+        data: decoded.status === "gone" ? null : materialized,
         v2: decoded,
         normalized,
       };
@@ -518,8 +520,10 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   return requestRevalidator.load<T>(resourceKey, requestFor<T>(resourceKey, requestClient));
 }
 async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
-  const first = await load<NavigationProjectResource>({ kind: "project", projectKey });
-  if (!isNavigationUnavailable(first.error)) return first;
+  const projectResourceKey = { kind: "project", projectKey } as const;
+  const first = await load<NavigationProjectResource>(projectResourceKey);
+  const gone = first.normalized?.presence === "gone";
+  if (!gone && !isNavigationUnavailable(first.error)) return first;
   const state = navigationStore.getState();
   const catalogs = [...state.resources.values()].filter((r) => r.key.kind === "catalog");
   const known = catalogs.filter((r) => {
@@ -550,7 +554,8 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
     return (r.data as NavigationProjectCatalog | null)?.projects.some((p) => p.key === projectKey) ?? false;
   });
   if (!present) return first;
-  return load<NavigationProjectResource>({ kind: "project", projectKey });
+  if (gone) revalidator?.force([projectResourceKey]);
+  return load<NavigationProjectResource>(projectResourceKey);
 }
 function actions() {
   return {

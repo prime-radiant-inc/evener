@@ -145,6 +145,7 @@ function routePlacementIsApplied(
   pathname: string,
   location: NavigationSessionLocation | null,
   locationTerminal = false,
+  locationGone = false,
   allowFocusedPanel = false,
 ): boolean {
   const route = urlToPane(pathname);
@@ -168,8 +169,8 @@ function routePlacementIsApplied(
     return typeof paneRef === "string" ? paneRef : null;
   };
   if (location === null) {
-    const main = workspace.mainPane();
-    return locationTerminal && main?.type === "session" && sessionRefOf(main) === ref;
+    if (locationGone) return main.type === "welcome";
+    return locationTerminal && main.type === "session" && sessionRefOf(main) === ref;
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
@@ -210,6 +211,7 @@ function openRouteAsPane(
   pathname: string,
   location: NavigationSessionLocation | null,
   locationTerminal: boolean,
+  locationGone: boolean,
   pendingSessionRef: { current: string | null },
 ): void {
   const route = urlToPane(pathname);
@@ -221,6 +223,12 @@ function openRouteAsPane(
   if (route.type === "session") {
     const ref = sessionRefFromRouteParams(route.params);
     if (ref === null) return;
+
+    if (locationGone) {
+      pendingSessionRef.current = null;
+      workspaceStore.getState().replacePrimary("welcome", {});
+      return;
+    }
 
     if (location === null && !locationTerminal) {
       pendingSessionRef.current = ref;
@@ -478,19 +486,22 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   const navigationMode = useNavigationStore((state) => state.mode);
   const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
   const locationFailed = locationResource?.error != null;
+  const locationGone = locationResource?.normalized?.presence === "gone";
   const locationNotFound = isNavigationUnavailable(locationResource?.error);
   const locationTerminal = locationFailed && (locationResource?.data === null || locationNotFound);
-  const location = locationNotFound
-    ? null
-    : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
+  const location =
+    locationNotFound || locationGone
+      ? null
+      : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
     if (locationRef === null || (navigationMode !== "v1" && navigationMode !== "v2")) return;
-    if (locationFailed || locationResource?.loading || (locationResource && !locationResource.stale)) return;
+    if (locationFailed || locationGone || locationResource?.loading || (locationResource && !locationResource.stale))
+      return;
     void navigationStore
       .getState()
       .lookupLocation(locationRef)
       .catch(() => undefined);
-  }, [locationFailed, locationRef, locationResource, navigationMode]);
+  }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
   const isMobile = useIsMobile();
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
@@ -581,7 +592,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   const placedPathnameRef = useRef<string | null>(null);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
+    openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
@@ -613,16 +624,16 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, allowFocusedPanel)) {
+      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedPanel)) {
         placedPathnameRef.current = pathname;
         return;
       }
       openedForPathnameRef.current = pathname;
-      const expectWorkspaceTransition = route.type !== "session" || location !== null;
+      const expectWorkspaceTransition = route.type !== "session" || location !== null || locationGone;
       routePlacementInProgressRef.current = expectWorkspaceTransition;
       routePlacementPathnameRef.current = expectWorkspaceTransition ? pathname : null;
       try {
-        openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
+        openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
       } finally {
         if (!expectWorkspaceTransition) {
           routePlacementInProgressRef.current = false;
@@ -634,8 +645,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     if (route?.type === "welcome") reconcileWelcomeRouteWithLocation(location);
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
-  }, [pathname, route?.type, location, locationTerminal, workspacePanesVersion]);
+    openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+  }, [pathname, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
 
   return (
     <ClientProvider client={client}>

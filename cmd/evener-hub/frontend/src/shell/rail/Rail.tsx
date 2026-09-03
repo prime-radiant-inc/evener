@@ -360,8 +360,16 @@ function dedupeSessions(rows: readonly RailSession[]): RailSession[] {
     return true;
   });
 }
+function resourceState(
+  state: ReturnType<typeof navigationStore.getState>,
+  key: ResourceKey,
+): ResourceState | undefined {
+  return state.resources.get(keyID(key));
+}
 function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
-  return (state.resources.get(keyID(key))?.data as T | undefined) ?? null;
+  const resource = resourceState(state, key);
+  if (resource?.normalized?.presence === "gone") return null;
+  return (resource?.data as T | undefined) ?? null;
 }
 function returnedRootRows(resource: ResourceState, slot: string, field: string): number {
   const normalized = resource.normalized;
@@ -546,7 +554,7 @@ function projectFromGraph(
   pages: ReadonlyMap<string, ResourceState>,
 ): RailProject | null {
   const normalized = resource.normalized;
-  if (!normalized) return null;
+  if (!normalized || normalized.presence === "gone") return null;
   const allPageStates = projectPageStates(pages, summary.key);
   const pageDependencies = projectPageDependencies(allPageStates);
   const cached = cachedProject(summary, "graph", normalized.graph as object, pageDependencies);
@@ -610,7 +618,13 @@ function asArchivedProject(project: RailProject): RailProject {
 function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
   const catalogResources = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .filter(
+      (resource) =>
+        resource.key.kind === "catalog" &&
+        resource.key.catalog === catalog &&
+        resource.data !== null &&
+        resource.normalized?.presence !== "gone",
+    )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
@@ -639,7 +653,10 @@ function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog
           continue;
         }
       }
-      const root = (rootState?.data as NavigationProjectResource | null | undefined) ?? null;
+      const root =
+        rootState?.normalized?.presence === "gone"
+          ? null
+          : ((rootState?.data as NavigationProjectResource | null | undefined) ?? null);
       output.push(
         projectFromSummary(summary, root, rootState?.error ? errorText(rootState.error) : undefined, state.resources),
       );
@@ -652,7 +669,13 @@ function catalogOverflowFor(
   catalog: CatalogKind,
 ): { remaining: number; offset: number; limit: number } | undefined {
   const pages = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .filter(
+      (resource) =>
+        resource.key.kind === "catalog" &&
+        resource.key.catalog === catalog &&
+        resource.data !== null &&
+        resource.normalized?.presence !== "gone",
+    )
     .sort((a, b) =>
       a.key.kind === "catalog" && b.key.kind === "catalog"
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
@@ -937,12 +960,15 @@ function NavigationRail({
       setExpanded(projectID, true);
       return;
     }
+    const currentState = navigationStore.getState();
+    const locationKey = { kind: "location", ref: revealTarget } as const;
+    if (resourceState(currentState, locationKey)?.normalized?.presence === "gone") {
+      consumeReveal();
+      return;
+    }
     const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
-      navigationStore.getState(),
-      {
-        kind: "location",
-        ref: revealTarget,
-      },
+      currentState,
+      locationKey,
     );
     if (!location) {
       if (revealLookupInFlight.current?.target !== revealTarget) {
@@ -969,6 +995,11 @@ function NavigationRail({
       return;
     }
     if (location.project_key) {
+      const projectState = resourceState(currentState, { kind: "project", projectKey: location.project_key });
+      if (projectState?.normalized?.presence === "gone") {
+        consumeReveal();
+        return;
+      }
       const projectID = projectNodeExpansionKey(location.project_key);
       if (expandedOverrides.get(projectID) !== true) {
         setExpanded(projectID, true);
@@ -1000,6 +1031,7 @@ function NavigationRail({
     if (
       value &&
       node.kind === "project" &&
+      resourceState(state, { kind: "project", projectKey: node.project.key })?.normalized?.presence !== "gone" &&
       !resourceData(state, { kind: "project", projectKey: node.project.key }) &&
       !rootLoadsInFlight.current.has(node.project.key)
     ) {
