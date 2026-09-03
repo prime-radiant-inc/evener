@@ -75,7 +75,11 @@
   outline-offset: -1px;
 }
 .denseName {
-  flex: 1;
+  /* flex: 0 1 auto, NOT flex: 1: the name still shrinks and ellipsizes under
+   * pressure, but it no longer GROWS - growing pushed the row's open
+   * affordance a column of whitespace away from the name it opens. The meta
+   * segments own the right edge via their own margin-left:auto. */
+  flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -106,6 +110,8 @@
 }
 .denseMeta {
   flex: none;
+  /* The right edge is the meta's, so the open control stays beside the name. */
+  margin-left: auto;
   white-space: nowrap;
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
