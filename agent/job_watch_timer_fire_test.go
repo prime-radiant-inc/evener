@@ -574,3 +574,56 @@ func TestConditionFireBudget_OneChunkStopsAtTheBudget(t *testing.T) {
 		t.Fatalf("watch history = %+v, want a budget_exhausted row", history)
 	}
 }
+
+// TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone pins who
+// owns a config when a model-requested clear lands on the same key while the
+// over-budget teardown is persisting. The clear detaches the config and drops
+// its frames under its own rejecting mark; the budget teardown then finds the
+// key gone. Releasing that config anyway — clearing the mark, parking it for
+// flush — would hand a config that belongs to neither jm.watches nor
+// terminalFlush back to a fire that is still in flight.
+//
+// The append seam drives the race deterministically: the concurrent clear runs
+// inside the durable append of the budget teardown's own cleared event, which is
+// exactly the window between the mark and the detach.
+func TestConditionFireBudget_TeardownLeavesAConcurrentClearsConfigAlone(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	cfg := installCallerSendWatchWithPending(t, jm)
+	key := watchKey{
+		VisibleSessionID: jm.sessionID,
+		Target:           runtimeMessageAliasCaller,
+		SendTo:           runtimeMessageAliasCaller,
+	}
+
+	realAppendEvents := jm.appendEvents
+	won := false
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind != jobstore.EventWatchCleared || won {
+				continue
+			}
+			won = true
+			if _, err := jm.clearWatchByID(cfg.watchID); err != nil {
+				t.Errorf("concurrent clear: %v", err)
+			}
+		}
+		return realAppendEvents(events)
+	}
+	for range watchDeliveryBudget - 1 {
+		onSessionEventKD(jm, events.EventCommunicate, nil)
+	}
+	jm.appendEvents = realAppendEvents
+	if !won {
+		t.Fatal("the concurrent clear never ran; the budget teardown did not persist a cleared event")
+	}
+
+	jm.mu.Lock()
+	live, rejecting, parked, pending := jm.watches[key] == cfg, cfg.rejectingDelivery, jm.terminalFlush[cfg], len(cfg.pending)
+	jm.mu.Unlock()
+	if live || !rejecting || parked || pending != 0 {
+		t.Fatalf("after a clear won the key = live:%t rejecting:%t parked:%t pending:%d, want the clear's own dropped-and-rejecting config, untouched by the budget teardown",
+			live, rejecting, parked, pending)
+	}
+}

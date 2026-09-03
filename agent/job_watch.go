@@ -1814,27 +1814,33 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 		jm.rollbackWatchBudgetTeardown(targets, cfg)
 		return jobNotification{}, false
 	}
-	jm.detachWatchConfigSnapshots(targets)
-	jm.flushDetachedPendingSends(cfg)
+	jm.detachOverBudgetWatch(targets[0])
 
 	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
 }
 
-// flushDetachedPendingSends releases the config the over-budget teardown has
-// just detached onto the terminal-flush rail, where drains, restore, and
-// clear-by-id can still see and settle the frames it already produced. The
-// rejecting mark comes off HERE and not earlier: it is what froze the config
-// while the teardown persisted, so no fire past the crossing could slip a frame
-// in, and a config still marked rejecting delivers nothing. Detached, it can
-// gain no new frames — a delivery snapshotted before the teardown no longer
-// resolves to a live watch. A config with nothing pending is left off the rail:
-// terminalFlush holds flushing configs, not ended ones.
-func (jm *jobManager) flushDetachedPendingSends(cfg *watchConfig) {
+// detachOverBudgetWatch removes the over-budget config from the live set and, in
+// the SAME critical section, releases it onto the terminal-flush rail, where
+// drains, restore, and clear-by-id can still see and settle the frames it
+// already produced. The rejecting mark comes off HERE and not earlier: it is
+// what froze the config while the teardown persisted, so no fire past the
+// crossing could slip a frame in, and a config still marked rejecting delivers
+// nothing. Detached, it can gain no new frames — a delivery snapshotted before
+// the teardown no longer resolves to a live watch. A config with nothing pending
+// is left off the rail: terminalFlush holds flushing configs, not ended ones.
+//
+// The release is gated on this call being the one that detached the config, and
+// shares its critical section for the same reason. A model-requested clear that
+// won the key owns that config: it has already dropped those frames under its
+// own rejecting mark, and unmarking it here would hand a config that is in
+// neither jm.watches nor terminalFlush back to a fire still in flight.
+func (jm *jobManager) detachOverBudgetWatch(target watchConfigTerminalSnapshot) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if cfg == nil {
+	if !jm.detachWatchConfigSnapshotLocked(target) {
 		return
 	}
+	cfg := target.cfg
 	cfg.rejectingDelivery = false
 	if len(cfg.pending) == 0 {
 		return
@@ -4412,14 +4418,24 @@ func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSn
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, target := range targets {
-		if target.cfg != nil && jm.watches[target.key] == target.cfg {
-			if target.endReason != "" {
-				jm.recordWatchEndedLocked(target.key, target.cfg, target.endReason)
-			}
-			closeWatchConfig(target.cfg)
-			delete(jm.watches, target.key)
-		}
+		jm.detachWatchConfigSnapshotLocked(target)
 	}
+}
+
+// detachWatchConfigSnapshotLocked removes one target's config from the live set
+// and reports whether THIS call was the one that removed it. False means the key
+// no longer held that config — a concurrent teardown already took it, and owns
+// whatever happens to it next. The caller must hold jm.mu.
+func (jm *jobManager) detachWatchConfigSnapshotLocked(target watchConfigTerminalSnapshot) bool {
+	if target.cfg == nil || jm.watches[target.key] != target.cfg {
+		return false
+	}
+	if target.endReason != "" {
+		jm.recordWatchEndedLocked(target.key, target.cfg, target.endReason)
+	}
+	closeWatchConfig(target.cfg)
+	delete(jm.watches, target.key)
+	return true
 }
 
 func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) watchSendTerminalSnapshot {
