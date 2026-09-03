@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -53,6 +54,29 @@ func TestSemanticFailureBreaker_DistinctUntypedExecutionErrorsDoNotParkAcrossRaw
 	}
 	if fake.calls != 3 {
 		t.Fatalf("distinct untyped semantic variants executed %d times, want 3", fake.calls)
+	}
+}
+
+func TestStripPresentationTraceSuffix(t *testing.T) {
+	longToken := strings.Repeat("a", 65)
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "leading and trailing whitespace", input: "  backend unavailable [trace a]  ", want: "backend unavailable"},
+		{name: "case insensitive marker", input: "backend unavailable [TrAcE A]", want: "backend unavailable"},
+		{name: "valid bounded token", input: "backend unavailable [trace a_1.foo:bar-]", want: "backend unavailable"},
+		{name: "invalid bracket details remain meaningful", input: "backend unavailable [trace has spaces]", want: "backend unavailable [trace has spaces]"},
+		{name: "token length bound", input: "backend unavailable [trace " + longToken + "]", want: "backend unavailable [trace " + longToken + "]"},
+		{name: "utf8 prefix", input: "échec backend [trace a]", want: "échec backend"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripPresentationTraceSuffix(tc.input)
+			if got != tc.want || !utf8.ValidString(got) {
+				t.Fatalf("stripPresentationTraceSuffix(%q) = %q (valid=%t), want %q", tc.input, got, utf8.ValidString(got), tc.want)
+			}
+		})
 	}
 }
 

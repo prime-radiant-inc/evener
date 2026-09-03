@@ -559,9 +559,9 @@ func errorClass(output string) string {
 }
 
 // FailureClasser lets an executor expose a stable machine-facing failure class
-// without putting presentation text into semantic loop identity. Built-in
-// typed families also have stable classes; generic executor errors have no
-// stable class and are excluded from semantic breaker history.
+// without putting presentation text into semantic loop identity. Typed classes
+// take precedence; untyped executor errors use the bounded normalized class
+// genericExecutionClass derives before telemetry HMACs it.
 type FailureClasser interface {
 	FailureClass() string
 }
@@ -609,7 +609,8 @@ func genericExecutionClass(output string) string {
 // marker. The token grammar is deliberately narrow so bracketed error details
 // remain semantic identity rather than being mistaken for presentation noise.
 func stripPresentationTraceSuffix(line string) string {
-	lower := strings.ToLower(strings.TrimSpace(line))
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
 	const marker = " [trace "
 	start := strings.LastIndex(lower, marker)
 	if start < 0 || !strings.HasSuffix(lower, "]") {
@@ -624,7 +625,7 @@ func stripPresentationTraceSuffix(line string) string {
 			return line
 		}
 	}
-	return strings.TrimSpace(line[:start])
+	return strings.TrimSpace(trimmed[:start])
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the
