@@ -2039,7 +2039,14 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 // (0, false, nil); an int or an integral, finite float64 is its value; anything
 // else (a string, 1.5, NaN) is invalid_request naming the field. Providers hand
 // numbers over as float64, so silently truncating would hide a model error.
+// The only numeric bound here is what int can hold; a field with a documented
+// maximum (the timer seconds) enforces it in normalizeWatchArgs instead.
 func watchIntArg(args map[string]any, key string) (int, bool, error) {
+	// float64 cannot represent math.MaxInt exactly - it rounds up to 2^63 - so
+	// the upper bound is exclusive, which keeps every float64 that reaches the
+	// int conversion below in range. math.MinInt is exactly representable and
+	// stays inclusive.
+	const aboveMaxInt = float64(math.MaxInt) + 1
 	raw, present := args[key]
 	if !present || raw == nil {
 		return 0, false, nil
@@ -2048,7 +2055,7 @@ func watchIntArg(args map[string]any, key string) (int, bool, error) {
 	case int:
 		return v, true, nil
 	case float64:
-		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v > math.MaxInt32 || v < math.MinInt32 {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v >= aboveMaxInt || v < math.MinInt {
 			return 0, false, fmt.Errorf("invalid_request: %s must be an integer", key)
 		}
 		return int(v), true, nil
