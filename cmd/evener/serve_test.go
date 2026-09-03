@@ -1249,13 +1249,13 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 	}
 }
 
-// serveScratchThatMustBeDisposed gives env the owned session scratch a
+// launchScratchThatMustBeDisposed gives env the owned session scratch a
 // sandboxed startup provisions — a write-blocked off policy takes that path
 // without needing a kernel backend this host may not have — and holds the
 // startup to disposing of it. Nothing releases the directory or the flock
 // lease under it until a session owns the environment and its Close does, so
 // every way out before that hand-off owes them.
-func serveScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
+func launchScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
 	t.Helper()
 	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
 		return err
@@ -1276,13 +1276,13 @@ func serveScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnv
 	return nil
 }
 
-// provisionServeScratchThatMustBeDisposed is serveScratchThatMustBeDisposed as
+// provisionServeScratchThatMustBeDisposed is launchScratchThatMustBeDisposed as
 // a startup's sandbox-provisioning step, running then once the scratch is in
 // place.
 func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
 	t.Helper()
 	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
-		if err := serveScratchThatMustBeDisposed(t, env); err != nil {
+		if err := launchScratchThatMustBeDisposed(t, env); err != nil {
 			return err
 		}
 		then()
@@ -1336,7 +1336,7 @@ func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
 		if !ok {
 			t.Fatalf("restore got a %T, want the local environment serve built", env)
 		}
-		if err := serveScratchThatMustBeDisposed(t, local); err != nil {
+		if err := launchScratchThatMustBeDisposed(t, local); err != nil {
 			return nil, err
 		}
 		return nil, errors.New("restore failed after the sandbox was provisioned")

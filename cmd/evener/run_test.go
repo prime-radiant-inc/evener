@@ -1204,3 +1204,78 @@ func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
 		})
 	}
 }
+
+// Provisioning takes the session scratch and the flock lease under it, and
+// nothing releases either until a session owns the environment and its Close
+// does. A launch that ends before that hand-off owes them itself: a fresh
+// session that could not be built, or a resume whose restore fails after
+// re-provisioning the environment from the persisted mode.
+func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, cfg *runConfig)
+		wantErr string
+	}{
+		{
+			name: "a fresh session that cannot be created",
+			arrange: func(t *testing.T, _ *runConfig) {
+				oldProvision, oldNew := runProvisionSandbox, runNewSession
+				t.Cleanup(func() { runProvisionSandbox = oldProvision; runNewSession = oldNew })
+				runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+					return launchScratchThatMustBeDisposed(t, env)
+				}
+				runNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+					return nil, errors.New("no session today")
+				}
+			},
+			wantErr: "session creation",
+		},
+		{
+			name: "a resume whose restore fails",
+			arrange: func(t *testing.T, cfg *runConfig) {
+				const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+				if err := schema.SaveSessionMeta(cfg.stateDir, schema.SessionMeta{
+					ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+				}); err != nil {
+					t.Fatalf("SaveSessionMeta: %v", err)
+				}
+				cfg.resume = sessionID
+				oldRestore := runRestoreSession
+				t.Cleanup(func() { runRestoreSession = oldRestore })
+				runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+					// What RestoreSessionFromMetaWithConfig does before the
+					// steps that can still fail: it re-provisions this env's
+					// sandbox from the session's persisted mode.
+					local, ok := env.(*execenv.LocalExecutionEnvironment)
+					if !ok {
+						t.Fatalf("restore got a %T, want the local environment run built", env)
+					}
+					if err := launchScratchThatMustBeDisposed(t, local); err != nil {
+						return nil, err
+					}
+					return nil, errors.New("restore failed after the sandbox was provisioned")
+				}
+			},
+			wantErr: "restore session",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			oldEnsure := runEnsureUserConfigDirs
+			t.Cleanup(func() { runEnsureUserConfigDirs = oldEnsure })
+			runEnsureUserConfigDirs = func() error { return nil }
+			dir := t.TempDir()
+			cfg := runConfig{
+				prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+				noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+			}
+			tt.arrange(t, &cfg)
+
+			err := run(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("run error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
