@@ -2008,10 +2008,12 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 // timerWatchIsLive reports whether the timer with this id is still installed.
 // A timer's key is reconstructible from its id because its slot is the id, so
 // this is one map lookup under jm.mu, taken with pendingJobNotifsMu released.
+// With no manager to ask it fails OPEN: this answer only ever decides a drop,
+// and delivering a tick whose timer cannot be checked beats losing it.
 func (s *Session) timerWatchIsLive(watchID string) bool {
 	jm := s.jobManager
 	if jm == nil {
-		return false
+		return true
 	}
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
 	jm.mu.Lock()

@@ -807,6 +807,9 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // appendOrFoldJobNotificationLocked appends n to the pending queue, or, for a
 // timer tick whose watch already has a pending non-terminal entry, adds its
 // fires to that entry instead. Non-timer notifications take the fast path.
+// The folded entry takes the UNION of both lineages: the notification turn
+// stamps the union of what it delivers, so keeping only the survivor's
+// provenance would narrow the turn's lineage every time a tick folded.
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
@@ -815,6 +818,7 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 			p := &s.pendingJobNotifs[i]
 			if p.WatchID == n.WatchID && !p.Terminal {
 				p.Fires += n.Fires
+				p.Provenance = provenance.Union(p.Provenance, n.Provenance)
 				return
 			}
 		}
