@@ -74,12 +74,14 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 	})
 }
 
-// PreviewForLaunch is ResolveForLaunch for inspection only. It prepares the
-// store exactly as a launch does, so a destination a launch would reject fails
+// PreviewForLaunch is ResolveForLaunch for inspection only. It readies the
+// store the way a launch does, so a destination a launch would reject fails
 // preview the same way, a store a launch could not publish into fails preview
-// too, and an already published copy is the one preview describes. What
-// preview never does is publish: it reads the staging it filled and removes it
-// before returning, so the store gains nothing.
+// too, and an already published copy is the one preview describes. Exactly
+// what it touches: it creates <Root>/bundled if that is missing, and for a
+// requested bundled plugin not yet published it stages a marked copy there,
+// reads it, and removes it before returning. It publishes nothing, and it
+// reclaims nothing: collecting abandoned staging belongs to a launch.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	defer func() {
@@ -88,7 +90,7 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 		}
 	}()
 	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
-		dest, staging, err := m.prepareBundledStore(name)
+		dest, staging, err := m.prepareBundledStore(name, false)
 		if err != nil {
 			return "", "", err
 		}
@@ -269,7 +271,7 @@ func newBundledStaging(store, base string) (*bundledStaging, error) {
 // the copy is staged in a private directory and renamed into place, and a
 // concurrent publisher that loses the rename adopts the winner's copy.
 func (m *Manager) materializeBundledPlugin(name string) (string, error) {
-	dest, staging, err := m.prepareBundledStore(name)
+	dest, staging, err := m.prepareBundledStore(name, true)
 	if err != nil {
 		return "", err
 	}
@@ -294,9 +296,10 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 // there yet, a private staging directory to fill; staging is nil for a copy
 // that is already published. Creating that directory is what proves the store
 // can be published into, so a launch and a preview that share this preparation
-// fail identically on a store neither can write. Abandoned staging is
-// reclaimed on every call, including the calls that adopt a published copy.
-func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, error) {
+// fail identically on a store neither can write. reclaim asks for the
+// abandoned-staging sweep: a launch asks on every call, including the calls
+// that adopt a published copy, and a preview never does.
+func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundledStaging, error) {
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
 		return "", nil, err
@@ -319,7 +322,9 @@ func (m *Manager) prepareBundledStore(name string) (string, *bundledStaging, err
 	// Sweeping before the published check, not after: a publisher that lost a
 	// rename and died leaves an orphan that only ever meets callers taking the
 	// published path.
-	m.reclaimAbandonedStaging(store)
+	if reclaim {
+		m.reclaimAbandonedStaging(store)
+	}
 	if published {
 		return dest, nil, nil
 	}

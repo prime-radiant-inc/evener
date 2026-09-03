@@ -569,6 +569,34 @@ func TestBundledStore_CreatesMissingParentsPrivately(t *testing.T) {
 	}
 }
 
+// Reclaiming abandoned staging is a launch's job. Preview inspects, so an
+// orphan survives a preview and is collected by the launch that follows.
+func TestPreviewForLaunch_ReclaimsNothing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	staging := filepath.Join(m.Root, "bundled", ".stage-coordinator-workflow-abandoned")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stagingMarker), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	if _, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("preview reclaimed abandoned staging: %v", err)
+	}
+
+	if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("the launch after a preview left abandoned staging behind (stat err = %v)", err)
+	}
+}
+
 func assertPerm(t *testing.T, path string, want fs.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)
