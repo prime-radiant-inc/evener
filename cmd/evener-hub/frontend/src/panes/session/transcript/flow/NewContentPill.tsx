@@ -52,7 +52,8 @@ export interface NewContentPillProps {
    * content below the viewport. Set to "up" when the anchor (failed turn)
    * being jumped to is above the current scroll position. */
   pillArrowDirection?: "up" | "down";
-  /** Scrolls to bottom and clears the pill (also fires on a manual return to bottom, independently). */
+  /** Scrolls to bottom and clears the pill's count/error state; the pill itself stays
+   * visible until the landing confirms arrival (a manual return to bottom clears it independently). */
   onClick: () => void;
 }
 

@@ -772,7 +772,7 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
   });
 
-  test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the pill", () => {
+  test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the error/count state while the pill stays on offer", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
@@ -795,6 +795,9 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
     expect(result.current.pillError).toBe(false);
     expect(result.current.pillCount).toBe(0);
+    // The anchor jump lands mid-transcript, NOT at the bottom: the plain
+    // jump-to-latest pill must remain on offer.
+    expect(result.current.pillVisible).toBe(true);
   });
 
   test("after jumping to an error anchor, the next append does not auto-stick to bottom (the reader is not actually there)", () => {
