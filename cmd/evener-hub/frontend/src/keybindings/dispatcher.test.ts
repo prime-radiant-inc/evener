@@ -295,4 +295,34 @@ describe("default editable-target detection", () => {
     dispatcher.dispose();
     document.body.innerHTML = "";
   });
+
+  test("an element inside a contenteditable=false island inside an editor is NOT editable", () => {
+    // The nearest contenteditable ancestor's VALUE decides: an explicitly
+    // non-editable control nested in an editor must not suppress bindings
+    // (e.g. Ctrl+B inside a toolbar embedded in a rich-text editor).
+    const registry = createKeybindingsRegistry();
+    const dispatcher = createKeybindingDispatcher({ registry });
+    const detach = dispatcher.attach(window);
+    const run = vi.fn();
+    registry.getState().registerAction("a", run);
+    registry.getState().registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" });
+    const editor = document.createElement("div");
+    editor.setAttribute("contenteditable", "true");
+    const island = document.createElement("div");
+    island.setAttribute("contenteditable", "false");
+    const button = document.createElement("button");
+    editor.appendChild(island);
+    island.appendChild(button);
+    document.body.appendChild(editor);
+    pressOn(button, MOD_K);
+    expect(run).toHaveBeenCalledTimes(1);
+    // ...while a plain descendant of the same editor still suppresses.
+    const plain = document.createElement("span");
+    editor.appendChild(plain);
+    pressOn(plain, MOD_K);
+    expect(run).toHaveBeenCalledTimes(1);
+    detach();
+    dispatcher.dispose();
+    document.body.innerHTML = "";
+  });
 });
