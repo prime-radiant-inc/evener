@@ -72,14 +72,7 @@ function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: strin
   // own affordance tests among them - still finds this control unchanged;
   // the path is appended for the same specificity the old dynamic title had.
   const name = `Open beside: ${docParams.path}`;
-  return (
-    <OpenButton
-      iconOnly
-      size="sm"
-      label={name}
-      onClick={() => paneActions.openBeside({ type: "doc", params: docParams })}
-    />
-  );
+  return <OpenButton label={name} onClick={() => paneActions.openBeside({ type: "doc", params: docParams })} />;
 }
 
 function LegacyFileOpenBesideButton({ absPath, sessionRef }: { absPath: string; sessionRef: string }) {

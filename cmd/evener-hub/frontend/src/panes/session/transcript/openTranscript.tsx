@@ -53,22 +53,12 @@ export function OpenTranscriptButton({
   transcriptRef,
   parentRef,
   label = "Open transcript",
-  iconOnly = false,
   tabIndex,
 }: {
   transcriptRef: string;
   parentRef?: string;
   label?: string;
-  iconOnly?: boolean;
   tabIndex?: number;
 }) {
-  return (
-    <OpenButton
-      label={label}
-      iconOnly={iconOnly}
-      size="xs"
-      tabIndex={tabIndex}
-      onClick={() => openTranscript(transcriptRef, parentRef)}
-    />
-  );
+  return <OpenButton label={label} tabIndex={tabIndex} onClick={() => openTranscript(transcriptRef, parentRef)} />;
 }

@@ -379,7 +379,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
 
       {/* Footer: transcript ref + copy raw JSON */}
       <div className={CLASS.footer}>
-        {transcriptRef && <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} iconOnly />}
+        {transcriptRef && <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} />}
         <span className={CLASS.footerSpacer} />
         <CopyButton text={rawJson} label="Copy raw JSON" />
       </div>
