@@ -81,6 +81,7 @@ function reconnectHarness(): {
         version: handshake.version,
         generationId: handshake.generationId,
         sequence: handshake.sequence,
+        readVersions: handshake.readVersions,
       },
     };
     const socket = new FakeSocket({ autoInitialize: true, initializeResult: result });
@@ -349,7 +350,9 @@ describe("AppwireClient reconnect", () => {
     await harness.connect({ version: 1, generationId: "a", sequence: 0, readVersions: [1, 2] });
     await harness.reconnect({ version: 1, generationId: "b", sequence: 0, readVersions: [1, 2] });
     expect(generations).toEqual(["a", "b"]);
-    expect((await harness.client.connect()).navigation?.generationId).toBe("b");
+    const latest = (await harness.client.connect()).navigation;
+    expect(latest?.generationId).toBe("b");
+    expect(latest?.readVersions).toEqual([1, 2]);
   });
 
   test("backs off 250ms, 500ms, 1000ms, 2000ms, 4000ms, then caps at 5000ms, re-dialing every attempt", async () => {

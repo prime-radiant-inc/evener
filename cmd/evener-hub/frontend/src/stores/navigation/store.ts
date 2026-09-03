@@ -20,7 +20,7 @@ import type {
   NavigationSectionResource,
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
-import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
+import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
 import {
   type DecodedNavigationResponse,
   decodeNavigationResponse,
@@ -589,7 +589,8 @@ function actions() {
       expandedMap.set(projectKey, expanded);
       navigationStore.setState({ expanded: expandedMap });
       saveExpansion(expandedMap);
-      if (expanded && navigationStore.getState().mode === "v1") void hydrateProject(projectKey, bootEpoch);
+      const mode = navigationStore.getState().mode;
+      if (expanded && (mode === "v1" || mode === "v2")) void hydrateProject(projectKey, bootEpoch);
     },
     toggleExpanded: (projectKey: string) => {
       const m = new Map(navigationStore.getState().expanded);
@@ -684,7 +685,10 @@ async function hydrateManifestResources(manifest: NavigationManifest, epoch: num
   // pool prevents a large catalog from monopolising the browser connection.
   const projects = selectSummaries();
   const pending = projects
-    .filter((p) => navigationStore.getState().expanded.get(p.key) ?? p.default_expanded)
+    .filter((p) => {
+      const expanded = navigationStore.getState().expanded;
+      return expanded.get(projectNodeExpansionKey(p.key)) ?? expanded.get(p.key) ?? p.default_expanded;
+    })
     .map((p) => p.key);
   await runBounded(
     [

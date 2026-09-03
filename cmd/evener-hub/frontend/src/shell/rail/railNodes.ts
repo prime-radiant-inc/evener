@@ -6,6 +6,7 @@
 // project detail map) and wires the results into <Tree>.
 
 import type { NavigationJobSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import { projectNodeExpansionKey } from "./railExpansion";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -255,7 +256,7 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
 // surfaces again.
 const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "warning", "notLoaded"]);
 
-// Namespaced the same way projectNodeId is, and off the PARENT's row_id, so
+// Namespaced the same way projectNodeExpansionKey is, and off the PARENT's row_id, so
 // every parent's fold is its own key at every nesting depth - expanding one
 // never opens another's.
 function inactiveFoldId(parentRowID: string): string {
@@ -464,10 +465,6 @@ function sessionWantsYou(n: RailSession): boolean {
 // Namespaced so a project branch's own id can never collide with a
 // session's row_id (row_ids are always "<scope>:...", but never start with
 // "projectnode:") within the same Tree instance.
-function projectNodeId(key: string): string {
-  return `projectnode:${key}`;
-}
-
 // The bit of a project's own working_dir that tells it apart from a
 // same-named sibling - the parent directory's basename (two checkouts named
 // "frontend" usually differ in which repo holds them, not in the leaf
@@ -545,7 +542,7 @@ export function topLevelAncestorRef(projects: readonly RailProject[], ref: strin
  * expand the right project section, matching the id projectNodes assigns. */
 export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref: string): string | null {
   for (const project of projects) {
-    if (sessionListHasRef(project.sessions, ref)) return projectNodeId(project.key);
+    if (sessionListHasRef(project.sessions, ref)) return projectNodeExpansionKey(project.key);
   }
   return null;
 }
@@ -560,7 +557,7 @@ export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref
 export function projectNodes(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
-    const id = projectNodeId(p.key);
+    const id = projectNodeExpansionKey(p.key);
     const expanded = isExpanded(id, p.default_expanded ?? false);
     const displayName = labels.get(p.key);
     const children = projectChildren(p, isExpanded, "active", () =>
@@ -647,7 +644,7 @@ function isArchivedTier(n: RailSession): boolean {
   return n.tier === "archived";
 }
 
-// Namespaced apart from projectNodeId on purpose: the SAME project renders
+// Namespaced apart from projectNodeExpansionKey on purpose: the SAME project renders
 // twice when it has both live and archived sessions - once in Projects, once
 // as a sub-branch here - and two Tree branches sharing an id would share
 // expand state.
@@ -735,7 +732,7 @@ export function archivedProjectNodes(
 ): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
-    const id = projectNodeId(p.key);
+    const id = projectNodeExpansionKey(p.key);
     const detail = projectDetails.get(p.key);
     let children: RailNode[];
     if (detail) {

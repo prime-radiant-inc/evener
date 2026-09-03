@@ -979,6 +979,21 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
+test("a deep-link lookup starts exactly once when navigation mode becomes v2", async () => {
+  const ref = "local:mode-transition";
+  const lookupLocation = vi.fn().mockRejectedValue(new Error("scripted location miss"));
+  window.history.pushState({}, "", `/s/${encodeURIComponent(ref)}`);
+  navigationStore.setState({ mode: "unknown", lookupLocation });
+
+  render(<AppShell client={new FakeClient("ready")} />);
+  expect(lookupLocation).not.toHaveBeenCalled();
+
+  act(() => navigationStore.setState({ mode: "v2" }));
+
+  await waitFor(() => expect(lookupLocation).toHaveBeenCalledTimes(1));
+  expect(lookupLocation).toHaveBeenCalledWith(ref);
+});
+
 test("a nested location opens its explicit owner without loading a project", async () => {
   const child = "local:collapsed-child";
   const client = navClient();

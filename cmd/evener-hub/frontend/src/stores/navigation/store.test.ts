@@ -1016,6 +1016,31 @@ test("expanded and default projects hydrate complete tiers and post-action expan
   });
 });
 
+test("setExpanded hydrates a raw v2 project key with representation version 2", async () => {
+  const projectKey = "raw/project key";
+  const calls: NavigationReadParams[] = [];
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return reconnectV2Response(params);
+    throw new Error(`scripted project read ${params.resource}`);
+  });
+  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  await flush();
+
+  try {
+    navigationStore.getState().setExpanded(projectKey, true);
+    await flush();
+
+    expect(navigationStore.getState().expanded.get(projectKey)).toBe(true);
+    expect(calls.filter((params) => params.resource === "project")).toEqual([
+      { resource: "project", projectKey, representationVersion: 2 },
+    ]);
+  } finally {
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+  }
+});
+
 test("notification fencing rejects duplicate, wrong generation, and gaps while locations stay retained", async () => {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) =>
@@ -2015,6 +2040,81 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
   resetNavigationStoreForTests();
   expect(selectExpanded("p")(navigationStore.getState())).toBe(true);
   localStorage.removeItem(EXPANSION_STORAGE_KEY);
+});
+
+test("a canonical persisted project-node key hydrates one v2 project root during boot", async () => {
+  const projectKey = "persisted/project";
+  const manifestKey = { kind: "manifest" } as const;
+  const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
+  const projectEntityKey = `${navigationViewScope(catalogKey)}/entity/${"5".repeat(64)}`;
+  localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ [`projectnode:${projectKey}`]: true }));
+  resetNavigationStoreForTests();
+
+  const calls: NavigationReadParams[] = [];
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") {
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 1,
+        etag: '"manifest-v2"',
+        data: {
+          metadata: emptyManifest({
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          }),
+          entities: [],
+          containers: [
+            {
+              key: navigationRootContainerKey(manifestKey, "manifest"),
+              owner: { kind: "resource_root", slot: "manifest" },
+              children: [],
+            },
+          ],
+        },
+      };
+    }
+    if (params.resource === "catalog") {
+      return {
+        status: "ok",
+        representation: "snapshot",
+        generationId: generation,
+        revision: 1,
+        etag: '"catalog-v2"',
+        data: {
+          metadata: { generation_id: generation, revision: 1, offset: 0, limit: 100, remaining: 0 },
+          entities: [
+            {
+              key: projectEntityKey,
+              kind: "project",
+              value: { key: projectKey, name: "Persisted project", session_count: 1, default_expanded: false },
+            },
+          ],
+          containers: [
+            {
+              key: navigationRootContainerKey(catalogKey, "projects"),
+              owner: { kind: "resource_root", slot: "projects" },
+              children: [projectEntityKey],
+            },
+          ],
+        },
+      };
+    }
+    throw new Error(`scripted project read ${params.resource}`);
+  });
+
+  try {
+    initNavigation(client, { ...capability(), readVersions: [1, 2] });
+    await flush();
+
+    expect(calls.filter((params) => params.resource === "project")).toEqual([
+      { resource: "project", projectKey, representationVersion: 2 },
+    ]);
+  } finally {
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+  }
 });
 
 test("targeted updates are immutable and preserve unrelated resource identity", async () => {

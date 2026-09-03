@@ -475,6 +475,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   const restoredSessionRef =
     route?.type === "welcome" ? sessionRefFromRouteParams(workspaceStore.getState().mainPane()?.params) : null;
   const locationRef = sessionRouteRef ?? restoredSessionRef;
+  const navigationMode = useNavigationStore((state) => state.mode);
   const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
   const locationFailed = locationResource?.error != null;
   const locationNotFound = isNavigationUnavailable(locationResource?.error);
@@ -483,13 +484,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     ? null
     : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
-    if (locationRef === null || navigationStore.getState().mode !== "v1") return;
+    if (locationRef === null || (navigationMode !== "v1" && navigationMode !== "v2")) return;
     if (locationFailed || (locationResource && !locationResource.stale)) return;
     void navigationStore
       .getState()
       .lookupLocation(locationRef)
       .catch(() => undefined);
-  }, [locationFailed, locationRef, locationResource]);
+  }, [locationFailed, locationRef, locationResource, navigationMode]);
   const isMobile = useIsMobile();
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.

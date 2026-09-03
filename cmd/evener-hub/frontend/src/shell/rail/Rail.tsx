@@ -70,7 +70,7 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
-import { loadExpansion, saveExpansion } from "./railExpansion";
+import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "./railExpansion";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -907,7 +907,7 @@ function NavigationRail({
       rootGeneration.current = generation;
     }
     for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
-      const expanded = isExpanded(`projectnode:${project.key}`, project.default_expanded ?? false);
+      const expanded = isExpanded(projectNodeExpansionKey(project.key), project.default_expanded ?? false);
       if (
         !expanded ||
         project.loaded === true ||
@@ -969,7 +969,7 @@ function NavigationRail({
       return;
     }
     if (location.project_key) {
-      const projectID = `projectnode:${location.project_key}`;
+      const projectID = projectNodeExpansionKey(location.project_key);
       if (expandedOverrides.get(projectID) !== true) {
         setExpanded(projectID, true);
         return;
@@ -1362,7 +1362,8 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" || (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" ||
+    ((navigationMode === "v1" || navigationMode === "v2") && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =

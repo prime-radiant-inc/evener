@@ -274,6 +274,25 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
   });
+  test("v2 pending manifest suppresses the settled empty state until it finishes", () => {
+    const empty = manifest({
+      sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+      catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+    });
+    const pendingManifest = {
+      ...resource({ kind: "manifest" }, empty),
+      data: null,
+      loading: true,
+    } as ResourceState<NavigationManifest>;
+    installState([], empty);
+    navigationStore.setState({ mode: "v2", manifest: pendingManifest });
+
+    render(<Rail />);
+
+    expect(screen.queryByText(/no sessions yet/i)).toBeNull();
+    act(() => navigationStore.setState({ manifest: resource({ kind: "manifest" }, empty) }));
+    expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
+  });
   test("expanding a summary loads one canonical project root", async () => {
     const loadProject = vi.fn().mockResolvedValue(undefined);
     installState([catalogResource([{ key: "p", name: "Proj", session_count: 1 }])]);
