@@ -592,9 +592,9 @@ const (
 // and is not this code's to move, and loading through it would report an
 // unrelated directory as the bundled plugin, so it is an error. Among
 // directories, <name>-<digest> is a claim about the contents: only a tree that
-// hashes to digest is the published copy, and a tree that hashes to anything
-// else is a conflict — a foreign directory that took the name, or a copy this
-// code published and something has changed since.
+// hashes to digest is the published copy, and anything else is a conflict — a
+// foreign directory that took the name, a copy this code published that has
+// changed since, or a tree this code cannot read through to tell.
 func classifyBundledDestination(dest, digest string) (bundledDestination, error) {
 	info, err := os.Lstat(dest)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -607,14 +607,16 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 		return bundledDestinationVacant, fmt.Errorf("bundled plugin path %s is not a directory", dest)
 	}
 	found, err := digestFS(os.DirFS(dest))
-	if errors.Is(err, errIrregularContent) {
-		// Not a copy of anything this ships, so it is somebody else's
-		// directory under this name, classified the same as one whose contents
-		// simply hash to something else.
-		return bundledDestinationConflict, nil
-	}
 	if err != nil {
-		return bundledDestinationVacant, fmt.Errorf("read the bundled plugin at %s: %w", dest, err)
+		// A tree that cannot be read through is not a tree that hashes to
+		// digest, so it is a conflict like any other: somebody else's
+		// directory under this name (errIrregularContent), or one whose
+		// permissions or media keep this from reading it. Treating that as a
+		// failure instead would leave the store unusable for the plugin
+		// forever — never launching, never moving the directory aside — while
+		// setting it aside preserves it whole and needs nothing from it but
+		// the parent's write bit.
+		return bundledDestinationConflict, nil //nolint:nilerr // the read failure IS the classification: an unreadable tree is a mismatch, not a store failure
 	}
 	if found != digest {
 		return bundledDestinationConflict, nil

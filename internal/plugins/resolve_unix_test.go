@@ -628,3 +628,59 @@ func TestMaterializeBundledPlugin_StopsForACallerThatLeftDuringTheSweep(t *testi
 		t.Errorf("the published copy did not survive the cancelled launch: %v", err)
 	}
 }
+
+// A destination this code cannot read is not a copy it published: an
+// unreadable tree hashes to nothing, and there is no version of it that is
+// this build's own content. Holding the store hostage to it — never
+// launching, never moving it aside — serves nobody, so it is preserved the way
+// every other conflict is (the rename needs only the parent's write bit) and
+// the launch publishes into the name that frees.
+func TestBundledStore_AnUnreadableDestinationIsSetAsideLikeAnyOtherConflict(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0o000 directory, so there is no unreadable tree to plant")
+	}
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	theirs := filepath.Join(dest, "theirs")
+	if err := os.MkdirAll(theirs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(theirs, "data"), []byte("someone else's data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(theirs, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Whatever the launch does with it, the tree has to be readable again
+	// before the temp directory can be removed.
+	t.Cleanup(func() {
+		_ = os.Chmod(theirs, 0o700)
+		_ = os.Chmod(filepath.Join(dest+conflictSuffix, "theirs"), 0o700)
+	})
+
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatalf("ResolveForLaunch: %v", err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("the store stayed unusable for the plugin: %v", err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != dest {
+		t.Fatalf("SelectedDirs = %v, want the published copy at %s", res.SelectedDirs, dest)
+	}
+	aside := filepath.Join(dest+conflictSuffix, "theirs")
+	if err := os.Chmod(aside, 0o700); err != nil {
+		t.Fatalf("the unreadable directory was not set aside: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(aside, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "someone else's data" {
+		t.Errorf("preserved content = %q, want it untouched", content)
+	}
+}
