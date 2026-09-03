@@ -428,6 +428,8 @@ func TestOneShotTimer_FailedTeardownRetriesOnTheNextTick(t *testing.T) {
 	teardownFails = false
 	mu.Unlock()
 	clk.Advance(60 * time.Second)
+	// TRIPWIRE: the retry runs on the tick this Advance just fired, so the
+	// watch leaves the live set in microseconds. 5s only fires on a genuine hang.
 	waitForCondition(t, 5*time.Second, "the retried one-shot teardown to end the watch", func() bool {
 		jm.mu.Lock()
 		defer jm.mu.Unlock()
