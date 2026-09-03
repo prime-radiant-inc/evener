@@ -20,7 +20,16 @@ export const SETTINGS_SCOPE = "settings";
 
 export const DEFAULT_BINDINGS: readonly BindingInput[] = [
   { id: ACTIONS.paletteOpen, actionId: ACTIONS.paletteOpen, chord: "$mod+K", allowInEditable: true },
-  { id: ACTIONS.railToggle, actionId: ACTIONS.railToggle, chord: "$mod+B", allowInEditable: false },
+  // ignoreIfDefaultPrevented: false - RailHost's ⌘B listener (RailHost.tsx:59-66)
+  // guards only the editable target; it has no defaultPrevented check and
+  // toggles the rail even when an inner handler already claimed the keydown.
+  {
+    id: ACTIONS.railToggle,
+    actionId: ACTIONS.railToggle,
+    chord: "$mod+B",
+    allowInEditable: false,
+    ignoreIfDefaultPrevented: false,
+  },
   { id: ACTIONS.composerFocus, actionId: ACTIONS.composerFocus, chord: "$mod+I", allowInEditable: true },
   { id: ACTIONS.nextNeedsYou, actionId: ACTIONS.nextNeedsYou, chord: "$mod+J", allowInEditable: true },
   { id: ACTIONS.selectionQuote, actionId: ACTIONS.selectionQuote, chord: "$mod+'", allowInEditable: true },

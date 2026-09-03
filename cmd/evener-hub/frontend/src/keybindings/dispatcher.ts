@@ -13,8 +13,12 @@
 // firing binding preventDefaults and stops evaluation, and a shadowed or
 // policy-blocked binding never falls through to a lower-precedence twin.
 //
-// An event another handler already claimed (event.defaultPrevented) is ignored
-// before any of the above, matching every listener site this module replaces.
+// An event another handler already claimed (event.defaultPrevented) is
+// ignored per binding: ignoreIfDefaultPrevented defaults to true, matching
+// AppShell (AppShell.tsx:392), Settings (Settings.tsx:188), and
+// SelectionQuote (SelectionQuote.tsx:148) - but NOT RailHost's ⌘B listener
+// (RailHost.tsx:59-66), which has no defaultPrevented check and so binds with
+// ignoreIfDefaultPrevented: false in defaults.ts.
 
 import { createKeybindingsHandler, type KeybindingsMap } from "tinykeys";
 import { serializeChord } from "./chord";
@@ -79,6 +83,7 @@ export function createKeybindingDispatcher(options: DispatcherOptions = {}): Key
         if (claimed.has(chordKey)) continue;
         claimed.add(chordKey);
         map[chordKey] = (event) => {
+          if (binding.ignoreIfDefaultPrevented && event.defaultPrevented) return;
           if (!binding.allowInEditable && isEditable(event.target)) return;
           const run = registry.getState().actions.get(binding.actionId);
           if (!run) return;
@@ -99,7 +104,6 @@ export function createKeybindingDispatcher(options: DispatcherOptions = {}): Key
   });
 
   function handleKeyDown(event: KeyboardEvent): void {
-    if (event.defaultPrevented) return;
     if (event.isComposing || event.keyCode === 229) return;
     if (isModalOpen(event)) return;
     current(event);

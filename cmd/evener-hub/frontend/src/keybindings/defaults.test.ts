@@ -52,6 +52,13 @@ describe("default binding map", () => {
       expect(other.scope ?? GLOBAL_SCOPE).toBe(GLOBAL_SCOPE);
     }
   });
+
+  test("only rail.toggle opts out of the defaultPrevented gate (RailHost.tsx:59-66 has no such check)", () => {
+    for (const binding of DEFAULT_BINDINGS) {
+      const expected = binding.actionId !== ACTIONS.railToggle;
+      expect(binding.ignoreIfDefaultPrevented ?? true).toBe(expected);
+    }
+  });
 });
 
 describe("default bindings through the dispatcher", () => {

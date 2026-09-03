@@ -68,6 +68,21 @@ describe("dispatcher", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  test("ignoreIfDefaultPrevented: false fires on a keydown another handler claimed", () => {
+    const state = setup();
+    const run = vi.fn();
+    state.registerAction("a", run);
+    // RailHost's ⌘B listener has no defaultPrevented check (RailHost.tsx:59-66)
+    // and toggles even when an inner handler claimed the keydown; the flag
+    // exists so the module can express exactly that.
+    state.registerBinding({ id: "b1", actionId: "a", chord: "$mod+B", ignoreIfDefaultPrevented: false });
+    const inner = document.createElement("div");
+    inner.addEventListener("keydown", (event) => event.preventDefault());
+    document.body.appendChild(inner);
+    pressOn(inner, { key: "b", code: "KeyB", ctrlKey: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   test("suppresses bindings in editable targets by default", () => {
     const state = setup();
     const run = vi.fn();

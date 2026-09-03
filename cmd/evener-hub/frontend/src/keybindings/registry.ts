@@ -23,6 +23,10 @@ export interface Binding {
   scope: string;
   when?: WhenClause;
   allowInEditable: boolean;
+  /** When true (the default), a keydown another handler already claimed
+   * (event.defaultPrevented) suppresses this binding. RailHost's ⌘B listener
+   * has no such check, so rail.toggle sets this to false. */
+  ignoreIfDefaultPrevented: boolean;
 }
 
 export interface BindingInput {
@@ -35,6 +39,8 @@ export interface BindingInput {
   when?: WhenClause;
   /** Defaults to false: bindings are suppressed while an editable target has focus. */
   allowInEditable?: boolean;
+  /** Defaults to true. */
+  ignoreIfDefaultPrevented?: boolean;
 }
 
 export interface KeybindingsState {
@@ -89,6 +95,7 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
         scope: input.scope ?? GLOBAL_SCOPE,
         ...(input.when === undefined ? {} : { when: input.when }),
         allowInEditable: input.allowInEditable ?? false,
+        ignoreIfDefaultPrevented: input.ignoreIfDefaultPrevented ?? true,
       };
       const serialized = serializeChord(chord);
       for (const existing of get().bindings) {
