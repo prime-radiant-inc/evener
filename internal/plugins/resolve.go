@@ -489,16 +489,15 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 		// auto-upgrade holding the store lock across git fetches.
 		if reclaim && len(m.abandonedStaging(store)) > 0 {
 			// Housekeeping for a launch that is otherwise done: it waits the
-			// housekeeping wait, not the wait a publish is entitled to. A lock
-			// it does not get quickly is left to the next launch rather than
+			// housekeeping wait, not the wait a publish is entitled to — the
+			// wait acquireLock is given here is the whole of it. A lock it
+			// does not get quickly is left to the next launch rather than
 			// making this one queue behind whatever holds it. Whether the
 			// orphans are really abandoned is decided again under the lock.
-			sweepCtx, cancelSweep := context.WithTimeout(ctx, bundledSweepLockWait)
-			if release, lockErr := acquireLock(sweepCtx, m.lockPath(), bundledSweepLockWait); lockErr == nil {
+			if release, lockErr := acquireLock(ctx, m.lockPath(), bundledSweepLockWait); lockErr == nil {
 				m.reclaimAbandonedStaging(store)
 				release()
 			}
-			cancelSweep()
 		}
 		return dest, nil, nil, nil
 	}
@@ -603,7 +602,7 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 // destination: one preserved copy per plugin, so a store that keeps meeting
 // conflicts does not grow without bound. Callers hold the store lock, so
 // nothing else this package runs is looking at the destination meanwhile. It
-// reports whether anything moved, and what to say about it: nothing moves when
+// reports what the caller should say about what it moved: nothing moves when
 // the destination is already gone, which under the lock means something
 // outside this package took it away.
 func setAsideBundledConflict(dest string) ([]string, error) {

@@ -522,7 +522,7 @@ func TestMaterializeBundledPlugin_GivesUpQuicklyOnTheSweepLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if waited := time.Since(start); waited > 3*time.Second {
+	if waited := time.Since(start); waited > 2*time.Second {
 		t.Errorf("adopting waited %v on the sweep lock, want it to give up quickly", waited)
 	}
 	if err := res.ValidateSelection(); err != nil {
