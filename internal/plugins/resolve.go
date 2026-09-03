@@ -104,10 +104,21 @@ func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, e
 		// staging that fills; reading the copy back needs nothing from the
 		// store, and removing a private directory disturbs nobody.
 		defer staging.release()
+		// The loop that removes staged copies runs on a normal return, so a
+		// panic on the way there would leave this one behind. Handing the
+		// payload back is what puts it in the loop's hands; until then it is
+		// this closure's to remove, the way a publish removes its own.
+		handed := false
+		defer func() {
+			if !handed {
+				_ = os.RemoveAll(staging.dir)
+			}
+		}()
 		scratch = append(scratch, staging.dir)
 		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return bundledCandidate{path: dest, warnings: warnings}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
+		handed = true
 		return bundledCandidate{loadPath: staging.payload, path: dest, warnings: warnings}, nil
 	})
 	for _, dir := range scratch {
