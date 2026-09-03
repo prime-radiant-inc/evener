@@ -409,8 +409,9 @@ func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
 }
 
 // Preview only inspects: a bundled plugin is described with the path a launch
-// would publish it at, and the store is never written.
-func TestPreviewForLaunch_DoesNotWriteToTheStore(t *testing.T) {
+// would publish it at, and nothing is published — the staging preview reads is
+// gone by the time it returns.
+func TestPreviewForLaunch_PublishesNothing(t *testing.T) {
 	m := NewManager(t.TempDir())
 	digest, err := bundledPluginDigest("coordinator-workflow")
 	if err != nil {
@@ -427,8 +428,12 @@ func TestPreviewForLaunch_DoesNotWriteToTheStore(t *testing.T) {
 	if len(res.Candidates) != 1 || res.Candidates[0].Path != want || res.Candidates[0].Source != LaunchPluginSourceBundled || res.Candidates[0].AgentCount < 7 {
 		t.Fatalf("Candidates = %+v, want the bundled coordinator-workflow at %s", res.Candidates, want)
 	}
-	if _, err := os.Stat(filepath.Join(m.Root, "bundled")); !os.IsNotExist(err) {
-		t.Fatalf("preview wrote to the plugin store (stat err = %v)", err)
+	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+	if err != nil {
+		t.Fatalf("read the bundled store after a preview: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}
 }
 
@@ -479,6 +484,43 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 			t.Errorf("Candidates = %+v, want the published copy at %s with no agents", res.Candidates, dest)
 		}
 	})
+}
+
+// Preview and launch must agree about a store that cannot be published into:
+// a read-only <Root>/bundled fails both rather than previewing as selectable
+// and then failing the launch it promised.
+func TestPreviewForLaunch_ReadOnlyStoreFailsPreviewAndLaunchAlike(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory mode")
+	}
+	m := NewManager(t.TempDir())
+	store := filepath.Join(m.Root, "bundled")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(store, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store, 0o755) })
+
+	preview, err := m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.ValidateSelection(); err == nil {
+		t.Errorf("preview selected a bundled plugin a launch cannot publish: %+v", preview.Candidates)
+	}
+	if len(preview.Diagnostics) != 1 || preview.Diagnostics[0].Source != LaunchPluginSourceBundled {
+		t.Errorf("preview Diagnostics = %+v, want one bundled diagnostic", preview.Diagnostics)
+	}
+
+	launch, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := launch.ValidateSelection(); err == nil {
+		t.Fatalf("launch selected a bundled plugin from a read-only store: %+v", launch.Candidates)
+	}
 }
 
 // A published copy is reused only when the destination is a real directory. A

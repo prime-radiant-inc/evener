@@ -74,44 +74,32 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 	})
 }
 
-// PreviewForLaunch is ResolveForLaunch for inspection only. It classifies the
-// store destination exactly as a launch does, so a destination a launch would
-// reject fails preview the same way and an already published copy is the one
-// preview describes. Only when nothing is published yet does it load a private
-// temporary copy, discarded before returning, so previewing never writes to
-// the plugin store.
+// PreviewForLaunch is ResolveForLaunch for inspection only. It prepares the
+// store exactly as a launch does, so a destination a launch would reject fails
+// preview the same way, a store a launch could not publish into fails preview
+// too, and an already published copy is the one preview describes. What
+// preview never does is publish: it reads the staging it filled and removes it
+// before returning, so the store gains nothing.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
-	scratch := ""
+	var scratch []string
 	defer func() {
-		if scratch != "" {
-			_ = os.RemoveAll(scratch)
+		for _, dir := range scratch {
+			_ = os.RemoveAll(dir)
 		}
 	}()
 	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
-		digest, err := bundledPluginDigest(name)
+		dest, staging, err := m.prepareBundledStore(name)
 		if err != nil {
 			return "", "", err
 		}
-		dest := m.bundledPluginPath(name, digest)
-		published, err := publishedBundledCopy(dest)
-		if err != nil {
-			return "", "", err
-		}
-		if published {
+		if staging == "" {
 			return dest, dest, nil
 		}
-		if scratch == "" {
-			dir, err := os.MkdirTemp("", "evener-bundled-preview-")
-			if err != nil {
-				return "", "", err
-			}
-			scratch = dir
-		}
-		loadPath := filepath.Join(scratch, name)
-		if err := os.CopyFS(loadPath, mustSubFS(bundled.Plugins(), name)); err != nil {
+		scratch = append(scratch, staging)
+		if err := os.CopyFS(staging, mustSubFS(bundled.Plugins(), name)); err != nil {
 			return "", "", fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
-		return loadPath, dest, nil
+		return staging, dest, nil
 	})
 }
 
@@ -248,25 +236,12 @@ const (
 // the copy is staged in a private directory and renamed into place, and a
 // concurrent publisher that loses the rename adopts the winner's copy.
 func (m *Manager) materializeBundledPlugin(name string) (string, error) {
-	digest, err := bundledPluginDigest(name)
+	dest, staging, err := m.prepareBundledStore(name)
 	if err != nil {
 		return "", err
 	}
-	dest := m.bundledPluginPath(name, digest)
-	published, err := publishedBundledCopy(dest)
-	if err != nil {
-		return "", err
-	}
-	if published {
+	if staging == "" {
 		return dest, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	m.reclaimAbandonedStaging(filepath.Dir(dest))
-	staging, err := os.MkdirTemp(filepath.Dir(dest), stagingPrefix+filepath.Base(dest)+"-")
-	if err != nil {
-		return "", fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
 	if err := os.CopyFS(staging, mustSubFS(bundled.Plugins(), name)); err != nil {
 		_ = os.RemoveAll(staging)
@@ -280,6 +255,37 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 		return "", fmt.Errorf("publish bundled plugin %s: %w", name, err)
 	}
 	return dest, nil
+}
+
+// prepareBundledStore readies <Root>/bundled to hold the bundled plugin named
+// name. It returns the published destination and, when nothing is published
+// there yet, a private staging directory to fill; staging is empty for a copy
+// that is already published. Creating that directory is what proves the store
+// can be published into, so a launch and a preview that share this preparation
+// fail identically on a store neither can write.
+func (m *Manager) prepareBundledStore(name string) (dest, staging string, err error) {
+	digest, err := bundledPluginDigest(name)
+	if err != nil {
+		return "", "", err
+	}
+	dest = m.bundledPluginPath(name, digest)
+	published, err := publishedBundledCopy(dest)
+	if err != nil {
+		return "", "", err
+	}
+	if published {
+		return dest, "", nil
+	}
+	store := filepath.Dir(dest)
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		return "", "", err
+	}
+	m.reclaimAbandonedStaging(store)
+	staging, err = os.MkdirTemp(store, stagingPrefix+filepath.Base(dest)+"-")
+	if err != nil {
+		return "", "", fmt.Errorf("stage bundled plugin %s: %w", name, err)
+	}
+	return dest, staging, nil
 }
 
 // publishedBundledCopy reports whether dest already holds a published copy.

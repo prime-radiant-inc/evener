@@ -351,10 +351,9 @@ func TestPluginSelectionPreviewUsesOnlySelectedConcreteDirectories(t *testing.T)
 	}
 }
 
-// Previewing a bundled plugin by name only inspects it: the plugin store is
-// never written, so a read-only store or an abandoned preview leaves nothing
-// behind.
-func TestPluginPreviewBundledPluginLeavesStoreUntouched(t *testing.T) {
+// Previewing a bundled plugin by name only inspects it: nothing is published,
+// so an abandoned preview leaves nothing behind.
+func TestPluginPreviewBundledPluginPublishesNothing(t *testing.T) {
 	pluginRoot := t.TempDir()
 	ctl := newHubPluginsController(pluginRoot, t.TempDir())
 	names := []string{"coordinator-workflow"}
@@ -367,7 +366,11 @@ func TestPluginPreviewBundledPluginLeavesStoreUntouched(t *testing.T) {
 	if len(got.SelectionErrors) != 0 || len(got.Plugins) != 1 || got.Plugins[0].Source != "bundled" || !got.Plugins[0].Selected {
 		t.Fatalf("preview = %+v, want the bundled coordinator-workflow selected", got)
 	}
-	if _, err := os.Stat(filepath.Join(pluginRoot, "bundled")); !os.IsNotExist(err) {
-		t.Fatalf("preview wrote to the plugin store (stat err = %v)", err)
+	entries, err := os.ReadDir(filepath.Join(pluginRoot, "bundled"))
+	if err != nil {
+		t.Fatalf("read the bundled store after a preview: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}
 }
