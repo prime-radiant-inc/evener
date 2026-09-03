@@ -302,6 +302,185 @@ describe("clearing the pill", () => {
   });
 });
 
+// The jump-to-latest pill is a SCROLL-POSITION affordance (docs/web-ui/
+// decisions.md: "a jump-to-latest pill when scrolled up"), not a new-content
+// counter: it must be on offer whenever the reader is away from the bottom,
+// even when nothing new has arrived - and a jump that lands short must leave
+// it on offer rather than stranding the reader with no affordance.
+describe("the pill while scrolled back (no new content)", () => {
+  test("scrolling away from the bottom makes the pill visible even when nothing new arrived", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillVisible).toBe(true);
+    // Still no count - nothing arrived; the pill is the plain jump-to-latest form.
+    expect(result.current.pillCount).toBe(0);
+    expect(result.current.pillError).toBe(false);
+  });
+
+  test("scrolling back to the bottom hides the pill again", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
+    act(() => {
+      set(AT_BOTTOM);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(false);
+  });
+
+  test("an attention-worthy thread upgrades the scrolled-back pill to needs-you even at count 0", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillNeedsYou).toBe(false);
+
+    // The awaiting flip can land after the reader scrolled away (no new
+    // items at all) - the visible pill still upgrades in place.
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }) });
+    expect(result.current.pillNeedsYou).toBe(true);
+  });
+
+  test("at the bottom, an attention-worthy thread alone does not show the pill", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillNeedsYou).toBe(false);
+  });
+
+  test("a jump that lands short of the bottom leaves the pill on offer instead of stranding the reader", () => {
+    const { ref, el } = makeListHandle();
+    // The measure seam stays at SCROLLED_AWAY even after the jump: this
+    // simulates the real failure mode, where the virtualizer's
+    // estimate-derived landing is corrected by later measurements to
+    // somewhere that is NOT the true bottom.
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+
+    act(() => result.current.jumpToBottom());
+    // The post-jump scroll event reports the short landing...
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    // ...and the pill must still be on offer (plain form), not cleared.
+    expect(result.current.pillVisible).toBe(true);
+  });
+});
+
+describe("jumpToBottom landing reliability", () => {
+  test("jumpToBottom pins the scroll element to its true DOM maximum, not only the virtualizer's estimate-derived offset", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    scrollToIndex.mockClear(); // drop the initial-mount positioning call
+
+    act(() => result.current.jumpToBottom());
+
+    // The virtualizer scroll is still requested (it engages measurement and
+    // the end-anchor machinery)...
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
+    // ...and the scroll element is pinned to the TRUE bottom by real DOM
+    // geometry (scrollHeight - clientHeight), exact regardless of how wrong
+    // the virtualizer's estimates for unmeasured rows are.
+    expect(el.scrollTop).toBe(SCROLLED_AWAY.scrollHeight - SCROLLED_AWAY.clientHeight);
+  });
+
+  test("the error-anchor jump does NOT pin to the bottom - it lands on the failed turn", () => {
+    const { ref, el } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+
+    expect(el.scrollTop).toBe(0);
+  });
+});
+
 // The error anchor (contracts-transcript-scroll-liveness.md §5, lines
 // 113-114): a failed turn arriving while the reader is scrolled away is
 // remembered so the pill can point at it and jump straight there, instead
@@ -318,7 +497,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           renderedRowCount: rowCount,
           sourceTurnRowIndexes: rowIndexes,
@@ -355,7 +534,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -375,7 +561,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -394,7 +587,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -423,7 +623,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -436,7 +643,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -450,7 +664,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
 
@@ -465,7 +686,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -487,7 +715,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -505,7 +740,14 @@ describe("the error anchor (failed turn)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -533,7 +775,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -560,7 +802,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -584,7 +826,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -611,7 +853,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -639,7 +881,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -666,7 +908,7 @@ describe("the error anchor (failed turn)", () => {
           ref: "ref_a",
           model: m,
           listRef: ref,
-          loadOlder: vi.fn().mockResolvedValue(undefined),
+          loadOlder: vi.fn(() => Promise.resolve()).mockResolvedValue(undefined),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
@@ -690,7 +932,14 @@ describe("the needs-you upgrade", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])], { status: { type: "idle" } }) } },
     );
 
@@ -709,7 +958,14 @@ describe("the needs-you upgrade", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])], { askPending: false }) } },
     );
 
@@ -726,7 +982,7 @@ describe("the needs-you upgrade", () => {
         ref: "ref_a",
         model: model([turn("t1", ["i1"])], { askPending: true }),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -803,7 +1059,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
 
@@ -826,7 +1089,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure({ scrollTop: 200, scrollHeight: 500, clientHeight: 100 });
     const { rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
     el.scrollTop = 200;
@@ -841,7 +1111,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(AT_BOTTOM);
     const { rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     el.scrollTop = 111; // arbitrary sentinel the stick/no-op path must not touch via the prepend math
@@ -868,7 +1145,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t1", ["i1"])]) } },
     );
     rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
@@ -895,7 +1179,14 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
       { initialProps: { m: model([turn("t2", ["i2"])]) } },
     );
 
@@ -939,7 +1230,7 @@ describe("mount positioning", () => {
         ref: "ref_never_seen",
         model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -963,7 +1254,7 @@ describe("mount positioning", () => {
         ref: "ref_a",
         model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
         listRef: ref,
-        loadOlder: vi.fn(),
+        loadOlder: vi.fn(() => Promise.resolve()),
         measure,
       }),
     );
@@ -983,7 +1274,7 @@ describe("mount positioning", () => {
           ref: "ref_hydrating",
           model: m,
           listRef: list.ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { m: undefined as ThreadModel | undefined } },
@@ -1024,7 +1315,7 @@ describe("ref change on a persistent pane instance (sidebar click to a different
           ref: r,
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           measureAnchors: () => positions,
         }),
@@ -1048,7 +1339,7 @@ describe("ref change on a persistent pane instance (sidebar click to a different
           ref: r,
           model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { r: "ref_a" } },
@@ -1068,7 +1359,8 @@ describe("ref change on a persistent pane instance (sidebar click to a different
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ r, m }) =>
+        useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(() => Promise.resolve()), measure }),
       {
         initialProps: {
           r: "ref_a",
@@ -1092,7 +1384,8 @@ describe("ref change on a persistent pane instance (sidebar click to a different
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
     const { result, rerender } = renderHook(
-      ({ r, m }) => useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      ({ r, m }) =>
+        useTranscriptScroll({ ref: r, model: m, listRef: ref, loadOlder: vi.fn(() => Promise.resolve()), measure }),
       {
         initialProps: {
           r: "ref_a",
@@ -1129,7 +1422,7 @@ describe("same-ref remount (model undefined -> defined on the same ref)", () => 
           ref: "ref_a",
           model: m,
           listRef: list.ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
         }),
       { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) as ThreadModel | undefined } },
@@ -1197,7 +1490,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           measureAnchors: () => positions,
@@ -1254,7 +1547,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"]), turn("turn-4", ["i4"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           measureAnchors,
@@ -1291,7 +1584,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("mixed-turn", ["user-1", "tool-1", "agent-1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           anchorEntries,
@@ -1324,7 +1617,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure: metrics.measure,
           viewKey,
           measureAnchors: () => positions,
@@ -1355,7 +1648,7 @@ describe("view-mode anchor preservation", () => {
           ref: "ref_a",
           model: model([turn("t1", ["i1"])]),
           listRef: ref,
-          loadOlder: vi.fn(),
+          loadOlder: vi.fn(() => Promise.resolve()),
           measure,
           viewKey,
           anchorEntries,
@@ -1531,7 +1824,13 @@ describe("no-model / not-yet-mounted safety", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result } = renderHook(() =>
-      useTranscriptScroll({ ref: "ref_a", model: undefined, listRef: ref, loadOlder: vi.fn(), measure }),
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: undefined,
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
     );
 
     expect(result.current.pillCount).toBe(0);
@@ -1542,7 +1841,12 @@ describe("no-model / not-yet-mounted safety", () => {
   test("listRef.current null (VirtualList not yet mounted, e.g. an empty transcript): no crash", () => {
     const notMountedRef = createRef<VirtualListHandle>() as React.RefObject<VirtualListHandle | null>;
     const { result } = renderHook(() =>
-      useTranscriptScroll({ ref: "ref_a", model: model([]), listRef: notMountedRef, loadOlder: vi.fn() }),
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([]),
+        listRef: notMountedRef,
+        loadOlder: vi.fn(() => Promise.resolve()),
+      }),
     );
 
     expect(result.current.pillCount).toBe(0);

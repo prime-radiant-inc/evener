@@ -1163,7 +1163,9 @@ function scrollRootOf(container: HTMLElement): HTMLElement {
 }
 
 function stubScrolledAway(el: HTMLElement) {
-  Object.defineProperty(el, "scrollTop", { configurable: true, value: 0 });
+  // scrollTop is writable (unlike scrollHeight/clientHeight): jumpToBottom
+  // pins the true bottom by assigning it directly, and tests observe that.
+  Object.defineProperty(el, "scrollTop", { configurable: true, writable: true, value: 0 });
   Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
 }
@@ -1212,6 +1214,50 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
 
   const pill = await screen.findByTestId("new-content-pill");
   expect(pill.textContent).toContain("1");
+});
+
+test("scrolled away with NO new content: the jump-to-latest pill still appears, and clicking it pins the scroll root to its true bottom", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
+      ],
+    }),
+  );
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+
+  // No notification, no new items - the pill appears purely because the
+  // reader scrolled back, in its plain (countless) jump-to-latest form.
+  const pill = await screen.findByTestId("new-content-pill");
+  expect(pill.textContent!.toLowerCase()).toContain("latest");
+  expect(pill.textContent).not.toMatch(/\d/);
+
+  fireEvent.click(pill);
+
+  // The click pins the scroll element to its true DOM maximum by real
+  // geometry - 5000 - 500 = 4500 - not an estimate-derived offset.
+  expect(root.scrollTop).toBe(4500);
+
+  // The landing's own scroll event then clears the pill.
+  fireEvent.scroll(root);
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
 
 test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {
@@ -1308,6 +1354,11 @@ test("clicking the real NewContentPill clears it", async () => {
 
   fireEvent.click(screen.getByTestId("new-content-pill"));
 
+  // The click pins the scroll root to its true DOM maximum; the pill stays
+  // on offer (now in its plain jump-to-latest form) until the landing's own
+  // scroll event reports the reader actually arrived at the bottom.
+  expect(root.scrollTop).toBe(4500);
+  fireEvent.scroll(root);
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
 
