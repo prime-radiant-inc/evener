@@ -423,8 +423,15 @@ func (r *Registry) semanticSignature(name string, args map[string]any, parameter
 	r.mu.RLock()
 	registered, ok := r.tools[name]
 	r.mu.RUnlock()
-	omitDescription := ok && registered.OmitDescriptionFromSemanticIdentity
-	applyDefaults := ok && registered.ApplyBuiltInSemanticDefaults
+	if !ok {
+		return r.semanticSignatureFor(name, args, parameters, nil)
+	}
+	return r.semanticSignatureFor(name, args, parameters, &registered)
+}
+
+func (r *Registry) semanticSignatureFor(name string, args map[string]any, parameters map[string]any, registered *RegisteredTool) string {
+	omitDescription := registered != nil && registered.OmitDescriptionFromSemanticIdentity
+	applyDefaults := registered != nil && registered.ApplyBuiltInSemanticDefaults
 	encoded, err := semanticCanonicalBytes(name, args, parameters, omitDescription, applyDefaults)
 	if err != nil {
 		encoded = []byte("unencodable")
@@ -459,7 +466,7 @@ func (r *Registry) telemetryComponent(domain, value string) string {
 	return hex.EncodeToString(h.Sum(nil)[:8])
 }
 
-func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters map[string]any) string {
+func (r *Registry) semanticSignatureFromRawFor(name string, raw []byte, parameters map[string]any, registered *RegisteredTool) string {
 	if len(raw) > maxToolArgumentBytes {
 		return name + ":" + r.telemetryComponent("semantic-marker", "oversize")
 	}
@@ -467,7 +474,11 @@ func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters 
 	if len(raw) > 0 && json.Unmarshal(raw, &args) != nil {
 		return name + ":" + r.telemetryComponent("semantic-marker", "invalid-json")
 	}
-	return r.semanticSignature(name, args, parameters)
+	return r.semanticSignatureFor(name, args, parameters, registered)
+}
+
+func (r *Registry) semanticSignatureFromRaw(name string, raw []byte, parameters map[string]any) string {
+	return r.semanticSignatureFromRawFor(name, raw, parameters, nil)
 }
 
 func (r *Registry) semanticPark(name, callID, semanticSignature, exactSignature string, lim schema.ToolOutputLimit, judged bool) (ExecResult, bool) {
@@ -802,7 +813,11 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
-	semanticSignature := r.semanticSignatureFromRaw(name, call.Arguments, nil)
+	var semanticRegistered *RegisteredTool
+	if ok {
+		semanticRegistered = &t
+	}
+	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, nil, semanticRegistered)
 	preNormalizationSignature := semanticSignature
 	finish := func(res ExecResult) ExecResult {
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, judged, humanBypassed, "")
@@ -851,7 +866,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
 		}
 		args = normalized
-		semanticSignature = r.semanticSignature(name, args, t.Definition.Parameters)
+		semanticSignature = r.semanticSignatureFor(name, args, t.Definition.Parameters, &t)
 	}
 	if t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
@@ -863,7 +878,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		}
 		args = normalized
 	}
-	semanticSignature = r.semanticSignature(name, args, t.Definition.Parameters)
+	semanticSignature = r.semanticSignatureFor(name, args, t.Definition.Parameters, &t)
 
 	if err := t.Schema.Validate(args); err != nil {
 		if res, blocked := park(t.Limit); blocked {
@@ -934,7 +949,11 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	humanBypassed := breakerBypassed(ctx)
 	judged := !humanBypassed && name != "model_list"
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
-	semanticSignature := r.semanticSignatureFromRaw(name, call.Arguments, parameters)
+	var semanticRegistered *RegisteredTool
+	if found {
+		semanticRegistered = &t
+	}
+	semanticSignature := r.semanticSignatureFromRawFor(name, call.Arguments, parameters, semanticRegistered)
 	if boundary == "" {
 		boundary = prevalidationBoundary(name, call.Arguments, found)
 	}
