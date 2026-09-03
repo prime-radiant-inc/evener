@@ -14,3 +14,32 @@
   outline-offset: 2px;
   border-radius: var(--radius-control);
 }
+
+/* The button form's layout shell: the touch target WITHOUT the leading. The
+ * box is the full hit size (28px - IconButton sm fills it) and the negative
+ * margin-block hands exactly one text line back to layout, so a row with the
+ * affordance is the height of a row without it. The margin is symmetric, so
+ * the glyph does not move; min(0px, ...) means a font taller than the hit
+ * size never earns a positive margin. The one container that would clip the
+ * overhang - toolcallitem.module.css's .clamped - relaxes its clip with
+ * overflow-clip-margin (see there). */
+.inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 28px;
+  margin-block: min(0px, calc((1em - 28px) / 2));
+  vertical-align: middle;
+}
+
+/* Phone tap floor (tokens.css's --tap-min, decision 4 of
+ * 2026-07-30-mobile-session-layout-design.md): iconbutton.module.css's own
+ * phone block grows the button to fill, this shell grows with it, and the
+ * leading is still exactly one line. */
+@media (max-width: 899px) {
+  .inline {
+    height: var(--tap-min);
+    margin-block: min(0px, calc((1em - var(--tap-min)) / 2));
+  }
+}
