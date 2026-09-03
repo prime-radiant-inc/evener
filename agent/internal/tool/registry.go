@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
@@ -25,7 +26,7 @@ import (
 
 const toolIntentDescription = "Describe what you expect to learn or accomplish from this tool call, using a verb-first gerund. Make the expected outcome clear to the user and your future self; e.g. \"Reading config to identify the active profile\" or \"Searching handlers to locate request routing.\""
 
-// maxToolArgumentBytes caps the size of a tool call's raw argument payload
+// MaxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB
 // blob through JSON unmarshaling and schema validation for no useful reason.
 // This must stay above agent/jobs.go's maxPersistedStructuredResultJSONBytes
@@ -35,7 +36,20 @@ const toolIntentDescription = "Describe what you expect to learn or accomplish f
 // before it ever reached that graceful path. (Cross-package constant:
 // agent/internal/tool cannot import agent to derive this by reference, so
 // keep the two values in sync by comment.)
-const maxToolArgumentBytes = 2 * 1024 * 1024
+const MaxToolArgumentBytes = 2 * 1024 * 1024
+
+// ValidateRawArguments rejects raw tool argument bytes that must never reach a
+// lossy JSON decode or an allocation-heavy schema path. Callers return this
+// bounded diagnostic directly to keep all prevalidation paths consistent.
+func ValidateRawArguments(arguments []byte) error {
+	if len(arguments) > MaxToolArgumentBytes {
+		return fmt.Errorf("tool arguments too large: %d bytes exceeds the %d byte limit", len(arguments), MaxToolArgumentBytes)
+	}
+	if !utf8.Valid(arguments) {
+		return errors.New("invalid tool arguments JSON: input is not valid UTF-8")
+	}
+	return nil
+}
 
 // ctxIntentKey is the context key carrying a tool call's `intent` argument
 // past the registry's strip point (see ExecuteCall): handlers that want it —
@@ -653,9 +667,8 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
 	}
 
-	if len(call.Arguments) > maxToolArgumentBytes {
-		msg := fmt.Sprintf("tool arguments too large: %d bytes exceeds the %d byte limit", len(call.Arguments), maxToolArgumentBytes)
-		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
+	if err := ValidateRawArguments(call.Arguments); err != nil {
+		return truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
 	}
 
 	var args map[string]any

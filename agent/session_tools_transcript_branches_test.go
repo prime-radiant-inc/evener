@@ -1138,6 +1138,60 @@ func TestProjectToolResultsForTranscriptWithProjection(t *testing.T) {
 	}
 }
 
+func TestProjectToolResultsForTranscriptInvalidUnknownCallPreservesDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args func() []byte
+	}{
+		{
+			name: "invalid UTF-8",
+			args: func() []byte {
+				args := append([]byte(`{"source":"api_log","hint":"`), 0xff)
+				return append(args, []byte(`"}`)...)
+			},
+		},
+		{
+			name: "over limit",
+			args: func() []byte {
+				base := `{"source":"api_log"}`
+				return []byte(base + strings.Repeat(" ", tool.MaxToolArgumentBytes+1-len(base)))
+			},
+		},
+		{
+			name: "numeric overflow",
+			args: func() []byte {
+				return []byte(`{"source":"api_log","overflow":1e1000}`)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const diagnostic = "invalid_request: unknown tool read_session_transcript"
+			calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: tc.args()}}
+			results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: diagnostic, FullOutput: diagnostic, IsError: true, PrevalOnly: true}}
+			parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: diagnostic}}}
+
+			out := projectToolResultsForTranscript(calls, results, parts)
+			content, ok := out[0].ToolResult.Content.(string)
+			if !ok || content != diagnostic {
+				t.Fatalf("projected raw-rejected diagnostic = %#v, want exact %q", out[0].ToolResult.Content, diagnostic)
+			}
+		})
+	}
+}
+
+func TestProjectToolResultsForTranscriptResultIdentitySurvivesCallDecodeError(t *testing.T) {
+	const resultJSON = `{"source":"api_log","transcript_ref":"local:abc","attempt":{"attempt_id":"att_1"}}`
+	calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log","overflow":1e1000}`)}}
+	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: resultJSON, PrevalOnly: true}}
+	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
+
+	out := projectToolResultsForTranscript(calls, results, parts)
+	content, ok := out[0].ToolResult.Content.(string)
+	if !ok || content == "original" || !strings.Contains(content, `"att_1"`) {
+		t.Fatalf("independently identified API-log result = %#v, want projected result placeholder", out[0].ToolResult.Content)
+	}
+}
+
 func TestProjectToolResultsForTranscriptNilToolResult(t *testing.T) {
 	calls := []llm.ToolCallData{{Name: "read_session_transcript", Arguments: json.RawMessage(`{"source":"api_log"}`)}}
 	results := []tool.ExecResult{{ToolName: "read_session_transcript", Output: `{"source":"api_log"}`}}

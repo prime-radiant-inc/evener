@@ -6,6 +6,7 @@ package repair
 
 import (
 	"maps"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -14,12 +15,15 @@ import (
 type ChangeKind string
 
 const (
-	ChangeAlias            ChangeKind = "alias"
-	ChangeCoerceType       ChangeKind = "coerce_type"
-	ChangeDropUnknown      ChangeKind = "drop_unknown"
-	ChangeUnicodeRepair    ChangeKind = "unicode_repair"
-	ChangeFillRequired     ChangeKind = "fill_required"
-	ChangeNormalizeDefault ChangeKind = "normalize_default"
+	ChangeAlias             ChangeKind = "alias"
+	ChangeCoerceType        ChangeKind = "coerce_type"
+	ChangeDropUnknown       ChangeKind = "drop_unknown"
+	ChangeUnicodeRepair     ChangeKind = "unicode_repair"
+	ChangeFillRequired      ChangeKind = "fill_required"
+	ChangeNormalizeDefault  ChangeKind = "normalize_default"
+	ChangeSynthesize        ChangeKind = "synthesize"
+	ChangeCopy              ChangeKind = "copy"
+	ChangePromoteJSONObject ChangeKind = "promote_json_object"
 )
 
 // Change records one repair for telemetry. Field is the affected key ("" for a
@@ -128,7 +132,7 @@ func applyCoercions(params, args map[string]any) []Change {
 				continue
 			}
 			f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-			if err != nil {
+			if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 				continue
 			}
 			args[key] = f
