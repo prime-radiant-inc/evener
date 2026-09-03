@@ -33,7 +33,9 @@
 <!-- Reproduces ToolRow.tsx's intent-only expandable branch (the delegate /
      subagent card) against the REAL classes from
      panes/session/transcript/toolcallitem.module.css and
-     widgets/button/button.module.css:
+     widgets/button/button.module.css,
+     widgets/iconbutton/iconbutton.module.css, and
+     widgets/openbutton/openbutton.module.css:
 
        <div class="row" data-intent="true" data-intent-trailing="true">
          <button class="trigger">
@@ -42,17 +44,26 @@
          <span class="intentTrailing">{trailing open control}</span>
        </div>
 
-     The trailing control is the word-form OpenButton the delegate row renders
-     (OpenTranscriptButton -> Button variant="quiet" size="sm" with the word
-     "open" + the box-arrow OpenIcon), reproduced with Button's real classes.
+     The trailing control is the icon-only OpenButton the delegate row renders
+     (OpenTranscriptButton -> OpenButton -> span.inline shell around an
+     IconButton variant="quiet" size="sm" - 28px square, box-arrow OpenIcon,
+     no visible word), reproduced with the widgets' real classes. The .inline
+     shell is the full hit size; its negative margin-block hands exactly 1em
+     back to layout, so the row stays one text line tall. iconbutton.module.css
+     must follow button.module.css in cssFiles: both define a plain .sm, and
+     the icon-only square sizing (padding:0) only wins the cascade second.
 
      Two intent lengths x two column widths:
        short intent - already fits beside the control, so it is inline
          regardless of the trigger's flex-basis (it is not the binding case,
-         but it must not regress either);
+         but it must not regress either) AND the control hugs the intent's
+         end (adjacency: the guard against flex-grow springing it to the
+         line's far end);
        long intent  - the binding case: with flex-basis:auto it claims its
          max-content width and pushes the control to line 2; with flex-basis:0
-         it wraps INSIDE the trigger and the control stays on line 1.
+         it wraps INSIDE the trigger and the control stays on line 1 - the
+         max-width reservation is what clamps the base size so the wrap
+         happens inside the trigger rather than ahead of the control.
 
      The measure reports each fixture's trigger and control top edges (and
      whether they share a line) so the assert is font- and platform-independent:
@@ -80,10 +91,11 @@ function delegateRowHtml(id, intent) {
         </span>
       </button>
       <span class="intentTrailing" id="trailing-${id}">
-        <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open transcript">
-          open
-          <span class="icon" aria-hidden="true">${OPEN_SVG}</span>
-        </button>
+        <span class="inline">
+          <button type="button" class="button quiet sm" id="open-${id}" aria-label="Open transcript" title="Open">
+            <span class="icon" aria-hidden="true">${OPEN_SVG}</span>
+          </button>
+        </span>
       </span>
     </div>`;
 }
@@ -94,10 +106,10 @@ const SHORT_INTENT = "Scout the frontend for the open-widget renderer.";
 const LONG_INTENT = "Locate the delegate row renderer in the transcript pane, trace how its trailing open-transcript control is composed against the disclosure trigger, and confirm the inline placement holds when the stated intent wraps across more than one line inside the row.";
 
 const CONFIGS = [
-  { key: "narrow-short",  width: 420, intent: SHORT_INTENT, label: "420px column, short intent (fits beside the control)" },
-  { key: "narrow-long",  width: 420, intent: LONG_INTENT,  label: "420px column, long intent (binding: must wrap inside the trigger)" },
-  { key: "wide-short",   width: 880, intent: SHORT_INTENT, label: "880px column, short intent" },
-  { key: "wide-long",    width: 880, intent: LONG_INTENT,  label: "880px column, long intent (binding)" },
+  { key: "narrow-short",  width: 420, intent: SHORT_INTENT, shortIntent: true,  label: "420px column, short intent (fits beside the control)" },
+  { key: "narrow-long",  width: 420, intent: LONG_INTENT,  shortIntent: false, label: "420px column, long intent (binding: must wrap inside the trigger)" },
+  { key: "wide-short",   width: 880, intent: SHORT_INTENT, shortIntent: true,  label: "880px column, short intent" },
+  { key: "wide-long",    width: 880, intent: LONG_INTENT,  shortIntent: false, label: "880px column, long intent (binding)" },
 ];
 
 const root = document.querySelector(".fixtures");
@@ -125,8 +137,9 @@ function box(el) {
 // button baseline-aligns above an italic text line -> its top is HIGHER,
 // not lower). A naive top-equality test misreads that baseline offset as a
 // wrap. Line membership is decided instead against the trigger's own first
-// line: a Range over the intent text yields one rect per wrapped line, and
-// rects[0] is line 1. The control shares line 1 iff it starts WITHIN or ABOVE
+// line: a Range over the intent text yields that line's fragments (their
+// union is line 1 - see firstLineBox). The control shares line 1 iff it
+// starts WITHIN or ABOVE
 // that line (its top is below the line-1 bottom by only sub-pixel noise);
 // once it wraps to line 2 its top sits at the line-1 bottom (the row's
 // row-gap is 0, so flex line 2 begins exactly where line 1 ends). Font- and
@@ -136,11 +149,26 @@ function firstLineBox(intentEl) {
   range.selectNodeContents(intentEl);
   const rects = range.getClientRects();
   // An intent with no text would return nothing; the harness always has one.
-  return rects[0];
+  const first = rects[0];
+  // getClientRects returns one rect PER FRAGMENT, not one union per line:
+  // rects[0] is the text's own first fragment and its right edge stops at the
+  // last WORD - before the chevron's margin-left (8px) + 14px box, which ride
+  // the same line as later fragments. The vertical band (top/bottom) is the
+  // first fragment's (the chevron's 14px box stays inside the title
+  // line-height), but the RIGHT edge the adjacency check measures against is
+  // the whole first line, chevron included: union every fragment that
+  // overlaps line 1's vertical span. (Line 2's fragments begin exactly at
+  // line 1's bottom, so the strict-overlap test excludes them.)
+  let right = first.right;
+  for (const r of rects) {
+    if (r.top < first.bottom && r.bottom > first.top) right = Math.max(right, r.right);
+  }
+  return { top: first.top, bottom: first.bottom, left: first.left, right };
 }
 
 window.measure = () => {
   return CONFIGS.map((c) => {
+    const row      = document.getElementById(`row-${c.key}`);
     const trigger  = box(document.getElementById(`trigger-${c.key}`));
     const trailing = box(document.getElementById(`trailing-${c.key}`));
     const open     = box(document.getElementById(`open-${c.key}`));
@@ -152,10 +180,19 @@ window.measure = () => {
     // the control's top reaches line 1's bottom (it starts on line 2). The
     // 1px tolerance absorbs rounding where line 2 meets line 1's bottom.
     const sameLine = open.top < line1.bottom - 1;
+    // Adjacency: how far the control's left edge sits past the trigger's
+    // line-1 right edge (the intent text + its inline chevron, a Range
+    // rect). flex:0 1 auto keeps the trigger hugging its content, so the
+    // gap is exactly the row's column-gap; a growing trigger would spring
+    // the control to the line's far end (a gap far larger than the
+    // column-gap). The row's computed column-gap is measured, not assumed.
+    const columnGap = parseFloat(getComputedStyle(row).columnGap);
+    const controlLeftGap = open.left - line1.right;
     return {
       id: c.key,
       label: c.label,
       width: c.width,
+      shortIntent: c.shortIntent,
       trigger,
       trailing,
       open,
@@ -165,6 +202,8 @@ window.measure = () => {
       // How far the control's top sits below line 1's bottom, for the assert's
       // reason: 0 (or negative) = inline; >0 = dropped to a later line.
       dropBelowLine1: open.top - line1.bottom,
+      columnGap,
+      controlLeftGap,
     };
   });
 };
