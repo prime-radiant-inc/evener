@@ -1667,3 +1667,53 @@ test("the collapsed summary line clips with a margin, so the open control's hit 
   expect(css).toMatch(/\.clamped\s*\{[^}]*overflow:\s*clip/);
   expect(css).toMatch(/\.clamped\s*\{[^}]*overflow-clip-margin:\s*16px/);
 });
+
+test("the intent-only overlay trigger describes itself with the row's status", () => {
+  // The overlay branch renders the visible status as a SIBLING of the trigger
+  // (valid DOM order text/Open/chevron); aria-describedby keeps the state
+  // ("Working", "Needs you") announced on focus, as it was when the trigger
+  // contained the status.
+  render(
+    <ToolRow
+      summary=""
+      intent="Delegate on the parser"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      status={<span>Working</span>}
+      trailing={<button type="button" aria-label="Open transcript" />}
+    />,
+  );
+  const trigger = screen.getByTestId("tool-row-trigger");
+  const status = screen.getByTestId("tool-row-status");
+  expect(status.id).not.toBe("");
+  expect(trigger.getAttribute("aria-describedby")).toBe(status.id);
+});
+
+test("the body-trigger-on-intent-line row marks itself, and the stylesheet constrains the plain trigger", () => {
+  // Two-level row with the summary hidden and the body expanded: the body
+  // chevron rides the intent line. The plain trigger must keep a constrained
+  // basis - the [data-intent] rule's flex: 1 1 100% would wrap the chevron
+  // onto its own line - and the Open-plus-chevron reservation widens by one
+  // more chevron and gap when both ride the line.
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen={false}
+      onToggleSummary={() => {}}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  expect(row.getAttribute("data-intent-trailing")).toBe("true");
+  expect(row.getAttribute("data-body-trigger-intent")).toBe("true");
+  expect(css).toMatch(
+    /\.row\[data-intent-trailing="true"\]\s*>\s*\.trigger:not\(\.intentOverlayTrigger\)\s*\{[^}]*flex:\s*0 1 auto/,
+  );
+  expect(css).toMatch(/\[data-body-trigger-intent="true"\]\s+\.intentTriggerContent\s*\{[^}]*max-width/);
+});

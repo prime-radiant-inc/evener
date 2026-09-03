@@ -295,8 +295,13 @@ export function ToolRow({
     </span>
   ) : null;
   const failureNode = failed ? <FailureGlyph /> : null;
+  // The id lets the intent-only overlay trigger name the status as its
+  // description: the visible status is a SIBLING of that trigger (valid DOM
+  // order text/Open/chevron), so without aria-describedby a focused trigger
+  // no longer announces it (the pre-overlay trigger contained it).
+  const statusId = useId();
   const statusNode = hasStatus ? (
-    <span className={CLASS.status} data-testid="tool-row-status">
+    <span id={statusId} className={CLASS.status} data-testid="tool-row-status">
       {status}
     </span>
   ) : null;
@@ -531,6 +536,7 @@ export function ToolRow({
       data-testid="tool-row"
       data-intent={hasIntent ? "true" : undefined}
       data-intent-trailing={showIntentTrailing || bodyTriggerOnIntentLine ? "true" : undefined}
+      data-body-trigger-intent={bodyTriggerOnIntentLine ? "true" : undefined}
       title={title}
     >
       {hasIntent && showIntentTrailing ? (
@@ -542,6 +548,7 @@ export function ToolRow({
             aria-expanded={triggerExpanded}
             aria-controls={triggerControls}
             aria-label={`${failed ? "Failed " : ""}${statedIntent}`}
+            aria-describedby={hasStatus ? statusId : undefined}
             onClick={triggerOnClick}
           />
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">

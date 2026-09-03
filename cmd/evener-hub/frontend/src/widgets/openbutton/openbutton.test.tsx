@@ -66,6 +66,8 @@ test("the anchor form renders a real link to an external target, glyph following
   expect(link.getAttribute("href")).toBe("vscode://file/src/agents/foo.md");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toContain("noopener");
+  // The tooltip is the one word everywhere - the anchor form included.
+  expect(link.getAttribute("title")).toBe("Open");
   expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   fireEvent.click(link);
   expect(onParentClick).not.toHaveBeenCalled();
