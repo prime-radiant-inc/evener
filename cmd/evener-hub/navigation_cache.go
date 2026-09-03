@@ -4,9 +4,12 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 
 	"golang.org/x/sync/singleflight"
@@ -17,12 +20,15 @@ import (
 // mutated. One representation owns both wire encodings so encoding is not a
 // cache-key dimension.
 type navigationRepresentation struct {
-	Object       any
-	JSON         []byte
-	Gzip         []byte
-	ETag         string
-	Generation   string
-	Revision     uint64
+	Object     any
+	JSON       []byte
+	Gzip       []byte
+	ETag       string
+	Generation string
+	Revision   uint64
+	// SizeEstimate is computed by the cache boundary. Encoded JSON length is the
+	// conservative decoded-object estimate, in addition to the independently
+	// retained JSON and gzip byte slices.
 	SizeEstimate int64
 }
 
@@ -127,14 +133,13 @@ func (c *navigationRepresentationCache) Get(
 	result = c.group.DoChan(flightKey, func() (any, error) {
 		representation, err := build(ctx)
 		if err == nil {
+			representation.SizeEstimate = navigationRetainedRepresentationSize(representation.JSON, representation.Gzip)
 			if !validNavigationETagGeneration(representation.Generation) {
 				err = errors.New("navigation cache: invalid result generation")
 			} else if representation.Generation != key.Generation {
 				err = errors.New("navigation cache: result generation mismatch")
 			} else if representation.Revision != key.Revision {
 				err = errors.New("navigation cache: result revision mismatch")
-			} else if representation.SizeEstimate < 0 {
-				err = errors.New("navigation cache: negative size estimate")
 			} else {
 				// The ETag is owned by the cache boundary, ensuring every
 				// representation uses the exact weak-tag contract.
@@ -159,6 +164,15 @@ func (c *navigationRepresentationCache) Get(
 		}
 		return result.Val.(navigationRepresentation), nil
 	}
+}
+
+func navigationRetainedRepresentationSize(jsonBytes, gzipBytes []byte) int64 {
+	jsonSize := int64(len(jsonBytes))
+	gzipSize := int64(len(gzipBytes))
+	if jsonSize > (math.MaxInt64-gzipSize)/2 {
+		return math.MaxInt64
+	}
+	return 2*jsonSize + gzipSize
 }
 
 func (c *navigationRepresentationCache) publish(key navigationResourceKey, representation navigationRepresentation) {
@@ -259,6 +273,43 @@ func (key navigationResourceKey) canonical() navigationResourceKey {
 		return key
 	}
 	return canonical
+}
+
+// View returns the complete selector identity for a normalized resource. It
+// excludes only the publication generation and revision.
+func (key navigationResourceKey) View() navigationResourceKey {
+	view := key.canonical()
+	view.Generation = ""
+	view.Revision = 0
+	return view
+}
+
+func navigationViewScope(key navigationResourceKey) string {
+	view := key.View()
+	encode := base64.RawURLEncoding.EncodeToString
+	return fmt.Sprintf(
+		"nav2/%s/%s/%s/%s/%s/%d/%d",
+		view.Kind,
+		encode([]byte(view.ID)),
+		encode([]byte(view.SectionID)),
+		encode([]byte(view.ProjectKey)),
+		encode([]byte(view.Tier)),
+		view.Offset,
+		view.Limit,
+	)
+}
+
+func navigationEntityKey(key navigationResourceKey, kind, identity string) string {
+	localID := sha256.Sum256([]byte(kind + "\x00" + identity))
+	return navigationViewScope(key) + "/entity/" + hex.EncodeToString(localID[:])
+}
+
+func navigationRootContainerKey(key navigationResourceKey, slot string) string {
+	return navigationViewScope(key) + "/root/" + slot
+}
+
+func navigationOwnedContainerKey(entityKey, slot string) string {
+	return entityKey + "/" + slot
 }
 
 func canonicalNavigationLimit(limit, maximum uint32) uint32 {

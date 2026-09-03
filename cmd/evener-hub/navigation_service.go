@@ -59,6 +59,11 @@ var navigationBeforePublicationDrainLock = func() {}
 
 var navigationPendingCleared = func() {}
 
+// navigationReadV2MissingCaptured is a deterministic test seam after ReadV2
+// observes a missing resource and releases the service lock. Production leaves
+// it as a no-op.
+var navigationReadV2MissingCaptured = func() {}
+
 type navigationSourceRevision struct {
 	Inputs uint64
 	Remote uint64
@@ -157,6 +162,7 @@ type NavigationService struct {
 	buildTimeout time.Duration
 	retryAfter   time.Duration
 	cache        *navigationRepresentationCache
+	history      *navigationHistory
 
 	core                *navigationCoreSnapshot
 	resources           map[navigationResourceKey]navigationResourceState // includes tombstones
@@ -202,8 +208,19 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 	}
 	cache := cfg.Cache
 	if cache == nil {
-		cache = newNavigationRepresentationCache(defaultNavigationCacheEntries, defaultNavigationCacheBytes)
+		// Cache and delta history share one service-global retention budget. The
+		// standalone cache constructor keeps its public defaults; service-owned
+		// retention reserves half for each store.
+		cache = newNavigationRepresentationCache(defaultNavigationCacheEntries/2, defaultNavigationCacheBytes/2)
 	}
+	cache.mu.Lock()
+	if cache.maxEntries > defaultNavigationCacheEntries {
+		cache.maxEntries = defaultNavigationCacheEntries
+	}
+	if cache.maxBytes > defaultNavigationCacheBytes {
+		cache.maxBytes = defaultNavigationCacheBytes
+	}
+	cache.mu.Unlock()
 	if cfg.BuildTimeout <= 0 {
 		cfg.BuildTimeout = defaultNavigationBuildTimeout
 	}
@@ -211,6 +228,8 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		cfg.RetryAfter = defaultNavigationRetryAfter
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	historyEntries := max(0, defaultNavigationCacheEntries-cache.maxEntries)
+	historyBytes := max(0, defaultNavigationCacheBytes-cache.maxBytes)
 	return &NavigationService{
 		source:           cfg.Source,
 		generation:       id,
@@ -220,6 +239,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		buildTimeout:     cfg.BuildTimeout,
 		retryAfter:       cfg.RetryAfter,
 		cache:            cache,
+		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
 		wake:             make(chan struct{}, 1),
 		publicationReady: make(chan struct{}, 1),
@@ -267,7 +287,7 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	if s.genErr != nil {
 		return nil
 	}
-	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
+	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{1, 2}}
 }
 
 // EmptyMutation returns the current navigation generation with no invalidation
@@ -317,8 +337,16 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 		return nil, navigationResourceKey{}, navigationProjection{}, errors.New("navigation core unavailable")
 	}
 	state, ok := s.resources[semantic]
-	if !ok || !state.Present {
+	if !ok {
 		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{kind: semantic.Kind}
+	}
+	if !state.Present {
+		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{
+			kind:       semantic.Kind,
+			known:      true,
+			generation: s.generation,
+			revision:   state.Revision,
+		}
 	}
 	versioned := key.canonical()
 	versioned.Generation = s.generation
@@ -349,18 +377,83 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 			return navigationRepresentation{}, err
 		}
 		return navigationRepresentation{
-			Object:       object,
-			JSON:         encoded,
-			Gzip:         compressed,
-			Generation:   versioned.Generation,
-			Revision:     versioned.Revision,
-			SizeEstimate: int64(len(encoded) + len(compressed)),
+			Object:     object,
+			JSON:       encoded,
+			Gzip:       compressed,
+			Generation: versioned.Generation,
+			Revision:   versioned.Revision,
 		}, nil
 	})
 	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return navigationRepresentation{}, navigationUnavailable(err)
 	}
 	return representation, err
+}
+
+type navigationReadResult struct {
+	Response appwire.NavigationReadResponse
+}
+
+// readV2 captures one authoritative projection and reconciles it against an
+// exact retained base. A history miss is deliberately a normal full snapshot;
+// it is never reported as a transport error.
+func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKey, base *appwire.NavigationReadBase) (navigationReadResult, error) {
+	_, versioned, projection, err := s.versionedCore(ctx, key)
+	if err != nil {
+		missing, ok := errors.AsType[navigationNotFoundError](err)
+		if !ok {
+			return navigationReadResult{}, err
+		}
+		navigationReadV2MissingCaptured()
+		if !missing.known {
+			return navigationReadResult{}, err
+		}
+		generation, revision := missing.generation, missing.revision
+		etag := navigationETag(key, generation, revision)
+		if base != nil && base.GenerationID == generation && base.Revision == revision && base.ETag == etag {
+			return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "not_modified", GenerationID: generation, Revision: revision, ETag: etag}}, nil
+		}
+		return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "gone", GenerationID: generation, Revision: revision, ETag: etag}}, nil
+	}
+	generation, revision := versioned.Generation, versioned.Revision
+	etag := navigationETag(key, generation, revision)
+	if base != nil && base.GenerationID == generation && base.Revision == revision && base.ETag == etag {
+		return navigationReadResult{Response: appwire.NavigationReadResponse{Status: "not_modified", GenerationID: generation, Revision: revision, ETag: etag}}, nil
+	}
+	object, _, err := projection.Resource(versioned)
+	if err != nil {
+		return navigationReadResult{}, err
+	}
+	snapshot, err := normalizeNavigationResource(versioned, object)
+	if err != nil {
+		return navigationReadResult{}, err
+	}
+	view := versioned.View()
+	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: generation, Revision: revision, ETag: etag}
+	if base != nil {
+		if previous, ok := s.history.Lookup(view, *base); ok {
+			currentBase := appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}
+			delta, diffErr := diffNavigationSnapshots(view, *base, currentBase, previous, snapshot)
+			if diffErr != nil {
+				return navigationReadResult{}, diffErr
+			}
+			response.Representation = appwire.NavigationRepresentationDelta
+			response.Base = base
+			response.Data, err = json.Marshal(delta)
+			if err != nil {
+				return navigationReadResult{}, err
+			}
+			_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot, false)
+			return navigationReadResult{Response: response}, nil
+		}
+	}
+	response.Representation = appwire.NavigationRepresentationSnapshot
+	response.Data, err = json.Marshal(snapshot)
+	if err != nil {
+		return navigationReadResult{}, err
+	}
+	_ = s.history.Remember(view, appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}, &snapshot, false)
+	return navigationReadResult{Response: response}, nil
 }
 
 func gzipNavigation(input []byte) ([]byte, error) {
@@ -1204,7 +1297,12 @@ func (e navigationAvailabilityError) Unwrap() error   { return e.err }
 func (e navigationAvailabilityError) StatusCode() int { return 503 }
 func navigationUnavailable(err error) error           { return navigationAvailabilityError{err: err} }
 
-type navigationNotFoundError struct{ kind navigationResourceKind }
+type navigationNotFoundError struct {
+	kind       navigationResourceKind
+	known      bool
+	generation string
+	revision   uint64
+}
 
 func (e navigationNotFoundError) Error() string   { return "navigation resource not found" }
 func (e navigationNotFoundError) StatusCode() int { return 404 }

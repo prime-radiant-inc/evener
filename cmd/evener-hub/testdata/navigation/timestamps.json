@@ -1,0 +1,13 @@
+[
+  { "value": "2024-01-01T00:00:00Z", "valid": true },
+  { "value": "2024-01-01T00:00:00.123456789Z", "valid": true },
+  { "value": "2024-02-29T23:59:59+05:30", "valid": true },
+  { "value": "0000-01-01T00:00:00-23:59", "valid": true },
+  { "value": "2024-01-01", "valid": false },
+  { "value": "2024-02-30T00:00:00Z", "valid": false },
+  { "value": "2023-02-29T00:00:00Z", "valid": false },
+  { "value": "2024-01-01T00:00:00", "valid": false },
+  { "value": "2024-01-01t00:00:00Z", "valid": false },
+  { "value": "2024-01-01T00:00:00z", "valid": false },
+  { "value": "2024-01-01T24:00:00Z", "valid": false }
+]

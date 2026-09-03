@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -142,6 +143,47 @@ func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T
 	}
 	if after := service.Stats(); after.CoreBuilds != before.CoreBuilds+1 {
 		t.Fatalf("core builds before=%+v after=%+v", before, after)
+	}
+}
+
+func TestNavigationServiceCacheBudgetCountsObjectAndBothEncodings(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current = make([]hubcore.TreeNode, 200)
+	for index := range source.inputs.Tree.Projects[0].Current {
+		source.inputs.Tree.Projects[0].Current[index] = hubcore.TreeNode{
+			ID:        fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G%03d", index),
+			Title:     strings.Repeat("compressible navigation title ", 20),
+			Project:   "p1",
+			Kind:      "session",
+			State:     "idle",
+			UpdatedAt: now,
+		}
+	}
+	source.mu.Unlock()
+	const budget = int64(32 << 10)
+	cache := newNavigationRepresentationCache(8, budget)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Cache = cache
+	})
+
+	representation, err := service.Representation(t.Context(), navigationResourceKey{
+		Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldEstimate := int64(len(representation.JSON) + len(representation.Gzip))
+	retainedEstimate := int64(2*len(representation.JSON) + len(representation.Gzip))
+	if oldEstimate > budget || retainedEstimate <= budget {
+		t.Fatalf("fixture estimates old=%d retained=%d budget=%d, want old within and retained above budget", oldEstimate, retainedEstimate, budget)
+	}
+	if representation.SizeEstimate != retainedEstimate {
+		t.Fatalf("representation size estimate=%d, want object+JSON+gzip estimate %d", representation.SizeEstimate, retainedEstimate)
+	}
+	if stats := cache.Stats(); stats.Entries != 0 || stats.Bytes != 0 || stats.Bytes > budget {
+		t.Fatalf("oversized retained representation escaped budget: %+v (budget %d)", stats, budget)
 	}
 }
 
@@ -297,6 +339,391 @@ func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testin
 	}
 	if got := builds.Load(); got != 1 {
 		t.Fatalf("projection builds = %d, want one retained core build", got)
+	}
+}
+
+func TestNavigationReadV2ExactCurrentDoesNotReinsertHistory(t *testing.T) {
+	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{
+		GenerationID: initial.Response.GenerationID,
+		Revision:     initial.Response.Revision,
+		ETag:         initial.Response.ETag,
+	}
+
+	history := newNavigationHistory(1, 1<<20)
+	service.history = history
+	current, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Response.Status != "not_modified" {
+		t.Fatalf("exact-current response = %+v, want not_modified", current.Response)
+	}
+	history.mu.Lock()
+	entries, indexed, bytes := history.order.Len(), len(history.entries), history.bytes
+	history.mu.Unlock()
+	if entries != 0 || indexed != 0 || bytes != 0 {
+		t.Fatalf("exact-current read rebuilt history: order=%d entries=%d bytes=%d, want empty", entries, indexed, bytes)
+	}
+}
+
+func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	current := make([]hubcore.TreeNode, 6)
+	archived := make([]hubcore.TreeNode, 6)
+	for index := range current {
+		current[index] = hubcore.TreeNode{ID: fmt.Sprintf("current-%02d", index), Title: fmt.Sprintf("current %d", index), Project: "p1", Kind: "session", State: "idle", UpdatedAt: now}
+		archived[index] = hubcore.TreeNode{ID: fmt.Sprintf("archived-%02d", index), Title: fmt.Sprintf("archived %d", index), Project: "p1", Kind: "session", State: "ended", UpdatedAt: now}
+	}
+	source.inputs.Tree.Projects[0].Current = current
+	source.inputs.Tree.Projects[0].Archived = archived
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+
+	rootKey := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}
+	currentKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 2, Limit: 2}
+	archivedKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "archived", Offset: 2, Limit: 2}
+	readSnapshot := func(key navigationResourceKey) appwire.NavigationReadBase {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Representation != appwire.NavigationRepresentationSnapshot {
+			t.Fatalf("initial %s representation = %q, want snapshot", key.Kind, result.Response.Representation)
+		}
+		return appwire.NavigationReadBase{GenerationID: result.Response.GenerationID, Revision: result.Response.Revision, ETag: result.Response.ETag}
+	}
+	rootBase := readSnapshot(rootKey)
+	currentBase := readSnapshot(currentKey)
+	archivedBase := readSnapshot(archivedKey)
+
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current[2].Title = "changed exact current page"
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	exact, err := service.readV2(t.Context(), currentKey, &currentBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exact.Response.Representation != appwire.NavigationRepresentationDelta {
+		t.Fatalf("exact current-page base representation = %q, want delta", exact.Response.Representation)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(exact.Response.Data, &delta); err != nil {
+		t.Fatal(err)
+	}
+	foundChanged := false
+	for _, entity := range delta.UpsertedEntities {
+		if bytes.Contains(entity.Value, []byte("changed exact current page")) {
+			foundChanged = true
+		}
+	}
+	if !foundChanged {
+		t.Fatalf("exact-view delta omitted changed entity: %+v", delta.UpsertedEntities)
+	}
+
+	for name, crossViewBase := range map[string]appwire.NavigationReadBase{
+		"project root":  rootBase,
+		"archived page": archivedBase,
+	} {
+		result, err := service.readV2(t.Context(), currentKey, &crossViewBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Representation != appwire.NavigationRepresentationSnapshot {
+			t.Errorf("%s base representation = %q, want snapshot fallback", name, result.Response.Representation)
+		}
+	}
+}
+
+func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current = []hubcore.TreeNode{
+		{ID: navigationTestSessionID, Title: "one", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Title: "two", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)},
+	}
+	source.mu.Unlock()
+	// The service reserves the remainder of the default retention budget for
+	// history, so maxEntries=255 gives this test exactly one history entry.
+	cache := newNavigationRepresentationCache(255, 1<<20)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) { cfg.Cache = cache })
+	originalKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+	otherKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 1, Limit: 1}
+	type readBase = appwire.NavigationReadBase
+	read := func(key navigationResourceKey) (readBase, hubapi.NavigationSnapshot) {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Status != "ok" || result.Response.Representation != appwire.NavigationRepresentationSnapshot || result.Response.Base != nil {
+			t.Fatalf("initial %s representation = %q, want snapshot", key, result.Response.Representation)
+		}
+		var snapshot hubapi.NavigationSnapshot
+		if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		return readBase{GenerationID: result.Response.GenerationID, Revision: result.Response.Revision, ETag: result.Response.ETag}, snapshot
+	}
+	originalBase, originalSnapshot := read(originalKey)
+	otherBase, otherSnapshot := read(otherKey)
+	assertScope := func(key navigationResourceKey, snapshot hubapi.NavigationSnapshot, wantTitle string) {
+		t.Helper()
+		scope := navigationViewScope(key)
+		if len(snapshot.Entities) != 1 || len(snapshot.Containers) == 0 {
+			t.Fatalf("%s initial snapshot = %+v, want one entity and containers", key, snapshot)
+		}
+		for _, entity := range snapshot.Entities {
+			if !strings.HasPrefix(entity.Key, scope+"/entity/") {
+				t.Fatalf("%s entity key %q escaped requested scope %q", key, entity.Key, scope)
+			}
+			encoded, err := json.Marshal(entity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(encoded, []byte(`"revision"`)) {
+				t.Fatalf("%s entity %q emitted a record revision: %s", key, entity.Key, encoded)
+			}
+			if wantTitle != "" && !bytes.Contains(entity.Value, []byte(wantTitle)) {
+				t.Fatalf("%s entity %q omitted title %q", key, entity.Key, wantTitle)
+			}
+		}
+		for _, container := range snapshot.Containers {
+			if !strings.HasPrefix(container.Key, scope+"/") {
+				t.Fatalf("%s container key %q escaped requested scope %q", key, container.Key, scope)
+			}
+			encoded, err := json.Marshal(container)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(encoded, []byte(`"revision"`)) {
+				t.Fatalf("%s container %q emitted a record revision: %s", key, container.Key, encoded)
+			}
+			if container.Owner.Kind == "entity" && !strings.HasPrefix(container.Owner.EntityKey, scope+"/entity/") {
+				t.Fatalf("%s owner key %q escaped requested scope %q", key, container.Owner.EntityKey, scope)
+			}
+		}
+	}
+	assertScope(originalKey, originalSnapshot, "one")
+	assertScope(otherKey, otherSnapshot, "two")
+
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current[0].Title = "original refreshed content"
+	source.inputs.Tree.Projects[0].Current[1].Title = "evicted fresh content"
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	otherResult, err := service.readV2(t.Context(), otherKey, &otherBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherResult.Response.Status != "ok" || otherResult.Response.Representation != appwire.NavigationRepresentationDelta {
+		t.Fatalf("retained other base response = %+v, want delta", otherResult.Response)
+	}
+	if otherResult.Response.Base == nil || *otherResult.Response.Base != otherBase {
+		t.Fatalf("retained other base echo = %+v, want exact %+v", otherResult.Response.Base, otherBase)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(otherResult.Response.Data, &delta); err != nil {
+		t.Fatal(err)
+	}
+	if len(delta.UpsertedEntities) != 1 {
+		t.Fatalf("retained other delta entities = %+v, want changed entity", delta.UpsertedEntities)
+	}
+	changedEntity := delta.UpsertedEntities[0]
+	if scope := navigationViewScope(otherKey) + "/entity/"; !strings.HasPrefix(changedEntity.Key, scope) {
+		t.Fatalf("retained other delta entity %q escaped requested scope %q", changedEntity.Key, scope)
+	}
+	if !bytes.Contains(changedEntity.Value, []byte("evicted fresh content")) {
+		t.Fatalf("retained other delta entity = %+v, want changed content", changedEntity)
+	}
+	if otherResult.Response.Revision <= otherBase.Revision || otherResult.Response.ETag == otherBase.ETag {
+		t.Fatalf("retained other authority = revision %d etag %q, want later than %+v", otherResult.Response.Revision, otherResult.Response.ETag, otherBase)
+	}
+	retainedOtherBase := appwire.NavigationReadBase{
+		GenerationID: otherResult.Response.GenerationID,
+		Revision:     otherResult.Response.Revision,
+		ETag:         otherResult.Response.ETag,
+	}
+	crossView, err := service.readV2(t.Context(), originalKey, &retainedOtherBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if crossView.Response.Status != "ok" || crossView.Response.Representation != appwire.NavigationRepresentationSnapshot || crossView.Response.Base != nil {
+		t.Fatalf("cross-View base response = %+v, want snapshot without Base", crossView.Response)
+	}
+	var crossSnapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(crossView.Response.Data, &crossSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertScope(originalKey, crossSnapshot, "original refreshed content")
+	if crossView.Response.Revision <= originalBase.Revision {
+		t.Fatalf("cross-View snapshot revision = %d, want later than original base %d", crossView.Response.Revision, originalBase.Revision)
+	}
+
+	result, err := service.readV2(t.Context(), originalKey, &originalBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Status != "ok" || result.Response.Representation != appwire.NavigationRepresentationSnapshot || result.Response.Base != nil {
+		t.Fatalf("evicted base response = %+v, want current snapshot without Base", result.Response)
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertScope(originalKey, snapshot, "original refreshed content")
+	if result.Response.Revision != crossView.Response.Revision || result.Response.ETag != crossView.Response.ETag {
+		t.Fatalf("evicted fallback authority = revision %d etag %q, want current %d/%q", result.Response.Revision, result.Response.ETag, crossView.Response.Revision, crossView.Response.ETag)
+	}
+}
+
+func TestNavigationReadV2PresentGoneTombstoneAndReappearLifecycle(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+	read := func(base *appwire.NavigationReadBase) appwire.NavigationReadResponse {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Response
+	}
+	present := read(nil)
+	if present.Status != "ok" || present.Representation != appwire.NavigationRepresentationSnapshot || len(present.Data) == 0 {
+		t.Fatalf("first present response = %+v, want snapshot with data", present)
+	}
+	presentBase := &appwire.NavigationReadBase{GenerationID: present.GenerationID, Revision: present.Revision, ETag: present.ETag}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	gone := read(presentBase)
+	if gone.Status != "gone" || gone.Data != nil || gone.Revision <= present.Revision || gone.ETag == present.ETag {
+		t.Fatalf("gone response = %+v, want later tombstone without data", gone)
+	}
+	tombstoneBase := &appwire.NavigationReadBase{GenerationID: gone.GenerationID, Revision: gone.Revision, ETag: gone.ETag}
+	if notModified := read(tombstoneBase); notModified.Status != "not_modified" || notModified.Data != nil {
+		t.Fatalf("exact tombstone response = %+v, want not_modified without data", notModified)
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = []hubcore.TreeProject{{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{
+		ID: navigationTestSessionID, Title: "reappeared", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now,
+	}}}}
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	reappeared := read(tombstoneBase)
+	if reappeared.Status != "ok" || reappeared.Representation != appwire.NavigationRepresentationSnapshot || reappeared.Revision <= gone.Revision {
+		t.Fatalf("reappeared response = %+v, want later snapshot", reappeared)
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(reappeared.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entities) != 1 || !bytes.Contains(snapshot.Entities[0].Value, []byte("reappeared")) {
+		t.Fatalf("reappeared entities = %+v, want only current row", snapshot.Entities)
+	}
+	neverKnown := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "never-known"}
+	if _, err := service.readV2(t.Context(), neverKnown, nil); err == nil {
+		t.Fatal("never-known resource fabricated a tombstone")
+	}
+}
+
+func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+
+	present, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentBase := &appwire.NavigationReadBase{
+		GenerationID: present.Response.GenerationID,
+		Revision:     present.Response.Revision,
+		ETag:         present.Response.ETag,
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneRevision := service.CurrentRevision(key.Semantic())
+	tombstoneETag := navigationETag(key, present.Response.GenerationID, tombstoneRevision)
+
+	previous := navigationReadV2MissingCaptured
+	var refreshOnce sync.Once
+	navigationReadV2MissingCaptured = func() {
+		refreshOnce.Do(func() {
+			source.mu.Lock()
+			source.inputs.Tree.Projects = []hubcore.TreeProject{{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{
+				ID: navigationTestSessionID, Title: "reappeared during read", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now,
+			}}}}
+			source.revision++
+			source.mu.Unlock()
+			if _, refreshErr := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); refreshErr != nil {
+				t.Errorf("reappear refresh: %v", refreshErr)
+			}
+		})
+	}
+	t.Cleanup(func() { navigationReadV2MissingCaptured = previous })
+
+	interleaved, err := service.readV2(t.Context(), key, presentBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentRevision := service.CurrentRevision(key.Semantic())
+	presentETag := navigationETag(key, present.Response.GenerationID, presentRevision)
+	if interleaved.Response.Status == "gone" && (interleaved.Response.Revision == presentRevision || interleaved.Response.ETag == presentETag) {
+		t.Fatalf("gone response mixed in reappeared authority: response=%+v present=%d/%q", interleaved.Response, presentRevision, presentETag)
+	}
+	if interleaved.Response.Status == "gone" && (interleaved.Response.Revision != tombstoneRevision || interleaved.Response.ETag != tombstoneETag) {
+		t.Fatalf("gone response authority=%d/%q, want captured tombstone %d/%q", interleaved.Response.Revision, interleaved.Response.ETag, tombstoneRevision, tombstoneETag)
+	}
+	if interleaved.Response.Status != "gone" && (interleaved.Response.Status != "ok" || interleaved.Response.Representation != appwire.NavigationRepresentationSnapshot || !bytes.Contains(interleaved.Response.Data, []byte("reappeared during read"))) {
+		t.Fatalf("interleaved response = %+v, want captured tombstone or current snapshot", interleaved.Response)
+	}
+
+	if interleaved.Response.Status == "gone" {
+		base := &appwire.NavigationReadBase{
+			GenerationID: interleaved.Response.GenerationID,
+			Revision:     interleaved.Response.Revision,
+			ETag:         interleaved.Response.ETag,
+		}
+		followUp, readErr := service.readV2(t.Context(), key, base)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if followUp.Response.Status == "not_modified" || followUp.Response.Representation != appwire.NavigationRepresentationSnapshot || !bytes.Contains(followUp.Response.Data, []byte("reappeared during read")) {
+			t.Fatalf("follow-up from gone authority = %+v, want present snapshot restoring graph", followUp.Response)
+		}
 	}
 }
 

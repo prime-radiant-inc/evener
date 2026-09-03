@@ -224,7 +224,9 @@ func TestNavigationCacheLRUEntryAndByteBounds(t *testing.T) {
 	build := func(identity string, size int64) func(context.Context) (navigationRepresentation, error) {
 		return func(context.Context) (navigationRepresentation, error) {
 			representation := representationFixture(identity, 1)
-			representation.SizeEstimate = size
+			representation.JSON = make([]byte, size/2)
+			representation.Gzip = make([]byte, size-2*(size/2))
+			representation.SizeEstimate = 1 // The cache must not trust caller accounting.
 			return representation, nil
 		}
 	}
@@ -405,6 +407,6 @@ func representationFixture(identity string, revision uint64) navigationRepresent
 		Gzip:         compressed.Bytes(),
 		Generation:   "generation-a",
 		Revision:     revision,
-		SizeEstimate: int64(len(jsonBytes) + compressed.Len()),
+		SizeEstimate: navigationRetainedRepresentationSize(jsonBytes, compressed.Bytes()),
 	}
 }
