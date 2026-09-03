@@ -48,7 +48,7 @@ func TestConfigureWatch_TimerCapIsEightPerManager(t *testing.T) {
 	}
 }
 
-func TestConfigureWatch_ConcurrentNinthTimersBothFail(t *testing.T) {
+func TestConfigureWatch_ConcurrentCreatesAtTheCapAdmitExactlyOne(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	for range maxLiveTimers - 1 {

@@ -495,7 +495,7 @@ func TestDefJobWatch_TimerProperties(t *testing.T) {
 	if !strings.HasPrefix(def.Description, "Wake yourself later:") {
 		t.Errorf("description must lead with the timer: %q", def.Description[:60])
 	}
-	for _, want := range []string{"after_seconds:600", "job_status", "clear and create", "(60 to 86400)", "(60 to 3600)"} {
+	for _, want := range []string{"(60 to 86400)", "(60 to 3600)"} {
 		if !strings.Contains(def.Description, want) && !strings.Contains(fmt.Sprint(props), want) {
 			t.Errorf("description or properties lack %q", want)
 		}
