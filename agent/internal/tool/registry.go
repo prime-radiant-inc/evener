@@ -883,7 +883,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 // same breaker ledgers as ExecuteCall, without dispatching the tool. Session
 // repair runs before registry execution, so these failures would otherwise be
 // invisible to loop protection and tool-call-end telemetry.
-func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.ToolCallData, message string, err error) ExecResult {
+func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.ToolCallData, message, boundary string, err error) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -904,7 +904,9 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, call llm.To
 	judged := !humanBypassed && name != "model_list"
 	exactSignature := r.telemetryExactSignature(name, call.Arguments)
 	semanticSignature := r.semanticSignatureFromRaw(name, call.Arguments, parameters)
-	boundary := prevalidationBoundary(name, call.Arguments, found)
+	if boundary == "" {
+		boundary = prevalidationBoundary(name, call.Arguments, found)
+	}
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(name, call.Arguments); failStreak >= breakerThreshold {
 			message := failureParkText(name, snippets)

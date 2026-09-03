@@ -22,6 +22,7 @@ type prepareResult struct {
 	Call      llm.ToolCallData
 	Changes   []repair.Change
 	PrevalErr string
+	Boundary  string
 	Err       error
 }
 
@@ -40,6 +41,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 	if t == nil {
 		res.PrevalErr = repair.UnknownToolMessage(requestedVisible, visibleNames)
+		res.Boundary = "unknown_tool"
 		return res
 	}
 
@@ -52,6 +54,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			// diagnosis instead.
 			if finishReason == llm.FinishReasonLength {
 				res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+				res.Boundary = "truncated_call"
 				return res
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
@@ -61,21 +64,25 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				// Show the model's own bytes and the original parse error
 				// (its offset refers to them, not the repaired form).
 				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)
+				res.Boundary = "arguments_json"
 				return res
 			}
 		}
 	}
 	if errText := unsupportedDelegateWaitOption(call.Name, args); errText != "" {
 		res.PrevalErr = errText
+		res.Boundary = "delegate_wait_option"
 		return res
 	}
 	if errText := retiredTaskListShapeError(call.Name, args); errText != "" {
 		res.PrevalErr = errText
+		res.Boundary = "retired_task_shape"
 		return res
 	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
+		res.Boundary = "delegate_sandbox_control"
 		res.Err = err
 		return res
 	}
@@ -83,6 +90,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		normalized, err := normalizeAskArgs(args)
 		if err != nil {
 			res.PrevalErr = err.Error()
+			res.Boundary = "ask_user_normalization"
 			return res
 		}
 		args = normalized
@@ -117,6 +125,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		// truncation message exists to prevent.
 		if finishReason == llm.FinishReasonLength && len(res.Call.Arguments) == 0 {
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+			res.Boundary = "truncated_call"
 			return res
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
@@ -151,6 +160,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				}
 			}
 			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingField(err2), offendingKeyword(err2))
+			res.Boundary = "schema_validation"
 			return res
 		}
 		args = healed

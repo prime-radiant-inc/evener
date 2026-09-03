@@ -100,7 +100,20 @@ func semanticCallSignatureWithDefaults(name string, args map[string]any, paramet
 }
 
 func semanticCanonicalBytes(name string, args map[string]any, parameters map[string]any) ([]byte, error) {
-	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file"))
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, parameters), "", name == "read_file", builtInPresentationDescription(name)))
+}
+
+// builtInPresentationDescription identifies the built-in tools whose top-level
+// description is operator-facing narration rather than execution input. Custom
+// and MCP tools keep description in semantic identity because their schemas may
+// assign it behavior-driving meaning.
+func builtInPresentationDescription(name string) bool {
+	switch name {
+	case "read_file", "write_file", "list_dir", "edit_file", "shell", "exec_command", "run_shell_command", "delegate", "delegate_send", "model_list", "job_watch", "job_status", "job_list", "job_stop", "grep", "glob", "apply_patch", "web_fetch", "web_search", "communicate", "task_list", "use_skill", "find_session_transcripts", "doctor_evener", "manage_worktree", "read_transcript", "ask_user", "update_goal":
+		return true
+	default:
+		return false
+	}
 }
 
 // canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
@@ -148,21 +161,21 @@ func canonicalAskUserDefaults(args map[string]any) {
 // Every behavior-driving value, including nested custom/MCP fields and bodies,
 // stays in the canonical identity. The registry HMACs those bytes before any
 // signature leaves process memory, so retaining identity does not expose text.
-func semanticArgumentValue(value any, field string, preserveTopLevelIntent bool) any {
+func semanticArgumentValue(value any, field string, preserveTopLevelIntent, omitTopLevelDescription bool) any {
 	switch value := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(value))
 		for key, item := range value {
-			if field == "" && (key == "description" || (key == "intent" && !preserveTopLevelIntent)) {
+			if field == "" && ((key == "description" && omitTopLevelDescription) || (key == "intent" && !preserveTopLevelIntent)) {
 				continue
 			}
-			out[key] = semanticArgumentValue(item, key, preserveTopLevelIntent)
+			out[key] = semanticArgumentValue(item, key, preserveTopLevelIntent, omitTopLevelDescription)
 		}
 		return out
 	case []any:
 		out := make([]any, len(value))
 		for i, item := range value {
-			out[i] = semanticArgumentValue(item, field, preserveTopLevelIntent)
+			out[i] = semanticArgumentValue(item, field, preserveTopLevelIntent, omitTopLevelDescription)
 		}
 		return out
 	case string:

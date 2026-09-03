@@ -50,6 +50,12 @@ func TestSemanticBreaker_ToolSpecificDefaultsAndReadFileIntent(t *testing.T) {
 	if first, second := semanticCallSignature("read_file", image), semanticCallSignature("read_file", pdf); first == second {
 		t.Fatalf("read_file analysis intent was removed from semantic identity: %q", first)
 	}
+	if first, second := semanticCallSignature("custom_description", map[string]any{"description": "analyze totals"}), semanticCallSignature("custom_description", map[string]any{"description": "find signatures"}); first == second {
+		t.Fatalf("custom behavior-driving descriptions were removed from semantic identity: %q", first)
+	}
+	if first, second := semanticCallSignature("shell", map[string]any{"command": "false", "description": "first narration"}), semanticCallSignature("shell", map[string]any{"command": "false", "description": "second narration"}); first != second {
+		t.Fatalf("built-in presentation descriptions changed semantic identity: %q != %q", first, second)
+	}
 }
 
 func TestSemanticBreaker_RecordsPreDispatchFailuresAndStableInvalidRequest(t *testing.T) {
