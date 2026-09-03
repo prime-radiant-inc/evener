@@ -138,12 +138,14 @@ function updateRows(item: ItemModel, updates: Record<string, unknown>[]): Touche
     if (!touch) continue;
     const id = typeof update.id === "number" ? update.id : undefined;
     const stateTask = id === undefined ? undefined : state?.find((task) => task.id === id);
-    // The Go task tool marks explicit in_progress updates from its pre-state.
+    // A suppressed status reassertion still belongs to this call. Record it
+    // before filtering so it cannot be rediscovered as an auto-start below.
+    if (id !== undefined) touchedIds.add(id);
+    // The Go task tool marks every current task from this call's pre-state.
     // A false marker is a status reassertion carrying notes, not a fresh
     // start. Unmarked historical state keeps the existing argument-only
     // rendering for transcripts written before this marker existed.
     if (touch === "started" && stateTask?.started === false) continue;
-    if (id !== undefined) touchedIds.add(id);
     if (touch === "done" || touch === "cancelled") completedAny = true;
     rows.push({
       key: `update_${i}`,

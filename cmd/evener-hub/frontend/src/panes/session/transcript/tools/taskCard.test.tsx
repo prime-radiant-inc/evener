@@ -181,6 +181,45 @@ test("a notes-only in_progress reassertion does not render a started row", () =>
   expect(screen.queryByTestId("task-card-row")).toBeNull();
 });
 
+test("completing a non-current task does not mistake the existing current task for an auto-start", () => {
+  renderItem(
+    taskItem({ update: [{ id: 3, status: "done" }] }, "Updated 3→done. Progress: 2/3 tasks complete.", {
+      raw: [
+        { id: 1, type: "implement", description: "first", prompt: "", status: "done" },
+        { id: 2, type: "implement", description: "current", prompt: "", status: "in_progress", started: false },
+        { id: 3, type: "implement", description: "non-current", prompt: "", status: "done" },
+      ],
+    }),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain("non-current");
+});
+
+test("a reasserted current task is touched before its started row is suppressed", () => {
+  renderItem(
+    taskItem(
+      {
+        update: [
+          { id: 3, status: "done" },
+          { id: 2, status: "in_progress", notes: "still working" },
+        ],
+      },
+      "Updated 3→done, 2→in_progress. Progress: 2/3 tasks complete.",
+      {
+        raw: [
+          { id: 1, type: "implement", description: "first", prompt: "", status: "done" },
+          { id: 2, type: "implement", description: "current", prompt: "", status: "in_progress", started: false },
+          { id: 3, type: "implement", description: "non-current", prompt: "", status: "done" },
+        ],
+      },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.getAttribute("data-touch")).toBe("done");
+});
+
 test("a real in_progress transition renders a started row from its authoritative marker", () => {
   renderItem(
     taskItem({ action: "update", updates: [{ id: 1, status: "in_progress" }] }, "Updated 1→in_progress.", {
@@ -302,7 +341,7 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
     taskItem(
       { action: "update", updates: [{ id: 4, status: "done" }] },
       "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState() },
+      { raw: sevenTaskState({ 5: { started: true } }) },
     ),
   );
   const summary = screen.getByTestId("tool-row-summary");
@@ -313,6 +352,20 @@ test("completing a task shows the auto-started row the daemon advanced to (autho
   expect(rows[1]!.getAttribute("data-touch")).toBe("started");
   expect(rows[1]!.textContent).toContain("fifth");
   expect(summary.textContent).toBe("☑ fourth · ☐ fifth");
+});
+
+test("a historical markerless snapshot retains auto-start inference", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 4, status: "done" }] },
+      "Updated 4→done. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+  expect(screen.getAllByTestId("task-card-row").map((row) => row.getAttribute("data-touch"))).toEqual([
+    "done",
+    "started",
+  ]);
 });
 
 test("an update row shows the task's description from authoritative state instead of a bare id", () => {

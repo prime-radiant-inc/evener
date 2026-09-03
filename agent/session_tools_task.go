@@ -94,20 +94,21 @@ func formatMutationAck(added int, updates []taskpkg.TaskUpdate) string {
 }
 
 // taskToolState is the task-list mutation snapshot carried to human clients.
-// Started is present only for explicit updates whose final status is
-// in_progress, so the frontend can distinguish a real transition from a
-// status reassertion without changing the model-facing tool schema or the
-// persisted Task shape.
+// Started is present for every in_progress task in a mutation snapshot. It is
+// true only when this call transitioned that task into progress (explicitly or
+// by auto-advance), letting the frontend distinguish that from an existing
+// current task or a status reassertion without changing the model-facing tool
+// schema or the persisted Task shape.
 type taskToolState struct {
 	taskpkg.Task
 	Started *bool `json:"started,omitempty"`
 }
 
-func taskToolStateSnapshot(tasks []taskpkg.Task, inProgressUpdates map[int]struct{}, started map[int]bool) []taskToolState {
+func taskToolStateSnapshot(tasks []taskpkg.Task, started map[int]bool) []taskToolState {
 	snapshot := make([]taskToolState, len(tasks))
 	for i, task := range tasks {
 		snapshot[i].Task = task
-		if _, ok := inProgressUpdates[task.ID]; !ok {
+		if task.Status != taskpkg.TaskInProgress {
 			continue
 		}
 		transitioned := started[task.ID]
@@ -431,7 +432,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				for _, t := range mutation.After {
 					afterByID[t.ID] = t
 				}
-				inProgressUpdates := make(map[int]struct{}, len(updates))
 				started := make(map[int]bool)
 				var completedAny bool
 				var manuallyStartedID int
@@ -446,7 +446,6 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						completedAny = true
 					}
 					if status == taskpkg.TaskInProgress {
-						inProgressUpdates[u.ID] = struct{}{}
 						if previous[u.ID] != taskpkg.TaskInProgress {
 							started[u.ID] = true
 							manuallyStartedID = u.ID
@@ -467,7 +466,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
 					return tool.StateResult{
 						Output: formatMutationAck(len(added), updates),
-						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
+						State:  taskToolStateSnapshot(mutation.After, started),
 					}, nil
 				}
 
@@ -484,6 +483,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							next := eligible[0]
 							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
 								finalTasks = auto.After
+								started[next.ID] = true
 								deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask)
 							}
 						} else {
@@ -520,7 +520,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())
-				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
+				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, started)}, nil
 			})
 		},
 	})
