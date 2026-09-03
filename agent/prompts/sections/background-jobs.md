@@ -34,8 +34,8 @@ When you have no independent work to advance — for example, you delegated the
 whole task and are only waiting on its result — end your turn. The completion
 notification resumes you. Do not call `job_status` in a loop to pass the time:
 polling neither speeds the job nor changes its result, and a running job is no
-reason to keep your turn alive. To block on one specific future signal, create a
-`job_watch`; never spin on `job_status`.
+reason to keep your turn alive. To wait on a pattern in a running job's output
+or an event from a delegate, create a `job_watch`; never spin on `job_status`.
 
 Waiting on a notification beats polling, but wall clock is a real budget: every
 job you end your turn to wait on is spending it. Only start work whose result
