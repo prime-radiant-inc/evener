@@ -388,6 +388,37 @@ func TestSemanticBreaker_CheckDoesNotRefreshLRU(t *testing.T) {
 	}
 }
 
+func TestSemanticBreaker_AskUserDefaultsDoNotMutateArguments(t *testing.T) {
+	r := NewRegistry()
+	seenAbsent := false
+	registerSemanticReviewTool(t, r, "ask_user", DefAskUser().Parameters, func(args map[string]any) (any, error) {
+		questions := args["questions"].([]any)
+		_, seenAbsent = questions[0].(map[string]any)["multi_select"]
+		return nil, errors.New("invalid_request: unavailable")
+	})
+	r.MarkRegisteredToolsCoreSemanticMetadata()
+	args := map[string]any{"questions": []any{map[string]any{
+		"question": "Choose",
+		"options":  []any{map[string]any{"label": "A", "detail": "a"}, map[string]any{"label": "B", "detail": "b"}},
+	}}}
+	before, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.semanticSignature("ask_user", args, DefAskUser().Parameters)
+	after, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("signature mutated args: before=%s after=%s", before, after)
+	}
+	r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall("ask-no-mutate", "ask_user", string(before)))
+	if seenAbsent {
+		t.Fatal("executor received synthesized multi_select")
+	}
+}
+
 func TestSemanticBreaker_ConcurrentExactFailurePublishesSemanticMetadata(t *testing.T) {
 	r := NewRegistry()
 	entered := make(chan struct{}, 2)

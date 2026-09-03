@@ -137,13 +137,22 @@ func canonicalSemanticArgs(name string, args map[string]any, parameters map[stri
 // multi_select means one choice, exactly as an explicit false does.
 func canonicalAskUserDefaults(args map[string]any) {
 	questions, _ := args["questions"].([]any)
-	for _, value := range questions {
+	canonical := make([]any, len(questions))
+	for i, value := range questions {
 		question, _ := value.(map[string]any)
 		if question != nil {
+			copyQuestion := make(map[string]any, len(question)+1)
+			maps.Copy(copyQuestion, question)
 			if _, present := question["multi_select"]; !present {
-				question["multi_select"] = false
+				copyQuestion["multi_select"] = false
 			}
+			canonical[i] = copyQuestion
+			continue
 		}
+		canonical[i] = value
+	}
+	if questions != nil {
+		args["questions"] = canonical
 	}
 }
 
