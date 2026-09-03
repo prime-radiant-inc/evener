@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 )
 
@@ -606,6 +608,65 @@ func assertPerm(t *testing.T, path string, want fs.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Errorf("%s mode = %04o, want %04o", path, got, want)
+	}
+}
+
+// An unresolved store root is not a relative one. DefaultRoot returns "" when
+// no XDG_CONFIG_HOME is set and the home directory cannot be found; every
+// store path built from that root would be relative, so a launch would
+// materialize <cwd>/bundled and then load a plugin out of whatever directory
+// the process happened to be in. cmdutil owns evener's config-root fallback
+// and already depends on this package, so there is no fallback to share here:
+// the root is rejected before anything is created.
+func TestBundledStore_RejectsAnUnresolvedRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(*Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			t.Setenv(envvars.XDGConfigHome.Name, "")
+			restoreHome := pluginUserHomeDir
+			pluginUserHomeDir = func() (string, error) { return "", errors.New("no home directory") }
+			t.Cleanup(func() { pluginUserHomeDir = restoreHome })
+
+			m := NewManager("")
+			if m.Root != "" {
+				t.Fatalf("Root = %q, want the unresolved root this test covers", m.Root)
+			}
+			res, err := test.resolve(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ValidateSelection(); err == nil {
+				t.Errorf("selected a bundled plugin with no store root: %+v", res.Candidates)
+			}
+			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled {
+				t.Fatalf("Diagnostics = %+v, want one bundled diagnostic", res.Diagnostics)
+			}
+			entries, err := os.ReadDir(cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("working directory gained %v, want nothing", entries)
+			}
+		})
 	}
 }
 

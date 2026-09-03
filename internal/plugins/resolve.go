@@ -304,6 +304,16 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if err != nil {
 		return "", nil, err
 	}
+	// Checked after the digest so a name that is not bundled at all still
+	// reports fs.ErrNotExist rather than a store complaint. An unresolved Root
+	// (DefaultRoot returns "" when there is no XDG_CONFIG_HOME and no home
+	// directory) would make every path below relative, materializing the store
+	// into whichever directory the process happens to be in and loading a
+	// plugin back out of it. cmdutil owns evener's config-root fallback and
+	// already depends on this package, so there is no fallback to share.
+	if m.Root == "" {
+		return "", nil, fmt.Errorf("materialize bundled plugin %s: no plugin store root is configured", name)
+	}
 	dest := m.bundledPluginPath(name, digest)
 	published, err := publishedBundledCopy(dest)
 	if err != nil {
