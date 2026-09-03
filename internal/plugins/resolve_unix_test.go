@@ -297,3 +297,37 @@ func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 		t.Errorf("set-aside content = %q (err %v), want what was moved preserved", content, err)
 	}
 }
+
+// Reading a FIFO blocks until somebody writes to it, so a destination holding
+// one would hang the launch that classified it — forever, on a pipe nobody
+// ever writes. A FIFO is not a regular file, which is decided from the
+// directory entry and never by opening it, so the destination is set aside
+// without anything in it being read.
+func TestBundledStore_SetsAsideADestinationHoldingAFIFO(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(published, "pipe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("a destination holding a FIFO left the bundled plugin unselectable: %v", err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != published {
+		t.Fatalf("SelectedDirs = %v, want a republished copy at %s", res.SelectedDirs, published)
+	}
+	if _, err := os.Lstat(filepath.Join(published, "pipe")); !os.IsNotExist(err) {
+		t.Errorf("the republished copy carries the FIFO (lstat err = %v)", err)
+	}
+	info, err := os.Lstat(filepath.Join(published+conflictSuffix, "pipe"))
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("set-aside entry mode = %v (err %v), want the FIFO preserved", info, err)
+	}
+}

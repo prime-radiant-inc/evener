@@ -1056,3 +1056,55 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		}
 	})
 }
+
+// A published copy is a copy: every entry in it is a regular file or a
+// directory. A symlink inside one is neither, however the bytes at the other
+// end read today — the target is somebody else's to change, and the copy the
+// digest vouched for would change with it. The destination is set aside and a
+// real copy published in its place.
+func TestBundledStore_SetsAsideADestinationHoldingASymlink(t *testing.T) {
+	m := NewManager(t.TempDir())
+	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(published, ".claude-plugin", "plugin.json")
+	content, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The very same bytes, one indirection away: the tree reads identically
+	// and is still not a copy of anything.
+	target := filepath.Join(t.TempDir(), "plugin.json")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("a linked destination left the bundled plugin unselectable: %v", err)
+	}
+	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != published {
+		t.Fatalf("SelectedDirs = %v, want a republished copy at %s", res.SelectedDirs, published)
+	}
+	info, err := os.Lstat(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("republished manifest mode = %v, want a regular file", info.Mode())
+	}
+	aside, err := os.Lstat(filepath.Join(published+conflictSuffix, ".claude-plugin", "plugin.json"))
+	if err != nil || aside.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("set-aside manifest mode = %v (err %v), want the symlink preserved", aside, err)
+	}
+}

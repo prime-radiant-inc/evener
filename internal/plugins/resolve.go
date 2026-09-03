@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -510,6 +511,12 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 		return bundledDestinationVacant, fmt.Errorf("bundled plugin path %s is not a directory", dest)
 	}
 	found, err := digestFS(os.DirFS(dest))
+	if errors.Is(err, errIrregularContent) {
+		// Not a copy of anything this ships, so it is somebody else's
+		// directory under this name, classified the same as one whose contents
+		// simply hash to something else.
+		return bundledDestinationConflict, nil
+	}
 	if err != nil {
 		return bundledDestinationVacant, fmt.Errorf("read the bundled plugin at %s: %w", dest, err)
 	}
@@ -607,6 +614,19 @@ func bundledPluginDigest(name string) (string, error) {
 	return digest, nil
 }
 
+// maxBundledFileBytes bounds what a single file in a bundled plugin may be
+// before the tree holding it stops looking like a copy of one. Bundled plugins
+// are manifests and markdown, orders of magnitude under this; the bound is
+// there so a foreign directory that took the destination cannot make a launch
+// read an arbitrarily large file to find that out.
+const maxBundledFileBytes = 64 << 20
+
+// errIrregularContent marks a tree that cannot be a copy of an embedded
+// plugin: an entry that is neither a regular file nor a directory, or a file
+// too large for anything this ships. It is a mismatch to classify, not a
+// failure to read.
+var errIrregularContent = errors.New("not a copy of an embedded plugin")
+
 // digestFS summarizes a whole tree: every name in walk order, and the length
 // and contents of every file. A published copy is a copy of the embedded tree,
 // so reading the copy back through os.DirFS digests to the value the embedded
@@ -621,12 +641,38 @@ func digestFS(fsys fs.FS) (string, error) {
 			_, _ = fmt.Fprintf(sum, "dir %s\x00", path)
 			return nil
 		}
-		content, err := fs.ReadFile(fsys, path)
+		// Decided from the directory entry, before anything is opened. An
+		// embedded plugin is regular files and directories; a symlink reads as
+		// whatever it points at today and can point somewhere else tomorrow, a
+		// FIFO blocks the open until somebody writes to it, and a device is
+		// not something to read at all.
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s: %w", path, errIrregularContent)
+		}
+		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(sum, "file %s %d\x00", path, len(content))
-		_, _ = sum.Write(content)
+		if info.Size() > maxBundledFileBytes {
+			return fmt.Errorf("%s: %w", path, errIrregularContent)
+		}
+		file, err := fsys.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = file.Close() }()
+		_, _ = fmt.Fprintf(sum, "file %s %d\x00", path, info.Size())
+		// Streamed rather than read whole, and never further than the size the
+		// entry declared: a file growing under the walk cannot be read past
+		// the bound, and one that no longer matches its own size is not the
+		// copy this is trying to recognize.
+		read, err := io.Copy(sum, io.LimitReader(file, maxBundledFileBytes))
+		if err != nil {
+			return err
+		}
+		if read != info.Size() {
+			return fmt.Errorf("%s: %w", path, errIrregularContent)
+		}
 		return nil
 	})
 	if err != nil {
