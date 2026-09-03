@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"sync"
 	"testing"
@@ -202,4 +205,78 @@ func TestConfigureWatch_TimerConfigCarriesItsSlotAndFields(t *testing.T) {
 			t.Errorf("%s: the same send key must still match the slot-less key", tc.name)
 		}
 	}
+}
+
+// watchIDMintFunc is the generator call a timer create allocates its id from.
+const watchIDMintFunc = "NewWatchID"
+
+// watchCreateValidators are the checks a create must pass before it is entitled
+// to an id, in the order configureWatchWithHooks runs them.
+var watchCreateValidators = []string{"validateWatchTarget", "validateWatchEventArgs", "validateWatchTriggerShape"}
+
+// TestConfigureWatch_TimerIDIsMintedAfterValidation is a source scan, not a
+// behavior test, because a burned watch id leaves nothing to observe: the ids
+// are random UUIDv7 values from a stateless generator, so a create that mints
+// one and is then rejected moves no counter and opens no gap that a later
+// create's id would show. What CAN be checked is where the mint sits in
+// configureWatchWithHooks — after every validation that can reject a create, so
+// no rejected path reaches it, and the one id still threads into both the key
+// and the config.
+func TestConfigureWatch_TimerIDIsMintedAfterValidation(t *testing.T) {
+	t.Parallel()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "job_watch.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse job_watch.go: %v", err)
+	}
+	var body *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "configureWatchWithHooks" {
+			body = fn
+		}
+	}
+	if body == nil {
+		t.Fatal("configureWatchWithHooks is gone from job_watch.go: this guard now checks nothing")
+	}
+	firstCall := map[string]token.Pos{}
+	var mints []token.Pos
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := calleeName(call.Fun)
+		if name == watchIDMintFunc {
+			mints = append(mints, call.Pos())
+		}
+		if _, seen := firstCall[name]; !seen {
+			firstCall[name] = call.Pos()
+		}
+		return true
+	})
+	if len(mints) != 1 {
+		t.Fatalf("configureWatchWithHooks calls %s %d times, want exactly one mint for the timer slot", watchIDMintFunc, len(mints))
+	}
+	for _, validator := range watchCreateValidators {
+		pos, ok := firstCall[validator]
+		if !ok {
+			t.Fatalf("configureWatchWithHooks no longer calls %s: this guard now checks nothing", validator)
+		}
+		if mints[0] < pos {
+			t.Errorf("%s is minted at %s, before %s at %s: a create rejected by that check burns an id",
+				watchIDMintFunc, fset.Position(mints[0]), validator, fset.Position(pos))
+		}
+	}
+}
+
+// calleeName is the bare function name of a call: f(...) and x.f(...) both
+// report "f".
+func calleeName(fun ast.Expr) string {
+	switch node := fun.(type) {
+	case *ast.Ident:
+		return node.Name
+	case *ast.SelectorExpr:
+		return node.Sel.Name
+	}
+	return ""
 }

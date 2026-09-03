@@ -614,20 +614,15 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.ReceiverSendInternal {
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
-	// A timer's id is minted before the key so the key's Slot, the config's
-	// slot, and the config's watchID are all the same id. A clear carries no
-	// slot: a fresh id would build a key that matches nothing.
-	slot := ""
-	if !a.Clear && watchArgsIsTimer(a) {
-		slot = jobstore.NewWatchID()
-	}
+	// The Slot is filled in below, once the request has earned an id. Every use
+	// of the key above that point is a clear or a terminal catch-up, and neither
+	// carries a slot: a fresh id would build a key that matches nothing.
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
 		Target:             a.Target,
 		SendTo:             sendTo,
 		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
-		Slot:               slot,
 	}
 	if a.Clear && jm.hasWatchClearState(key) {
 		return jm.clearWatch(key)
@@ -684,6 +679,13 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	}
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
+	}
+	// A timer's id is minted here, after every check that can reject the create,
+	// so a rejected create never takes one. It goes into the key's Slot and
+	// through validateWatchConfig into the config, so the key's Slot, the
+	// config's slot, and the config's watchID are all the same id.
+	if !a.Clear && watchArgsIsTimer(a) {
+		key.Slot = jobstore.NewWatchID()
 	}
 	cfg, err := jm.validateWatchConfig(a, key.Slot)
 	if err != nil {
