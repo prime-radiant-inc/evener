@@ -1249,31 +1249,42 @@ func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
 	}
 }
 
-// provisionServeScratchThatMustBeDisposed gives the environment the owned
-// session scratch a sandboxed startup provisions — a write-blocked off policy
-// takes that path without needing a kernel backend this host may not have —
-// runs then, and holds the startup to disposing of it. Nothing releases the
-// directory or the flock lease under it until a session owns the environment
-// and its Close does, so every way out before that hand-off owes them.
+// serveScratchThatMustBeDisposed gives env the owned session scratch a
+// sandboxed startup provisions — a write-blocked off policy takes that path
+// without needing a kernel backend this host may not have — and holds the
+// startup to disposing of it. Nothing releases the directory or the flock
+// lease under it until a session owns the environment and its Close does, so
+// every way out before that hand-off owes them.
+func serveScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
+	t.Helper()
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		return err
+	}
+	scratch := env.SessionScratchDir()
+	// Registered before the assertion so it runs after it: a failing test must
+	// not leave the scratch behind either.
+	t.Cleanup(env.DisposeSandboxScratch)
+	t.Cleanup(func() {
+		if scratch == "" {
+			t.Error("provisioning left no session scratch to dispose")
+			return
+		}
+		if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
+		}
+	})
+	return nil
+}
+
+// provisionServeScratchThatMustBeDisposed is serveScratchThatMustBeDisposed as
+// a startup's sandbox-provisioning step, running then once the scratch is in
+// place.
 func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
 	t.Helper()
 	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
-		if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		if err := serveScratchThatMustBeDisposed(t, env); err != nil {
 			return err
 		}
-		scratch := env.SessionScratchDir()
-		// Registered before the assertion so it runs after it: a failing test
-		// must not leave the scratch behind either.
-		t.Cleanup(env.DisposeSandboxScratch)
-		t.Cleanup(func() {
-			if scratch == "" {
-				t.Error("provisioning left no session scratch to dispose")
-				return
-			}
-			if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
-			}
-		})
 		then()
 		return nil
 	}
@@ -1300,5 +1311,45 @@ func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
 	}, deps)
 	if err == nil || !strings.Contains(err.Error(), "session creation") {
 		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+}
+
+// A resume provisions the environment's sandbox from the session's PERSISTED
+// mode inside the restore (provisionRestoredSandbox), and the restore can
+// still fail after that — env.Initialize, the transcript, the artifact store —
+// with no session built to own what was provisioned.
+func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("restore got a %T, want the local environment serve built", env)
+		}
+		if err := serveScratchThatMustBeDisposed(t, local); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("restore failed after the sandbox was provisioned")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a resume that never restored")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }

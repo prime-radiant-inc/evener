@@ -559,6 +559,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})
 		if err != nil {
+			// A resume provisions this environment's sandbox from the
+			// session's persisted mode inside the restore, and the restore can
+			// fail after that with no session built to own what it took.
+			env.DisposeSandboxScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
