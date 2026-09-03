@@ -101,7 +101,7 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			dest, staging, err := m.prepareBundledStore("coordinator-workflow", true)
+			dest, staging, _, err := m.prepareBundledStore("coordinator-workflow", true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,11 +130,12 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 			test.survive(t, dest)
 
 			// What a publisher that lost the rename does next: it adopts the
-			// winner's copy. Foreign data is not that copy, so the adoption
-			// check refuses it rather than loading it as the bundled plugin.
-			adopted, adoptErr := publishedBundledCopy(dest, staging.digest)
-			if adopted || adoptErr == nil {
-				t.Errorf("publishedBundledCopy = %v, %v; want a refusal for the %s at the destination", adopted, adoptErr, test.name)
+			// winner's copy. Foreign data is not that copy, so it is never
+			// loaded as the bundled plugin — a directory is set aside, and
+			// anything that is not a directory is an error.
+			state, classifyErr := classifyBundledDestination(dest, staging.digest)
+			if classifyErr == nil && state == bundledDestinationPublished {
+				t.Errorf("the %s at the destination was classified as the published copy", test.name)
 			}
 		})
 	}

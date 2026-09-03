@@ -68,9 +68,9 @@ type LaunchPluginResolution struct {
 // enabled installed plugins. It loads each candidate with the same loader used
 // by session startup, retaining invalid candidates as structured diagnostics.
 func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
-	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
-		path, err := m.materializeBundledPlugin(name)
-		return path, path, err
+	return m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
+		path, warnings, err := m.materializeBundledPlugin(name)
+		return bundledCandidate{loadPath: path, path: path, warnings: warnings}, err
 	})
 }
 
@@ -78,28 +78,30 @@ func (m *Manager) ResolveForLaunch(explicitDirs []string, enabledNames *[]string
 // store the way a launch does, so a destination a launch would reject fails
 // preview the same way, a store a launch could not publish into fails preview
 // too, and an already published copy is the one preview describes. Exactly
-// what it touches: it creates <Root>/bundled if that is missing, and for a
-// requested bundled plugin not yet published it stages a marked copy there,
-// reads it, and removes it before returning. It publishes nothing, and it
+// what it touches: it creates <Root>/bundled if that is missing, it moves a
+// destination holding content this build did not publish to the sibling slot
+// kept for it exactly as a launch would, and for a requested bundled plugin
+// not yet published it stages a marked copy there, reads it, and removes it
+// before returning. It publishes nothing, and it
 // reclaims nothing: collecting abandoned staging belongs to a launch. Removing
 // what it staged is part of the promise, so a removal that fails is reported
 // alongside whatever else went wrong; the marked directory stays in the store
 // until a later launch's sweep reclaims it.
 func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
-	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (string, string, error) {
-		dest, staging, err := m.prepareBundledStore(name, false)
+	resolution, err := m.resolveForLaunch(explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
+		dest, staging, warnings, err := m.prepareBundledStore(name, false)
 		if err != nil {
-			return "", "", err
+			return bundledCandidate{}, err
 		}
 		if staging == nil {
-			return dest, dest, nil
+			return bundledCandidate{loadPath: dest, path: dest, warnings: warnings}, nil
 		}
 		scratch = append(scratch, staging.dir)
 		if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
-			return "", "", fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
+			return bundledCandidate{}, fmt.Errorf("stage bundled plugin %s for preview: %w", name, err)
 		}
-		return staging.payload, dest, nil
+		return bundledCandidate{loadPath: staging.payload, path: dest, warnings: warnings}, nil
 	})
 	for _, dir := range scratch {
 		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
@@ -113,10 +115,19 @@ func (m *Manager) PreviewForLaunch(explicitDirs []string, enabledNames *[]string
 	return resolution, err
 }
 
-// resolveForLaunch builds the inventory. bundledPath supplies, for a requested
-// bundled plugin, the directory to load it from and the path to report; it
-// returns fs.ErrNotExist when no bundled plugin has that name.
-func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string, bundledPath func(name string) (loadPath, reportPath string, err error)) (LaunchPluginResolution, error) {
+// bundledCandidate is where a requested bundled plugin can be loaded from, the
+// path to report for it, and whatever readying the store had to do that the
+// caller should hear about.
+type bundledCandidate struct {
+	loadPath string
+	path     string
+	warnings []string
+}
+
+// resolveForLaunch builds the inventory. bundledPath readies a requested
+// bundled plugin; it returns fs.ErrNotExist when no bundled plugin has that
+// name.
+func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string, bundledPath func(name string) (bundledCandidate, error)) (LaunchPluginResolution, error) {
 	resolution := LaunchPluginResolution{
 		Candidates: []LaunchPluginCandidate{}, SelectedDirs: []string{},
 		Diagnostics: []LaunchPluginDiagnostic{}, SelectionErrors: []PluginSelectionError{},
@@ -229,8 +240,13 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 				// manifest name; the two agree for every bundled plugin, and
 				// TestBundledPluginsAreNamedAfterTheirDirectory keeps it that
 				// way.
-				if loadPath, path, err := bundledPath(name); err == nil {
-					add(loadPath, path, LaunchPluginSourceBundled, "", "", name)
+				if candidate, err := bundledPath(name); err == nil {
+					for _, warning := range candidate.warnings {
+						resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
+							Name: name, Path: candidate.path, Message: warning, Source: LaunchPluginSourceBundled,
+						})
+					}
+					add(candidate.loadPath, candidate.path, LaunchPluginSourceBundled, "", "", name)
 				} else if !errors.Is(err, fs.ErrNotExist) {
 					resolution.Diagnostics = append(resolution.Diagnostics, LaunchPluginDiagnostic{
 						Name: name, Message: err.Error(), Source: LaunchPluginSourceBundled,
@@ -251,11 +267,15 @@ func (m *Manager) resolveForLaunch(explicitDirs []string, enabledNames *[]string
 // renaming it into place, and stagingMarker is the file inside it that proves
 // this code created it. abandonedStaging is how stale such a directory must be
 // before a later publish reclaims it: orders of magnitude longer than the copy
-// it names, so a publish in flight is never disturbed.
+// it names, so a publish in flight is never disturbed. conflictSuffix names the
+// single sibling slot a destination is moved to when it holds content this
+// build did not publish; it is outside the staging namespace, so the sweep
+// never collects it.
 const (
 	stagingPrefix    = ".stage-"
 	stagingMarker    = ".evener-staging"
 	abandonedStaging = time.Hour
+	conflictSuffix   = ".conflict"
 )
 
 // bundledStaging is a private directory in the bundled store that a publish
@@ -298,33 +318,49 @@ func newBundledStaging(store, base, digest string) (*bundledStaging, error) {
 // rewritten or removed, so sessions already reading it are safe, and a new
 // binary with different contents publishes beside it. Publication is atomic:
 // the copy is staged in a private directory and renamed into place, and a
-// concurrent publisher that loses the rename adopts the winner's copy.
-func (m *Manager) materializeBundledPlugin(name string) (string, error) {
-	dest, staging, err := m.prepareBundledStore(name, true)
+// concurrent publisher that loses the rename adopts the winner's copy. A
+// destination holding anything else is set aside rather than adopted, and the
+// publish goes ahead into the name it freed. It reports the published path and
+// anything the caller should hear about getting there.
+func (m *Manager) materializeBundledPlugin(name string) (string, []string, error) {
+	dest, staging, warnings, err := m.prepareBundledStore(name, true)
 	if err != nil {
-		return "", err
+		return "", warnings, err
 	}
 	if staging == nil {
-		return dest, nil
+		return dest, warnings, nil
 	}
 	defer func() { _ = os.RemoveAll(staging.dir) }()
 	if err := os.CopyFS(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
-		return "", fmt.Errorf("materialize bundled plugin %s: %w", name, err)
+		return "", warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
-		// A concurrent publisher may have taken the destination first. Its
-		// copy is adopted only when it is the copy this publish would have
-		// made; anything else there is a conflict, reported as one.
-		winner, adoptErr := publishedBundledCopy(dest, staging.digest)
-		if adoptErr != nil {
-			return "", adoptErr
+		// Somebody took the destination between the check that found it free
+		// and this rename. A concurrent publisher's copy is adopted; anything
+		// else is set aside the way the check would have, and the publish is
+		// retried into the name that frees.
+		state, classifyErr := classifyBundledDestination(dest, staging.digest)
+		if classifyErr != nil {
+			return "", warnings, classifyErr
 		}
-		if winner {
-			return dest, nil
+		if state == bundledDestinationPublished {
+			return dest, warnings, nil
 		}
-		return "", fmt.Errorf("publish bundled plugin %s: %w", name, err)
+		if state != bundledDestinationConflict {
+			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
+		}
+		aside, warning, asideErr := setAsideBundledConflict(dest)
+		if asideErr != nil {
+			return "", warnings, asideErr
+		}
+		if aside != "" {
+			warnings = append(warnings, warning)
+		}
+		if err := os.Rename(staging.payload, dest); err != nil {
+			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
+		}
 	}
-	return dest, nil
+	return dest, warnings, nil
 }
 
 // prepareBundledStore readies <Root>/bundled to hold the bundled plugin named
@@ -335,10 +371,10 @@ func (m *Manager) materializeBundledPlugin(name string) (string, error) {
 // fail identically on a store neither can write. reclaim asks for the
 // abandoned-staging sweep: a launch asks on every call, including the calls
 // that adopt a published copy, and a preview never does.
-func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundledStaging, error) {
+func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundledStaging, []string, error) {
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	// The resolver rejects an unresolved root before it reads or builds
 	// anything; this is the same guard on the function that does the creating,
@@ -346,22 +382,22 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	// name that is not bundled at all still reports fs.ErrNotExist rather than
 	// a store complaint.
 	if err := m.storeRootError(); err != nil {
-		return "", nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
+		return "", nil, nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
 	dest := m.bundledPluginPath(name, digest)
-	published, err := publishedBundledCopy(dest, digest)
+	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	store := filepath.Dir(dest)
 	// A launch resolves plugins before the startup call that creates the user
 	// config tree privately, so any parent this is first to create gets that
 	// call's own 0o700 rather than the store root's readable mode.
 	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	if err := os.MkdirAll(store, 0o755); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	// Sweeping before the published check, not after: a publisher that lost a
 	// rename and died leaves an orphan that only ever meets callers taking the
@@ -369,44 +405,90 @@ func (m *Manager) prepareBundledStore(name string, reclaim bool) (string, *bundl
 	if reclaim {
 		m.reclaimAbandonedStaging(store)
 	}
-	if published {
-		return dest, nil, nil
+	if state == bundledDestinationPublished {
+		return dest, nil, nil, nil
+	}
+	var warnings []string
+	if state == bundledDestinationConflict {
+		aside, warning, err := setAsideBundledConflict(dest)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		if aside != "" {
+			warnings = append(warnings, warning)
+		}
 	}
 	staging, err := newBundledStaging(store, filepath.Base(dest), digest)
 	if err != nil {
-		return "", nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
+		return "", nil, warnings, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
-	return dest, staging, nil
+	return dest, staging, warnings, nil
 }
 
-// publishedBundledCopy reports whether dest already holds the published copy
-// of the plugin digest names. Only a real directory counts: a file or a
-// symlink there was not published by this code, and loading through it would
-// report an unrelated directory as the bundled plugin. Only the right contents
-// count as well: <name>-<digest> is a claim about what is inside, so a
-// directory that hashes to anything else is somebody else's, whether it took
-// the name in a publish race or was edited after it was published. Nothing is
-// removed or rewritten either way — the caller reports the conflict and
-// publishes nothing.
-func publishedBundledCopy(dest, digest string) (bool, error) {
+// bundledDestination is what a content-addressed destination turned out to
+// hold.
+type bundledDestination int
+
+const (
+	// bundledDestinationVacant: nothing is there to adopt.
+	bundledDestinationVacant bundledDestination = iota
+	// bundledDestinationPublished: the copy the digest names.
+	bundledDestinationPublished
+	// bundledDestinationConflict: a directory holding something else.
+	bundledDestinationConflict
+)
+
+// classifyBundledDestination reports what is at dest. Only a real directory is
+// considered at all: a file or a symlink there was not published by this code
+// and is not this code's to move, and loading through it would report an
+// unrelated directory as the bundled plugin, so it is an error. Among
+// directories, <name>-<digest> is a claim about the contents: only a tree that
+// hashes to digest is the published copy, and a tree that hashes to anything
+// else is a conflict — a foreign directory that took the name, or a copy this
+// code published and something has changed since.
+func classifyBundledDestination(dest, digest string) (bundledDestination, error) {
 	info, err := os.Lstat(dest)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return bundledDestinationVacant, nil
 	}
 	if err != nil {
-		return false, err
+		return bundledDestinationVacant, err
 	}
 	if !info.IsDir() {
-		return false, fmt.Errorf("bundled plugin path %s is not a directory", dest)
+		return bundledDestinationVacant, fmt.Errorf("bundled plugin path %s is not a directory", dest)
 	}
 	found, err := digestFS(os.DirFS(dest))
 	if err != nil {
-		return false, fmt.Errorf("read the bundled plugin at %s: %w", dest, err)
+		return bundledDestinationVacant, fmt.Errorf("read the bundled plugin at %s: %w", dest, err)
 	}
 	if found != digest {
-		return false, fmt.Errorf("bundled plugin path %s holds conflicting content", dest)
+		return bundledDestinationConflict, nil
 	}
-	return true, nil
+	return bundledDestinationPublished, nil
+}
+
+// setAsideBundledConflict frees a destination holding content this build did
+// not publish, so publication can put the matching copy there rather than the
+// store staying unusable for that plugin forever. The conflicting directory is
+// moved, never deleted, to the single sibling slot kept beside the
+// destination: one preserved copy per plugin, so a store that keeps meeting
+// conflicts does not grow without bound. It reports where the content went and
+// how to say so, or "" when the destination was already gone because a
+// concurrent publisher set the same conflict aside first.
+func setAsideBundledConflict(dest string) (string, string, error) {
+	aside := dest + conflictSuffix
+	// Whatever is in the slot is the previous occupant this replaces. Nothing
+	// else in the store is ever removed to make room.
+	if err := os.RemoveAll(aside); err != nil {
+		return "", "", fmt.Errorf("clear the bundled plugin path %s: %w", aside, err)
+	}
+	if err := os.Rename(dest, aside); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("set aside the bundled plugin path %s: %w", dest, err)
+	}
+	return aside, fmt.Sprintf("bundled plugin path %s held content this build did not publish; it was set aside at %s", dest, aside), nil
 }
 
 // reclaimAbandonedStaging removes staging directories orphaned by a publish

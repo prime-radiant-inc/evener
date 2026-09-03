@@ -2827,7 +2827,9 @@ type PluginCheckNowResponse struct {
 // a launch publishes into, staging and removing a marked copy, so it fails
 // wherever the launch it describes would. Readying that store creates the
 // bundled directory under the plugin root when it is missing, and the
-// directory stays behind once the staged copy is removed.
+// directory stays behind once the staged copy is removed; a destination
+// holding content the running binary did not publish is moved to the sibling
+// slot kept for it, exactly as a launch would move it.
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`

@@ -346,7 +346,7 @@ func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{".", "..", "", "a/b", "../coordinator-workflow", "/coordinator-workflow"} {
-		if path, err := m.materializeBundledPlugin(name); err == nil {
+		if path, _, err := m.materializeBundledPlugin(name); err == nil {
 			t.Errorf("materializeBundledPlugin(%q) = %s, want an error", name, path)
 		}
 	}
@@ -357,7 +357,7 @@ func TestMaterializeBundledPlugin_RejectsTraversingNames(t *testing.T) {
 
 func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	m := NewManager(t.TempDir())
-	first, err := m.materializeBundledPlugin("coordinator-workflow")
+	first, _, err := m.materializeBundledPlugin("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := m.materializeBundledPlugin("coordinator-workflow")
+	second, _, err := m.materializeBundledPlugin("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range workers {
 		wg.Go(func() {
-			paths[i], errs[i] = m.materializeBundledPlugin("coordinator-workflow")
+			paths[i], _, errs[i] = m.materializeBundledPlugin("coordinator-workflow")
 		})
 	}
 	wg.Wait()
@@ -484,7 +484,7 @@ func TestPreviewForLaunch_ClassifiesTheDestinationLikeLaunch(t *testing.T) {
 
 	t.Run("a published copy is the one preview describes", func(t *testing.T) {
 		m := NewManager(t.TempDir())
-		published, err := m.materializeBundledPlugin("coordinator-workflow")
+		published, _, err := m.materializeBundledPlugin("coordinator-workflow")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -697,7 +697,7 @@ func TestMaterializeBundledPlugin_RejectsAForeignDestination(t *testing.T) {
 				t.Fatal(err)
 			}
 			plant(t, dest)
-			path, err := m.materializeBundledPlugin("coordinator-workflow")
+			path, _, err := m.materializeBundledPlugin("coordinator-workflow")
 			if err == nil {
 				t.Fatalf("materializeBundledPlugin = %s, want an error for a %s at the destination", path, name)
 			}
@@ -727,7 +727,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		m := NewManager(t.TempDir())
 		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 		staging := plantStaging(t, m, true)
-		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(staging); !os.IsNotExist(err) {
@@ -738,7 +738,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 	t.Run("staging in flight is left alone", func(t *testing.T) {
 		m := NewManager(t.TempDir())
 		staging := plantStaging(t, m, true)
-		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(staging); err != nil {
@@ -754,7 +754,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(keep); err != nil {
@@ -772,7 +772,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 		if err := os.WriteFile(stray, []byte("not staging"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
+		if _, _, err := m.materializeBundledPlugin("coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(stray); err != nil {
@@ -787,7 +787,7 @@ func TestMaterializeBundledPlugin_ReclaimsAbandonedStaging(t *testing.T) {
 // never reclaimed.
 func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing.T) {
 	m := NewManager(t.TempDir())
-	published, err := m.materializeBundledPlugin("coordinator-workflow")
+	published, _, err := m.materializeBundledPlugin("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +800,7 @@ func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing
 	}
 	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	again, err := m.materializeBundledPlugin("coordinator-workflow")
+	again, _, err := m.materializeBundledPlugin("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +828,7 @@ func TestBundledPluginsAreNamedAfterTheirDirectory(t *testing.T) {
 			continue
 		}
 		m := NewManager(t.TempDir())
-		path, err := m.materializeBundledPlugin(entry.Name())
+		path, _, err := m.materializeBundledPlugin(entry.Name())
 		if err != nil {
 			t.Fatalf("materialize %s: %v", entry.Name(), err)
 		}
@@ -865,14 +865,8 @@ func TestBundledPluginNamesStayOutOfTheStagingNamespace(t *testing.T) {
 // A destination is adopted only when its contents are the contents its name
 // promises. <name>-<digest> is a claim about what is inside, so a directory
 // that hashes to anything else was not published by this code — a foreign
-// directory that took the name, or a published copy somebody edited. Neither a
-// launch nor a preview loads it, both report it as conflicting content, and
-// nobody removes or rewrites it: it belongs to whoever wrote it.
+// directory that took the name, or a published copy somebody edited.
 func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
-	digest, err := bundledPluginDigest("coordinator-workflow")
-	if err != nil {
-		t.Fatal(err)
-	}
 	resolvers := []struct {
 		name    string
 		resolve func(*Manager) (LaunchPluginResolution, error)
@@ -891,36 +885,9 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 		},
 	}
 	for _, resolver := range resolvers {
-		t.Run(resolver.name+" refuses conflicting content", func(t *testing.T) {
-			m := NewManager(t.TempDir())
-			dest := m.bundledPluginPath("coordinator-workflow", digest)
-			// A plausible impostor: a loadable plugin under the right name,
-			// holding contents the digest never described.
-			writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
-
-			res, err := resolver.resolve(m)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(res.Candidates) != 0 {
-				t.Errorf("Candidates = %+v, want the conflicting destination unselected", res.Candidates)
-			}
-			if err := res.ValidateSelection(); err == nil {
-				t.Error("selected a bundled plugin from a destination holding conflicting content")
-			}
-			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
-				!strings.Contains(res.Diagnostics[0].Message, dest) ||
-				!strings.Contains(res.Diagnostics[0].Message, "conflicting content") {
-				t.Fatalf("Diagnostics = %+v, want one bundled diagnostic naming %s as conflicting", res.Diagnostics, dest)
-			}
-			if content, err := os.ReadFile(filepath.Join(dest, "theirs.md")); err != nil || string(content) != "someone else's data" {
-				t.Errorf("conflicting destination content = %q (err %v), want it untouched", content, err)
-			}
-		})
-
 		t.Run(resolver.name+" adopts the published copy", func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			published, err := m.materializeBundledPlugin("coordinator-workflow")
+			published, _, err := m.materializeBundledPlugin("coordinator-workflow")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -943,4 +910,149 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// <Root>/bundled is evener's own cache of what the running binary ships, so a
+// destination that holds something else is stale or foreign rather than
+// authoritative: refusing it forever would leave a stray file — a .DS_Store
+// Finder wrote, an editor's backup — permanently unlaunchable. The conflicting
+// directory is moved to the one sibling slot kept beside it and publication
+// continues, so the launch selects a copy that matches the binary. What was
+// there is never deleted; only an earlier occupant of that slot is replaced.
+func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvers := []struct {
+		name    string
+		resolve func(*Manager) (LaunchPluginResolution, error)
+	}{
+		{
+			name: "preview",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.PreviewForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+		{
+			name: "launch",
+			resolve: func(m *Manager) (LaunchPluginResolution, error) {
+				return m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+			},
+		},
+	}
+	for _, resolver := range resolvers {
+		t.Run(resolver.name+" sets a conflicting destination aside", func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			dest := m.bundledPluginPath("coordinator-workflow", digest)
+			// A plausible impostor: a loadable plugin under the right name,
+			// holding contents the digest never described.
+			writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+			res, err := resolver.resolve(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := res.ValidateSelection(); err != nil {
+				t.Fatalf("a conflicting destination left the bundled plugin unselectable: %v", err)
+			}
+			if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount < 7 {
+				t.Fatalf("Candidates = %+v, want the copy this build ships at %s", res.Candidates, dest)
+			}
+			aside := dest + conflictSuffix
+			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
+				!strings.Contains(res.Diagnostics[0].Message, aside) {
+				t.Fatalf("Diagnostics = %+v, want one bundled warning naming %s", res.Diagnostics, aside)
+			}
+			if content, err := os.ReadFile(filepath.Join(aside, "theirs.md")); err != nil || string(content) != "someone else's data" {
+				t.Errorf("set-aside content = %q (err %v), want what was there preserved", content, err)
+			}
+		})
+	}
+
+	// The realistic case: Finder or an editor drops a file into a published
+	// copy. The next launch sets the changed copy aside and republishes, so
+	// the plugin keeps working without anybody deleting anything.
+	t.Run("a stray file in a published copy heals on the next launch", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		first, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := first.ValidateSelection(); err != nil {
+			t.Fatal(err)
+		}
+		published := first.SelectedDirs[0]
+		if err := os.WriteFile(filepath.Join(published, ".DS_Store"), []byte("finder"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		again, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := again.ValidateSelection(); err != nil {
+			t.Fatalf("a stray file left the bundled plugin unlaunchable: %v", err)
+		}
+		if len(again.SelectedDirs) != 1 || again.SelectedDirs[0] != published {
+			t.Fatalf("SelectedDirs = %v, want a republished copy at %s", again.SelectedDirs, published)
+		}
+		if _, err := os.Stat(filepath.Join(published, ".DS_Store")); !os.IsNotExist(err) {
+			t.Errorf("the republished copy carries the stray file (stat err = %v)", err)
+		}
+		if _, err := os.Stat(filepath.Join(published+conflictSuffix, ".DS_Store")); err != nil {
+			t.Errorf("the copy that was set aside lost the file it was kept for: %v", err)
+		}
+	})
+
+	// One slot per plugin, so a store that keeps meeting conflicts does not
+	// grow without bound: the second set-aside copy replaces the first.
+	t.Run("a later conflict replaces the copy set aside before it", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		writePlugin(t, dest, "coordinator-workflow", map[string]string{"first.md": "first"})
+		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dest, "second.md"), []byte("second"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+			t.Fatal(err)
+		}
+
+		aside := dest + conflictSuffix
+		if _, err := os.Stat(filepath.Join(aside, "second.md")); err != nil {
+			t.Errorf("the latest conflict was not the one kept: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(aside, "first.md")); !os.IsNotExist(err) {
+			t.Errorf("an earlier set-aside copy survived (stat err = %v), want one slot per plugin", err)
+		}
+		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 {
+			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
+		}
+	})
+
+	// A set-aside copy lives in the store beside staging, and it is not
+	// staging: the sweep that reclaims abandoned publishes must leave it alone
+	// however old it gets.
+	t.Run("the staging sweep leaves a set-aside copy alone", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+		if _, err := m.ResolveForLaunch(nil, &[]string{"coordinator-workflow"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dest+conflictSuffix, "theirs.md")); err != nil {
+			t.Errorf("the sweep collected a set-aside copy: %v", err)
+		}
+	})
 }
