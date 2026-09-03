@@ -580,10 +580,12 @@ export function useTranscriptScroll({
   // reader has scrolled back, even with zero new items - rather than only a
   // new-content counter. Updated everywhere wasAtBottomRef is written:
   // handleScroll (the common path), the one-time mount init, and the per-ref
-  // reset. jumpToBottom deliberately does NOT clear it: the scroll triggered
-  // by the jump fires handleScroll on landing, which clears it only once the
-  // reader has ACTUALLY arrived - so a jump that lands short leaves the pill
-  // on offer instead of vanishing into a stranded mid-transcript position.
+  // reset. jumpToBottom clears it ONLY from a measurement that already reads
+  // at-bottom (where no scroll - and so no landing event - will happen);
+  // otherwise the scroll triggered by the jump fires handleScroll on landing,
+  // which clears it only once the reader has ACTUALLY arrived - so a jump
+  // that lands short leaves the pill on offer instead of vanishing into a
+  // stranded mid-transcript position.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
 
   const wasAtBottomRef = useRef(true);
@@ -743,13 +745,27 @@ export function useTranscriptScroll({
       // estimates say. Later measurement corrections only ever change
       // scrollHeight, and the end-anchor (threshold 4px; the pin leaves the
       // distance at 0) keeps the viewport pinned to the new true end.
+      //
+      // Bottom state is NEVER set optimistically here: wasAtBottomRef and
+      // awayFromBottom only come from measured geometry. The landing's own
+      // scroll event confirms arrival (handleScroll), so until then the
+      // reader is still away - an append in that window increments the pill
+      // instead of auto-sticking on an unconfirmed jump, and a landing that
+      // later corrections leave short keeps the pill on offer.
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const el = listRef.current?.getScrollElement();
       if (el) {
         const m = measure(el);
-        if (!isAtBottom(m)) el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+        if (isAtBottom(m)) {
+          // Already at the true bottom by measurement (no scroll will happen,
+          // so no landing event will fire): confirm arrival from the
+          // measurement itself.
+          wasAtBottomRef.current = true;
+          setAwayFromBottom(false);
+        } else {
+          el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+        }
       }
-      wasAtBottomRef.current = true;
     }
     clearPill();
   }, [listRef, clearPill, measure]);

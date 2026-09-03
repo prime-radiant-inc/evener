@@ -406,11 +406,10 @@ describe("the pill while scrolled back (no new content)", () => {
 
   test("a jump that lands short of the bottom leaves the pill on offer instead of stranding the reader", () => {
     const { ref, el } = makeListHandle();
-    // The measure seam stays at SCROLLED_AWAY even after the jump: this
-    // simulates the real failure mode, where the virtualizer's
-    // estimate-derived landing is corrected by later measurements to
-    // somewhere that is NOT the true bottom.
-    const { measure } = makeMeasure(SCROLLED_AWAY);
+    // Start at the bottom with the pill hidden, then scroll away so the pill
+    // appears - the test must prove the JUMP preserves that visibility across
+    // a short landing, not merely that a pre-existing pill survives one.
+    const { measure, set } = makeMeasure(AT_BOTTOM);
     const { result } = renderHook(() =>
       useTranscriptScroll({
         ref: "ref_a",
@@ -421,14 +420,76 @@ describe("the pill while scrolled back (no new content)", () => {
       }),
     );
 
+    expect(result.current.pillVisible).toBe(false);
+
+    // Scroll away from the bottom: the pill appears (plain "latest" form).
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
     act(() => result.current.jumpToBottom());
-    // The post-jump scroll event reports the short landing...
+    // The post-jump scroll event reports the short landing - the measure seam
+    // stays at SCROLLED_AWAY, simulating the real failure mode, where the
+    // virtualizer's estimate-derived landing is corrected by later
+    // measurements to somewhere that is NOT the true bottom...
     act(() => {
       el.dispatchEvent(new Event("scroll"));
     });
 
     // ...and the pill must still be on offer (plain form), not cleared.
     expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("an append before the jump's landing is confirmed does not auto-stick on the unconfirmed jump", () => {
+    const { ref, el, scrollToIndex } = makeListHandle();
+    const { measure, set } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) } },
+    );
+
+    // Scroll away: the pill appears and wasAtBottomRef is honestly false.
+    act(() => {
+      set(SCROLLED_AWAY);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+    scrollToIndex.mockClear(); // drop the jump's own scrollToIndex call
+
+    // An item arrives in the click -> landing-confirmation window: it must be
+    // counted on the pill, NOT auto-stuck. Auto-sticking here is exactly the
+    // yank an optimistic wasAtBottomRef caused - the jump's arrival has not
+    // been confirmed by any scroll event yet.
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]) });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(result.current.pillCount).toBe(1);
+
+    // The landing's scroll event confirms arrival at the bottom: the pill
+    // clears...
+    act(() => {
+      set(AT_BOTTOM);
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.pillVisible).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+
+    // ...and from then on appends stick to the bottom again.
+    scrollToIndex.mockClear();
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+    });
+    expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "end" });
   });
 });
 
