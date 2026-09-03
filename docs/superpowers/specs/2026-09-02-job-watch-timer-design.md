@@ -155,9 +155,9 @@ eight times a minute by its own timers, visibly and by its own doing.
   says so.
 
 Out-of-range values are rejected, not clamped, in `normalizeWatchArgs`
-where bounds live today. A present `0` is rejected with the bounds
-message; null reads as absent. There is no `update`: to change a note,
-clear and create.
+where bounds live today. A present `0` reads as absent, exactly like
+`progress_interval_ms: 0`, and so does null; the bounds apply to non-zero
+values only. There is no `update`: to change a note, clear and create.
 
 Both time fields are surface names for the existing periodic engine. A
 timer config sets `progressIntervalMS` to the seconds times 1,000 and a
@@ -381,8 +381,8 @@ reports once.
 | Input | Result |
 |---|---|
 | both time fields set, or either with `progress_interval_ms`, `events`, `output_match`, `every`, or `event_filter` | `invalid_request` naming both fields |
-| `after_seconds` outside 60 to 86,400, including a present `0` | `invalid_request: after_seconds must be between 60 and 86400` |
-| `repeat_seconds` outside 60 to 3,600, including a present `0` | `invalid_request: repeat_seconds must be between 60 and 3600` |
+| a non-zero `after_seconds` outside 60 to 86,400 | `invalid_request: after_seconds must be between 60 and 86400` |
+| a non-zero `repeat_seconds` outside 60 to 3,600 | `invalid_request: repeat_seconds must be between 60 and 3600` |
 | any integer argument wrong-typed | `invalid_request: <field> must be an integer` |
 | `progress_interval_ms` on a session source | `invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds` |
 | a time field on any source but `self`; `note` without a time trigger | `invalid_request` as worded above |
