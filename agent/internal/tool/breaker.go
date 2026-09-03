@@ -515,12 +515,10 @@ func errorClass(output string) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// semanticErrorClass uses stable machine-facing failure boundaries whenever a
-// handler supplies one. Generic executor errors retain the existing normalized
-// error class, preserving the exact breaker's distinction between genuinely
-// different failures that lack a typed boundary.
 // FailureClasser lets an executor expose a stable machine-facing failure class
-// without putting presentation text into semantic loop identity.
+// without putting presentation text into semantic loop identity. Built-in
+// typed families also have stable classes; otherwise untyped executor errors
+// intentionally share a coarse class rather than deriving identity from prose.
 type FailureClasser interface {
 	FailureClass() string
 }
