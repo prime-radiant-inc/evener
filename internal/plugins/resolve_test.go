@@ -1359,8 +1359,8 @@ func TestPreviewForLaunch_LeavesAMismatchedDestinationWhereItIs(t *testing.T) {
 	if err := res.ValidateSelection(); err != nil {
 		t.Fatalf("preview did not describe the bundled plugin: %v", err)
 	}
-	if len(res.Candidates) != 1 || res.Candidates[0].Path != dest {
-		t.Fatalf("Candidates = %+v, want the bundled plugin reported at %s", res.Candidates, dest)
+	if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount < 7 {
+		t.Fatalf("Candidates = %+v, want the copy this build ships reported at %s", res.Candidates, dest)
 	}
 	content, err := os.ReadFile(theirs)
 	if err != nil {

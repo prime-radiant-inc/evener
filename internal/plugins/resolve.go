@@ -81,12 +81,14 @@ func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, e
 // preview the same way, a store a launch could not publish into fails preview
 // too, and an already published copy is the one preview describes. Exactly
 // what it touches: it creates <Root>/bundled if that is missing, it takes the
-// store lock while it works there, it moves a destination holding content this
-// build did not publish to the sibling slot kept for it exactly as a launch
-// would, and for a requested bundled plugin not yet published it stages a
-// marked copy there, reads it, and removes it before returning. It publishes
-// nothing, and it reclaims nothing: collecting abandoned staging belongs to a
-// launch. Removing what it staged is part of the promise, so a removal that
+// store lock while it works there, and for a requested bundled plugin not yet
+// published it stages a marked copy there, reads it, and removes it before
+// returning. A destination holding content this build did not publish is
+// reported as the conflict a launch would act on and left exactly where it is:
+// repairing the store belongs to a launch, and a preview that moved that
+// directory would take a path live sessions read out from under them. It
+// publishes nothing, and it reclaims nothing: collecting abandoned staging
+// belongs to a launch. Removing what it staged is part of the promise, so a removal that
 // fails is reported as a diagnostic on the inventory it returns rather than as
 // an error that would throw the inventory away; the marked directory stays in
 // the store until a later launch's sweep reclaims it.
@@ -552,7 +554,7 @@ const (
 // the ones that adopt a published copy) and only a publish moves a conflicting
 // destination aside.
 func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent bundledStoreIntent) (string, *bundledStaging, []string, error) {
-	reclaim := intent == publishBundledStore
+	publishing := intent == publishBundledStore
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
 		return "", nil, nil, err
@@ -596,7 +598,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 		// something to sweep, and the scan that answers that needs no lock.
 		// Taking one on every launch would park a routine one behind an
 		// auto-upgrade holding the store lock across git fetches.
-		if reclaim && len(m.abandonedStaging(store)) > 0 {
+		if publishing && len(m.abandonedStaging(store)) > 0 {
 			// Housekeeping for a launch that is otherwise done: it waits the
 			// housekeeping wait, not the wait a publish is entitled to — the
 			// wait acquireLock is given here is the whole of it. A lock it
@@ -631,7 +633,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// holds the lock that publisher would be holding, and an orphan left by a
 	// publisher that lost a rename and died only ever meets callers taking the
 	// published path.
-	if reclaim {
+	if publishing {
 		m.reclaimAbandonedStaging(store)
 	}
 	state, err := classifyBundledDestination(dest, digest)
@@ -649,12 +651,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	var warnings []string
 	setAside := false
 	if state == bundledDestinationConflict {
-		if intent == previewBundledStore {
-			// A preview says what a launch would do here and does none of it.
-			warnings = append(warnings, fmt.Sprintf(
-				"bundled plugin path %s holds content this build did not publish; a launch would set it aside at %s",
-				dest, dest+conflictSuffix))
-		} else {
+		if publishing {
 			asideWarnings, err := setAsideBundledConflict(dest)
 			warnings = append(warnings, asideWarnings...)
 			if err != nil {
@@ -662,6 +659,11 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 				return "", nil, warnings, err
 			}
 			setAside = true
+		} else {
+			// A preview says what a launch would do here and does none of it.
+			warnings = append(warnings, fmt.Sprintf(
+				"bundled plugin path %s holds content this build did not publish; a launch would set it aside at %s",
+				dest, dest+conflictSuffix))
 		}
 	}
 	staging, err := stageBundledCopy(store, filepath.Base(dest), digest, release)
