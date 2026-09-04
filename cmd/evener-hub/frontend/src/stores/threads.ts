@@ -2337,11 +2337,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
-    const client = await requireReadyClient();
+    await requireReadyClient();
     await trackedHydrationCompletions.get(ref);
+    const client = await requireReadyClient();
+    const capturedEpoch = readyEpoch;
     const model = threadsStore.getState().threads.get(ref);
     if (!model?.olderCursor) return; // untracked, or no more history to page in
-    const capturedEpoch = readyEpoch;
     const capturedRef = model.ref;
     const capturedCursor = model.olderCursor;
     const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;

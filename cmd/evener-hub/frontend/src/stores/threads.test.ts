@@ -6437,6 +6437,42 @@ describe("useThreadsStore.loadOlderTurns", () => {
     expect(model?.olderCursor).toBe("cursor_0");
   });
 
+  test("reacquires the ready client after waiting for a tracked hydration", async () => {
+    const oldClient = connectFakeClient();
+    oldClient.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    oldClient.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let resolveBlockingHydration!: (response: ThreadReadResponse) => void;
+    const blockingHydrationRequested = nextHandledRequest(
+      oldClient,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveBlockingHydration = resolve;
+        }),
+    );
+
+    oldClient.emitStateChange("reconnecting");
+    oldClient.emitReady();
+    await blockingHydrationRequested;
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await settleCallerContinuations();
+
+    const newClient = new FakeClient("ready");
+    newClient.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_2" }));
+    newClient.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
+    connectionStore.getState().connect(newClient);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.olderCursor === "cursor_2");
+    resolveBlockingHydration({ thread: testThread("ref_a"), olderCursor: "stale-cursor" });
+    await loading;
+
+    expect({
+      old: oldClient.calls.filter((call) => call.method === "thread/turns/list").length,
+      current: newClient.calls.filter((call) => call.method === "thread/turns/list").length,
+    }).toEqual({ old: 0, current: 1 });
+  });
+
   test("a stale item cursor triggers one fresh subscribed read and does not surface an older-page error", async () => {
     const fake = connectFakeClient();
     let reads = 0;
