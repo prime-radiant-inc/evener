@@ -3,17 +3,13 @@
 package plugins
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	agentplugin "primeradiant.com/evener/agent/plugin"
 )
 
 type coverageDirEntry struct {
@@ -39,7 +35,6 @@ func FuzzDoctorGCCoverage(f *testing.F) {
 	f.Fuzz(func(t *testing.T, _ uint8) {
 		t.Run("doctor", coverageDoctor)
 		t.Run("gc", coverageGC)
-		t.Run("enabled", coverageEnabled)
 	})
 }
 
@@ -205,24 +200,5 @@ func coverageGC(t *testing.T) {
 	gcRemoveAll = func(string) error { return boom }
 	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("remove succeeded")
-	}
-}
-
-func coverageEnabled(t *testing.T) {
-	origLoad := enabledLoad
-	t.Cleanup(func() { enabledLoad = origLoad })
-	root := t.TempDir()
-	var stderr bytes.Buffer
-	m := &Manager{Root: root, Stderr: &stderr}
-	pluginDir := t.TempDir()
-	writePlugin(t, pluginDir, "p", nil)
-	reg := Registry{Plugins: map[string][]InstallEntry{"p@m": {{Enabled: true, InstallPath: pluginDir, Source: Source{Kind: SourceDirectory, Path: pluginDir}}}}}
-	if err := SaveRegistry(m.registryPath(), reg); err != nil {
-		t.Fatal(err)
-	}
-	enabledLoad = func(string) (agentplugin.Instance, error) { return agentplugin.Instance{}, errors.New("boom") }
-	m.EnabledPluginDirs(nil)
-	if !strings.Contains(stderr.String(), "skipping broken plugin") {
-		t.Fatalf("warning = %q", stderr.String())
 	}
 }

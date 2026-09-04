@@ -21,6 +21,14 @@ func DefaultMarketplaceSeeds() map[string]Source {
 // seeded marketplace never gets it back. Seeded entries are unfetched pointers
 // (empty InstallLocation), cloned lazily on first Browse/Install.
 func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
+	// Every path under an unresolved root is relative, so seeding would write
+	// the marketplaces file and take its lock in whatever directory the
+	// process happens to be in. Launches seed on the way past and carry a
+	// seeding failure as a warning, so refusing here is what keeps a store
+	// out of somebody's project.
+	if err := m.storeRootError(); err != nil {
+		return false, err
+	}
 	if _, err := marketplaceStat(m.marketplacesFile()); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {

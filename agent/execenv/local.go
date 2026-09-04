@@ -625,6 +625,26 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	}
 }
 
+// DisposeUnadoptedScratch drops every per-session scratch directory this env
+// provisioned — the one it owns from EnableSandbox and the one an unsandboxed
+// env mints lazily on its first command — releasing each lease with its
+// directory. It is what a launch calls when it provisioned an environment and
+// then failed before any session adopted it: the release paths for both belong
+// to a session's Cleanup, so without this nothing ever runs them and each
+// failed launch leaves a directory and a live lease behind. Idempotent, since
+// more than one failure path can run on the way out, and subject to
+// DisposeSandboxScratch's rule: only ever on a freshly provisioned env, never
+// on a shared parent whose live children point into its scratch.
+func (e *LocalExecutionEnvironment) DisposeUnadoptedScratch() {
+	e.DisposeSandboxScratch()
+	e.unsandboxedScratchMu.Lock()
+	defer e.unsandboxedScratchMu.Unlock()
+	if tmp := e.unsandboxedScratch; tmp != nil {
+		e.unsandboxedScratch = nil
+		_ = tmp.Cleanup()
+	}
+}
+
 // filesystem returns the environment's filesystem, defaulting to the OS
 // filesystem when one was never injected (e.g. a zero-value environment).
 func (e *LocalExecutionEnvironment) filesystem() afero.Fs {

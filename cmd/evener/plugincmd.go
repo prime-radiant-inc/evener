@@ -35,24 +35,40 @@ type pluginManager interface {
 }
 
 type pluginLaunchResolver interface {
-	ResolveForLaunch([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	ResolveForLaunch(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 }
 
 var newPluginManager = func() pluginManager { return plugins.NewManager("") }
 var parsePluginMarketplaceSource = parseMarketplaceSourceArg
 
 func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// Saying how the command works reaches nothing under the config root, so
+	// it answers before the guard below and leaves no root behind: a user with
+	// unmigrated data can still read the usage.
+	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		printPluginUsage(stderr)
+		return nil
+	}
 	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
-	// mutates store state) and must not trigger first-run seeding the way
-	// every other verb does.
-	if len(args) == 0 || args[0] != "doctor" {
+	// mutates store state), so it takes only the read-only half of the guard
+	// and skips first-run seeding: creating the config tree for a diagnostic
+	// would mutate what it reports on, and would fail outright on a read-only
+	// config home. Every other verb works under that tree, and gets the guard
+	// before anything creates it — seeding writes into the config root and
+	// every store path below hangs off it, while the legacy-data check reads
+	// an existing root as already migrated, so running it second would strand
+	// a user's legacy configuration and credentials silently.
+	if args[0] == "doctor" {
+		if err := cmdutil.CheckLegacyDataDirs(); err != nil {
+			return err
+		}
+	} else {
+		if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+			return err
+		}
 		if _, err := newPluginManager().SeedDefaultMarketplaces(context.Background()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
-	}
-	if len(args) == 0 {
-		printPluginUsage(stderr)
-		return nil
 	}
 
 	switch args[0] {
@@ -65,9 +81,6 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runPluginCheckNow(args[1:], stdout, stderr)
 	case "doctor":
 		return runPluginDoctor(args[1:], stdout, stderr)
-	case "help", "-h", "--help":
-		printPluginUsage(stderr)
-		return nil
 	default:
 		printPluginUsage(stderr)
 		return fmt.Errorf("unknown plugin command %q", args[0])
@@ -368,7 +381,10 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			if !ok {
 				return errors.New("plugin manager does not support effective listing")
 			}
-			resolution, err := resolver.ResolveForLaunch([]string(pluginDirs), nil)
+			// context.Background: runPlugin is a one-shot command with no
+			// context of its own, and nothing cancels this listing but the
+			// process ending.
+			resolution, err := resolver.ResolveForLaunch(context.Background(), []string(pluginDirs), nil)
 			if renderErr := renderEffectivePluginList(stdout, resolution, *asJSON); renderErr != nil {
 				return renderErr
 			}

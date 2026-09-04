@@ -881,8 +881,8 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
-		return hubCommandList(cfg)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
+		return hubCommandList(ctx, cfg)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
 		return hubSettingsOverview(ctx, cfg)
@@ -890,7 +890,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 }
 
 // hubCommandList answers evener/command/list by loading every plugin a real
-// session would load — internal/plugins.Manager.EnabledPluginDirs (explicit
+// session would load — internal/plugins.Manager.ResolveForLaunch (explicit
 // --plugin-dir-equivalent PluginDirs first, then every installed+enabled
 // registry entry) — and flattening their discovered slash commands into a
 // catalog. This used to mirror discoverPluginsForSettings's display-only scan
@@ -904,8 +904,8 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // multi-project: project commands are per-session and must never appear here.
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
-func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(cfg.PluginDirs, nil)
+func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
+	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(ctx, cfg.PluginDirs, nil)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
 	}

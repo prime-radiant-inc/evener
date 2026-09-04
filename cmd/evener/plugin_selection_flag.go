@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -122,6 +123,24 @@ type effectivePluginJSON struct {
 	CommandCount int                        `json:"commandCount"` //nolint:tagliatelle // stable CLI JSON uses camelCase
 	HookCount    int                        `json:"hookCount"`    //nolint:tagliatelle // stable CLI JSON uses camelCase
 	MCPCount     int                        `json:"mcpCount"`     //nolint:tagliatelle // stable CLI JSON uses camelCase
+}
+
+// fatalLaunchPluginError decides what a resolver failure means to a launch,
+// and returns nil when the launch may go on with whatever could be listed. An
+// inventory that could not be built completely is fail-soft unless a selection
+// has to be honoured. A cancellation is not that kind of failure: it is the
+// caller leaving, and everything a launch does next — seeding marketplaces,
+// which waits on the plugin store lock and writes config — is work nobody is
+// waiting for.
+func fatalLaunchPluginError(err error, selection *[]string) error {
+	switch {
+	case err == nil:
+		return nil
+	case selection != nil, errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("resolve plugins: %w", err)
+	default:
+		return nil
+	}
 }
 
 func renderLaunchPluginDiagnostics(w io.Writer, diagnostics []plugins.LaunchPluginDiagnostic) {

@@ -11,10 +11,11 @@ import (
 const (
 	// pluginsQuickTimeout bounds unlocked, purely local reads (the list calls).
 	pluginsQuickTimeout = 5 * time.Second
-	// pluginsSlowTimeout bounds every mutation. internal/plugins.Manager takes
-	// a flock budgeted up to 30s under contention before add/refresh/install/
-	// upgrade even start their own git clone/pull, so this must clear that
-	// floor with headroom for real network I/O.
+	// pluginsSlowTimeout bounds every mutation, and the preview that readies
+	// the bundled store alongside them. internal/plugins.Manager takes a flock
+	// budgeted up to 30s under contention before add/refresh/install/upgrade
+	// even start their own git clone/pull, so this must clear that floor with
+	// headroom for real network I/O.
 	pluginsSlowTimeout = 60 * time.Second
 )
 
@@ -81,8 +82,10 @@ type PluginMutateResultMsg struct {
 	Err  error
 }
 
-// PluginPreviewRequestMsg asks the hub model to run a side-effect-free plugin
-// preview. Key identifies the request's directory/override revision so a late
+// PluginPreviewRequestMsg asks the hub model to run a plugin preview. Preview
+// starts no session and runs no plugin code; for a requested bundled plugin it
+// readies the store a launch publishes into, staging and removing a marked
+// copy. Key identifies the request's directory/override revision so a late
 // response cannot replace a newer preview.
 type PluginPreviewRequestMsg struct {
 	Params appwire.PluginPreviewParams
@@ -167,7 +170,11 @@ func CmdPluginList(client *appwire.Client) tea.Cmd {
 
 func CmdPluginPreview(client *appwire.Client, params appwire.PluginPreviewParams, key string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), pluginsQuickTimeout)
+		// Not a quick read: previewing a bundled plugin readies the store the
+		// way a launch does, which waits on the same flock every mutation
+		// takes. A client deadline under that wait would report a failure the
+		// hub is still working through.
+		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.PluginPreview(ctx, params)
 		return PluginPreviewResultMsg{Response: resp, Key: key, Err: err}

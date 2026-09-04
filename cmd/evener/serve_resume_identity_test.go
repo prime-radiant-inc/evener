@@ -67,7 +67,7 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 	probe := &serveResumeIdentityProbe{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	var cancel context.CancelFunc
 	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
 		next, stop := context.WithCancel(ctx)

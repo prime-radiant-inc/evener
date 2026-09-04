@@ -112,7 +112,7 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	writePluginSelectionFixture(t, selectedDir, "selected", selectedHook, mcpServer, selectedMCP)
 	writePluginSelectionFixture(t, excludedDir, "excluded", excludedHook, mcpServer, excludedMCP)
 
-	resolution, err := plugins.NewManager(t.TempDir()).ResolveForLaunch([]string{selectedDir}, nil)
+	resolution, err := plugins.NewManager(t.TempDir()).ResolveForLaunch(context.Background(), []string{selectedDir}, nil)
 	if err != nil {
 		t.Fatalf("ResolveForLaunch: %v", err)
 	}

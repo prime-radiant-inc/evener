@@ -107,8 +107,8 @@ type serveDeps struct {
 	newFlagSet       func(string, flag.ErrorHandling) *flag.FlagSet
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
-	seedMarketplaces func() error
-	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
+	seedMarketplaces func(context.Context) error
+	resolvePlugins   func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
@@ -253,6 +253,20 @@ func runServe(args []string) error {
 	return runServeWithDeps(args, defaultServeDeps())
 }
 
+// startupInterrupted reports an interrupt that arrived during a startup step
+// which could not read the context itself. Seeding marketplaces waits on the
+// plugin store lock, probing the login shell PATH and provisioning the sandbox
+// run subprocesses, and net.ListenConfig.Listen on a literal address binds
+// happily with a cancelled context — so the interrupt is only noticed where
+// the context is read, and a startup that was interrupted has to say so and
+// fail rather than bind, shut itself down and exit 0 in silence.
+func startupInterrupted(ctx context.Context, step string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("interrupted while %s: %w", step, err)
+	}
+	return nil
+}
+
 func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
@@ -317,15 +331,31 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
 		return err
 	}
+	// Signal handling, installed before the first thing that can wait on
+	// something: resolving plugins takes the plugin store lock, which an
+	// install or an auto-upgrade can be holding across git fetches, and an
+	// interrupt has to end that wait rather than being ignored until the
+	// daemon reaches its listener.
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := deps.ensureConfigDirs(); err != nil {
+		return err
+	}
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
-		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-			return pluginManager.ResolveForLaunch(explicit, enabled)
+		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return pluginManager.ResolveForLaunch(ctx, explicit, enabled)
 		}
 	}
-	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
-	if resolveErr != nil && enabledPlugins.Value() != nil {
-		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	resolvedPlugins, resolveErr := resolvePlugins(ctx, []string(pluginDirs), enabledPlugins.Value())
+	if fatal := fatalLaunchPluginError(resolveErr, enabledPlugins.Value()); fatal != nil {
+		return fatal
 	}
 	if resolveErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
@@ -360,18 +390,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 	}
-	if err := deps.ensureConfigDirs(); err != nil {
-		return err
-	}
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {
-		seedMarketplaces = func() error {
-			_, err := pluginManager.SeedDefaultMarketplaces(context.Background())
+		seedMarketplaces = func(ctx context.Context) error {
+			_, err := pluginManager.SeedDefaultMarketplaces(ctx)
 			return err
 		}
 	}
-	if err := seedMarketplaces(); err != nil {
+	if err := seedMarketplaces(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+	}
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 
 	// Resolve state directory.
@@ -455,6 +485,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren:      *shareTaskStore,
@@ -503,6 +536,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err := deps.provisionSandbox(env, &sessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the flock lease that
+		// keeps the crashed-scratch sweeper off it, and an unsandboxed session
+		// mints one of its own on its first command; nothing releases either
+		// until a session owns this environment and its Close does. Every way
+		// out between here and that hand-off has to dispose of them, or an
+		// interrupted startup leaks a directory and a lease per attempt.
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeUnadoptedScratch()
+			return err
+		}
 	}
 
 	var sess *agent.Session
@@ -517,6 +560,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})
 		if err != nil {
+			// A resume provisions this environment's sandbox from the
+			// session's persisted mode inside the restore, and the restore can
+			// fail after that with no session built to own what it took.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
@@ -526,6 +573,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	} else {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
+			// The session that would have owned whatever this environment
+			// provisioned was never built.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
@@ -535,10 +585,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// session — nothing to announce.
 	printServeSandboxLine(os.Stderr, sandboxEnforcementLine(env))
 
-	// Signal handling.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		sess.Close()
+		return err
+	}
 	listener, err := deps.listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()

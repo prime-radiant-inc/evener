@@ -41,6 +41,9 @@ var (
 	hubEnsureSource    = func(ctx context.Context, launcher *codexlaunch.CodexLauncher, id string, sources *appsource.Registry) (appsource.Source, error) {
 		return launcher.EnsureSource(ctx, id, sources)
 	}
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
+	}
 )
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -140,13 +143,27 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
-	pluginResolution, pluginErr := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
+	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
 	if pluginErr != nil {
-		if spawnResolved.Effective.EnabledPlugins != nil {
+		// A resolver failure is fatal when a selection has to be honoured, and
+		// always when the failure IS the caller leaving: the next thing this
+		// handler does is detach from the request context and spawn, so a
+		// cancellation walked past here becomes a session started for a client
+		// that has gone. Everything else falls through to a launch with
+		// whatever the resolver could list.
+		if spawnResolved.Effective.EnabledPlugins != nil ||
+			errors.Is(pluginErr, context.Canceled) || errors.Is(pluginErr, context.DeadlineExceeded) {
 			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
 		}
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	// One last look at the connection before the handler stops listening to
+	// it. Everything above is validation, and a request the caller abandoned
+	// while it ran must not become a session: past the detach below, nothing
+	// asks about the caller again.
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	// The mutation is admitted here: every validation has passed and the spawn
 	// is about to happen. From this point the outcome must not depend on the
