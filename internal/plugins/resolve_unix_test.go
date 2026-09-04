@@ -5,6 +5,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,9 +256,11 @@ func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) 
 }
 
 // Readying the store can move somebody's directory aside and then fail at the
-// next step. What was moved is theirs and they have to be told where it went,
-// so the warning survives the failure that follows it rather than being
-// dropped with the candidate that never resolved.
+// next step. What was moved is theirs, so they are told where it went — the
+// warning survives the failure that follows it rather than being dropped with
+// the candidate that never resolved — and because nothing is going to publish
+// into the name it was moved out of, it goes back there and they are told that
+// too.
 func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes through directory modes")
@@ -284,19 +287,23 @@ func TestBundledStore_ReportsASetAsideThatIsFollowedByAFailure(t *testing.T) {
 		t.Errorf("selected a bundled plugin the store could not stage: %+v", res.Candidates)
 	}
 	aside := dest + conflictSuffix
-	var setAside, failure bool
+	var setAside, failure, restored bool
 	for _, diagnostic := range res.Diagnostics {
 		if diagnostic.Source != LaunchPluginSourceBundled {
 			continue
 		}
 		setAside = setAside || strings.Contains(diagnostic.Message, aside)
 		failure = failure || strings.Contains(diagnostic.Message, "stage bundled plugin")
+		restored = restored || strings.Contains(diagnostic.Message, "put back")
 	}
-	if !setAside || !failure {
-		t.Fatalf("Diagnostics = %+v, want both the set-aside naming %s and the staging failure", res.Diagnostics, aside)
+	if !setAside || !failure || !restored {
+		t.Fatalf("Diagnostics = %+v, want the set-aside naming %s, the staging failure, and the restore", res.Diagnostics, aside)
 	}
-	if content, err := os.ReadFile(filepath.Join(aside, "theirs.md")); err != nil || string(content) != "someone else's data" {
-		t.Errorf("set-aside content = %q (err %v), want what was moved preserved", content, err)
+	if content, err := os.ReadFile(filepath.Join(dest, "theirs.md")); err != nil || string(content) != "someone else's data" {
+		t.Errorf("destination content = %q (err %v), want what was moved put back", content, err)
+	}
+	if _, err := os.Stat(aside); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the copy is still set aside at %s: stat err = %v", aside, err)
 	}
 }
 

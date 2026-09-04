@@ -1418,3 +1418,45 @@ func TestMaterializeBundledPlugin_PutsASetAsideBackWhenPublishingFails(t *testin
 		t.Errorf("warnings = %v, want one naming the restore", warnings)
 	}
 }
+
+// Setting a conflict aside empties the destination, and the very next step is
+// creating the private directory a publish copies into. When that step fails —
+// no space, no permission — nothing is going to publish into the name just
+// freed, so the occupant goes back there too.
+func TestMaterializeBundledPlugin_PutsASetAsideBackWhenStagingCannotBeCreated(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+	original := stageBundledCopy
+	t.Cleanup(func() { stageBundledCopy = original })
+	stageBundledCopy = func(string, string, string, func()) (*bundledStaging, error) {
+		return nil, errors.New("no space left on device")
+	}
+
+	published, warnings, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err == nil {
+		t.Fatal("publishing reported success with staging it could not create")
+	}
+	if published != "" {
+		t.Errorf("published = %q, want nothing published", published)
+	}
+	content, readErr := os.ReadFile(filepath.Join(dest, "theirs.md"))
+	if readErr != nil || string(content) != "someone else's data" {
+		t.Fatalf("destination content = %q (err %v), want the occupant put back", content, readErr)
+	}
+	if _, statErr := os.Stat(dest + conflictSuffix); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the copy is still set aside at %s: stat err = %v", dest+conflictSuffix, statErr)
+	}
+	restored := false
+	for _, warning := range warnings {
+		restored = restored || strings.Contains(warning, "put back")
+	}
+	if !restored {
+		t.Errorf("warnings = %v, want one naming the restore", warnings)
+	}
+}
