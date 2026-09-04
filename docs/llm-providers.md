@@ -147,8 +147,9 @@ inherited key variables from another scheme:
 - `bearer` / `header` — a credentials-store entry for the id, or one of the
   provider's own `APIKeyEnv` variables set.
 - `oauth-openai-codex` — the instance's OAuth record, and nothing else.
-- `gcp-adc` — `GOOGLE_APPLICATION_CREDENTIALS` or the well-known ADC file
-  (never a live metadata-server probe at load time).
+- `gcp-adc` — a credentials-store entry under the instance name (a credential
+  JSON), `GOOGLE_APPLICATION_CREDENTIALS`, or the well-known ADC file (never
+  a live metadata-server probe at load time).
 - `none` / `optional-bearer` — only the base URL needs to resolve.
 
 "Not `Hidden`" means the base URL template resolves, which means the cloud
@@ -213,7 +214,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` (`https://api.anthropic.com/v1`) | surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5` |
 | `openai-codex` | none — OAuth only, `api_key_env = []` so a bare `OPENAI_API_KEY` never yields this instance | `OPENAI_CODEX_BASE_URL` (`https://chatgpt.com/backend-api/codex`) | see [The Codex transport](#the-codex-transport) below; `default_model = gpt-5.6`, `cheap_model = gpt-5.6-luna` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` (`https://api.openai.com/v1`) | surface `openai`; `default_model = gpt-5.6`, `cheap_model = gpt-4.1-nano`; `strict_tools = true` (strict JSON-schema tool calls on the native Responses path) |
-| `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; `default_model = gemini-3.7-flash`, `cheap_model = gemini-2.5-flash-lite` |
+| `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite` |
 | `groq` | `GROQ_API_KEY` | `GROQ_BASE_URL` (`https://api.groq.com/openai/v1`) | `default_model = openai/gpt-oss-120b`, `cheap_model = llama-3.1-8b-instant` |
 | `zai` | `ZHIPU_API_KEY` | `ZAI_BASE_URL` (`https://api.z.ai/api/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-4.7-flash` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` (`https://api.deepseek.com` — no version segment, a documented exception) | `thinking_format = deepseek`; `default_model = deepseek-v4-pro`, `cheap_model = deepseek-v4-flash` |
@@ -226,8 +227,8 @@ openai/gpt-5.6` work on a machine with no key set.
 | `kimi-for-coding` | `KIMI_API_KEY` (meaning changed at the flag day — see ["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)) | `KIMI_FOR_CODING_BASE_URL` (`https://api.kimi.com/coding/v1`) | anthropic protocol, surface `anthropic`; sends `Headers["User-Agent"] = "claude-cli/2.1.177 (external, cli)"` (Kimi's coding-plan endpoint 403s any other User-Agent); `default_model = k3`, `cheap_model = kimi-for-coding` |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` (`https://api.minimax.io/anthropic/v1`) | anthropic protocol, surface `anthropic`; `default_model = MiniMax-M3`, `cheap_model = MiniMax-M2.7` |
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
-| `google-vertex-anthropic` | none — `gcp-adc` (`GOOGLE_APPLICATION_CREDENTIALS` or the well-known ADC file) | n/a — host derived from `GOOGLE_VERTEX_LOCATION` | also needs `GOOGLE_VERTEX_PROJECT` to exist at all; surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5@20251001` |
-| `google-vertex` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.7-flash`, `cheap_model = gemini-2.5-flash-lite` |
+| `google-vertex-anthropic` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — host derived from `GOOGLE_VERTEX_LOCATION` | also needs `GOOGLE_VERTEX_PROJECT` to exist at all; surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5@20251001` |
+| `google-vertex` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite` |
 | `google-vertex-express` | `GOOGLE_VERTEX_API_KEY` (a Google Cloud API key, `AQ.…`; sent as `x-goog-api-key`) | `GOOGLE_VERTEX_EXPRESS_BASE_URL` (`https://aiplatform.googleapis.com/v1`) | Vertex AI in express mode: `google`'s Gemini rows on the `vertex-gemini` endpoints, no project or location; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite`. Listing is catalog-only — API keys cannot call the publisher-model listing |
 | `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
@@ -447,8 +448,11 @@ file using any of them fails to load; see
    `ANTHROPIC_API_KEY` through the name layer — and, symmetrically, an
    instance named `togetherai` does not gain a `TOGETHERAI_API_KEY` fallback
    just because its name matches the registry id; see the table above)
-5. `oauth-openai-codex` and `gcp-adc` ignore all of the above and use their
-   own record
+5. `oauth-openai-codex` ignores all of the above and uses its OAuth record.
+   `gcp-adc` consults only step 3 — a credential JSON stored under the
+   instance name — and otherwise application-default credentials (the
+   `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known file); it
+   never reads `api_key_env` or a `<NAME>_API_KEY` variable.
 
 ## Cloud transports: Azure, Bedrock, Vertex
 
@@ -492,9 +496,12 @@ else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-defaul
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
 pasted in the hub's instance sheet or written into `credentials.toml`), which
-outranks the ADC file. Every request carries `x-goog-user-project` =
-`GOOGLE_VERTEX_PROJECT`, which user credentials need for calls that have no
-project in their path. `google-vertex-anthropic` uses the `vertex-anthropic`
+outranks the ADC file. Requests authenticated with user credentials — an
+`authorized_user` ADC file or a stored `authorized_user` JSON — carry
+`x-goog-user-project` = `GOOGLE_VERTEX_PROJECT`, which such credentials need
+for calls that have no project in their path (the model listing).
+Service-account credentials are attributed to their own project and send no
+such header. `google-vertex-anthropic` uses the `vertex-anthropic`
 transport preset (`:rawPredict`/`:streamRawPredict`, `body.anthropic_version =
 "vertex-2023-10-16"`); `google-vertex` uses `vertex-gemini`, whose
 `models_endpoint` lists the project's Gemini publisher models live: `GET

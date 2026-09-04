@@ -69,6 +69,7 @@ not re-derive them from memory.
 | Upstream models.dev has the new rows | `scripts/ops/refresh-model-catalog.sh --check` adds `google/gemini-3.8-flash`, `google-vertex/gemini-3.8-flash`, `google-vertex/claude-fable-5-1@default` |
 | Evener's existing `google-vertex` path works end-to-end with ADC + the two variables (§5 flow 3) | after `gcloud auth application-default login`: `GOOGLE_VERTEX_PROJECT=jesse-coding-agents GOOGLE_VERTEX_LOCATION=global go run ./cmd/llmcall --provider google-vertex --model gemini-3.8-flash "…"` → `OK`; `providers list` shows `google-vertex` and `google-vertex-anthropic` with source `adc` and the `global` base URL |
 | A fresh gcloud ADC file is `authorized_user` JSON with **no** `quota_project_id` | keys: `account`, `client_id`, `client_secret`, `refresh_token`, `type`, `universe_domain` — so §2.2's header is what makes listing work, and §4 accepts this file's contents verbatim |
+| The quota header was live-verified with `authorized_user` credentials only (ADC login and the same JSON stored) | listing + generation pins on 2026-09-04; no service-account key was available, so R6 limits the header to user credentials |
 
 Today's 27-id listing, for the discovery fixture (§2.4):
 
@@ -182,6 +183,15 @@ redundant.) The host for the listing URL comes from `res.Transport.BaseURL`.
 Required for the listing call under user credentials (verified); harmless on
 project-scoped `generateContent`; a no-op for instances without the variable.
 The header is not credential material.
+
+**Amended 2026-09-04 (ruling R6, final review):** the header is sent only
+when the credential is a user credential (`"type": "authorized_user"` in the
+ADC file or the stored JSON). Service-account and other credential types are
+attributed to their own project and Google requires
+`serviceusage.services.use` on any project named by this header, so sending
+it for a least-privilege service account would turn working requests into
+403s. The service-account path was not live-verified on this branch; with R6
+it behaves exactly as before the branch (no header).
 
 ### 2.3 `models_endpoint` for the Vertex preset
 
