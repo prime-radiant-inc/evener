@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -553,17 +552,18 @@ func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testin
 
 	disposeUnadoptedSubagentSession(child, true)
 
+	// No bound needed: a Cleanup that reached this process would have signalled
+	// it, waited out the termination grace and killed it, all before the dispose
+	// call returned — so its exit is already visible here if it happened at all.
 	select {
 	case <-exited:
 		t.Fatalf("disposing an unadopted child ended the parent's in-flight process %d", handle.Pid)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 	// The other half: the process is still the parent's to end, so it never left
-	// the environment that tracks it.
+	// the environment that tracks it. Awaiting the real exit rather than a bound;
+	// a cleanup that never ends it hangs until the package deadline, which is the
+	// same failure with a clearer report.
 	parentEnv.Cleanup()
-	select {
-	case <-exited:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the parent's own cleanup did not end the process it tracks")
-	}
+	<-exited
 }
