@@ -171,7 +171,11 @@ func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 	if sess == nil {
 		return
 	}
-	sess.Close()
+	// The environment's Cleanup belongs to whoever owns it: on a shared one it
+	// would release the LIVE parent's scratch leases and signal the processes the
+	// parent tracks. Skipping it for a non-owned env is the same call the
+	// parent's own teardown makes for its children (close(ctx, false)).
+	sess.close(context.Background(), ownsEnv)
 	if !ownsEnv {
 		return
 	}

@@ -423,7 +423,11 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 		t.Fatalf("ExecCommand: %v", err)
 	}
 	sharedScratch := shared.SessionScratchDir()
-	sharing, err := NewSession(client, parent.currentProfile(), shared, SessionConfig{
+	// Counting Cleanup is how the second decision is observable: Cleanup is what
+	// releases the environment's live scratch leases and signals the processes it
+	// tracks, and on a shared environment both belong to the live parent.
+	counted := &cleanupCountingEnv{ExecutionEnvironment: shared}
+	sharing, err := NewSession(client, parent.currentProfile(), counted, SessionConfig{
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{skipGitSnapshot: true},
 	})
@@ -433,6 +437,9 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 
 	disposeUnadoptedSubagentSession(sharing, false)
 
+	if got := counted.count(); got != 0 {
+		t.Errorf("unadopted child ran Cleanup %d time(s) on the parent's environment, releasing the parent's live scratch lease and signalling the processes it tracks", got)
+	}
 	if _, err := os.Stat(sharedScratch); err != nil {
 		t.Errorf("disposing a child on the parent's shared environment removed its scratch %s: %v", sharedScratch, err)
 	}
