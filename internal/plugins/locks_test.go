@@ -109,6 +109,17 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 		{"RefreshMarketplace", func(ctx context.Context, m *Manager) error {
 			return m.RefreshMarketplace(ctx, "marketplace")
 		}},
+		// The two sweeps enumerate the registry before they lock anything, so
+		// an empty registry — which is what an ambient working directory
+		// hands back — means they never reach the lock at all.
+		{"UpdateAll", func(ctx context.Context, m *Manager) error {
+			_, err := m.UpdateAll(ctx)
+			return err
+		}},
+		{"UpdateAutoUpgrade", func(ctx context.Context, m *Manager) error {
+			_, err := m.UpdateAutoUpgrade(ctx)
+			return err
+		}},
 	}
 	roots := []struct {
 		name    string
