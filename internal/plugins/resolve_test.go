@@ -806,6 +806,116 @@ func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing
 	}
 }
 
+// A publish that dies between parking the previous occupant of the conflict
+// slot and removing it leaves that parked copy behind forever, and a version
+// bump that changes a plugin's digest leaves its old .conflict and
+// .conflict.previous behind too: neither is a .stage- directory the staging
+// sweep looks for, and Gc only walks the install cache, never the bundled
+// store. The next publish's sweep has to reclaim both, while never touching
+// the one .conflict the design promises to keep: the preserved copy for the
+// digest this binary still ships.
+func TestMaterializeBundledPlugin_ReclaimsConflictSlots(t *testing.T) {
+	t.Run("an aged conflict.previous beside a published copy is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := dest + conflictSuffix + previousSuffix
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); !os.IsNotExist(err) {
+			t.Fatalf("aged conflict.previous survived a later publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("a fresh conflict.previous survives", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := dest + conflictSuffix + previousSuffix
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); err != nil {
+			t.Fatalf("fresh conflict.previous was reclaimed: %v", err)
+		}
+	})
+
+	t.Run("a conflict for a stale digest is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		digest, err := bundledPluginDigest("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		staleConflict := m.bundledPluginPath("coordinator-workflow", staleBundledDigest(digest)) + conflictSuffix
+		if err := os.MkdirAll(staleConflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staleConflict); !os.IsNotExist(err) {
+			t.Fatalf("conflict for a stale digest survived a publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("a conflict for the current digest is never reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		digest, err := bundledPluginDigest("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Something else for the sweep to reclaim alongside it, so the
+		// assertion below proves the sweep ran and chose to spare the
+		// current-digest conflict rather than merely never being triggered.
+		staleConflict := m.bundledPluginPath("coordinator-workflow", staleBundledDigest(digest)) + conflictSuffix
+		if err := os.MkdirAll(staleConflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staleConflict); !os.IsNotExist(err) {
+			t.Fatalf("sweep did not run: the stale conflict planted beside it is still present (stat err = %v)", err)
+		}
+		if _, err := os.Stat(conflict); err != nil {
+			t.Fatalf("conflict for the current digest was reclaimed: %v", err)
+		}
+	})
+}
+
+// staleBundledDigest returns a same-length hex digest that differs from
+// current, standing in for what a version bump leaves behind: a digest this
+// binary no longer computes for any bundled plugin.
+func staleBundledDigest(current string) string {
+	if current[:1] == "0" {
+		return "1" + current[1:]
+	}
+	return "0" + current[1:]
+}
+
 // The resolver looks a bundled plugin up by its embedded directory name and
 // then keys the inventory by the manifest name the loader reports, so every
 // bundled plugin must carry the manifest name its directory promises.
