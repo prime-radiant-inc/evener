@@ -436,6 +436,142 @@ func TestProviderHistoryMessagePreservesEmptyToolResultNameForAdapterRecovery(t 
 	}
 }
 
+func assertSessionToolCallHistoryArgumentsAcrossDurableAndReplayPaths(t *testing.T, arguments []byte, wantProjected bool) {
+	t.Helper()
+
+	wantAssistant := append([]byte(nil), arguments...)
+	wantReplay := append([]byte(nil), arguments...)
+	if wantProjected {
+		wantAssistant = []byte(`{}`)
+		wantReplay = []byte(`{}`)
+	}
+
+	sess := newSession(t, withoutGitSnapshot())
+	defer sess.Close()
+
+	responseCall := &llm.ToolCallData{
+		ID:        "history-arguments-durable",
+		Name:      "read_file",
+		Arguments: append([]byte(nil), arguments...),
+	}
+	response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind:     llm.ContentToolCall,
+		ToolCall: responseCall,
+	}}}}
+	if err := sess.appendAssistantTurn(response, ModelAttemptMetadata{}); err != nil {
+		t.Fatalf("append assistant turn: %v", err)
+	}
+	if !bytes.Equal(responseCall.Arguments, arguments) {
+		t.Error("assistant persistence mutated the provider response")
+	}
+	sess.mu.Lock()
+	persistedArguments := append([]byte(nil), sess.history[len(sess.history)-1].Message.Content[0].ToolCall.Arguments...)
+	sess.mu.Unlock()
+	if !bytes.Equal(persistedArguments, wantAssistant) {
+		t.Fatalf("persisted assistant arguments = %q, want %q", persistedArguments, wantAssistant)
+	}
+
+	legacyCall := &llm.ToolCallData{
+		ID:        "history-arguments-replay",
+		Name:      "read_file",
+		Arguments: append([]byte(nil), arguments...),
+	}
+	sess.mu.Lock()
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("replay the legacy call")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: legacyCall}}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: legacyCall.ID,
+			Name:       legacyCall.Name,
+			Content:    "result",
+		}}}}),
+	}
+	initialRevision := sess.historyRevision
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings)
+	if err != nil {
+		t.Fatalf("prepare provider request: %v", err)
+	}
+	var replayedArguments []byte
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == legacyCall.ID {
+				replayedArguments = part.ToolCall.Arguments
+			}
+		}
+	}
+	if !bytes.Equal(replayedArguments, wantReplay) {
+		t.Fatalf("provider-bound arguments = %q, want %q", replayedArguments, wantReplay)
+	}
+	if !bytes.Equal(legacyCall.Arguments, arguments) {
+		t.Error("provider replay mutated stored legacy arguments")
+	}
+	sess.mu.Lock()
+	storedArguments := append([]byte(nil), sess.history[1].Message.Content[0].ToolCall.Arguments...)
+	storedRevision := sess.historyRevision
+	sess.mu.Unlock()
+	if !bytes.Equal(storedArguments, arguments) {
+		t.Fatalf("provider replay replaced durable legacy arguments with %q, want original %q", storedArguments, arguments)
+	}
+	if storedRevision != initialRevision {
+		t.Fatalf("provider replay advanced history revision from %d to %d without a context change", initialRevision, storedRevision)
+	}
+}
+
+func TestSessionToolCallHistoryPreservesAllowedArgumentsWithoutMutatingSource(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		arguments []byte
+	}{
+		{name: "empty arguments", arguments: nil},
+		{name: "non-empty object", arguments: []byte(`{"file_path":"/tmp/input.txt","limit":1}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSessionToolCallHistoryArgumentsAcrossDurableAndReplayPaths(t, tc.arguments, false)
+		})
+	}
+}
+
+func TestSessionToolCallHistoryProjectsSyntacticallyValidInvalidArgumentsWithoutMutatingSource(t *testing.T) {
+	t.Parallel()
+
+	overflowObject := []byte(`{"value":1e10000}`)
+	if !json.Valid(overflowObject) {
+		t.Fatal("overflow fixture is not valid JSON")
+	}
+	if err := tool.ValidateRawArguments(overflowObject); err != nil {
+		t.Fatalf("overflow fixture failed raw guards: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(overflowObject, &decoded); err == nil {
+		t.Fatal("overflow fixture unexpectedly decoded into map[string]any")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		arguments []byte
+	}{
+		{name: "null", arguments: []byte(`null`)},
+		{name: "array", arguments: []byte(`[1,2,3]`)},
+		{name: "scalar", arguments: []byte(`1`)},
+		{name: "decoder overflow object", arguments: overflowObject},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !json.Valid(tc.arguments) {
+				t.Fatalf("fixture %q is not valid JSON", tc.name)
+			}
+			if err := tool.ValidateRawArguments(tc.arguments); err != nil {
+				t.Fatalf("fixture %q failed raw guards: %v", tc.name, err)
+			}
+			assertSessionToolCallHistoryArgumentsAcrossDurableAndReplayPaths(t, tc.arguments, true)
+		})
+	}
+}
+
 func TestSessionToolCallHistoryProjectsUnsafeArgumentsWithoutMutatingSource(t *testing.T) {
 	invalidUTF8 := append([]byte(`{"value":"`), 0xff)
 	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)

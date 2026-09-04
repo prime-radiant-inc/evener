@@ -1859,7 +1859,17 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 }
 
 func validHistoryToolArguments(arguments []byte) bool {
-	return len(arguments) == 0 || (tool.ValidateRawArguments(arguments) == nil && json.Valid(arguments))
+	if len(arguments) == 0 {
+		return true
+	}
+	if err := tool.ValidateRawArguments(arguments); err != nil {
+		return false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(arguments, &decoded); err != nil {
+		return false
+	}
+	return decoded != nil
 }
 
 // providerHistoryMessage returns a replay copy whose tool identities satisfy
