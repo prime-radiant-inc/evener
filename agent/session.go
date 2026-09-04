@@ -399,8 +399,9 @@ type Session struct {
 	// reset — the one-shot drain reads it to abandon residue with no live work
 	// behind it, and the round loop reads it to finish an empty post-terminal
 	// notification turn idle instead of retrying (issue #329). A completion
-	// the model was never shown is still delivered after it (#865). Guarded
-	// by mu.
+	// the model was never shown is still delivered after it; watch
+	// notifications queued before it are cut when the drain starts (#865).
+	// Guarded by mu.
 	terminalCommunicateAccepted bool
 
 	// askPending is the per-turn pending set of questions posted by ask_user

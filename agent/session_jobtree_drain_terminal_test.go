@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
@@ -453,4 +454,91 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("want no warnings, got %+v", warnings)
 	}
+}
+
+// TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer: a watch frame
+// (an output match the model asked for) and the job's completion both land
+// during the final answer's generation. The completion is news the model never
+// heard and is delivered on one extra turn; the watch frame is work the model
+// already declined to wait for, so the drain discards it on entry and records
+// it in a warning, never delivering it.
+func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T) {
+	t.Parallel()
+	const firstAnswer = "first answer, written before the build finished"
+	const finalAnswer = "FINAL-ANSWER: the build passed"
+	var sess *Session
+	var jobID string
+	var releaseShell func()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			// The final-answer request is built. Fire the watch, then finish the
+			// job, so both a watch frame and the completion are queued before
+			// the reply.
+			feedJob(sess.jobManager, jobID, []byte("READY\n"))
+			finalizeShell(t, sess.jobManager, jobID, releaseShell)
+			if n := sess.peekNotifications(); n < 2 {
+				t.Errorf("queued notifications before the reply = %d, want the watch frame and the completion", n)
+			}
+			return finalResponse(firstAnswer)
+		},
+		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
+	}}
+	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+	}))
+	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
+	watchRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "watch-it", Name: "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","output_match":"READY"}`),
+	})
+	if watchRes.IsError {
+		t.Fatalf("job_watch create: %s", watchRes.Output)
+	}
+
+	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
+	// fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := sess.ProcessInput(ctx, "build it and report", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if res != firstAnswer {
+		t.Fatalf("ProcessInput result = %q, want %q", res, firstAnswer)
+	}
+	if early := collectStallWarnings(sess); len(early) != 0 {
+		t.Fatalf("want no warnings before the drain, got %+v", early)
+	}
+
+	drained, err := sess.DrainJobTree(ctx)
+	if err != nil {
+		t.Fatalf("DrainJobTree: %v", err)
+	}
+	if drained != finalAnswer {
+		t.Fatalf("drain result = %q, want %q", drained, finalAnswer)
+	}
+	warnings := collectStallWarnings(sess)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings after the drain = %d, want exactly one recording the discarded watch frame: %+v", len(warnings), warnings)
+	}
+	if msg := warnings[0].Data.(events.WarningData).Message; !strings.Contains(msg, jobID) || !strings.Contains(msg, "watch notification") {
+		t.Fatalf("discard warning must name the job and say what was dropped, got: %q", msg)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("model calls = %d, want exactly 2: the answer, then one turn carrying only the completion", len(reqs))
+	}
+	last := lastMessageText(reqs[1])
+	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, jobID) {
+		t.Fatalf("the notification turn did not carry the completion: %q", last)
+	}
+	if strings.Contains(last, `event="watch"`) {
+		t.Fatalf("the notification turn delivered a watch frame queued before the final answer: %q", last)
+	}
+	if p := sess.peekNotifications(); p != 0 {
+		t.Fatalf("queued notifications after the drain = %d, want 0", p)
+	}
+	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
+	requireNeverConsumed(t, sess.jobManager, jobID)
 }
