@@ -111,3 +111,62 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughEnterExitEnter(t *testing.T
 		t.Errorf("the scratch %s lease is still held after the session closed", scratch)
 	}
 }
+
+// A child spawned with no working_dir shares the parent's environment object.
+// The parent's enter moves the scratch off that object, so the child's next
+// command mints a new one there, and the exit's move back must not drop it:
+// that scratch is the one the child is working in, and dropping its pointer
+// holds its lease for the daemon's uptime while the child's $TMPDIR silently
+// changes a second time mid-session. The environment keeps what it owns; the
+// incoming scratch is retained instead.
+func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	first := launch.SessionScratchDir()
+	if first == "" {
+		t.Fatal("the root's command minted no session scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(first) })
+
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// What a child sharing the launch environment does next: its command mints
+	// a scratch on the object the parent's enter just emptied.
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("child command on the launch environment: %v", err)
+	}
+	second := launch.SessionScratchDir()
+	if second == "" || second == first {
+		t.Fatalf("shared environment scratch after the enter = %q, want a fresh one beside %q", second, first)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(second) })
+	if !scratchLeaseHeld(t, second) {
+		t.Fatalf("the child's scratch %s lease is not held", second)
+	}
+
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if got := currentLocalEnv(t, r.s); got != launch {
+		t.Fatalf("after exit the session holds %p, want the launch environment %p", got, launch)
+	}
+	if got := launch.SessionScratchDir(); got != second {
+		t.Errorf("the exit changed the shared environment's scratch from %q to %q", second, got)
+	}
+
+	r.s.Close()
+
+	for name, dir := range map[string]string{"launch": first, "child": second} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("session close removed the %s scratch %s, want it retained for the handoff: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s scratch %s lease is still held after the session closed", name, dir)
+		}
+	}
+}

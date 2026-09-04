@@ -679,23 +679,39 @@ func (e *LocalExecutionEnvironment) DisposeUnadoptedScratch() {
 // the one EnableSandbox provisioned and the one an unsandboxed env minted on
 // its first command — onto this env, leases included, leaving `from` owning
 // none. A session that swaps its environment for a re-rooted clone (a worktree
-// re-entry on resume) keeps working in the scratch the original provisioned:
-// the clone's re-rooted kernel wrapper carries the same session tmp, and an
-// unsandboxed clone exports whatever it is handed. Exactly one environment owns
-// each scratch, and it must be the one the session's own teardown reaches, so
-// ownership follows the swap. This env must not yet own one of either kind; a
-// fresh WithWorkingDirectory clone never does.
+// enter, exit, or re-entry on resume) keeps working in the scratch the original
+// provisioned: the clone's re-rooted kernel wrapper carries the same session
+// tmp, and an unsandboxed clone exports whatever it is handed. Exactly one
+// environment owns each scratch, and it must be the one the session's own
+// teardown reaches, so ownership follows the swap.
+//
+// A kind this env already owns stays put. Live commands on this env may be
+// using it — a child spawned with no working_dir shares its parent's
+// environment object, and mints a scratch there while the parent is away on a
+// clone — so this env's path stays stable for them and the incoming one is
+// retained instead: its lease released, its directory kept for the handoff,
+// as with any scratch a session hands off. Nothing is ever dropped unreleased.
 func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvironment) {
 	if from == nil || from == e {
 		return
 	}
-	e.ownedSessionTmp, from.ownedSessionTmp = from.ownedSessionTmp, nil
+	owned := from.ownedSessionTmp
+	from.ownedSessionTmp = nil
+	if e.ownedSessionTmp == nil {
+		e.ownedSessionTmp = owned
+	} else {
+		_ = owned.Retain()
+	}
 	from.unsandboxedScratchMu.Lock()
-	tmp := from.unsandboxedScratch
+	unsandboxed := from.unsandboxedScratch
 	from.unsandboxedScratch = nil
 	from.unsandboxedScratchMu.Unlock()
 	e.unsandboxedScratchMu.Lock()
-	e.unsandboxedScratch = tmp
+	if e.unsandboxedScratch == nil {
+		e.unsandboxedScratch = unsandboxed
+	} else {
+		_ = unsandboxed.Retain()
+	}
 	e.unsandboxedScratchMu.Unlock()
 }
 

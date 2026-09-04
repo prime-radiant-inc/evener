@@ -153,3 +153,65 @@ func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
 		}
 	}
 }
+
+// An environment that already owns a scratch of a kind keeps it: live commands
+// on that environment may be using it (a child sharing the environment minted
+// it while the session was away on a clone), so the target's path stays stable
+// and the incoming one is retained instead — lease released, directory kept
+// for the handoff. Both kinds follow the rule.
+func TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming(t *testing.T) {
+	original := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { original.Cleanup(); original.DisposeUnadoptedScratch() })
+	_ = original.commandEnvironment(nil)
+	firstUnsandboxed := original.SessionScratchDir()
+	if err := original.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	firstOwned := original.SessionScratchDir()
+	if firstUnsandboxed == "" || firstOwned == "" || firstUnsandboxed == firstOwned {
+		t.Fatalf("original scratch = unsandboxed %q, owned %q, want two distinct dirs", firstUnsandboxed, firstOwned)
+	}
+	clone := original.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+	clone.AdoptSessionScratch(original)
+
+	// The original mints both kinds afresh while the clone holds the first pair.
+	_ = original.commandEnvironment(nil)
+	secondUnsandboxed := original.SessionScratchDir()
+	if err := original.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox again: %v", err)
+	}
+	secondOwned := original.SessionScratchDir()
+	if secondUnsandboxed == "" || secondOwned == "" || secondUnsandboxed == firstUnsandboxed || secondOwned == firstOwned {
+		t.Fatalf("original minted unsandboxed %q, owned %q after the move; want fresh dirs beside %q and %q", secondUnsandboxed, secondOwned, firstUnsandboxed, firstOwned)
+	}
+
+	original.AdoptSessionScratch(clone)
+
+	if got := original.SessionScratchDir(); got != secondOwned {
+		t.Errorf("original scratch after the move back = %q, want the one it already owned %q", got, secondOwned)
+	}
+	for name, dir := range map[string]string{"unsandboxed": firstUnsandboxed, "owned": firstOwned} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("incoming %s scratch %s was not kept: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("incoming %s scratch %s lease is still held: it was neither adopted nor retained", name, dir)
+		}
+	}
+	for name, dir := range map[string]string{"unsandboxed": secondUnsandboxed, "owned": secondOwned} {
+		if !scratchLeaseHeld(t, dir) {
+			t.Errorf("the original's own %s scratch %s lease was released by the move back", name, dir)
+		}
+	}
+	// The clone owns nothing any more: disposing it drops neither pair.
+	clone.DisposeUnadoptedScratch()
+	for _, dir := range []string{firstUnsandboxed, firstOwned, secondUnsandboxed, secondOwned} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("the clone's disposal after the move back removed %s: %v", dir, err)
+		}
+	}
+	for _, dir := range []string{firstUnsandboxed, firstOwned} {
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	}
+}
