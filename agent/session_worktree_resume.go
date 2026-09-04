@@ -43,13 +43,26 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
 
+	// Every environment the session leaves this function on is a clone of local,
+	// and a clone owns nothing of its original: the scratch local already
+	// provisioned (a launcher's own command may have minted it before the
+	// restore) has to follow the session onto whichever clone it lands on, or
+	// the session's own close reaches only the clone and local's lease is held
+	// for the rest of the daemon's uptime. worktreeRestoreEnv is not the
+	// session's environment, so it adopts nothing.
+	reroot := func(dir string) *execenv.LocalExecutionEnvironment {
+		next := local.WithWorkingDirectory(dir)
+		next.AdoptSessionScratch(local)
+		return next
+	}
+
 	// notice lands the env at the persisted restore root (when one was
 	// recorded) and surfaces a model-facing warning explaining why re-entry
 	// did not happen (spec §7: worktree-gone and foreign-lock both "start at
 	// the restore root... with a notice").
 	notice := func(reason string) {
 		if restoreRoot != "" {
-			s.env = local.WithWorkingDirectory(restoreRoot)
+			s.env = reroot(restoreRoot)
 			reason += "; resuming at " + restoreRoot
 		}
 		// Buffered, not emitted directly: this runs before initSessionState
@@ -158,7 +171,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 
 	// Re-enter: root the env in the worktree directly. No swapEnvAndRefresh
 	// here — see the doc comment above.
-	s.env = local.WithWorkingDirectory(target)
+	s.env = reroot(target)
 	s.worktreeCurrentPath = target
 	s.worktreeCurrentManaged = meta.WorktreeManaged
 	if restoreRoot != "" {
