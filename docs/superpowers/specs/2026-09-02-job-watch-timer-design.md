@@ -214,7 +214,7 @@ burned on a clear or a rejected create.
   `configureWatch` under `jm.mu`. The ninth is `invalid_request: too many
   timers (8 live); clear one first`.
 - `watchArgsHasCondition` counts both time fields as conditions.
-- Timer ends enter watch history and lineage like any other watch.
+- Timer ends enter watch history like any other watch.
 - The clear contract is unchanged: clearing an inactive or unknown id is
   the existing no-op success.
 
