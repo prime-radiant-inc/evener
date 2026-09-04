@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -280,4 +282,69 @@ func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session 
 			sandboxProber:       prober,
 		},
 	}))
+}
+
+// scratchDirsIn lists the session scratch directories under base. Tests that
+// cannot reach an internally built environment point TMPDIR here instead and
+// read the disposal off the filesystem, the way an operator would.
+func scratchDirsIn(t *testing.T, base string) []string {
+	t.Helper()
+	found, err := filepath.Glob(filepath.Join(base, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatalf("glob session scratch dirs: %v", err)
+	}
+	return found
+}
+
+// A committed delegate's restore builds the child its own environment and then
+// constructs the session on it — and the construction runs the git snapshot,
+// which is what mints an unsandboxed environment's scratch dir. A restore that
+// fails after that point (a fault anywhere inside initSessionState) leaves no
+// session to own the scratch, so the abort has to drop it and its lease.
+func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
+	// A write-capable ceiling keeps the restore off the read-only floor, so the
+	// child gets a plain unsandboxed environment — the default shape, which mints
+	// its scratch lazily rather than owning one from EnableSandbox.
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.ToolNameCeiling = []string{"communicate", "write_file"}
+	})
+	// The snapshot only runs commands in a repo, and running commands is what
+	// mints that scratch.
+	sbxGit(t, fixture.workspace, "init", "-q")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	// The child takes production's snapshot path, so its environment mints a
+	// scratch before anything can fail; the fault then fails the construction
+	// after it, which is the shape this abort has to clean up after.
+	boom := errors.New("restored delegate construction failed")
+	root.cfg.testOnly.skipGitSnapshot = false
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
+		t.Errorf("failed delegate restore left scratch %v, which nothing will ever release", leaked)
+	}
 }
