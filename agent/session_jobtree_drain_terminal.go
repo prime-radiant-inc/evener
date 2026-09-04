@@ -1,5 +1,12 @@
 package agent
 
+import (
+	"fmt"
+	"strings"
+
+	"primeradiant.com/evener/agent/events"
+)
+
 // acceptTerminalCommunicate records that the model has explicitly ended the
 // turn that ends the process: a communicate with end_turn=true was accepted
 // while TurnEndsProcess. It is sticky for the life of the session.
@@ -7,6 +14,52 @@ func (s *Session) acceptTerminalCommunicate() {
 	s.mu.Lock()
 	s.terminalCommunicateAccepted = true
 	s.mu.Unlock()
+}
+
+// discardTerminalWatchLeftovers drops the watch notifications queued when the
+// drain starts after the model ended the process-ending turn, and records
+// them in a warning. A job completion in that queue is news the model never
+// heard and is delivered (#865); a watch frame, timer tick or watch-send token
+// is work the model has already declined to wait for, and delivering it would
+// force a post-terminal turn or start new work on a run the model declared
+// over. It runs at drain ENTRY, never at acceptance: only the pre-drain final
+// answer precedes the drain, so a frame a drain turn arms later — the watch
+// the model creates in answer to the undisposed-job announcement, the notice
+// that its delivery budget cleared it — still reaches the model even though
+// that turn's reply is itself a terminal communicate.
+func (s *Session) discardTerminalWatchLeftovers() {
+	s.pendingJobNotifsMu.Lock()
+	kept := s.pendingJobNotifs[:0]
+	var dropped []string
+	for _, n := range s.pendingJobNotifs {
+		if !n.isWatch() {
+			kept = append(kept, n)
+			continue
+		}
+		dropped = append(dropped, describeWatchLeftover(n))
+	}
+	s.pendingJobNotifs = kept
+	s.pendingJobNotifsMu.Unlock()
+	if len(dropped) == 0 {
+		return
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		"terminal communicate ended this run; discarding %d watch notification(s) queued before the final answer: %s",
+		len(dropped), strings.Join(dropped, ", "))})
+}
+
+func describeWatchLeftover(n jobNotification) string {
+	subject := n.JobID
+	if n.WatchID != "" {
+		subject = "timer " + n.WatchID
+	}
+	if subject == "" {
+		subject = "watch"
+	}
+	if n.Reason == "" {
+		return subject
+	}
+	return subject + " (" + n.Reason + ")"
 }
 
 // hasAcceptedTerminalCommunicate reports whether the model has explicitly
@@ -18,7 +71,8 @@ func (s *Session) acceptTerminalCommunicate() {
 // delegate attention, a child's undeliverable leftovers), which the drain
 // abandons once nothing live remains, and an empty reply to a post-terminal
 // notification turn, which finishes idle instead of being retried (issue
-// #329).
+// #329). Watch notifications queued before the pre-drain final answer are cut
+// when the drain starts (discardTerminalWatchLeftovers).
 func (s *Session) hasAcceptedTerminalCommunicate() bool {
 	if s == nil {
 		return false

@@ -916,6 +916,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
 
+	// The pre-drain turn ended with the run's final answer: watch notifications
+	// queued before it are stale and are cut here, while a completion queued
+	// before it is news the model never heard and drains as always (#865).
+	if s.hasAcceptedTerminalCommunicate() {
+		s.discardTerminalWatchLeftovers()
+	}
+
 	lastResult := ""
 	var stallStart time.Time
 	// drainStartedAt is the instant the root declared the work over: in a
@@ -977,7 +984,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// the coordinator's model receives it and can dispatch more work or wrap
 			// up. The turn's boundary also drives any idle descendant that has
 			// undelivered attention. The turn's internal loop drains any further
-			// already-pending notifications.
+			// already-pending notifications. After a terminal communicate the
+			// queue holds only completions and frames armed during the drain;
+			// frames queued before the pre-drain final answer were cut at entry
+			// (discardTerminalWatchLeftovers).
 			res, err := process(ctx, "", nil, EntryNotification)
 			if err != nil {
 				return lastResult, err
