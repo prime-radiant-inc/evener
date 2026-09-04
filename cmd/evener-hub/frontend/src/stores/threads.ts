@@ -2351,6 +2351,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
     } catch (error) {
       if (isStaleCursorError(error)) {
+        if (wiredClient !== client || readyEpoch !== capturedEpoch) return;
         await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
         return;
       }

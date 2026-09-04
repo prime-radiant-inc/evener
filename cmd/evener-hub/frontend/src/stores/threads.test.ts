@@ -6467,6 +6467,72 @@ describe("useThreadsStore.loadOlderTurns", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("fresh-cursor");
   });
 
+  test("a stale cursor rejection from a replaced client leaves reconnect hydration authoritative", async () => {
+    const oldClient = connectFakeClient();
+    let oldReads = 0;
+    oldClient.on("thread/read", () => {
+      oldReads += 1;
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: oldReads === 1 ? "before-reconnect" : "old-client-recovery",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: "stale-cursor",
+      };
+    });
+    let rejectStalePage: ((error: Error) => void) | undefined;
+    const stalePageRequested = nextHandledRequest(
+      oldClient,
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          rejectStalePage = reject;
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await stalePageRequested;
+
+    const newClient = new FakeClient("ready");
+    let resolveReconnectHydration: ((response: ThreadReadResponse) => void) | undefined;
+    const reconnectHydrationRequested = nextHandledRequest(
+      newClient,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveReconnectHydration = resolve;
+        }),
+    );
+    connectionStore.getState().connect(newClient);
+    await reconnectHydrationRequested;
+    const authoritativePublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-reconnect") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+
+    rejectStalePage?.(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await loading;
+
+    expect(oldReads).toBe(1);
+    resolveReconnectHydration?.({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-reconnect", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "authoritative-cursor",
+    });
+    await authoritativePublished;
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("authoritative-cursor");
+  });
+
   test("an ordinary older-page failure rejects so the inline retry UI can surface it", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));

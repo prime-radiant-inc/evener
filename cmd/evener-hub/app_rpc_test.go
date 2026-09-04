@@ -216,7 +216,7 @@ func TestHubRPCItemReadAndListHonorSmallerRequestedLimit(t *testing.T) {
 	}
 }
 
-func TestHubRPCInitialItemReadSynthesizesCompleteLegacyV3Metadata(t *testing.T) {
+func TestHubRPCInitialItemReadRejectsCompleteLegacyV3Metadata(t *testing.T) {
 	const (
 		sessionID = "02wMz5Txv733WHFsVy66SR"
 		routeRef  = "local:legacy-initial-workspace"
@@ -227,9 +227,7 @@ func TestHubRPCInitialItemReadSynthesizesCompleteLegacyV3Metadata(t *testing.T) 
 			{Type: "agentMessage", ID: "item-0-0", Text: "oldest"},
 			{Type: "agentMessage", ID: "item-0-1", Text: "older"},
 		}},
-		{ID: "turn-1", Items: []appwire.ThreadItem{
-			{Type: "agentMessage", ID: "item-1-0", Text: "middle"},
-		}},
+		{ID: "turn-with-zero-items"},
 		{ID: "turn-2", Items: []appwire.ThreadItem{
 			{Type: "agentMessage", ID: "item-2-0", Text: "newer"},
 			{Type: "agentMessage", ID: "item-2-1", Text: "newest"},
@@ -270,8 +268,8 @@ func TestHubRPCInitialItemReadSynthesizesCompleteLegacyV3Metadata(t *testing.T) 
 		Ref: routeRef, ThreadID: sessionID, IncludeTurns: true, ItemsView: string(appwire.TurnItemsViewFull),
 		PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3,
 	})
-	if err != nil {
-		t.Fatalf("legacy-v3 initial item read: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "unpositioned item") {
+		t.Fatalf("legacy-v3 initial item read = (%+v, %v), want unpositioned item identity error", response, err)
 	}
 	request := <-daemonRequest
 	if request.Ref != routeRef || request.ThreadID != sessionID || !request.IncludeTurns || request.ItemsView != string(appwire.TurnItemsViewFull) || request.PageUnit != appwire.TranscriptPageUnitItem || request.ItemLimit != 3 {
@@ -279,29 +277,6 @@ func TestHubRPCInitialItemReadSynthesizesCompleteLegacyV3Metadata(t *testing.T) 
 	}
 	if got := <-authHeader; got != "Bearer "+hubToken {
 		t.Fatalf("legacy-v3 daemon authorization = %q, want bearer token", got)
-	}
-	if response.PageUnit != appwire.TranscriptPageUnitItem || response.OlderCursor == "" {
-		t.Fatalf("legacy-v3 initial item response = %+v, want item page with continuation", response)
-	}
-	if response.Thread.ID != sessionID || response.Thread.SessionID != sessionID || response.Thread.Source != "local" || response.Thread.Evener.Ref != routeRef {
-		t.Fatalf("legacy-v3 response routing = %+v, want resolved local thread", response.Thread)
-	}
-	items := flattenTestItems(response.Thread.Turns)
-	wantIDs := []string{"item-1-0", "item-2-0", "item-2-1"}
-	wantTurnIDs := []string{"turn-1", "turn-2", "turn-2"}
-	wantPositions := []appwire.ThreadItemPosition{{Entry: 1, Item: 0}, {Entry: 2, Item: 0}, {Entry: 2, Item: 1}}
-	if len(items) != len(wantIDs) {
-		t.Fatalf("legacy-v3 initial item count = %d, want %d: %+v", len(items), len(wantIDs), items)
-	}
-	for i, item := range items {
-		if item.ID != wantIDs[i] || item.Position == nil || *item.Position != wantPositions[i] {
-			t.Fatalf("legacy-v3 initial item %d = %+v, want id %q position %+v", i, item, wantIDs[i], wantPositions[i])
-		}
-		wantTurnID := wantTurnIDs[i]
-		wantKey := appitempaging.TranscriptItemKey(wantTurnID, wantPositions[i])
-		if item.TurnID != wantTurnID || item.TranscriptKey != wantKey {
-			t.Fatalf("legacy-v3 initial item %d identity = turn %q key %q, want turn %q key %q", i, item.TurnID, item.TranscriptKey, wantTurnID, wantKey)
-		}
 	}
 }
 

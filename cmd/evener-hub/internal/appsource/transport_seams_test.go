@@ -785,15 +785,16 @@ func TestLocalDaemonItemCandidatesMaterializeNativePagesChronologically(t *testi
 	}
 }
 
-func TestLocalDaemonItemCandidatesSynthesizeLegacyV3MaterializedMetadata(t *testing.T) {
+func TestLocalDaemonItemCandidatesRejectLegacyV3MaterializedMetadata(t *testing.T) {
 	turns := []appwire.Turn{
 		{ID: "turn-0", Items: []appwire.ThreadItem{
 			{Type: "agentMessage", ID: "item-0-0", Text: "oldest"},
 			{Type: "agentMessage", ID: "item-0-1", Text: "older"},
 		}},
-		{ID: "turn-1", Items: []appwire.ThreadItem{
-			{Type: "agentMessage", ID: "item-1-0", Text: "middle"},
-		}},
+		// A turn-shaped projection can contain no items and can omit decoded
+		// transcript entries that project to no turn at all. The following item's
+		// turn ordinal therefore cannot identify its absolute transcript entry.
+		{ID: "turn-with-zero-items"},
 		{ID: "turn-2", Items: []appwire.ThreadItem{
 			{Type: "agentMessage", ID: "item-2-0", Text: "newer"},
 			{Type: "agentMessage", ID: "item-2-1", Text: "newest"},
@@ -826,48 +827,14 @@ func TestLocalDaemonItemCandidatesSynthesizeLegacyV3MaterializedMetadata(t *test
 	}
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
 
-	assertCandidates := func(label string, candidates []appitempaging.TranscriptItemCandidate, wantIDs []string, wantPositions []appwire.ThreadItemPosition) {
-		t.Helper()
-		if len(candidates) != len(wantIDs) || len(wantIDs) != len(wantPositions) {
-			t.Fatalf("%s candidate count = %d, want %d", label, len(candidates), len(wantIDs))
-		}
-		for i, candidate := range candidates {
-			if candidate.Item.ID != wantIDs[i] || candidate.Position != wantPositions[i] || candidate.Item.Position == nil || *candidate.Item.Position != wantPositions[i] {
-				t.Fatalf("%s candidate %d = %+v, want id %q position %+v", label, i, candidate, wantIDs[i], wantPositions[i])
-			}
-			wantKey := appitempaging.TranscriptItemKey(candidate.TurnID, wantPositions[i])
-			if candidate.Item.TranscriptKey != wantKey || candidate.Item.TurnID != candidate.TurnID {
-				t.Fatalf("%s candidate %d identity = key %q item turn %q, want key %q turn %q", label, i, candidate.Item.TranscriptKey, candidate.Item.TurnID, wantKey, candidate.TurnID)
-			}
-		}
-	}
-
-	latest, err := source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{
+	result, err := source.ReadItemCandidates(context.Background(), appwire.ThreadReadParams{
 		Ref: "local:legacy-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3,
 	})
-	if err != nil {
-		t.Fatalf("legacy-v3 latest item page: %v", err)
-	}
-	assertCandidates("latest", latest.Candidates.Candidates,
-		[]string{"item-1-0", "item-2-0", "item-2-1"},
-		[]appwire.ThreadItemPosition{{Entry: 1, Item: 0}, {Entry: 2, Item: 0}, {Entry: 2, Item: 1}})
-	if latest.Candidates.OlderCursor == "" {
-		t.Fatal("legacy-v3 latest page has no hub-owned continuation")
-	}
-	older, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
-		Ref: "local:legacy-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 3, Cursor: latest.Candidates.OlderCursor,
-	})
-	if err != nil {
-		t.Fatalf("legacy-v3 older item page: %v", err)
-	}
-	assertCandidates("older", older.Candidates.Candidates,
-		[]string{"item-0-0", "item-0-1"},
-		[]appwire.ThreadItemPosition{{Entry: 0, Item: 0}, {Entry: 0, Item: 1}})
-	if !older.Exhausted || older.Candidates.OlderCursor != "" {
-		t.Fatalf("legacy-v3 older page = %+v, want exhausted terminal page", older)
+	if err == nil || !strings.Contains(err.Error(), "unpositioned item") {
+		t.Fatalf("legacy-v3 materialized item page = (%+v, %v), want unpositioned item identity error", result, err)
 	}
 
-	wantNativeCursors := []string{"", "legacy-older", "", "legacy-older"}
+	wantNativeCursors := []string{"", "legacy-older"}
 	if len(requests) != len(wantNativeCursors) {
 		t.Fatalf("legacy-v3 daemon calls = %d, want %d: %+v", len(requests), len(wantNativeCursors), requests)
 	}
@@ -918,6 +885,21 @@ func TestLocalDaemonMaterializedCompatibilityPreservesStrictMetadataBoundary(t *
 	if modernItem.TranscriptKey != "modern-original-key" || modernItem.Position == nil || *modernItem.Position != originalPosition || modernItem.TurnID != "modern-item-turn" {
 		t.Fatalf("modern metadata changed = %+v", modernItem)
 	}
+	continuationCursor, err := appitempaging.EncodeCursor(modern.Identity, originalPosition)
+	if err != nil {
+		t.Fatalf("encode modern continuation cursor: %v", err)
+	}
+	turns = []appwire.Turn{
+		{ID: "legacy-before", Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "legacy-before-item"}}},
+		{ID: "legacy-zero-items"},
+		{ID: "legacy-after", Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "legacy-after-item"}}},
+	}
+	continued, continuationErr := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:metadata-thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 10, Cursor: continuationCursor,
+	})
+	if continuationErr == nil || !strings.Contains(continuationErr.Error(), "unpositioned item") {
+		t.Fatalf("legacy materialized continuation = (%+v, %v), want unpositioned item identity error", continued, continuationErr)
+	}
 
 	for _, test := range []struct {
 		name  string
@@ -964,6 +946,13 @@ func TestLocalDaemonMaterializedCompatibilityPreservesStrictMetadataBoundary(t *
 				ID: "fragment-legacy-turn", ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
 				Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "fragment-legacy-unpositioned"}},
 			}}},
+		}},
+		{name: "complete legacy with zero-item and invisible entries", response: appwire.ThreadReadResponse{
+			Thread: appwire.Thread{Turns: []appwire.Turn{
+				{ID: "legacy-before", Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "legacy-before-item"}}},
+				{ID: "legacy-zero-items"},
+				{ID: "legacy-after", Items: []appwire.ThreadItem{{Type: "agentMessage", ID: "legacy-after-item"}}},
+			}},
 		}},
 		{name: "initial mixed legacy and modern", response: appwire.ThreadReadResponse{
 			Thread: appwire.Thread{Turns: []appwire.Turn{{ID: "mixed-initial-turn", Items: []appwire.ThreadItem{

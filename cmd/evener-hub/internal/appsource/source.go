@@ -394,54 +394,18 @@ func localDaemonItemCandidates(turns []appwire.Turn) ([]appitempaging.Transcript
 	return candidates, nil
 }
 
-// localDaemonMaterializedItemCandidates supports same-v3 daemons that return
-// legacy turns after the caller has assembled their complete chronological
-// transcript. Any item metadata makes the whole response use strict item-mode
-// validation so mixed or partially upgraded responses are never rewritten.
+// localDaemonMaterializedItemCandidates keeps the daemon's absolute transcript
+// positions. A complete turn-shaped transcript still cannot recover positions
+// omitted by legacy responses because decoded entries may project no items (or
+// no turn), so materialization must use the same strict identity validation as
+// a native item response.
 func localDaemonMaterializedItemCandidates(turns []appwire.Turn) ([]appitempaging.TranscriptItemCandidate, error) {
-	legacy := true
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			if item.Position != nil || item.TranscriptKey != "" {
-				legacy = false
-				break
-			}
-		}
-		if !legacy {
-			break
-		}
-	}
-	if legacy {
-		for turnIndex := range turns {
-			for itemIndex := range turns[turnIndex].Items {
-				position := appwire.ThreadItemPosition{Entry: uint64(turnIndex), Item: uint32(itemIndex)}
-				item := &turns[turnIndex].Items[itemIndex]
-				item.Position = &position
-				item.TranscriptKey = appitempaging.TranscriptItemKey(turns[turnIndex].ID, position)
-			}
-		}
-	}
 	return localDaemonItemCandidates(turns)
 }
 
-// localDaemonInitialItemCandidates accepts legacy metadata only when the
-// daemon returned a complete turn-shaped transcript. A native item page or any
-// partial turn window stays strict because its slice indices are not absolute
-// transcript positions.
+// localDaemonInitialItemCandidates preserves positions supplied by the daemon
+// and rejects every unpositioned item, including complete legacy turn reads.
 func localDaemonInitialItemCandidates(response appwire.ThreadReadResponse) ([]appitempaging.TranscriptItemCandidate, error) {
-	completeLegacyShape := response.OlderCursor == "" &&
-		(response.PageUnit == "" || response.PageUnit == appwire.TranscriptPageUnitTurn)
-	if completeLegacyShape {
-		for _, turn := range response.Thread.Turns {
-			if (turn.ItemsView != "" && turn.ItemsView != appwire.TurnItemsViewFull) || turn.HasEarlierItems || turn.HasLaterItems {
-				completeLegacyShape = false
-				break
-			}
-		}
-	}
-	if completeLegacyShape {
-		return localDaemonMaterializedItemCandidates(response.Thread.Turns)
-	}
 	return localDaemonItemCandidates(response.Thread.Turns)
 }
 
