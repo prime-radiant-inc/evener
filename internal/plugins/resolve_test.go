@@ -920,56 +920,40 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 // directory is moved to the one sibling slot kept beside it and publication
 // continues, so the launch selects a copy that matches the binary. What was
 // there is never deleted; only an earlier occupant of that slot is replaced.
+// Only a launch does any of this: a preview reports the conflict and leaves
+// the directory where it is, which
+// TestPreviewForLaunch_LeavesAMismatchedDestinationWhereItIs covers.
 func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 	digest, err := bundledPluginDigest("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvers := []struct {
-		name    string
-		resolve func(*Manager) (LaunchPluginResolution, error)
-	}{
-		{
-			name: "preview",
-			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
-			},
-		},
-		{
-			name: "launch",
-			resolve: func(m *Manager) (LaunchPluginResolution, error) {
-				return m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
-			},
-		},
-	}
-	for _, resolver := range resolvers {
-		t.Run(resolver.name+" sets a conflicting destination aside", func(t *testing.T) {
-			m := NewManager(t.TempDir())
-			dest := m.bundledPluginPath("coordinator-workflow", digest)
-			// A plausible impostor: a loadable plugin under the right name,
-			// holding contents the digest never described.
-			writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+	t.Run("a launch sets a conflicting destination aside", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest := m.bundledPluginPath("coordinator-workflow", digest)
+		// A plausible impostor: a loadable plugin under the right name,
+		// holding contents the digest never described.
+		writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
 
-			res, err := resolver.resolve(m)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := res.ValidateSelection(); err != nil {
-				t.Fatalf("a conflicting destination left the bundled plugin unselectable: %v", err)
-			}
-			if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount < 7 {
-				t.Fatalf("Candidates = %+v, want the copy this build ships at %s", res.Candidates, dest)
-			}
-			aside := dest + conflictSuffix
-			if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
-				!strings.Contains(res.Diagnostics[0].Message, aside) {
-				t.Fatalf("Diagnostics = %+v, want one bundled warning naming %s", res.Diagnostics, aside)
-			}
-			if content, err := os.ReadFile(filepath.Join(aside, "theirs.md")); err != nil || string(content) != "someone else's data" {
-				t.Errorf("set-aside content = %q (err %v), want what was there preserved", content, err)
-			}
-		})
-	}
+		res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := res.ValidateSelection(); err != nil {
+			t.Fatalf("a conflicting destination left the bundled plugin unselectable: %v", err)
+		}
+		if len(res.Candidates) != 1 || res.Candidates[0].Path != dest || res.Candidates[0].AgentCount < 7 {
+			t.Fatalf("Candidates = %+v, want the copy this build ships at %s", res.Candidates, dest)
+		}
+		aside := dest + conflictSuffix
+		if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
+			!strings.Contains(res.Diagnostics[0].Message, aside) {
+			t.Fatalf("Diagnostics = %+v, want one bundled warning naming %s", res.Diagnostics, aside)
+		}
+		if content, err := os.ReadFile(filepath.Join(aside, "theirs.md")); err != nil || string(content) != "someone else's data" {
+			t.Errorf("set-aside content = %q (err %v), want what was there preserved", content, err)
+		}
+	})
 
 	// The realistic case: Finder or an editor drops a file into a published
 	// copy. The next launch sets the changed copy aside and republishes, so
@@ -1344,5 +1328,51 @@ func TestResolveForLaunch_AnswersACancellationRatherThanARegistryFailure(t *test
 	}
 	if len(res.Candidates) != 0 || len(res.SelectedDirs) != 0 || len(res.Diagnostics) != 0 {
 		t.Errorf("resolved %+v for a caller that had given up", res)
+	}
+}
+
+// A preview describes the store; it never repairs it. A destination holding
+// something else is what a launch sets aside, and a preview that did the same
+// would take a path live sessions are reading — for hooks, skills and MCP
+// server commands — out from under them, and publish nothing in its place. So
+// preview reports the conflict a launch would act on, reads the copy it staged
+// for itself, and leaves the directory exactly as it found it.
+func TestPreviewForLaunch_LeavesAMismatchedDestinationWhereItIs(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	theirs := filepath.Join(dest, "theirs.txt")
+	if err := os.WriteFile(theirs, []byte("someone else's data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"coordinator-workflow"})
+	if err != nil {
+		t.Fatalf("PreviewForLaunch: %v", err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("preview did not describe the bundled plugin: %v", err)
+	}
+	if len(res.Candidates) != 1 || res.Candidates[0].Path != dest {
+		t.Fatalf("Candidates = %+v, want the bundled plugin reported at %s", res.Candidates, dest)
+	}
+	content, err := os.ReadFile(theirs)
+	if err != nil {
+		t.Fatalf("the destination preview found is gone: %v", err)
+	}
+	if string(content) != "someone else's data" {
+		t.Errorf("destination content = %q, want it untouched", content)
+	}
+	if _, err := os.Stat(dest + conflictSuffix); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("preview set the destination aside at %s: stat err = %v", dest+conflictSuffix, err)
+	}
+	if len(res.Diagnostics) != 1 || !strings.Contains(res.Diagnostics[0].Message, "a launch would set it aside") {
+		t.Fatalf("Diagnostics = %+v, want one saying what a launch would do about the conflict", res.Diagnostics)
 	}
 }

@@ -106,7 +106,7 @@ func TestBundledStore_PublishNeverReplacesForeignData(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			dest, staging, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", true)
+			dest, staging, _, err := m.prepareBundledStore(context.Background(), "coordinator-workflow", publishBundledStore)
 			if err != nil {
 				t.Fatal(err)
 			}

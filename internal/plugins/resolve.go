@@ -93,7 +93,7 @@ func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, e
 func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	resolution, err := m.resolveForLaunch(ctx, explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
-		dest, staging, warnings, err := m.prepareBundledStore(ctx, name, false)
+		dest, staging, warnings, err := m.prepareBundledStore(ctx, name, previewBundledStore)
 		if err != nil {
 			return bundledCandidate{path: dest, warnings: warnings}, err
 		}
@@ -389,6 +389,12 @@ type bundledStaging struct {
 	payload string
 	digest  string
 	release func()
+	// setAside records that publication is taking a name whose previous
+	// occupant was moved to the conflict slot. A publish that then fails owes
+	// that occupant its name back: live sessions read the destination path for
+	// hooks, skills and MCP server commands, so a path that simply vanishes
+	// breaks them until some later launch happens to repair it.
+	setAside bool
 }
 
 // newBundledStaging opens a staging directory for base inside store and marks
@@ -425,7 +431,7 @@ func newBundledStaging(store, base, digest string, release func()) (*bundledStag
 // publish goes ahead into the name it freed. It reports the published path and
 // anything the caller should hear about getting there.
 func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (string, []string, error) {
-	dest, staging, warnings, err := m.prepareBundledStore(ctx, name, true)
+	dest, staging, warnings, err := m.prepareBundledStore(ctx, name, publishBundledStore)
 	if err != nil {
 		return "", warnings, err
 	}
@@ -481,15 +487,32 @@ func publishedForCaller(ctx context.Context, dest string, warnings []string) (st
 	return dest, warnings, nil
 }
 
+// bundledStoreIntent is what a caller is entitled to do to the store on its
+// way past. A launch publishes: it sweeps abandoned staging, and it moves a
+// destination holding something else aside so the copy it publishes can take
+// the name. A preview only describes: it stages a private copy to read and
+// leaves everything already there exactly as it found it, because repairing is
+// a launch's job and a preview that repaired would take a path live sessions
+// read — for hooks, skills and MCP server commands — out from under them, with
+// nothing published in its place.
+type bundledStoreIntent int
+
+const (
+	previewBundledStore bundledStoreIntent = iota
+	publishBundledStore
+)
+
 // prepareBundledStore readies <Root>/bundled to hold the bundled plugin named
 // name. It returns the published destination and, when nothing is published
 // there yet, a private staging directory to fill; staging is nil for a copy
 // that is already published. Creating that directory is what proves the store
 // can be published into, so a launch and a preview that share this preparation
-// fail identically on a store neither can write. reclaim asks for the
-// abandoned-staging sweep: a launch asks on every call, including the calls
-// that adopt a published copy, and a preview never does.
-func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim bool) (string, *bundledStaging, []string, error) {
+// fail identically on a store neither can write. intent says which of the two
+// is asking: only a publish sweeps abandoned staging (on every call, including
+// the ones that adopt a published copy) and only a publish moves a conflicting
+// destination aside.
+func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent bundledStoreIntent) (string, *bundledStaging, []string, error) {
+	reclaim := intent == publishBundledStore
 	digest, err := bundledPluginDigest(name)
 	if err != nil {
 		return "", nil, nil, err
@@ -584,12 +607,21 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 		return dest, nil, nil, nil
 	}
 	var warnings []string
+	setAside := false
 	if state == bundledDestinationConflict {
-		asideWarnings, err := setAsideBundledConflict(dest)
-		warnings = append(warnings, asideWarnings...)
-		if err != nil {
-			release()
-			return "", nil, warnings, err
+		if intent == previewBundledStore {
+			// A preview says what a launch would do here and does none of it.
+			warnings = append(warnings, fmt.Sprintf(
+				"bundled plugin path %s holds content this build did not publish; a launch would set it aside at %s",
+				dest, dest+conflictSuffix))
+		} else {
+			asideWarnings, err := setAsideBundledConflict(dest)
+			warnings = append(warnings, asideWarnings...)
+			if err != nil {
+				release()
+				return "", nil, warnings, err
+			}
+			setAside = true
 		}
 	}
 	staging, err := newBundledStaging(store, filepath.Base(dest), digest, release)
@@ -597,6 +629,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, reclaim 
 		release()
 		return "", nil, warnings, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
+	staging.setAside = setAside
 	return dest, staging, warnings, nil
 }
 
