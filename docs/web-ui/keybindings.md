@@ -1,6 +1,6 @@
 # Web UI keybindings
 
-Status: **current** (Phase 4a). The web hub's global keyboard chords are
+Status: **current** (Phase 4b). The web hub's global keyboard chords are
 owned by one module, `cmd/evener-hub/frontend/src/keybindings/`, and one
 window-level dispatcher, instead of each component installing its own
 `keydown` listener. User overrides persist on the hub and sync to every
@@ -10,6 +10,9 @@ operation of the AskDock ask-user surface. Phase 4a finalized the default
 map (strict Mod chords for ⌘K/⌘I/⌘J, new `settings` and transcript
 end-jump bindings) and shipped the two discoverability surfaces: the
 cheatsheet overlay (⌘/ or `?`) and hold-modifier hint chips.
+Phase 4b turned Settings → Keybindings into a capture-based editor over
+the synced overrides: pre-flight conflict validation, per-action
+unbind/reset (the Settings section below).
 
 ## Architecture
 
@@ -188,7 +191,8 @@ The map is final as of Phase 4a: the provisional ledger Phase 3 carried
 is closed — the DevTools-chord hijack permissiveness is gone (above) and
 `transcript.scrollTop`/`scrollBottom` have their chords. Every binding
 stays remappable through the hub-synced overrides store (Persistence
-below); the Settings listing is read-only until the Phase 4b editor.
+below); Settings → Keybindings edits them directly (the Settings section
+at the end of this document).
 
 ## Phase 3: session-pane cycling
 
@@ -474,7 +478,7 @@ not the store; the store carries `hubSupport`, `revision`, the validated
   advances only after a successful apply, so a failed payload stays
   retryable (a later `changed` with the same revision is not eaten by the
   stale guard).
-- **Patch** (used by the future editor): sends `expectedRevision` +
+- **Patch** (the editor's write path): sends `expectedRevision` +
   `{version: 1, rules}`; on success the canonical response is applied; on a
   conflict rejection the store refreshes to `data.current`, sets `conflict`
   and `hubError`, and rethrows.
@@ -487,25 +491,63 @@ warnings or a surfaced `hubError` with the last good (or default) bindings
 in place; the `changed`-notification path catches so a reconcile failure
 never escapes the client's notification dispatch.
 
-### Settings section
+### Settings section (Phase 4b editor)
 
-Settings → Keybindings is a **read-only** listing of the effective
-bindings: one row per action from `DEFAULT_BINDINGS` via
-`keybindings/display.ts` (never a hand-maintained copy), the chord
-rendered with the `KeyHint` widget from the live registry, and a
-"Customized" marker on actions whose effective bindings differ from the
-default map (including unbound actions; the `?` entry's pref-conditional
-registration is not itself a customization). A **Character-key shortcuts**
-Switch row at the top owns the WCAG 2.1.4 pref. The store's
-`hubSupport`/`hubError`/validation warnings surface as quiet status or
-alert text. Editing arrives with the Phase 4b editor.
+Settings → Keybindings edits the synced overrides, not just lists them.
+Whenever the hub advertises `features.keybindingsSettings`
+(`hubSupport === "supported"`) every row is editable; an `unknown` or
+`unsupported` hub keeps the read-only listing and its status text — the
+overrides layer is hub-only by design, so there is nothing to edit
+against. The rows themselves are unchanged from Phase 4a: one per action
+from `DEFAULT_BINDINGS` via `keybindings/display.ts` (never a
+hand-maintained copy), the chord rendered with the `KeyHint` widget from
+the live registry, a "Customized" marker on actions whose effective
+bindings differ from the default map (including unbound actions; the `?`
+entry's pref-conditional registration is not itself a customization), and
+the **Character-key shortcuts** Switch row at the top owning the WCAG
+2.1.4 pref.
+
+- **Capture.** Clicking a row's chord ("Change the shortcut for {title}",
+  or "Set a shortcut" when unbound) swaps the row's controls for a focused
+  capture box showing "Press new shortcut…". Held modifiers echo live as
+  `KeyHint` chips; the first non-modifier press records the chord. Plain
+  Enter saves, plain Escape cancels, Enter/Escape WITH a modifier record
+  as chords (Escape itself stays bindable). Clicking away cancels. The
+  capture box preventDefaults and stopPropagations every keydown, so the
+  dispatcher and `settings.close`'s own Escape stay inert while capturing.
+- **Single-press only.** Capture records one press — no multi-press
+  sequences — matching the all-single-press default map (multi-press
+  conflict checking is deliberately coarser). Bare-character chords (a
+  plain "A") CAN be authored; the character-key pref governs only the
+  built-in `?` trigger, not user-authored character chords, so bind bare
+  characters only if you know you mean it.
+- **Conflict semantics.** Every save is pre-flight validated in the store
+  — the same `validateOverrideRules` simulation over the final effective
+  map the reconcile path uses — BEFORE any hub request. A chord already
+  held by another binding in the same scope is rejected inline with a
+  message naming the chord, the scope, and the action holding it; the
+  capture box stays open so another chord can be tried, and nothing
+  reaches the hub. Reserved (browser/OS-claimed) and unparseable chords
+  reject the same way. A passing save sends the FULL replacement rule set
+  with `expectedRevision` optimistic concurrency (the apply flow above); a
+  revision conflict refreshes to the server's current payload.
+- **Unbind / Reset.** "Unbind" (bound actions) writes a `chord: null`
+  rule; "Reset" (actions carrying an override) drops the action from the
+  payload, restoring its defaults through the reconcile's
+  `restoreDefaultBinding`. Failures surface inline under the row.
+- **cheatsheet.toggle.** The ⌘/ base chord edits like any other. The `?`
+  character-key entry renders read-only with a note while it is
+  registered: it follows the character-key pref and the
+  cheatsheetController reconcile, not this editor — and because an
+  override owns the action's whole chord set, rebinding or unbinding the
+  base chord replaces `?` too.
+
+The store's `hubSupport`/`hubError`/validation warnings surface as the
+same quiet status or alert text as before.
 
 ## Deliberately not here yet
 
-Later phases of the webui-keybindings plan add, and this module already
-leaves room for:
-
-- **A keybinding editor** (Phase 4b) — the store's `patchOverrides` is the
-  write path it will use; the Settings section stays read-only until then.
 - `Binding.when` is still stored verbatim and never evaluated; scope-stack
   membership is the only gating the dispatcher applies.
+- Multi-press (sequence) chords — the default map is single-press
+  throughout and the editor's capture records one press, by design.
