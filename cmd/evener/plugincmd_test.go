@@ -628,3 +628,70 @@ func TestPluginCommandChecksForLegacyDataBeforeTouchingTheStore(t *testing.T) {
 		})
 	}
 }
+
+// doctor is a read-only diagnostic: it reports on the store rather than
+// building one, so it takes only the read-only half of the startup guard.
+// Creating the config tree for a diagnostic would both mutate what it reports
+// on and fail outright on a read-only config home — while a legacy tree still
+// has to stop it, for the same reason it stops every other verb.
+func TestPluginDoctorTakesOnlyTheReadOnlyHalfOfTheGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, config string)
+		wantErr string
+	}{
+		{
+			name:    "a writable config home stays untouched",
+			arrange: func(*testing.T, string) {},
+		},
+		{
+			name: "a read-only config home is not a failure",
+			arrange: func(t *testing.T, config string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root writes a read-only directory, so there is no read-only home to plant")
+				}
+				if err := os.Chmod(config, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(config, 0o700) })
+			},
+		},
+		{
+			name: "legacy data still stops it",
+			arrange: func(t *testing.T, config string) {
+				if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "legacy Serf data",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			if err := os.MkdirAll(config, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			test.arrange(t, config)
+
+			var stdout, stderr bytes.Buffer
+			err := runPlugin([]string{"doctor"}, nil, &stdout, &stderr)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("plugin doctor error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("plugin doctor error = %v, want a diagnostic that needs nothing created", err)
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("doctor created the config root: stat err = %v", err)
+			}
+		})
+	}
+}

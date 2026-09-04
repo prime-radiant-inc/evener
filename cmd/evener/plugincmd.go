@@ -49,18 +49,23 @@ func runPlugin(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		printPluginUsage(stderr)
 		return nil
 	}
-	// Before anything that can create the user config root: seeding writes
-	// into it and every store path below hangs off it, and the legacy-data
-	// guard inside EnsureUserConfigDirs reads an existing root as already
-	// migrated. Running the guard second would strand a user's legacy
-	// configuration and credentials silently.
-	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
-		return err
-	}
 	// doctor is a read-only diagnostic (Manager.Doctor's contract: never
-	// mutates store state) and must not trigger first-run seeding the way
-	// every other verb does.
-	if args[0] != "doctor" {
+	// mutates store state), so it takes only the read-only half of the guard
+	// and skips first-run seeding: creating the config tree for a diagnostic
+	// would mutate what it reports on, and would fail outright on a read-only
+	// config home. Every other verb works under that tree, and gets the guard
+	// before anything creates it — seeding writes into the config root and
+	// every store path below hangs off it, while the legacy-data check reads
+	// an existing root as already migrated, so running it second would strand
+	// a user's legacy configuration and credentials silently.
+	if args[0] == "doctor" {
+		if err := cmdutil.CheckLegacyDataDirs(); err != nil {
+			return err
+		}
+	} else {
+		if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+			return err
+		}
 		if _, err := newPluginManager().SeedDefaultMarketplaces(context.Background()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "warning: seeding default marketplaces: %v\n", err)
 		}
