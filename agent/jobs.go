@@ -520,12 +520,9 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
-	// TerminalGen is the exact durable terminal generation represented by a
-	// terminal notification. queueSeq is its in-memory queue identity. Together
-	// they let terminal acceptance distinguish a pre-cut leftover from a later
-	// completion even if a job ID appears in both sets.
+	// TerminalGen is the exact durable terminal generation this terminal
+	// notification represents.
 	TerminalGen      string
-	queueSeq         uint64
 	ExhaustionBudget string
 	ExhaustionLimit  int
 	Resumable        *bool

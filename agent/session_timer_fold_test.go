@@ -52,13 +52,13 @@ func TestRequeueJobNotifications_FoldsIntoPendingTick(t *testing.T) {
 	}
 }
 
-func TestRequeueJobNotifications_KeepsRequeuedBatchFirstWithItsSeq(t *testing.T) {
+func TestRequeueJobNotifications_KeepsRequeuedBatchFirst(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	s.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_pending"})
 	requeued := []jobNotification{
-		{JobID: "job_first", queueSeq: 7},
-		{JobID: "job_second", queueSeq: 9},
+		{JobID: "job_first"},
+		{JobID: "job_second"},
 	}
 	s.requeueJobNotifications(requeued)
 	s.pendingJobNotifsMu.Lock()
@@ -70,9 +70,6 @@ func TestRequeueJobNotifications_KeepsRequeuedBatchFirstWithItsSeq(t *testing.T)
 	if pending[0].JobID != "job_first" || pending[1].JobID != "job_second" || pending[2].JobID != "job_pending" {
 		t.Fatalf("order = %q/%q/%q, want the requeued batch first, in order, ahead of what was pending",
 			pending[0].JobID, pending[1].JobID, pending[2].JobID)
-	}
-	if pending[0].queueSeq != 7 || pending[1].queueSeq != 9 {
-		t.Fatalf("requeued seqs = %d/%d, want 7/9 unchanged", pending[0].queueSeq, pending[1].queueSeq)
 	}
 }
 
