@@ -3,6 +3,7 @@ package registry
 import (
 	"bytes"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,7 +11,7 @@ import (
 var specImplicitOrder = []string{
 	"anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
 	"cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
-	"google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
+	"google-vertex-anthropic", "google-vertex", "google-vertex-express", "amazon-bedrock", "azure", "ollama",
 }
 
 var pseudoProviders = []string{"openai-compatible", "anthropic-compatible", "google-compatible"}
@@ -75,8 +76,15 @@ func TestCuratedOverlay_DefaultsAndTemplates(t *testing.T) {
 				t.Errorf("%s needs default_model and cheap_model", id)
 			}
 		}
-		if !strings.Contains(p.Transport.BaseURL, "{") {
-			t.Errorf("%s: base_url must be a template, got %q", id, p.Transport.BaseURL)
+		// A row with no base_url of its own (e.g. google-vertex-express)
+		// inherits one through base; walk that chain before judging it.
+		bu, cur := p.Transport.BaseURL, id
+		for bu == "" && l.Providers[cur].Base != "" {
+			cur = l.Providers[cur].Base
+			bu = l.Providers[cur].Transport.BaseURL
+		}
+		if !strings.Contains(bu, "{") {
+			t.Errorf("%s: base_url must be a template, got %q", id, bu)
 		}
 	}
 	for _, id := range pseudoProviders {
@@ -227,7 +235,20 @@ func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
 		}
 	}
 	// openai-codex has inherit_models = false: only its own rows count.
-	has := func(provider, id string) bool { return rows[provider][id] }
+	// A provider with no rows of its own (e.g. google-vertex-express) inherits
+	// them through base, so walk that chain before declaring a miss.
+	has := func(provider, id string) bool {
+		for {
+			if rows[provider][id] {
+				return true
+			}
+			base := l.Providers[provider].Base
+			if base == "" {
+				return false
+			}
+			provider = base
+		}
+	}
 	for id, p := range l.Providers {
 		for _, ref := range []string{p.DefaultModel, p.CheapModel} {
 			if ref != "" && !has(id, ref) {
@@ -246,5 +267,66 @@ func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
 				t.Errorf("%s/%s: alias_of %q does not resolve", id, mid, m.AliasOf)
 			}
 		}
+	}
+}
+
+func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k-express"}, "")
+	p, ok := r.Provider("google-vertex-express")
+	if !ok {
+		t.Fatal("google-vertex-express: not a curated provider")
+	}
+	if !BoolValue(p.Implicit) || p.Name != "Google Vertex (API key)" || p.Protocol != ProtocolGoogle || p.Surface != SurfaceGoogle {
+		t.Fatalf("head: implicit=%v name=%q protocol=%q surface=%q", BoolValue(p.Implicit), p.Name, p.Protocol, p.Surface)
+	}
+	tr := p.Transport
+	if tr.Auth != AuthHeader || tr.AuthHeader != "x-goog-api-key" {
+		t.Fatalf("auth: %+v", tr)
+	}
+	if tr.Endpoint != "/publishers/google/models/{model}:generateContent" || tr.StreamEndpoint != "/publishers/google/models/{model}:streamGenerateContent?alt=sse" {
+		t.Fatalf("endpoints: %+v", tr)
+	}
+	if tr.ModelsEndpoint != EndpointUnsupported || tr.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("listing/count must be unsupported on the express row: %+v", tr)
+	}
+	if tr.Vars["BASE_URL"] != "https://aiplatform.googleapis.com/v1" || tr.VarsEnv["BASE_URL"] != "GOOGLE_VERTEX_EXPRESS_BASE_URL" {
+		t.Fatalf("vars: %v %v", tr.Vars, tr.VarsEnv)
+	}
+	if !reflect.DeepEqual(p.APIKeyEnv, []string{"GOOGLE_VERTEX_API_KEY"}) {
+		t.Fatalf("api_key_env = %v", p.APIKeyEnv)
+	}
+	if p.DefaultModel != "gemini-3.8-flash" || p.CheapModel != "gemini-2.5-flash-lite" {
+		t.Fatalf("defaults: %q %q", p.DefaultModel, p.CheapModel)
+	}
+	for id := range p.Models {
+		if strings.HasPrefix(id, "claude") {
+			t.Fatalf("express row inherited a Claude row %q; it must be Gemini-only", id)
+		}
+	}
+	if _, ok := p.Models["gemini-2.5-flash"]; !ok {
+		t.Fatal("express row did not inherit google's gemini-2.5-flash")
+	}
+
+	res, err := r.Resolve("google-vertex-express/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1" || res.Credential.Value != "k-express" || res.Credential.Source != "env:GOOGLE_VERTEX_API_KEY" || res.Synthesized {
+		t.Fatalf("resolved: base=%q cred=%+v synthesized=%v", res.Transport.BaseURL, res.Credential, res.Synthesized)
+	}
+	if !BoolValue(res.Caps.WebSearch) {
+		t.Fatalf("web_search must survive on the express row: %v", res.Warnings)
+	}
+}
+
+func TestGoogleVertexExpressExistsOnlyWithItsOwnKey(t *testing.T) {
+	if names := instanceNames(fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "g"}, "")); slices.Contains(names, "google-vertex-express") {
+		t.Fatalf("GEMINI_API_KEY alone created google-vertex-express: %v", names)
+	}
+	if names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k"}, "")); !slices.Contains(names, "google-vertex-express") {
+		t.Fatalf("GOOGLE_VERTEX_API_KEY did not create google-vertex-express: %v", names)
+	}
+	if names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k"}, "")); slices.Contains(names, "google") {
+		t.Fatalf("GOOGLE_VERTEX_API_KEY must not create the google instance: %v", names)
 	}
 }
