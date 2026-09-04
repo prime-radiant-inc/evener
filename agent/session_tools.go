@@ -742,8 +742,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			}
 			// Preparation validated the original arguments. A hook may replace
 			// any semantic task field, so dispatch this changed call through the
-			// normal PreValidate path while unchanged prepared calls still avoid
-			// running that hook twice.
+			// normal validation path, including when the update corrected an
+			// initial preparation failure. Unchanged prepared calls still avoid
+			// running that validation twice.
+			prep.PrevalErr = ""
 			prevalidated = false
 		}
 	}

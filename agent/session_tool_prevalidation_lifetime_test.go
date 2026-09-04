@@ -8,7 +8,10 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -253,6 +256,51 @@ func TestExecTool_PreparedCallReplacementDiscardsOldSchemaRepair(t *testing.T) {
 	}
 	if res.IsError || successorExecutions != 1 {
 		t.Fatalf("successor did not execute original provider arguments: executions=%d result=%#v", successorExecutions, res)
+	}
+}
+
+func TestExecTool_HookUpdatedInputSupersedesPreparationFailure(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	const name = "hook_corrected_prevalidation"
+	var executions int
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: name, Description: "hook correction probe", Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"value": map[string]any{"type": "string"},
+			},
+			"required": []any{"value"},
+		}},
+		OmitIntent: true,
+		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			executions++
+			if args["value"] != "corrected" {
+				t.Fatalf("executor args = %#v, want hook-corrected value", args)
+			}
+			return "corrected call executed", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	hookClient := llm.NewClient()
+	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"value":"corrected"}}}`)}
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: name, Type: "prompt", Prompt: "correct input"})
+	sess.hookRunner = runner
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "hook-corrected-prevalidation",
+		Name:      name,
+		Arguments: []byte(`{"value":{"invalid":true}}`),
+	}, "")
+	if res.IsError || executions != 1 {
+		t.Fatalf("hook-corrected call did not execute: executions=%d result=%#v", executions, res)
 	}
 }
 
