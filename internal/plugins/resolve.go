@@ -399,16 +399,16 @@ type bundledStaging struct {
 	setAside bool
 }
 
-// newBundledStaging opens a staging directory for base inside store and marks
-// it as this code's to reclaim before anything is copied in, so a publish
-// killed at any moment leaves an orphan a later sweep recognizes. release is
-// the store lock the caller holds, handed over for the staging to carry.
 // stageBundledCopy makes the private directory a publish fills. Indirect
 // because it is the step between freeing a name and having anything to put in
 // it, and a test proving what a publish does when that step fails has to be
 // inside that window.
 var stageBundledCopy = newBundledStaging
 
+// newBundledStaging opens a staging directory for base inside store and marks
+// it as this code's to reclaim before anything is copied in, so a publish
+// killed at any moment leaves an orphan a later sweep recognizes. release is
+// the store lock the caller holds, handed over for the staging to carry.
 func newBundledStaging(store, base, digest string, release func()) (*bundledStaging, error) {
 	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
 	if err != nil {
