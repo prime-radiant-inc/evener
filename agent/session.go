@@ -1603,6 +1603,8 @@ func (s *Session) resetEnvContextTrackerAfterCompaction() {
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
 // semantic transcript distinct when a tool exposes explicitly private evidence.
 func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
@@ -1652,6 +1654,8 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
@@ -1809,15 +1813,15 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 			continue
 		}
 		validArguments := len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments)
-		displayName := tool.DisplayToolName(part.ToolCall.Name)
-		if validArguments && displayName == part.ToolCall.Name {
+		wireName := tool.WireToolName(part.ToolCall.Name)
+		if validArguments && wireName == part.ToolCall.Name {
 			continue
 		}
 		if content == nil {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
-		call.Name = displayName
+		call.Name = wireName
 		if !validArguments {
 			call.Arguments = json.RawMessage(`{}`)
 		}
@@ -1827,6 +1831,52 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 		message.Content = content
 	}
 	return message
+}
+
+// providerHistoryMessage returns a replay copy whose tool identities satisfy
+// provider name constraints. Stored turns remain unchanged so request assembly
+// never rewrites durable history or lifecycle state.
+func providerHistoryMessage(message llm.Message) llm.Message {
+	var content []llm.ContentPart
+	for i, part := range message.Content {
+		callName := ""
+		resultName := ""
+		if part.ToolCall != nil {
+			callName = tool.WireToolName(part.ToolCall.Name)
+		}
+		if part.ToolResult != nil {
+			resultName = tool.WireToolName(part.ToolResult.Name)
+		}
+		if (part.ToolCall == nil || callName == part.ToolCall.Name) &&
+			(part.ToolResult == nil || resultName == part.ToolResult.Name) {
+			continue
+		}
+		if content == nil {
+			content = append([]llm.ContentPart(nil), message.Content...)
+		}
+		if part.ToolCall != nil && callName != part.ToolCall.Name {
+			call := *part.ToolCall
+			call.Name = callName
+			content[i].ToolCall = &call
+		}
+		if part.ToolResult != nil && resultName != part.ToolResult.Name {
+			result := *part.ToolResult
+			result.Name = resultName
+			content[i].ToolResult = &result
+		}
+	}
+	if content != nil {
+		message.Content = content
+	}
+	return message
+}
+
+func providerHistoryTurns(history []schema.Turn) []schema.Turn {
+	projected := append([]schema.Turn(nil), history...)
+	for i := range projected {
+		projected[i].Message = providerHistoryMessage(projected[i].Message)
+	}
+	return projected
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response

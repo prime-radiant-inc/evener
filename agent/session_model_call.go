@@ -185,7 +185,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// for both context management and message expansion.
 	s.repairOrphanedToolResults(ctx, "before model request")
 	s.mu.Lock()
-	historyTurns := append([]schema.Turn{}, s.history...)
+	historyTurns := providerHistoryTurns(s.history)
 	s.mu.Unlock()
 
 	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
@@ -228,7 +228,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		const maxFoldAttempts = 2
 		for range maxFoldAttempts {
 			s.mu.Lock()
-			historyTurns = append([]schema.Turn{}, s.history...)
+			historyTurns = providerHistoryTurns(s.history)
 			preManageLen := len(historyTurns)
 			snapRevision := s.historyRevision
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
@@ -293,7 +293,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// corrects the boundary for whatever IT folds.
 	if !baselineSynced {
 		s.mu.Lock()
-		historyTurns = append([]schema.Turn{}, s.history...)
+		historyTurns = providerHistoryTurns(s.history)
 		if round == 0 {
 			s.turnHistoryBaseline = len(historyTurns)
 		}
@@ -1552,6 +1552,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		}
 	}
 	flushDeferredSteering()
+	for i := range history {
+		history[i] = providerHistoryMessage(history[i])
+	}
 	return history
 }
 

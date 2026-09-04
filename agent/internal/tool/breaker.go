@@ -110,6 +110,16 @@ func DisplayToolName(name string) string {
 	return "invalid tool name"
 }
 
+// WireToolName returns a provider-valid tool identity for replayed assistant
+// calls and tool results. It keeps readable names and replaces every other raw
+// or display identity with one fixed placeholder.
+func WireToolName(name string) string {
+	if IsReadableToolName(name) {
+		return name
+	}
+	return "invalid_tool_name"
+}
+
 // semanticCallSignature returns the call half of a semantic failure
 // fingerprint. Registered-tool normalization has already happened when this
 // is called, so it intentionally preserves meaningful zero values such as an

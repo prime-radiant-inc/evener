@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -44,6 +45,22 @@ func TestSalvageText_TruncatedToolCallArgs(t *testing.T) {
 		"content: # Plan\nlots of tex"
 	if got != want {
 		t.Fatalf("salvageText() = %q, want %q", got, want)
+	}
+}
+
+func TestSalvageTextProjectsUnreadableToolName(t *testing.T) {
+	const secret = "SALVAGED_PRIVATE_TOOL_NAME"
+	rawName := strings.Repeat(secret, 300)
+	partial := responseWith(toolCallPart(rawName, `{}`))
+
+	got := salvageText(partial)
+
+	want := "[incomplete tool call: invalid tool name — this call never executed]"
+	if got != want {
+		t.Fatalf("salvageText() bytes = %d, contains secret = %t, want %q", len(got), strings.Contains(got, secret), want)
+	}
+	if partial.ToolCalls()[0].Name != rawName {
+		t.Fatal("salvage projection mutated the partial response")
 	}
 }
 

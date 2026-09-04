@@ -119,6 +119,7 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for _, call := range calls {
 		displayName := tool.DisplayToolName(call.Name)
+		wireName := tool.WireToolName(call.Name)
 		content := fmt.Sprintf(
 			"Tool result unavailable: Evener was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
 			call.ID,
@@ -128,7 +129,7 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
 				ToolCallID: call.ID,
-				Name:       displayName,
+				Name:       wireName,
 				Content:    content,
 				IsError:    true,
 			},

@@ -1120,6 +1120,8 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 }
 
 func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit) error {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
