@@ -546,6 +546,9 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 	if len(olderItems) == 0 {
 		t.Fatal("saved turns/list continuation returned no older items")
 	}
+	if live.candidateListCalls != 1 {
+		t.Fatalf("saved turns/list continuation candidate lists = %d, want 1", live.candidateListCalls)
+	}
 	for _, item := range olderItems {
 		if initialIDs[item.ID] {
 			t.Fatalf("saved turns/list continuation repeated initial item %q", item.ID)
@@ -553,6 +556,20 @@ func TestHubRPCItemReadLiveEmptyUsesSavedPastFallback(t *testing.T) {
 		if item.Position == nil || item.Position.Entry >= minInitialEntry {
 			t.Fatalf("saved turns/list item %q position = %+v, want before initial entry %d", item.ID, item.Position, minInitialEntry)
 		}
+	}
+}
+
+func TestHubRPCItemTurnsListLiveEmptyWithoutSavedReturnsLivePage(t *testing.T) {
+	live := &localEmptyItemRPCSource{threadID: "no-saved-item-page"}
+	response, err := dispatchHubItemList(t.Context(), t, live, "local:no-saved-item-page")
+	if err != nil {
+		t.Fatalf("live-empty turns/list without saved history: %v", err)
+	}
+	if len(response.Data) != 0 || response.NextCursor != "" || response.PageUnit != appwire.TranscriptPageUnitItem {
+		t.Fatalf("live-empty turns/list response = %+v, want exhausted empty item page", response)
+	}
+	if live.candidateListCalls != 1 {
+		t.Fatalf("live-empty turns/list candidate lists = %d, want 1", live.candidateListCalls)
 	}
 }
 
@@ -575,6 +592,7 @@ type localEmptyItemRPCSource struct {
 	relayLifecycleSource
 	threadID           string
 	candidateReadCalls int
+	candidateListCalls int
 }
 
 func (*localEmptyItemRPCSource) ID() string { return "local" }
@@ -593,8 +611,9 @@ func (s *localEmptyItemRPCSource) ReadItemCandidates(context.Context, appwire.Th
 	return appsource.ItemCandidateResult{Exhausted: true}, nil
 }
 
-func (*localEmptyItemRPCSource) ListItemCandidates(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
-	return appsource.ItemCandidateResult{}, errors.New("cursor is not owned by live source")
+func (s *localEmptyItemRPCSource) ListItemCandidates(context.Context, appwire.ThreadTurnsListParams) (appsource.ItemCandidateResult, error) {
+	s.candidateListCalls++
+	return appsource.ItemCandidateResult{Exhausted: true}, nil
 }
 
 type rpcAtomicPagingFixture struct {
