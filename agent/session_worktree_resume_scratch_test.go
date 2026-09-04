@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -110,5 +111,35 @@ func TestResumeWorktreeReentry_RejectedRestoreDropsTheLaunchEnvironmentScratch(t
 	// lease's removal too.
 	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the launch environment's scratch %s survived the rejected restore: stat err = %v", scratch, err)
+	}
+}
+
+// A child session restores onto whatever environment its parent hands it —
+// the delegate-resume path hands the parent's own — and re-entry adopts the
+// scratch of the environment it re-roots from. No child persists a worktree,
+// so a child meta naming one is a corrupted record, and re-entering on it
+// would take the parent's scratch out from under the parent. The restore has
+// to refuse loudly and leave the handed-in environment owning what it owned.
+func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
+	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHCHILD000001")
+	cfg := sr.restoreConfig()
+	cfg.spawn.parentSessionID = "01PARENTSESSION00000000001"
+
+	sess, err := sr.restoreSessionOn(env, meta, cfg)
+	if err == nil {
+		sess.Close()
+		t.Fatal("a child session re-entered a persisted worktree, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "child") || !strings.Contains(err.Error(), meta.WorktreePath) {
+		t.Fatalf("refusal = %v, want it to name the child session and the worktree %s", err, meta.WorktreePath)
+	}
+	// The handed-in environment still owns its scratch: it is the caller's to
+	// dispose, and disposing it drops the directory.
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
+	}
+	env.DisposeUnadoptedScratch()
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}
 }

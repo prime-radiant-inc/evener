@@ -36,6 +36,16 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	if path == "" {
 		return nil
 	}
+	// A child session restores onto whatever environment its parent hands it,
+	// often the parent's own (a delegate with neither a working dir nor a box
+	// of its own), and the re-root below adopts that environment's scratch. No
+	// child ever persists a worktree — delegate lanes belong to the parent's
+	// lifecycle and a child cannot call manage_worktree — so a child meta naming
+	// one is a corrupted or hand-edited record. Refuse loudly: re-entering would
+	// take the parent's scratch out from under the parent.
+	if parentID := s.cfg.spawn.parentSessionID; parentID != "" {
+		return fmt.Errorf("worktree re-entry: child session %s of %s cannot re-enter %s: a child never persists a worktree", s.id, parentID, path)
+	}
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return nil // worktree re-entry is a local-execution-environment-only feature
