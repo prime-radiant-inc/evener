@@ -91,3 +91,70 @@ func TestGCPADCOmitsQuotaProjectWithoutTheVariable(t *testing.T) {
 		t.Fatalf("header set without a project: %v", req.Header)
 	}
 }
+
+const storedUserJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
+
+func storedRes(instance, value string) registry.Resolved {
+	return registry.Resolved{Instance: instance, Credential: registry.Credential{Value: value, Source: "store"}}
+}
+
+func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
+	var fromJSON [][]byte
+	finds := 0
+	a := &GCPADC{
+		FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+			finds++
+			return nil, errors.New("must not be consulted for a stored credential")
+		},
+		CredentialsFromJSON: func(_ context.Context, data []byte, scopes ...string) (*google.Credentials, error) {
+			if len(scopes) != 1 || scopes[0] != cloudPlatformScope {
+				t.Fatalf("scopes = %v", scopes)
+			}
+			fromJSON = append(fromJSON, data)
+			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
+		},
+	}
+	for range 2 {
+		req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+		if err := a.Apply(context.Background(), req, storedRes("vertex", storedUserJSON)); err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer json-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+	}
+	if finds != 0 || len(fromJSON) != 1 || string(fromJSON[0]) != storedUserJSON {
+		t.Fatalf("finds=%d fromJSON=%q; want the JSON parsed once and ADC never consulted", finds, fromJSON)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req, storedRes("vertex", `{"type":"authorized_user","client_id":"other"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(fromJSON) != 2 {
+		t.Fatalf("a changed stored value must rebuild the token source; parses = %d", len(fromJSON))
+	}
+}
+
+func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
+	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
+		return nil, errors.New("invalid character")
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, storedRes("vertex", "{"))
+	var cfg *llm.ConfigurationError
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateCredentialJSON(t *testing.T) {
+	if err := ValidateCredentialJSON([]byte(storedUserJSON)); err != nil {
+		t.Fatalf("authorized_user JSON rejected: %v", err)
+	}
+	if err := ValidateCredentialJSON([]byte(`{"type":"authorized_user"`)); err == nil {
+		t.Fatal("truncated JSON accepted")
+	}
+	if err := ValidateCredentialJSON([]byte(`{"hello":"world"}`)); err == nil {
+		t.Fatal("JSON with no credential type accepted")
+	}
+}
