@@ -33,12 +33,20 @@ type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
 // is the mutation's first write, so this is the one place that turns away a
 // root which resolves against whatever directory the process happens to be in
 // — an empty root (none could be resolved) or a relative one. Calling
-// storeRootError used to be each writer's own job, and not one of the eleven
-// that mutate the store did it, so every one of them planted a store in
-// somebody's project. Here a writer cannot forget the check without also
-// forgetting the lock. Paths that read or create something before they lock
-// still need their own check: see resolveForLaunch, prepareBundledStore,
-// SeedDefaultMarketplaces and registryForSweep.
+// storeRootError used to be each caller's own job: the nine writers that take
+// the lock and then write (install, upgrade, remove, the two flag setters, gc,
+// and the three marketplace mutations) skipped it and planted a store in
+// somebody's project, and Browse, which clones a marketplace lazily, skipped
+// it too. Seeding checked for itself and still does. Here a writer cannot
+// forget the check without also forgetting the lock.
+//
+// Locking is not the whole of it. A caller that reads or creates something
+// before it locks needs its own check and keeps one: resolveForLaunch never
+// locks at all, prepareBundledStore creates the store directories first,
+// SeedDefaultMarketplaces stats an ambient marketplaces file that would answer
+// "already seeded", and the two update sweeps (registryForSweep) enumerate the
+// registry first — on a broken root they wrote nothing, they just reported a
+// clean sweep of a store that was not there.
 func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
 	if err := m.storeRootError(); err != nil {
 		return nil, err
