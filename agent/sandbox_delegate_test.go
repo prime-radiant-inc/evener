@@ -471,3 +471,44 @@ func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
 		t.Errorf("delegate isolation rollback retained scratch %s: stat err = %v", scratch, err)
 	}
 }
+
+// Worktree re-entry (a resume of a session that was working in a worktree)
+// REPLACES the session's environment with a clone rooted in that worktree, and
+// initSessionState's snapshot then mints THAT clone's scratch. The caller's own
+// failure path can only dispose the environment it handed in, so a restore that
+// fails after re-entry has to drop what it re-rooted onto itself.
+func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) {
+	lane, _ := sbxLane(t)
+	launchDir := t.TempDir()
+	stateDir := t.TempDir()
+	meta := artifactRestoreMeta(t)
+	meta.WorktreePath = lane
+	meta.WorktreeRestoreRoot = launchDir
+
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	boom := errors.New("restore failed after the snapshot")
+	cfg := artifactRestoreConfig(t, stateDir)
+	// Production's snapshot path, so the re-entered environment mints its scratch
+	// before the fault fails the restore after it.
+	cfg.testOnly.skipGitSnapshot = false
+	cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	launchEnv := execenv.NewLocalExecutionEnvironment(launchDir)
+	if _, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), launchEnv, meta, cfg); !errors.Is(err, boom) {
+		t.Fatalf("restore error = %v, want %v", err, boom)
+	}
+	// The launch environment belongs to the caller, whose own failure path
+	// disposes it (run.go, serve.go, restoreIdle); everything left after that is
+	// the restore's own.
+	launchEnv.DisposeUnadoptedScratch()
+
+	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
+		t.Errorf("failed worktree re-entry restore left scratch %v, which nothing will ever release", leaked)
+	}
+}

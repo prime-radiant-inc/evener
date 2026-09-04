@@ -977,6 +977,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.resumeWorktreeReentry(meta); err != nil {
 		return nil, err
 	}
+	// Re-entry REPLACES the environment with a clone rooted in the persisted
+	// worktree, and initSessionState's snapshot below is what mints that clone's
+	// scratch. A caller's own failure path can only dispose the environment it
+	// handed in (it has no reference to the clone), so a restore that fails from
+	// here on disposes what it re-rooted onto itself — otherwise the directory
+	// and its live lease outlive every owner. Never the caller's own env: that
+	// one is the caller's to dispose or to keep.
+	reenteredEnv := s.env
+	defer func() {
+		if restoreComplete || reenteredEnv == env {
+			return
+		}
+		if local, ok := reenteredEnv.(*execenv.LocalExecutionEnvironment); ok {
+			local.DisposeUnadoptedScratch()
+		}
+	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
