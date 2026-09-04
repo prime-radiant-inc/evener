@@ -424,7 +424,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         const refs = needsYouRefs(rows);
         const current = focusedSessionRef();
         if (
-          state.mode === "v1" &&
+          (state.mode === "v1" || state.mode === "v2") &&
           (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
         ) {
           const page = nextPageFor(state);

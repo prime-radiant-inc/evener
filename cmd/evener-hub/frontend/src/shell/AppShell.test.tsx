@@ -766,6 +766,98 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: row.ref }));
 });
 
+test("v2 Mod+J loads the next needs-you page after the focused last row", async () => {
+  const current = {
+    ...TREE_SESSION,
+    ref: "local:page-one-last",
+    session_id: "page-one-last",
+    title: "Page one last",
+    state: "awaiting",
+  };
+  const next = {
+    ...TREE_SESSION,
+    ref: "local:page-two-first",
+    session_id: "page-two-first",
+    title: "Page two first",
+    state: "awaiting",
+  };
+  const firstPageRows = [
+    ...Array.from({ length: 49 }, (_, index) => ({
+      ...TREE_SESSION,
+      ref: `local:page-one-${index}`,
+      session_id: `page-one-${index}`,
+      title: `Page one ${index}`,
+      state: "awaiting",
+    })),
+    current,
+  ];
+  window.history.pushState({}, "", `/s/${current.ref}`);
+  installLocationForRoute(current.ref);
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: current.ref }));
+
+  const firstPageKey = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(firstPageKey), {
+    key: firstPageKey,
+    data: { generation_id: "generation_test", revision: 1, sessions: firstPageRows, remaining: 1, truncated: false },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "page-one",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  const loadSection = vi.fn(async (_section: "needs_you", offset = 0) => {
+    const pageKey = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: next.ref } as const;
+    const loadedResources = new Map(navigationStore.getState().resources);
+    loadedResources.set(keyID(pageKey), {
+      key: pageKey,
+      data: { generation_id: "generation_test", revision: 1, sessions: [next], remaining: 0, truncated: false },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "page-two",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    loadedResources.set(keyID(locationKey), {
+      key: locationKey,
+      data: {
+        generation_id: "generation_test",
+        revision: 1,
+        ref: next.ref,
+        top_level_ref: next.ref,
+        top_level: true,
+        session: { ...next, children: [] },
+      },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "page-two-location",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ resources: loadedResources });
+    return navigationStore.getState().resources.get(keyID(pageKey)) as never;
+  });
+  act(() => navigationStore.setState({ mode: "v2", resources, loadSection }));
+
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  expect(loadSection).toHaveBeenCalledWith("needs_you", 50);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: next.ref }));
+});
+
 function seedColdModJPage(ref = "local:late") {
   const row = { ...TREE_SESSION, ref, session_id: ref, title: "Late row", state: "awaiting" };
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;

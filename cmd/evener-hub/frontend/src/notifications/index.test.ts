@@ -192,10 +192,10 @@ function armPrefs(loudScope: "asks" | "all" = "all"): void {
 
 // Boot the engine with `baseline` as its first attention snapshot, then settle
 // so that snapshot is the established baseline (electLeader ⇒ leader = true).
-// The navigation store must reach mode "v1" (a capability-advertising client +
-// a valid manifest fetch) before the baseline is delivered, because
-// onNavigationAttention returns early while mode !== "v1" — so the baseline
-// is delivered through the client's attention notification after the manifest
+// The navigation store must reach a supported mode (a capability-advertising
+// client + a valid manifest fetch) before the baseline is delivered, because
+// onNavigationAttention returns early outside v1/v2 — so the baseline is
+// delivered through the client's attention notification after the manifest
 // settles, establishing prevNavigationAttention for later transition detection.
 //
 // onNavigationAttention skips a first snapshot whose changed list is empty
@@ -433,6 +433,25 @@ describe("edge-fire", () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
     navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting")]) });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  test("v2 fires OS and sound once for a newly attention-needed session", () => {
+    armPrefs("all");
+    initNotifications();
+    setFocused(false);
+    setLeaderForTests(true);
+    navigationStore.setState({
+      mode: "v2",
+      attention: attentionFromNodes([node("local:baseline", "awaiting")]),
+    });
+    expect(fires()).toEqual({ os: 0, sound: 0 });
+
+    const next = attentionFromNodes([node("local:baseline", "awaiting"), node("local:new", "awaiting")]);
+    navigationStore.setState({ attention: next });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+
+    navigationStore.setState({ attention: next });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
