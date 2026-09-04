@@ -570,7 +570,9 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	}
 	// The resolver rejects an unresolved root before it reads or builds
 	// anything; this is the same guard on the function that does the creating,
-	// for any caller that arrives here directly. Checked after the digest so a
+	// for any caller that arrives here directly. acquireStoreLock refuses the
+	// same roots, but the store directories below are created before the lock
+	// is taken, so the guard has to be here too. Checked after the digest so a
 	// name that is not bundled at all still reports fs.ErrNotExist rather than
 	// a store complaint.
 	if err := m.storeRootError(); err != nil {

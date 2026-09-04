@@ -22,13 +22,35 @@ var (
 	lockSleep = time.Sleep
 )
 
+// lockAcquirer is acquireLock's signature, which the per-area test seams
+// (installAcquireLock and its siblings) stand in for.
+type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
+
+// acquireStoreLock refuses a store root that cannot be used, then takes the
+// store lock at lockPath through acquire.
+//
+// Every mutation of the store passes through here, and creating the lock file
+// is the mutation's first write, so this is the one place that turns away a
+// root which resolves against whatever directory the process happens to be in
+// — an empty root (none could be resolved) or a relative one. A writer cannot
+// forget the check without also forgetting the lock, which is what the eleven
+// writers that predate this did: each was expected to call storeRootError for
+// itself and all but three did not, and a store appeared in somebody's
+// project. Read paths that act before any lock still need their own check;
+// see resolveForLaunch, prepareBundledStore and SeedDefaultMarketplaces.
+func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
+	if err := m.storeRootError(); err != nil {
+		return nil, err
+	}
+	return acquire(ctx, lockPath, timeout)
+}
+
 // acquireBundledLock takes the bundled cache's lock for one mutation of
 // <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
-// so whatever the acquirer the store lock goes through grows — the store-root
-// check Manager.acquireStoreLock centralizes — has one place to land for this
-// lock too. Callers reaching here have already been through storeRootError.
+// and it goes through acquireStoreLock so the store-root check lands on this
+// lock the same way it lands on the store lock.
 func (m *Manager) acquireBundledLock(ctx context.Context, timeout time.Duration) (func(), error) {
-	return acquireLock(ctx, m.bundledLockPath(), timeout)
+	return m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
 }
 
 // acquireLock takes an exclusive flock on lockPath, retrying with capped

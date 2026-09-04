@@ -25,7 +25,10 @@ func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
 	// the marketplaces file and take its lock in whatever directory the
 	// process happens to be in. Launches seed on the way past and carry a
 	// seeding failure as a warning, so refusing here is what keeps a store
-	// out of somebody's project.
+	// out of somebody's project. acquireStoreLock refuses the same roots, but
+	// only once this gets that far: the stat below is a read of an ambient
+	// known_marketplaces.json that would answer "already seeded" and skip the
+	// lock entirely.
 	if err := m.storeRootError(); err != nil {
 		return false, err
 	}
@@ -34,7 +37,7 @@ func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	release, err := marketplaceAcquireLock(ctx, m.lockPath(), 30*time.Second)
+	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return false, err
 	}
