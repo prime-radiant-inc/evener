@@ -313,3 +313,45 @@ func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
 		t.Fatalf("the root's process after release: %v", err)
 	}
 }
+
+// The stable controller's own close policy tears down every resident runtime
+// it still holds. Those runtimes are child sessions on the root's environment
+// or on clones sharing its process table, so the policy is a child teardown
+// like every other: it must not reach the root's environment.
+func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	root := &Session{delegateController: c}
+	c.rootRuntime = root
+	// The environment the resident runs on stands in for the root's own: the
+	// resident does not own it, and the root is still working in it.
+	shared := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(shared.Cleanup)
+	pid, done, release := startInFlightProcess(t, shared)
+	sharedScratch := heldParentScratch(t, shared)
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	resident, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), shared, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the shared environment: %v", err)
+	}
+	seedDelegateReclaimRuntimeSession(t, c, "dlg_resident", "", time.Unix(5, 0).UTC(), false, false, resident)
+
+	if err := c.closeRuntimeTree(context.Background(), nil); err != nil {
+		t.Fatalf("closeRuntimeTree: %v", err)
+	}
+
+	if got := resident.State(); got != SessionClosed {
+		t.Errorf("resident runtime state after the controller close = %q, want %q", got, SessionClosed)
+	}
+	assertInFlightProcessSurvived(t, "the controller close", pid, done)
+	assertParentScratchUntouched(t, "the controller close", sharedScratch)
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the root's process after release: %v", err)
+	}
+}

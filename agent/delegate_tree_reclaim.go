@@ -236,12 +236,7 @@ func (c *delegateTreeController) runtimeReclamationEntryLocked(id string) delega
 	entry := delegateRuntimeReclamationEntry{delegateID: id}
 	if aggregate != nil {
 		entry.childSessionID = aggregate.Descriptor.ChildSessionID
-		parentID := aggregate.Descriptor.ParentDelegateID
-		if parentID == "" {
-			entry.ownerRuntime = c.rootRuntime
-		} else if parent := c.live[parentID]; parent != nil {
-			entry.ownerRuntime = parent.runtime
-		}
+		entry.ownerRuntime = c.ownerRuntimeLocked(aggregate)
 	}
 	if live != nil {
 		entry.runtime = live.runtime
@@ -347,6 +342,20 @@ func (c *delegateTreeController) reclamationCoversLocked(delegateID string) bool
 	return false
 }
 
+// ownerRuntimeLocked returns the resident session that tracks the delegate's
+// runtime as a child: the root runtime for a root delegate, otherwise the
+// parent delegate's runtime, or nil when the parent is not resident.
+func (c *delegateTreeController) ownerRuntimeLocked(aggregate *delegatestore.Aggregate) *Session {
+	parentID := aggregate.Descriptor.ParentDelegateID
+	if parentID == "" {
+		return c.rootRuntime
+	}
+	if parent := c.live[parentID]; parent != nil {
+		return parent.runtime
+	}
+	return nil
+}
+
 func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 	if s == nil || s.delegateController == nil {
 		return errors.New("delegate controller is unavailable")
@@ -367,14 +376,8 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		if entry.runtime == nil {
 			continue
 		}
-		// The owner's record says whether the runtime's environment was built
-		// for it; a runtime with no record is treated as sharing, which touches
-		// nothing beyond the session's own resources.
-		ownsEnv := false
+		ownsEnv := entry.ownerRuntime.ownsChildEnvironment(entry.runtime)
 		if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
-			if sub := entry.ownerRuntime.subagents.get(entry.childSessionID); sub != nil && sub.sess == entry.runtime {
-				ownsEnv = sub.ownsEnv
-			}
 			entry.ownerRuntime.subagents.removeSession(entry.childSessionID, entry.runtime)
 		}
 		if closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose; closeRuntime != nil {

@@ -234,6 +234,19 @@ func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool
 	}
 }
 
+// ownsChildEnvironment reports whether child, a session this one tracks, runs
+// on an environment built for it (subagent.ownsEnv) rather than on this
+// session's own. A child this session does not track answers false: the safe
+// answer, since a teardown then touches nothing beyond the child's own
+// resources.
+func (s *Session) ownsChildEnvironment(child *Session) bool {
+	if s == nil || s.subagents == nil || child == nil {
+		return false
+	}
+	sub := s.subagents.get(child.id)
+	return sub != nil && sub.sess == child && sub.ownsEnv
+}
+
 // disposeUnadoptedSubagentSession tears down a child that never became a
 // tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
 // No owner is left to hand anything to, so its owned scratch goes with it.

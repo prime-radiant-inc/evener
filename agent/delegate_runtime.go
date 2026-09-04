@@ -2258,7 +2258,7 @@ func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.closeRuntimeTree(ctx, func(child *Session) {
+	return s.delegateController.closeRuntimeTree(ctx, func(child *Session, _ bool) {
 		child.close(ctx, false)
 	})
 }
