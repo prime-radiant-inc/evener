@@ -106,7 +106,7 @@ func TestCuratedOverlay_Transports(t *testing.T) {
 		t.Fatalf("vertex-anthropic: %+v", va)
 	}
 	vg := l.Transports[PresetVertexGemini]
-	if vg.Auth != AuthGCPADC || vg.Endpoint != "/publishers/google/models/{model}:generateContent" || vg.StreamEndpoint != "/publishers/google/models/{model}:streamGenerateContent?alt=sse" {
+	if vg.Auth != AuthGCPADC || vg.Endpoint != "/publishers/google/models/{model}:generateContent" || vg.StreamEndpoint != "/publishers/google/models/{model}:streamGenerateContent?alt=sse" || vg.ModelsEndpoint != "/publishers/google/models" || vg.CountTokensEndpoint != EndpointUnsupported {
 		t.Fatalf("vertex-gemini: %+v", vg)
 	}
 	bm := l.Transports[PresetBedrockMantleOpenAI]

@@ -27,7 +27,9 @@ body = { anthropic_version = "vertex-2023-10-16" }
 auth = "gcp-adc"
 endpoint = "/publishers/google/models/{model}:generateContent"
 stream_endpoint = "/publishers/google/models/{model}:streamGenerateContent?alt=sse"
-models_endpoint = "-"
+# Host-relative on v1beta1 (the google protocol composes it; spec §2.3):
+# the publisher listing is not project-scoped and does not exist on v1.
+models_endpoint = "/publishers/google/models"
 count_tokens_endpoint = "-"
 
 [transports."bedrock-mantle-openai"]
