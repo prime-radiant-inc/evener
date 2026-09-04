@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
 import { formatSequence, parseChord, serializeChord } from "./chord";
-import { DEFAULT_BINDINGS, registerDefaultBindings, SETTINGS_SCOPE } from "./defaults";
+import {
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  CHEATSHEET_SCOPE,
+  DEFAULT_BINDINGS,
+  registerDefaultBindings,
+  SETTINGS_SCOPE,
+} from "./defaults";
 import { createKeybindingDispatcher, type KeybindingDispatcher } from "./dispatcher";
 import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
@@ -27,6 +33,9 @@ describe("default binding map", () => {
       ACTIONS.transcriptScrollTop,
       ACTIONS.transcriptScrollBottom,
       ACTIONS.settingsClose,
+      ACTIONS.cheatsheetToggle,
+      ACTIONS.cheatsheetToggle, // the "?" character-key trigger is a second entry for the same action
+      ACTIONS.cheatsheetClose,
     ]);
   });
 
@@ -55,10 +64,18 @@ describe("default binding map", () => {
     [ACTIONS.transcriptPageDown, "Alt+Shift+ArrowDown"],
     [ACTIONS.transcriptScrollTop, "Alt+Home"],
     [ACTIONS.transcriptScrollBottom, "Alt+End"],
+    [ACTIONS.cheatsheetToggle, "$mod+/"],
+    [ACTIONS.cheatsheetClose, "[Control]+[Alt]+[Shift]+[Meta]+Escape"],
   ])("%s is bound to %s", (actionId, chord) => {
     const binding = DEFAULT_BINDINGS.find((b) => b.actionId === actionId);
     expect(binding).toBeDefined();
     expect(serializeChord(parseChord(String(binding?.chord)))).toBe(serializeChord(parseChord(chord)));
+  });
+
+  test('the "?" trigger lists Shift as OPTIONAL (every common layout types ? with Shift held; a bare binding would never fire)', () => {
+    const binding = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
+    expect(binding?.actionId).toBe(ACTIONS.cheatsheetToggle);
+    expect(serializeChord(parseChord(String(binding?.chord)))).toBe(serializeChord(parseChord("[Shift]+?")));
   });
 
   test("editable-target policy matches today's per-chord behavior", () => {
@@ -83,12 +100,25 @@ describe("default binding map", () => {
     expect(policy.get(ACTIONS.transcriptPageDown)).toBe(false);
     expect(policy.get(ACTIONS.transcriptScrollTop)).toBe(false);
     expect(policy.get(ACTIONS.transcriptScrollBottom)).toBe(false);
+    // cheatsheet.toggle's $mod+/ fires from editable targets (never collides
+    // with typing); the "?" character-key trigger does NOT (it is itself a
+    // printable character). cheatsheet.close mirrors settings.close.
+    // (Asserted per-entry, not via the policy map: the two toggle entries
+    // share one action id.)
+    const toggleBase = DEFAULT_BINDINGS.find((b) => b.id === ACTIONS.cheatsheetToggle);
+    const toggleQuestion = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
+    const close = DEFAULT_BINDINGS.find((b) => b.id === ACTIONS.cheatsheetClose);
+    expect(toggleBase?.allowInEditable).toBe(true);
+    expect(toggleQuestion?.allowInEditable).toBe(false);
+    expect(close?.allowInEditable).toBe(true);
   });
 
-  test("settings.close is scope-gated, not global", () => {
-    const binding = DEFAULT_BINDINGS.find((b) => b.actionId === ACTIONS.settingsClose);
-    expect(binding?.scope).toBe(SETTINGS_SCOPE);
-    for (const other of DEFAULT_BINDINGS.filter((b) => b.actionId !== ACTIONS.settingsClose)) {
+  test("settings.close and cheatsheet.close are scope-gated, not global", () => {
+    expect(DEFAULT_BINDINGS.find((b) => b.actionId === ACTIONS.settingsClose)?.scope).toBe(SETTINGS_SCOPE);
+    expect(DEFAULT_BINDINGS.find((b) => b.actionId === ACTIONS.cheatsheetClose)?.scope).toBe(CHEATSHEET_SCOPE);
+    for (const other of DEFAULT_BINDINGS.filter(
+      (b) => b.actionId !== ACTIONS.settingsClose && b.actionId !== ACTIONS.cheatsheetClose,
+    )) {
       expect(other.scope ?? GLOBAL_SCOPE).toBe(GLOBAL_SCOPE);
     }
   });
@@ -122,6 +152,16 @@ describe("default binding map", () => {
     // settings.open keeps the default suppression too (the p4 plan, Design
     // decision 2: allowInModal: false).
     expect(policy.get(ACTIONS.settingsOpen)).toBe(false);
+    // cheatsheet.toggle's $mod+/ is exempt so the same chord toggles the
+    // overlay CLOSED while it (or another modal) is open; the "?" trigger
+    // and cheatsheet.close keep the default suppression (the OverlayPanel's
+    // own Escape handler owns close while focus is inside the dialog).
+    const toggleBase = DEFAULT_BINDINGS.find((b) => b.id === ACTIONS.cheatsheetToggle);
+    const toggleQuestion = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
+    const close = DEFAULT_BINDINGS.find((b) => b.id === ACTIONS.cheatsheetClose);
+    expect(toggleBase?.allowInModal).toBe(true);
+    expect(toggleQuestion?.allowInModal ?? false).toBe(false);
+    expect(close?.allowInModal ?? false).toBe(false);
   });
 });
 
@@ -211,6 +251,27 @@ describe("default bindings through the dispatcher", () => {
     registry.getState().pushScope(SETTINGS_SCOPE);
     window.dispatchEvent(keydown({ key: "Escape", code: "Escape" }));
     expect(calls).toEqual([ACTIONS.settingsClose]);
+  });
+
+  test('the "?" trigger fires with or without Shift held, and is suppressed in an editable target', () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "?", code: "Slash", shiftKey: true }));
+    window.dispatchEvent(keydown({ key: "?", code: "Slash" }));
+    expect(calls).toEqual([ACTIONS.cheatsheetToggle, ACTIONS.cheatsheetToggle]);
+    calls = [];
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.dispatchEvent(keydown({ key: "?", code: "Slash", shiftKey: true }));
+    expect(calls).toEqual([]);
+  });
+
+  test("Escape only closes the cheatsheet while the cheatsheet scope is pushed", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "Escape", code: "Escape" }));
+    expect(calls).toEqual([]);
+    registry.getState().pushScope(CHEATSHEET_SCOPE);
+    window.dispatchEvent(keydown({ key: "Escape", code: "Escape" }));
+    expect(calls).toEqual([ACTIONS.cheatsheetClose]);
   });
 
   test("Mod+B is suppressed in an editable target while Mod+K still fires", () => {

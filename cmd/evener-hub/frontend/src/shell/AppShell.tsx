@@ -22,6 +22,7 @@ import { navigationStore, useNavigationStore } from "../stores/navigation/store"
 import { isNavigationUnavailable, keyID } from "../stores/navigation/types";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
@@ -654,6 +655,11 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         <ConnectionBanner state={connectionState} delayMs={bannerDelayMs} />
         <ToastRegion />
         <CommandPalette />
+        {/* The cheatsheet overlay (Phase 4a): desktop-only, so on a touch
+            viewport no cheatsheet action is ever registered and its trigger
+            chords stay inert - RailHost's rail.toggle no-registration
+            pattern. */}
+        {!isMobile && <CheatsheetOverlay />}
         <div className={styles.content}>
           {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole

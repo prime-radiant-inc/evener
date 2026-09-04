@@ -51,6 +51,14 @@ import { type KeySequence, parseChord, serializeChord, withOptionalModifier } fr
 import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export const SETTINGS_SCOPE = "settings";
+export const CHEATSHEET_SCOPE = "cheatsheet";
+
+/** The default-map id of the "?" character-key trigger for the cheatsheet
+ * overlay. It is the one CONDITIONAL entry in the map: registered only while
+ * the characterKeyTriggers pref (stores/prefs.ts) is on - the WCAG 2.1.4
+ * character-key turn-off. shell/cheatsheet/cheatsheetController.ts's
+ * reconcile owns that invariant; this module only names the entry. */
+export const CHARACTER_KEY_TRIGGER_BINDING_ID = "cheatsheet.toggle#question";
 
 /** A default-map entry: a BindingInput plus the module-internal
  * legacyEitherMod marker (stripped before registerBinding - see modPair). */
@@ -210,6 +218,53 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     scope: SETTINGS_SCOPE,
     allowInEditable: true,
   },
+  // Phase 4a (the p4 plan's Design decision 3): the cheatsheet overlay's
+  // triggers. $mod+/ is the primary (Slack precedent): not a printable
+  // character, so it fires from editable targets, and allowInModal so the
+  // same chord toggles the overlay CLOSED while it is open (the dialog's
+  // aria-modal would otherwise suppress it). Strict chord, NO
+  // legacyEitherMod - a new binding with no legacy listener to match.
+  {
+    id: ACTIONS.cheatsheetToggle,
+    actionId: ACTIONS.cheatsheetToggle,
+    title: "Show the keyboard shortcuts overlay",
+    chord: "$mod+/",
+    allowInEditable: true,
+    allowInModal: true,
+  },
+  // "?" is the secondary trigger (Design decision 3). It IS a printable
+  // character, so it never fires from an editable target (allowInEditable
+  // stays false) or over a modal. The chord lists Shift as OPTIONAL because
+  // tinykeys rejects an event carrying any modifier the binding does not
+  // name, and every common layout types "?" WITH Shift held - a bare "?"
+  // binding would never fire. Display drops optional modifiers
+  // (chordDisplayKeys), so the row still reads "?". The entry is
+  // CONDITIONAL: shell/cheatsheet/cheatsheetController.ts keeps it
+  // registered only while the characterKeyTriggers pref is on.
+  // Listed SECOND for the action so defaultInputFor (overrides.ts) keeps
+  // the $mod+/ entry's policy flags for overrides.
+  {
+    id: CHARACTER_KEY_TRIGGER_BINDING_ID,
+    actionId: ACTIONS.cheatsheetToggle,
+    title: "Show the keyboard shortcuts overlay",
+    chord: "[Shift]+?",
+    allowInEditable: false,
+  },
+  // The overlay's own Escape, scope-gated exactly like settings.close: the
+  // CheatsheetOverlay component pushes CHEATSHEET_SCOPE while it is open.
+  // In practice the OverlayPanel's own Escape handler claims the key first
+  // (it preventDefaults, which this binding's default
+  // ignoreIfDefaultPrevented gate then honors); this binding is the
+  // window-level backstop for a keydown whose target sits outside the
+  // dialog, and makes the close chord remappable like every other.
+  {
+    id: ACTIONS.cheatsheetClose,
+    actionId: ACTIONS.cheatsheetClose,
+    title: "Close the keyboard shortcuts overlay",
+    chord: "[Control]+[Alt]+[Shift]+[Meta]+Escape",
+    scope: CHEATSHEET_SCOPE,
+    allowInEditable: true,
+  },
 ];
 
 // tinykeys resolves "$mod" to Meta on Apple platforms and Control everywhere
@@ -285,6 +340,7 @@ export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, 
 }
 
 export interface DefaultBindingShape {
+  id: string;
   scope: string;
   sequence: KeySequence;
 }
@@ -301,6 +357,7 @@ export function defaultBindingShapesForAction(actionId: string): DefaultBindingS
     const pair = modPair(input);
     for (const entry of pair ?? [input]) {
       shapes.push({
+        id: entry.id,
         scope: entry.scope ?? GLOBAL_SCOPE,
         sequence: typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord,
       });
@@ -310,6 +367,7 @@ export function defaultBindingShapesForAction(actionId: string): DefaultBindingS
 }
 
 export interface DefaultChordInfo {
+  id: string;
   scope: string;
   serialized: string;
 }
@@ -319,6 +377,7 @@ export interface DefaultChordInfo {
  * customized-marker comparison. */
 export function defaultBindingChordsForAction(actionId: string): DefaultChordInfo[] {
   return defaultBindingShapesForAction(actionId).map((shape) => ({
+    id: shape.id,
     scope: shape.scope,
     serialized: serializeChord(shape.sequence),
   }));

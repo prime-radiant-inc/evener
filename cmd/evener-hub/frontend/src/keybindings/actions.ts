@@ -24,6 +24,11 @@ export const ACTIONS = {
   // above.
   settingsOpen: "settings",
   settingsClose: "settings.close",
+  // Phase 4a (the p4 plan's Design decision 3): the cheatsheet overlay's
+  // open/toggle and close. toggle's handler lives in the CheatsheetOverlay
+  // component (shell/cheatsheet/), close's next to it, scope-gated.
+  cheatsheetToggle: "cheatsheet.toggle",
+  cheatsheetClose: "cheatsheet.close",
 } as const;
 
 export type ActionId = (typeof ACTIONS)[keyof typeof ACTIONS];

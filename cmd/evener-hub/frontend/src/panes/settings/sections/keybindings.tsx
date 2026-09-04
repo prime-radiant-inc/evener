@@ -1,23 +1,27 @@
-// Settings -> Keybindings: a READ-ONLY listing of the effective bindings.
-// The action list is sourced live from the keybindings module's default map
-// (DEFAULT_BINDINGS is also the validator's action universe), never a
-// hand-maintained copy - the survey's stale-HELP_ROWS lesson. The chords come
-// from the live registry, so hub overrides applied by the keybindings store
-// show up the moment they reconcile. Editing affordances are deliberately
-// absent; the shortcuts editor is a later phase.
+// Settings -> Keybindings: a READ-ONLY listing of the effective bindings,
+// plus the character-key-triggers toggle. The action list and the per-action
+// display binding are sourced from keybindings/display.ts - the same module
+// the cheatsheet overlay reads - never a hand-maintained copy (the survey's
+// stale-HELP_ROWS lesson). The chords come from the live registry, so hub
+// overrides applied by the keybindings store show up the moment they
+// reconcile. Editing affordances are deliberately absent; the shortcuts
+// editor is a later phase (4b).
 
 import { useStore } from "zustand";
 import { chordDisplayKeys, serializeChord } from "../../../keybindings/chord";
-import { DEFAULT_BINDINGS, defaultBindingChordsForAction } from "../../../keybindings/defaults";
-import { type Binding, keybindingsRegistry } from "../../../keybindings/registry";
+import { ACTION_DISPLAY_ROWS, displayBindingFor, isActionCustomized } from "../../../keybindings/display";
+import { keybindingsRegistry } from "../../../keybindings/registry";
 import { useKeybindingsStore } from "../../../stores/keybindings";
-import { KeyHint } from "../../../widgets";
+import { prefsStore, usePrefsStore } from "../../../stores/prefs";
+import { KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
 const CLASS = {
   root: requireClass(styles.root, "keybindings.module.css", "root"),
   intro: requireClass(styles.intro, "keybindings.module.css", "intro"),
+  toggle: requireClass(styles.toggle, "keybindings.module.css", "toggle"),
+  help: requireClass(styles.help, "keybindings.module.css", "help"),
   status: requireClass(styles.status, "keybindings.module.css", "status"),
   warningList: requireClass(styles.warningList, "keybindings.module.css", "warningList"),
   error: requireClass(styles.error, "keybindings.module.css", "error"),
@@ -29,52 +33,12 @@ const CLASS = {
   chord: requireClass(styles.chord, "keybindings.module.css", "chord"),
 };
 
-interface ActionRow {
-  actionId: string;
-  title: string;
-}
-
-// One row per action, in default-map order. Module-level because it derives
-// entirely from the compiled-in default map; the effective chord each row
-// shows is read from the live registry at render.
-const ACTION_ROWS: readonly ActionRow[] = (() => {
-  const seen = new Set<string>();
-  const rows: ActionRow[] = [];
-  for (const input of DEFAULT_BINDINGS) {
-    if (seen.has(input.actionId)) continue;
-    seen.add(input.actionId);
-    rows.push({ actionId: input.actionId, title: input.title });
-  }
-  return rows;
-})();
-
-/** The binding to display for an action: the override when present, else the
- * platform base entry (its `#mod-twin` shows the same chord on this
- * platform), else whatever binding the action has left. */
-function displayBindingFor(bindings: readonly Binding[], actionId: string): Binding | undefined {
-  const owned = bindings.filter((b) => b.actionId === actionId);
-  return owned.find((b) => b.id === `${actionId}#override`) ?? owned.find((b) => b.id === actionId) ?? owned[0];
-}
-
-/** Whether the action's effective bindings differ from its default map
- * entries - including the unbound (override `chord: null`) case, where the
- * effective set is empty. */
-function isCustomized(bindings: readonly Binding[], actionId: string): boolean {
-  const effective = bindings
-    .filter((b) => b.actionId === actionId)
-    .map((b) => `${b.scope} ${serializeChord(b.chord)}`)
-    .sort();
-  const defaults = defaultBindingChordsForAction(actionId)
-    .map((d) => `${d.scope} ${d.serialized}`)
-    .sort();
-  return effective.length !== defaults.length || effective.some((entry, i) => entry !== defaults[i]);
-}
-
 export function KeybindingsSection() {
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
   const hubError = useKeybindingsStore((s) => s.hubError);
   const warnings = useKeybindingsStore((s) => s.warnings);
   const bindings = useStore(keybindingsRegistry, (s) => s.bindings);
+  const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
 
   let status: string | undefined;
   if (hubSupport === "unknown") {
@@ -88,6 +52,22 @@ export function KeybindingsSection() {
       <p className={CLASS.intro}>
         The keyboard shortcuts currently in effect. Bindings marked Customized come from this hub's synced overrides.
       </p>
+
+      {/* The WCAG 2.1.4 character-key turn-off (the p4 plan's Design
+          decision 3): off unregisters the "?" cheatsheet trigger, leaving
+          every shortcut on a modifier chord. Browser-local (prefs store),
+          by controller ruling. */}
+      <div className={CLASS.toggle}>
+        <Switch
+          label="Character-key shortcuts"
+          checked={characterKeyTriggers}
+          onChange={(value) => prefsStore.getState().setCharacterKeyTriggers(value)}
+        />
+        <p className={CLASS.help}>
+          When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut
+          on a modifier chord.
+        </p>
+      </div>
 
       {status !== undefined && (
         <p className={CLASS.status} role="status">
@@ -111,13 +91,15 @@ export function KeybindingsSection() {
       )}
 
       <ul className={CLASS.list}>
-        {ACTION_ROWS.map((row) => {
+        {ACTION_DISPLAY_ROWS.map((row) => {
           const binding = displayBindingFor(bindings, row.actionId);
           return (
             <li className={CLASS.row} key={row.actionId}>
               <span className={CLASS.label}>
                 {row.title}
-                {isCustomized(bindings, row.actionId) && <span className={CLASS.marker}>Customized</span>}
+                {isActionCustomized(bindings, row.actionId, characterKeyTriggers) && (
+                  <span className={CLASS.marker}>Customized</span>
+                )}
               </span>
               {binding === undefined ? (
                 <span className={CLASS.unbound}>Unbound</span>

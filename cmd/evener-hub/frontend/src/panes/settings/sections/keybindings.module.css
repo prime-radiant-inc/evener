@@ -12,6 +12,19 @@
   line-height: var(--line-height-body);
 }
 
+.toggle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.help {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
 .status {
   margin: 0;
   color: var(--ink-mid);
