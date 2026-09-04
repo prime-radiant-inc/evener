@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -516,5 +518,52 @@ func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) 
 
 	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
 		t.Errorf("failed worktree re-entry restore left scratch %v, which nothing will ever release", leaked)
+	}
+}
+
+// A fresh WithWorkingDirectory clone SHARES the parent's process table -- the
+// runningPIDs map is copied by pointer -- so Cleanup on a child's OWN clone
+// signals the parent's in-flight tools, not just the child's. An unadopted child
+// therefore never runs its environment's Cleanup at all: it closes the session
+// and disposes the scratch it owns, and every tracked process stays with the
+// environment that tracks it.
+func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testing.T) {
+	dir := t.TempDir()
+	parentEnv := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(parentEnv.Cleanup)
+	handle, err := parentEnv.StreamCommand(context.Background(), "sleep 30", dir, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("StreamCommand: %v", err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_, _ = handle.Wait()
+		close(exited)
+	}()
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	child, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), parentEnv.WithWorkingDirectory(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on a fresh clone: %v", err)
+	}
+
+	disposeUnadoptedSubagentSession(child, true)
+
+	select {
+	case <-exited:
+		t.Fatalf("disposing an unadopted child ended the parent's in-flight process %d", handle.Pid)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The other half: the process is still the parent's to end, so it never left
+	// the environment that tracks it.
+	parentEnv.Cleanup()
+	select {
+	case <-exited:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the parent's own cleanup did not end the process it tracks")
 	}
 }
