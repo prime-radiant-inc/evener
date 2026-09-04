@@ -149,8 +149,13 @@ type LocalExecutionEnvironment struct {
 	// revert to the launchd/GUI PATH this override exists to replace.
 	LoginPATH string
 
-	// unsandboxedScratchMu guards lazy provisioning of unsandboxedScratch.
-	unsandboxedScratchMu sync.Mutex
+	// scratchMu guards both per-session scratch fields, ownedSessionTmp above
+	// and unsandboxedScratch below: a session's environment swap moves them
+	// between environment objects (AdoptSessionScratch) while a child sharing
+	// one of those objects may be rendering its scratch path (SessionScratchDir)
+	// or minting one. It is never held across a subprocess or another env's
+	// scratchMu.
+	scratchMu sync.Mutex
 	// unsandboxedScratch is a per-session scratch dir this UNSANDBOXED env
 	// provisions on first spawn, so commandEnvironment can export
 	// EVENER_SCRATCH_DIR/TMPDIR per docs/developing-evener/environment.md's contract, which carries
@@ -222,11 +227,11 @@ func (e *LocalExecutionEnvironment) sessionScratchPath() string {
 // from a read path would make a report or a containment check a filesystem side
 // effect.
 func (e *LocalExecutionEnvironment) wrapperlessScratchDir() string {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
 		return tmp.Dir
 	}
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
 	if e.unsandboxedScratch == nil {
 		return ""
 	}
@@ -443,11 +448,11 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 // minting a second: the model's file tools and its shell must name the same
 // directory, and only the owned one is disposed with the env.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
 		return tmp.Dir
 	}
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
 	if e.unsandboxedScratch != nil {
 		return e.unsandboxedScratch.Dir
 	}
@@ -492,8 +497,8 @@ func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch
 // RetainSandboxScratch for the unsandboxed case, so a session close never
 // holds the lease open for the rest of the daemon's uptime.
 func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
 	if e.unsandboxedScratch != nil {
 		_ = e.unsandboxedScratch.Retain()
 	}
@@ -545,10 +550,11 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	// call owned so a second EnableSandbox never silently deletes handed-off work.
 	e.sandboxReRootErr = nil
 	e.invalidateSandboxFS()
-	if e.ownedSessionTmp != nil {
-		_ = e.ownedSessionTmp.Retain()
-		e.ownedSessionTmp = nil
-	}
+	e.scratchMu.Lock()
+	prior := e.ownedSessionTmp
+	e.ownedSessionTmp = nil
+	e.scratchMu.Unlock()
+	_ = prior.Retain()
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
 		e.Wrapper = nil
@@ -565,7 +571,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		// which denies writes — the fail-closed direction — and must not block a spawn.
 		if policy != nil && policy.FileToolConfined() {
 			if tmp, err := e.newSessionScratch(); err == nil {
-				e.ownedSessionTmp = tmp
+				e.setOwnedSessionTmp(tmp)
 			}
 		}
 		return nil
@@ -602,8 +608,14 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	}
 	e.Wrapper = w
 	e.Sandbox = policy
-	e.ownedSessionTmp = tmp
+	e.setOwnedSessionTmp(tmp)
 	return nil
+}
+
+func (e *LocalExecutionEnvironment) setOwnedSessionTmp(tmp *sandbox.SessionScratch) {
+	e.scratchMu.Lock()
+	e.ownedSessionTmp = tmp
+	e.scratchMu.Unlock()
 }
 
 // RetainSandboxScratch releases the per-session/per-lane scratch lease and cached
@@ -623,9 +635,10 @@ func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 		e.scratchFSRoot = ""
 	}
 	e.sbMu.Unlock()
-	if tmp := e.ownedSessionTmp; tmp != nil {
-		_ = tmp.Retain()
-	}
+	e.scratchMu.Lock()
+	tmp := e.ownedSessionTmp
+	e.scratchMu.Unlock()
+	_ = tmp.Retain()
 }
 
 // DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
@@ -649,10 +662,11 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 		e.scratchFSRoot = ""
 	}
 	e.sbMu.Unlock()
-	if tmp := e.ownedSessionTmp; tmp != nil {
-		e.ownedSessionTmp = nil
-		_ = tmp.Cleanup()
-	}
+	e.scratchMu.Lock()
+	tmp := e.ownedSessionTmp
+	e.ownedSessionTmp = nil
+	e.scratchMu.Unlock()
+	_ = tmp.Cleanup()
 }
 
 // DisposeUnadoptedScratch drops every per-session scratch directory this env
@@ -667,8 +681,8 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 // on a shared parent whose live children point into its scratch.
 func (e *LocalExecutionEnvironment) DisposeUnadoptedScratch() {
 	e.DisposeSandboxScratch()
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
 	if tmp := e.unsandboxedScratch; tmp != nil {
 		e.unsandboxedScratch = nil
 		_ = tmp.Cleanup()
@@ -695,24 +709,23 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	if from == nil || from == e {
 		return
 	}
-	owned := from.ownedSessionTmp
-	from.ownedSessionTmp = nil
+	// The two envs' locks are never held together, so swaps in opposite
+	// directions cannot deadlock; whatever this env keeps is retained after
+	// both are released.
+	from.scratchMu.Lock()
+	owned, unsandboxed := from.ownedSessionTmp, from.unsandboxedScratch
+	from.ownedSessionTmp, from.unsandboxedScratch = nil, nil
+	from.scratchMu.Unlock()
+	e.scratchMu.Lock()
 	if e.ownedSessionTmp == nil {
-		e.ownedSessionTmp = owned
-	} else {
-		_ = owned.Retain()
+		e.ownedSessionTmp, owned = owned, nil
 	}
-	from.unsandboxedScratchMu.Lock()
-	unsandboxed := from.unsandboxedScratch
-	from.unsandboxedScratch = nil
-	from.unsandboxedScratchMu.Unlock()
-	e.unsandboxedScratchMu.Lock()
 	if e.unsandboxedScratch == nil {
-		e.unsandboxedScratch = unsandboxed
-	} else {
-		_ = unsandboxed.Retain()
+		e.unsandboxedScratch, unsandboxed = unsandboxed, nil
 	}
-	e.unsandboxedScratchMu.Unlock()
+	e.scratchMu.Unlock()
+	_ = owned.Retain()
+	_ = unsandboxed.Retain()
 }
 
 // filesystem returns the environment's filesystem, defaulting to the OS

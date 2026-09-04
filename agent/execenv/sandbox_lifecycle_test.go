@@ -508,3 +508,39 @@ func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 		t.Errorf("SessionScratchDir = %q after disposal, want none", got)
 	}
 }
+
+// A session swapping environments moves the scratch between two environment
+// objects while a child sharing one of them renders its scratch path (the
+// session prompt's SessionScratchDir). The sandboxed kind's field has to be
+// guarded like the unsandboxed one, or the swap and the render race.
+func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	// Write-blocked off: an owned scratch with no kernel wrapper, so the reader
+	// goes through the owned field rather than the wrapper's copy of the path.
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	clone := env.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = env.SessionScratchDir()
+			}
+		}
+	}()
+	for range 200 {
+		clone.AdoptSessionScratch(env)
+		env.AdoptSessionScratch(clone)
+	}
+	close(stop)
+	<-readerDone
+}
