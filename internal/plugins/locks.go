@@ -32,12 +32,13 @@ type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
 // Every mutation of the store passes through here, and creating the lock file
 // is the mutation's first write, so this is the one place that turns away a
 // root which resolves against whatever directory the process happens to be in
-// — an empty root (none could be resolved) or a relative one. A writer cannot
-// forget the check without also forgetting the lock, which is what the eleven
-// writers that predate this did: each was expected to call storeRootError for
-// itself and all but three did not, and a store appeared in somebody's
-// project. Read paths that act before any lock still need their own check;
-// see resolveForLaunch, prepareBundledStore and SeedDefaultMarketplaces.
+// — an empty root (none could be resolved) or a relative one. Calling
+// storeRootError used to be each writer's own job, and not one of the eleven
+// that mutate the store did it, so every one of them planted a store in
+// somebody's project. Here a writer cannot forget the check without also
+// forgetting the lock. Paths that read or create something before they lock
+// still need their own check: see resolveForLaunch, prepareBundledStore,
+// SeedDefaultMarketplaces and registryForSweep.
 func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
 	if err := m.storeRootError(); err != nil {
 		return nil, err
