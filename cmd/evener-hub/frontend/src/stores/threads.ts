@@ -2351,7 +2351,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
     } catch (error) {
       if (isStaleCursorError(error)) {
-        if (wiredClient !== client || readyEpoch !== capturedEpoch) return;
+        const current = threadsStore.getState().threads.get(ref);
+        if (
+          !current ||
+          wiredClient !== client ||
+          readyEpoch !== capturedEpoch ||
+          current.ref !== capturedRef ||
+          current.olderCursor !== capturedCursor ||
+          (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
+          (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+          pendingThreadHydrations.has(ref)
+        )
+          return;
         await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
         return;
       }

@@ -6533,6 +6533,134 @@ describe("useThreadsStore.loadOlderTurns", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("authoritative-cursor");
   });
 
+  test("a stale rejection from a superseded same-cursor page preserves the accepted page", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: reads === 1 ? "current-turn" : "unexpected-recovery",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: reads === 1 ? "shared-cursor" : "recovery-cursor",
+      };
+    });
+    type DeferredPage = {
+      resolve: (response: ThreadTurnsListResponse) => void;
+      reject: (error: Error) => void;
+    };
+    const requests: DeferredPage[] = [];
+    let announceFirstRequest!: () => void;
+    let announceSecondRequest!: () => void;
+    const firstRequested = new Promise<void>((resolve) => (announceFirstRequest = resolve));
+    const secondRequested = new Promise<void>((resolve) => (announceSecondRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((resolve, reject) => {
+          requests.push({ resolve, reject });
+          if (requests.length === 1) announceFirstRequest();
+          if (requests.length === 2) announceSecondRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const accepted = threadsStore.getState().loadOlderTurns("ref_a");
+    await firstRequested;
+    const stale = threadsStore.getState().loadOlderTurns("ref_a");
+    await secondRequested;
+    requests[0]?.resolve({
+      data: [{ id: "accepted-older", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "advanced-cursor",
+    });
+    await accepted;
+    requests[1]?.reject(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await stale;
+
+    expect(reads).toBe(1);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["accepted-older", "current-turn"]);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("advanced-cursor");
+  });
+
+  test("a stale page rejection does not replace a pending same-epoch targeted resync", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    let resolveResync!: (response: ThreadReadResponse) => void;
+    let announceResyncRequest!: () => void;
+    const resyncRequested = new Promise<void>((resolve) => (announceResyncRequest = resolve));
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) {
+        return {
+          thread: testThread("ref_a", {
+            turns: [{ id: "before-resync", status: "completed", itemsView: "full", items: [] }],
+          }),
+          olderCursor: "stale-cursor",
+        };
+      }
+      if (reads === 2) {
+        return new Promise<ThreadReadResponse>((resolve) => {
+          resolveResync = resolve;
+          announceResyncRequest();
+        });
+      }
+      return {
+        thread: testThread("ref_a", {
+          turns: [{ id: "unexpected-recovery", status: "completed", itemsView: "full", items: [] }],
+        }),
+        olderCursor: "recovery-cursor",
+      };
+    });
+    let rejectStalePage!: (error: Error) => void;
+    let announcePageRequest!: () => void;
+    const pageRequested = new Promise<void>((resolve) => (announcePageRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          rejectStalePage = reject;
+          announcePageRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await pageRequested;
+
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await resyncRequested;
+    const resyncPublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-resync") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    rejectStalePage(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await loading;
+
+    expect(reads).toBe(2);
+    resolveResync({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-resync", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "resync-cursor",
+    });
+    await resyncPublished;
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("resync-cursor");
+  });
+
   test("an ordinary older-page failure rejects so the inline retry UI can surface it", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
