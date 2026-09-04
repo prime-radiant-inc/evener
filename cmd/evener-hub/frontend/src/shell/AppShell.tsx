@@ -33,6 +33,7 @@ import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { urlToPane } from "./routing";
+import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
@@ -475,6 +476,25 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
       .catch(() => undefined);
   }, [locationFailed, locationRef, locationResource]);
   const isMobile = useIsMobile();
+  // Alt+ArrowLeft/Right cycle focus through the open session panes (Phase 3;
+  // cycling semantics live in sessionCycle.ts). Desktop only, following
+  // RailHost's rail.toggle pattern: with no action registered on mobile the
+  // bindings are inert there. The handlers CLAIM their chord even when
+  // cycling no-ops (fewer than two session panes): Alt+ArrowLeft is the
+  // browser's Back shortcut, and declining would navigate the SPA's history
+  // underneath a user who has one session open.
+  useEffect(() => {
+    if (isMobile) return undefined;
+    installKeybindings();
+    const registry = keybindingsRegistry.getState();
+    const unregister = [
+      registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
+      registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
+    ];
+    return () => {
+      for (const dispose of unregister) dispose();
+    };
+  }, [isMobile]);
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
   useKeyboardInset();

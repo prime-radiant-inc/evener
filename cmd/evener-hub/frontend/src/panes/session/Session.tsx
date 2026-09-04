@@ -46,6 +46,7 @@ import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import {
@@ -210,6 +211,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     renderedRowCount: renderRows.length,
     sourceTurnRowIndexes,
   });
+  // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
+  // per-pane handlers against the shared registry that decline unless THIS
+  // pane is the workspace's focused one. Nothing registers on mobile.
+  useTranscriptScrollKeys({ paneId, listRef: virtualListRef, jumpToBottom: flow.jumpToBottom });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
   // this pane was last open, so a reopened session shows where to pick up.

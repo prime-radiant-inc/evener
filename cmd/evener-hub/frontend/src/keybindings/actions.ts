@@ -9,6 +9,17 @@ export const ACTIONS = {
   composerFocus: "composer.focus",
   nextNeedsYou: "next-needs-you",
   selectionQuote: "selection.quote",
+  sessionNext: "session.next",
+  sessionPrevious: "session.previous",
+  transcriptLineUp: "transcript.lineUp",
+  transcriptLineDown: "transcript.lineDown",
+  transcriptPageUp: "transcript.pageUp",
+  transcriptPageDown: "transcript.pageDown",
+  // No DEFAULT_BINDINGS entries for these two: their handlers exist (the
+  // session transcript registers them per pane) but the Phase 4 keymap
+  // decides whether they get a chord at all.
+  transcriptScrollTop: "transcript.scrollTop",
+  transcriptScrollBottom: "transcript.scrollBottom",
   settingsClose: "settings.close",
 } as const;
 
