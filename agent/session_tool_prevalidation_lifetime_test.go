@@ -173,6 +173,89 @@ func TestExecTool_PreparedCallReplacementRunsSuccessorPreValidate(t *testing.T) 
 	}
 }
 
+func TestExecTool_PreparedCallReplacementDiscardsOldSchemaRepair(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(client, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	const name = "prepared_schema_replacement"
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: name, Description: "original registration", Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": "integer"},
+			},
+			"required": []any{"value"},
+		}},
+		OmitIntent: true,
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return "original executor ran", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register original: %v", err)
+	}
+
+	var successorExecutions int
+	replaced := false
+	sess.cfg.testOnly.execToolCheckpoint = func(checkpoint string) {
+		if checkpoint != "after_pre_hook" || replaced {
+			return
+		}
+		replaced = true
+		err := sess.reg.Register(tool.RegisteredTool{
+			Definition: llm.ToolDefinition{Name: name, Description: "successor registration", Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value": map[string]any{"type": "integer"},
+				},
+				"required": []any{"value"},
+			}},
+			OmitIntent: true,
+			NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+				if args["value"] != "7" {
+					t.Fatalf("successor NormalizeArgs args = %#v, want original provider string", args)
+				}
+				args["value"] = float64(7)
+				return args, nil
+			},
+			PreValidate: func(args map[string]any) error {
+				if args["value"] != float64(7) {
+					t.Fatalf("successor PreValidate args = %#v, want successor-normalized integer", args)
+				}
+				return nil
+			},
+			Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+				successorExecutions++
+				if args["value"] != float64(7) {
+					t.Fatalf("successor executor args = %#v, want successor-normalized integer", args)
+				}
+				return "successor", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("Register successor: %v", err)
+		}
+	}
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "prepared-schema-replacement",
+		Name:      name,
+		Arguments: []byte(`{"value":"7"}`),
+	}, "")
+	if !replaced {
+		t.Fatal("successor was not installed between preparation and execution")
+	}
+	if res.IsError || successorExecutions != 1 {
+		t.Fatalf("successor did not execute original provider arguments: executions=%d result=%#v", successorExecutions, res)
+	}
+}
+
 func TestExecTool_PreparedCallNormalizesBeforePreValidate(t *testing.T) {
 	sess := newSession(t)
 	t.Cleanup(sess.Close)

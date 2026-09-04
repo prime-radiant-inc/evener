@@ -939,24 +939,21 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
-	return r.executeCall(ctx, env, call, nil, nil)
+	return r.executeCall(ctx, env, call, nil, nil, nil)
 }
 
 // ExecutePreparedCall runs a session-prepared call. Preparation has already
 // normalized and prevalidated arguments for snapshot's registration lifetime.
 // If that lifetime is no longer current, execution falls back to the successor
-// registration's normal normalization and prevalidation path.
-func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, snapshot PrevalidationSnapshot, preparedArguments json.RawMessage) ExecResult {
-	return r.executeCall(ctx, env, call, &snapshot, preparedArguments)
+// registration's normal normalization and prevalidation path, starting from
+// originalArguments rather than repairs produced for the stale registration.
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, snapshot PrevalidationSnapshot, preparedArguments, originalArguments json.RawMessage) ExecResult {
+	return r.executeCall(ctx, env, call, &snapshot, preparedArguments, originalArguments)
 }
 
-func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prepared *PrevalidationSnapshot, preparedArguments json.RawMessage) ExecResult {
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prepared *PrevalidationSnapshot, preparedArguments, originalArguments json.RawMessage) ExecResult {
 	name := call.Name
 	ledgerName := r.breakerToolIdentity(name)
-	callID := call.ID
-	if strings.TrimSpace(callID) == "" {
-		callID = "call_" + shortHash(call.Arguments)
-	}
 
 	// A signature that has already failed the same way twice is refused here,
 	// before the tool is even looked up, and is deliberately not recorded:
@@ -969,12 +966,19 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	humanBypassed := breakerBypassed(ctx)
 	protocolExempt := name == "model_list"
 	judged := !humanBypassed && !protocolExempt
-	exactSignature := r.telemetryExactSignature(name, call.Arguments)
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	currentGeneration := r.lifetimeLocked(name)
 	prevalidated := prepared != nil && prepared.registry == r && prepared.name == name &&
 		prepared.lifetime == currentGeneration && ok && t.generation == currentGeneration
+	if prepared != nil && !prevalidated {
+		call.Arguments = originalArguments
+	}
+	callID := call.ID
+	if strings.TrimSpace(callID) == "" {
+		callID = "call_" + shortHash(call.Arguments)
+	}
+	exactSignature := r.telemetryExactSignature(name, call.Arguments)
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
 			fingerprint, boundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)

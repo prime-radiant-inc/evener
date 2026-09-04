@@ -560,6 +560,17 @@ func (s *Session) canonicalToolName(name string) string {
 	return canonicalToolName(name, s.currentProfile().ToolNameMap())
 }
 
+// canonicalIncomingToolName reverse-maps a provider-visible alias only when the
+// exact incoming bytes already form a readable tool name. Malformed names must
+// remain unchanged so trimming during alias resolution cannot grant them the
+// behavior or presentation of a registered tool.
+func (s *Session) canonicalIncomingToolName(name string) string {
+	if !tool.IsReadableToolName(name) {
+		return name
+	}
+	return s.canonicalToolName(name)
+}
+
 func (s *Session) canonicalizeToolNames(names []string) []string {
 	return canonicalizeToolNames(names, s.currentProfile().ToolNameMap())
 }
@@ -671,6 +682,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if !tool.IsReadableToolName(call.Name) {
 		requestedVisible = tool.DisplayToolName(call.Name)
 	}
+	// Repair events and hooks below observe the prepared call. Keep the provider
+	// bytes separately because, if that registration is replaced afterward, the
+	// successor's dispatch pipeline must start from the unprepared input.
+	originalArguments := append(json.RawMessage(nil), call.Arguments...)
 	registered, lifetime := s.reg.SnapshotPrevalidation(call.Name)
 	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	prep.Lifetime = lifetime
@@ -796,7 +811,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
 		if prevalidated {
-			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments)
+			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments, originalArguments)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 		}

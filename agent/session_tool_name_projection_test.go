@@ -216,6 +216,24 @@ func TestSessionReadableUnknownToolNameExternalProjectionIsPreserved(t *testing.
 	assertProjectedToolNames(t, obs, name, "")
 }
 
+func TestCanonicalIncomingToolNameOnlyMapsReadableAliases(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "exec_command", want: "shell"},
+		{name: " exec_command ", want: " exec_command "},
+		{name: "readable_unknown_tool", want: "readable_unknown_tool"},
+	} {
+		if got := sess.canonicalIncomingToolName(tc.name); got != tc.want {
+			t.Errorf("canonicalIncomingToolName(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSessionMalformedProviderAliasDoesNotDispatchCanonicalTool(t *testing.T) {
 	const malformedAlias = " exec_command "
 	sess := newSession(t, withSteps(

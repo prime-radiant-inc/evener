@@ -428,7 +428,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
-			toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			toolNames[ev.ToolCall.ID] = s.canonicalIncomingToolName(ev.ToolCall.Name)
 			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
 			}
@@ -437,8 +437,8 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
-			if ev.ToolCall.Name != "" {
-				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			if ev.ToolCall.Name != "" && toolNames[ev.ToolCall.ID] == "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalIncomingToolName(ev.ToolCall.Name)
 			}
 			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
@@ -455,8 +455,8 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
-			if ev.ToolCall.Name != "" {
-				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
+			if ev.ToolCall.Name != "" && toolNames[ev.ToolCall.ID] == "" {
+				toolNames[ev.ToolCall.ID] = s.canonicalIncomingToolName(ev.ToolCall.Name)
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
 				b := &strings.Builder{}
