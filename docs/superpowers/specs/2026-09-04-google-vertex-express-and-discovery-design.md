@@ -164,24 +164,21 @@ described as missing.
 
 ## 2. Live discovery for `google-vertex` (ADC and stored-credential instances)
 
-### 2.1 `Resolved.Vars`
+### 2.1 The resolved project is already on `Resolved.Transport.Vars`
 
-`registry.Resolved` gains `Vars map[string]string`: every `{NAME}` the
-transport's `base_url` template referenced, with the value it resolved to,
-host-rule outputs included. For `google-vertex` that is `GOOGLE_VERTEX_HOST`,
-`GOOGLE_VERTEX_PROJECT`, `GOOGLE_VERTEX_LOCATION`. Populated at the single
-`Resolved{…}` construction site in `resolve.go` from the same lookup
-`resolveBaseURLWith` used. JSON-tagged `vars,omitempty`; values are not
-secrets (they are already in the base URL).
-
-Rejected alternative: parsing the project and host back out of
-`res.Transport.BaseURL`. Deterministic today because the overlay owns the
-template, but it couples the authenticator to a URL shape.
+No registry change. `buildTransport` (`resolve.go`) already scans every
+transport template for `{NAME}` placeholders and records the value each one
+resolved to on `Transport.Vars` — the existing
+`testdata/golden/google-vertex-opus-5.json` shows `"vars":
+{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "my-project"}`.
+The authenticator and the listing code read `res.Transport.Vars`. (An
+earlier draft of this spec added a separate `Resolved.Vars`; it was
+redundant.) The host for the listing URL comes from `res.Transport.BaseURL`.
 
 ### 2.2 Quota project on ADC requests
 
 `tokenauth.GCPADC.Apply` additionally sets `x-goog-user-project` to
-`res.Vars["GOOGLE_VERTEX_PROJECT"]` when that key is present and non-empty.
+`res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]` when that key is present and non-empty.
 Required for the listing call under user credentials (verified); harmless on
 project-scoped `generateContent`; a no-op for instances without the variable.
 The header is not credential material.
@@ -352,16 +349,15 @@ Deterministic (`make test`, no credentials, no network):
 - `llm/registry`: golden for `google-vertex-express` resolution (auth,
   header, base URL, endpoints, `APIKeyEnv`, default model, no Claude rows);
   a test that `GEMINI_API_KEY` alone does not create the express instance
-  and `GOOGLE_VERTEX_API_KEY` alone does; `Resolved.Vars` contents for
-  `google-vertex`; the `gcp-adc` store-first credential order; §5.1
+  and `GOOGLE_VERTEX_API_KEY` alone does; the `gcp-adc` store-first credential order; §5.1
   existence with a store entry and no ADC file.
 - `llm/providers/wirecapture`: goldens for express `generateContent` and
   stream (`x-goog-api-key`, `v1` publisher path, no project segment).
 - `llm/providers/google`: listing decode + filter against the 27-id fixture
   captured above; the URL built for a Vertex transport (`v1beta1`,
   host-relative); the non-Vertex path unchanged.
-- `llm/providers/tokenauth`: `x-goog-user-project` set from `Vars` and
-  absent without it; stored-JSON token source chosen for `Source == "store"`
+- `llm/providers/tokenauth`: `x-goog-user-project` set from
+  `Transport.Vars` and absent without it; stored-JSON token source chosen for `Source == "store"`
   (seam: `FindCredentials`/a `CredentialsFromJSON` seam); cache keyed by
   value hash.
 - `envvars`: the two new variables registered.
