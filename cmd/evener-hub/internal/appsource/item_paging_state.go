@@ -22,6 +22,7 @@ type itemSnapshotState struct {
 	ThreadRef        string
 	Incarnation      string
 	SourceIdentity   string
+	NativeCursor     string
 	ItemCount        int
 	FirstPosition    appwire.ThreadItemPosition
 	LastPosition     appwire.ThreadItemPosition

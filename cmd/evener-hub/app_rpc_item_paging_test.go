@@ -16,12 +16,14 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
+	daemonserver "primeradiant.com/evener/server"
 )
 
 func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
@@ -421,6 +423,132 @@ func TestHubRPCRealLocalItemReadUsesOneReadAndPreservesHandoff(t *testing.T) {
 		case <-deadline:
 			t.Fatal("timed out waiting for post-snapshot notification; handoff was not committed")
 		}
+	}
+}
+
+func TestHubRPCRealLocalBoundedItemReadContinuesNativeCursor(t *testing.T) {
+	const sessionID = "bounded-native-cursor"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	for i := range 45 {
+		daemon.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventUserInput,
+			SessionID: sessionID,
+			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d", i)},
+		})
+	}
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, Subscribe: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatalf("bounded initial item read: %v", err)
+	}
+	if got := len(flattenTestItems(initial.Thread.Turns)); got != 40 {
+		t.Fatalf("bounded initial item count = %d, want 40", got)
+	}
+	if initial.OlderCursor == "" {
+		t.Fatal("bounded initial item read omitted hub cursor")
+	}
+
+	older, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: initial.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("first continuation from bounded initial item read: %v", err)
+	}
+	items := flattenTestItems(older.Data)
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		texts = append(texts, item.Text)
+	}
+	if !slicesEqual(texts, []string{"item-00", "item-01", "item-02", "item-03", "item-04"}) {
+		t.Fatalf("first continuation item text = %v, want exact older items 00..04", texts)
+	}
+	if older.NextCursor != "" {
+		t.Fatalf("first continuation cursor = %q, want exhausted", older.NextCursor)
+	}
+}
+
+func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
+	const sessionID = "bounded-byte-fit-cursor"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	for i := range 45 {
+		daemon.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventUserInput,
+			SessionID: sessionID,
+			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", 30000))},
+		})
+	}
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, Subscribe: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatalf("byte-fit initial item read: %v", err)
+	}
+	initialItems := flattenTestItems(initial.Thread.Turns)
+	if len(initialItems) == 0 || len(initialItems) >= 40 {
+		t.Fatalf("byte-fit initial item count = %d, want nonempty count below 40", len(initialItems))
+	}
+	if initial.OlderCursor == "" {
+		t.Fatal("byte-fit initial item read omitted hub cursor")
+	}
+	older, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: initial.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("byte-fit continuation: %v", err)
+	}
+	olderItems := flattenTestItems(older.Data)
+	if len(olderItems) <= 5 {
+		t.Fatalf("byte-fit continuation item count = %d, want more than retained native five-item prefix", len(olderItems))
+	}
+	all := append(append([]appwire.ThreadItem(nil), olderItems...), initialItems...)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Text < all[j].Text })
+	for i, item := range all {
+		prefix := fmt.Sprintf("item-%02d-", i)
+		if !strings.HasPrefix(item.Text, prefix) {
+			t.Fatalf("byte-fit item %d text prefix = %q, want %q", i, item.Text[:min(len(item.Text), 12)], prefix)
+		}
+	}
+	if len(all) != 45 || older.NextCursor != "" {
+		t.Fatalf("byte-fit combined count/cursor = %d/%q, want 45/exhausted", len(all), older.NextCursor)
 	}
 }
 

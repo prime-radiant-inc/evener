@@ -144,6 +144,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	next.ThreadRef = resolved.pagingRef
 	next.Incarnation = incarnation
 	next.SourceIdentity = daemonIdentity
+	next.NativeCursor = response.OlderCursor
 	s.itemSnapshots.put(resolved.pagingRef, next)
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
@@ -238,9 +239,11 @@ func (s *LocalDaemonSource) ReadItemCandidates(ctx context.Context, params appwi
 	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
 }
 
-// ListItemCandidates resolves a hub-owned cursor against a freshly
-// materialized authenticated daemon snapshot. Browser cursors are never passed
-// to the daemon's native turns/list endpoint.
+// ListItemCandidates resolves a hub-owned cursor against the bounded native
+// daemon snapshot retained by ItemCandidatesFromRead. The browser cursor is
+// decoded against the hub identity, then its boundary is rebased onto the
+// retained opaque daemon cursor. Native state lives in the bounded item snapshot
+// cache, so eviction safely turns a continuation into a typed stale error.
 func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
 	resolved, err := s.resolveLocalDaemonItemThread(params.Ref, params.ThreadID)
 	if err != nil {
@@ -249,31 +252,128 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 	unlock := s.itemPagingLocks.lock(resolved.pagingRef)
 	defer unlock()
 
-	snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	identity := localDaemonItemSnapshotIdentity(snapshot)
-	var before *appwire.ThreadItemPosition
-	if params.Cursor != "" {
-		decoded, decodeErr := appitempaging.DecodeCursor(params.Cursor, identity)
-		if decodeErr != nil {
-			return ItemCandidateResult{}, decodeErr
-		}
-		before = &decoded
-	}
-	selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, before, params.ItemLimit)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	window := appitempaging.TranscriptItemWindow{Candidates: selected}
-	if hasOlder && len(selected) > 0 {
-		window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+	if params.Cursor == "" {
+		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
+		identity := localDaemonItemSnapshotIdentity(snapshot)
+		selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, nil, params.ItemLimit)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		window := appitempaging.TranscriptItemWindow{Candidates: selected}
+		if hasOlder && len(selected) > 0 {
+			window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+		}
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
 	}
-	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+
+	state, ok := s.itemSnapshots.get(resolved.pagingRef)
+	daemonIdentity := localDaemonItemDaemonIdentity(resolved.entry)
+	if !ok || state.ThreadRef != resolved.pagingRef || state.Incarnation == "" || state.SourceIdentity != daemonIdentity {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	if state.NativeCursor == "" {
+		if !state.Prefix {
+			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+		}
+		snapshot, err := s.refreshLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		identity := localDaemonItemSnapshotIdentity(snapshot)
+		before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		selected, hasOlder, err := appitempaging.SelectCandidates(snapshot.Candidates, &before, params.ItemLimit)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		window := appitempaging.TranscriptItemWindow{Candidates: selected}
+		if hasOlder && len(selected) > 0 {
+			window.OlderCursor, err = appitempaging.EncodeCursor(identity, selected[0].Position)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+		}
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: !hasOlder}, nil
+	}
+	identity := appitempaging.CursorIdentity{
+		ThreadRef:         state.ThreadRef,
+		Incarnation:       state.Incarnation,
+		ProjectionVersion: localDaemonItemCursorProjectionVersion,
+	}
+	before, err := appitempaging.DecodeCursor(params.Cursor, identity)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	nativeCursor, err := appitempaging.RebaseCursor(state.NativeCursor, before)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	response, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{
+		Ref:       resolved.routeRef,
+		ThreadID:  resolved.threadID,
+		Cursor:    nativeCursor,
+		ItemsView: params.ItemsView,
+		PageUnit:  appwire.TranscriptPageUnitItem,
+		ItemLimit: itemLimit,
+	})
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	candidates, err := localDaemonItemCandidates(response.Data)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	if response.NextCursor != "" {
+		if len(candidates) == 0 {
+			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+		}
+		if _, err := appitempaging.RebaseCursor(response.NextCursor, candidates[0].Position); err != nil {
+			return ItemCandidateResult{}, err
+		}
+	}
+	selected := localDaemonCandidatesBefore(candidates, before, itemLimit)
+	if len(selected) == 0 {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	state.NativeCursor = response.NextCursor
+	s.itemSnapshots.put(resolved.pagingRef, state)
+	return ItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: selected},
+		Identity:   identity,
+		Exhausted:  response.NextCursor == "",
+	}, nil
+}
+
+func localDaemonCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition, limit int) []appitempaging.TranscriptItemCandidate {
+	older := make([]appitempaging.TranscriptItemCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Position.Entry > before.Entry || (candidate.Position.Entry == before.Entry && candidate.Position.Item >= before.Item) {
+			continue
+		}
+		older = append(older, candidate)
+	}
+	if len(older) > limit {
+		older = older[len(older)-limit:]
+	}
+	return older
 }
 
 func localDaemonItemSnapshotIdentity(snapshot localDaemonItemSnapshot) appitempaging.CursorIdentity {

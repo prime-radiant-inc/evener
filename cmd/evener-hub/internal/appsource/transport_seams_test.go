@@ -471,7 +471,7 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		requests = append(requests, params)
 		return appwire.ThreadTurnsListResponse{
-			Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFull}},
+			Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment}}, PageUnit: appwire.TranscriptPageUnitItem,
 		}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
@@ -594,6 +594,20 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	if partial.Exhausted || partial.Candidates.OlderCursor != "" || len(partial.Candidates.Candidates) != 40 {
 		t.Fatalf("converted partial atomic read = %+v, want 40 source-owned non-exhausted candidates", partial)
 	}
+	nativeCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+		ThreadRef: "local:thread", Incarnation: "daemon-native", ProjectionVersion: 1,
+	}, appwire.ThreadItemPosition{Entry: 0, Item: 0})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
+	validPartialResponse := partialResponse
+	validPartialResponse.OlderCursor = nativeCursor
+	partial, err = source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	}, validPartialResponse)
+	if err != nil {
+		t.Fatalf("convert valid partial atomic read: %v", err)
+	}
 	partialCursor, err := appitempaging.EncodeCursor(partial.Identity, partial.Candidates.Candidates[0].Position)
 	if err != nil {
 		t.Fatalf("encode converted partial cursor: %v", err)
@@ -617,6 +631,138 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}); err == nil {
 		t.Fatal("cursor from a different authenticated daemon instance was accepted")
 	}
+}
+
+func TestLocalDaemonNativeItemCursorBridgeRebasesBoundary(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
+	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: 1})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
+	var requests []appwire.ThreadTurnsListParams
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		requests = append(requests, params)
+		response := positionedItemReadResponse(1, 2, "")
+		response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
+		return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local",
+		ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread", InstanceID: "instance-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+	response := positionedItemReadResponse(1, 4, nativeCursor)
+	first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 4}, response)
+	if err != nil {
+		t.Fatalf("bounded item read: %v", err)
+	}
+	browserCursor, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 3, Item: 0})
+	if err != nil {
+		t.Fatalf("encode browser cursor: %v", err)
+	}
+	older, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: browserCursor,
+	})
+	if err != nil {
+		t.Fatalf("rebased continuation: %v", err)
+	}
+	if len(older.Candidates.Candidates) != 2 || older.Candidates.Candidates[0].Position.Entry != 1 || older.Candidates.Candidates[1].Position.Entry != 2 {
+		t.Fatalf("rebased candidates = %+v, want positions 1 and 2", older.Candidates.Candidates)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("native list calls = %d, want 1", len(requests))
+	}
+	if requests[0].Cursor == nativeCursor {
+		t.Fatal("native continuation replayed retained token without rebasing")
+	}
+	gotBefore, err := appitempaging.DecodeCursor(requests[0].Cursor, nativeIdentity)
+	if err != nil {
+		t.Fatalf("decode rebased native cursor: %v", err)
+	}
+	if gotBefore != (appwire.ThreadItemPosition{Entry: 3, Item: 0}) {
+		t.Fatalf("native cursor boundary = %+v, want browser boundary item 3", gotBefore)
+	}
+	if !older.Exhausted {
+		t.Fatal("rebased continuation reported another page after item 1..2")
+	}
+}
+
+func TestLocalDaemonNativeItemCursorBridgeFailsSafely(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		response := positionedItemReadResponse(0, 0, "")
+		response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
+		return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	var entry = rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local",
+		ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread", InstanceID: "instance-1",
+	}
+	newSource := func(t *testing.T) (*LocalDaemonSource, string) {
+		t.Helper()
+		source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+		response := positionedItemReadResponse(0, 1, "native-secret")
+		first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2}, response)
+		if err != nil {
+			t.Fatalf("bounded item read: %v", err)
+		}
+		browserCursor, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[0].Position)
+		if err != nil {
+			t.Fatalf("encode browser cursor: %v", err)
+		}
+		return source, browserCursor
+	}
+	assertStale := func(t *testing.T, err error, secret string) {
+		t.Helper()
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) {
+			t.Fatalf("error = %T %v, want typed stale cursor", err, err)
+		}
+		data, ok := wireErr.Data.(appwire.ErrorData)
+		if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+			t.Fatalf("error data = %#v, want stale cursor", wireErr.Data)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("stale error leaked opaque token %q: %v", secret, err)
+		}
+	}
+	listParams := func(cursor string) appwire.ThreadTurnsListParams {
+		return appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: cursor}
+	}
+
+	t.Run("retained token loss", func(t *testing.T) {
+		source, browserCursor := newSource(t)
+		state, ok := source.itemSnapshots.get("local:thread")
+		if !ok {
+			t.Fatal("native state was not retained")
+		}
+		state.NativeCursor = ""
+		source.itemSnapshots.put("local:thread", state)
+		_, err := source.ListItemCandidates(context.Background(), listParams(browserCursor))
+		assertStale(t, err, "native-secret")
+	})
+	t.Run("daemon identity mismatch", func(t *testing.T) {
+		source, browserCursor := newSource(t)
+		entry.InstanceID = "instance-2"
+		defer func() { entry.InstanceID = "instance-1" }()
+		_, err := source.ListItemCandidates(context.Background(), listParams(browserCursor))
+		assertStale(t, err, "native-secret")
+	})
+	t.Run("malformed native token", func(t *testing.T) {
+		source, browserCursor := newSource(t)
+		_, err := source.ListItemCandidates(context.Background(), listParams(browserCursor))
+		assertStale(t, err, "native-secret")
+	})
+	t.Run("absent non-native state", func(t *testing.T) {
+		source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+		_, err := source.ListItemCandidates(context.Background(), listParams("browser-cursor"))
+		assertStale(t, err, "browser-cursor")
+	})
 }
 
 func newLocalDaemonItemTransitionSource(t *testing.T, items []appwire.ThreadItem) (*LocalDaemonSource, func([]appwire.ThreadItem)) {
