@@ -67,6 +67,8 @@ not re-derive them from memory.
 | The listing path is not project-scoped and lives on `v1beta1` | `v1/publishers/google/models` → HTML 404 even with OAuth; `v1beta1/projects/{P}/locations/global/publishers/google/models` → 404 |
 | `generateContent` with the project in the path does **not** need the quota-project header | ADC `POST …/v1/projects/{P}/locations/global/publishers/google/models/gemini-3.8-flash:generateContent` → 200 without it |
 | Upstream models.dev has the new rows | `scripts/ops/refresh-model-catalog.sh --check` adds `google/gemini-3.8-flash`, `google-vertex/gemini-3.8-flash`, `google-vertex/claude-fable-5-1@default` |
+| Evener's existing `google-vertex` path works end-to-end with ADC + the two variables (§5 flow 3) | after `gcloud auth application-default login`: `GOOGLE_VERTEX_PROJECT=jesse-coding-agents GOOGLE_VERTEX_LOCATION=global go run ./cmd/llmcall --provider google-vertex --model gemini-3.8-flash "…"` → `OK`; `providers list` shows `google-vertex` and `google-vertex-anthropic` with source `adc` and the `global` base URL |
+| A fresh gcloud ADC file is `authorized_user` JSON with **no** `quota_project_id` | keys: `account`, `client_id`, `client_secret`, `refresh_token`, `type`, `universe_domain` — so §2.2's header is what makes listing work, and §4 accepts this file's contents verbatim |
 
 Today's 27-id listing, for the discovery fixture (§2.4):
 
