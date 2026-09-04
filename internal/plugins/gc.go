@@ -37,7 +37,7 @@ func (m *Manager) Gc(ctx context.Context) ([]string, error) {
 	}
 	defer release()
 
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

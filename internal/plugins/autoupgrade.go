@@ -57,7 +57,7 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 // Failures are collected but do not stop the others (failure-isolated),
 // matching UpdateAll.
 func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, error) {
-	reg, err := m.registryForSweep()
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

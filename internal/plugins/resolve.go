@@ -561,18 +561,16 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	if err != nil {
 		return "", nil, nil, err
 	}
-	// The resolver rejects an unresolved root before it reads or builds
-	// anything; this is the same guard on the function that does the creating,
-	// for any caller that arrives here directly. acquireStoreLock refuses the
-	// same roots, but the store directories below are created before the lock
-	// is taken, so the guard has to be here too. Checked after the digest so a
-	// name that is not bundled at all still reports fs.ErrNotExist rather than
-	// a store complaint.
-	if err := m.storeRootError(); err != nil {
+	// Deriving the bundled store is what rejects an unresolved root, for the
+	// resolver and for any caller that arrives here directly. The guard cannot
+	// wait for the lock below: the directories are created before it is taken.
+	// Derived after the digest so a name that is not bundled at all still
+	// reports fs.ErrNotExist rather than a store complaint.
+	store, err := m.storePath(bundledDirName)
+	if err != nil {
 		return "", nil, nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
-	dest := m.bundledPluginPath(name, digest)
-	store := filepath.Dir(dest)
+	dest := filepath.Join(store, name+"-"+digest)
 	// A launch resolves plugins before the startup call that creates the user
 	// config tree privately, so any parent this is first to create gets that
 	// call's own 0o700 rather than the store root's readable mode. They are
@@ -865,6 +863,9 @@ func (m *Manager) storeRootError() error {
 	return nil
 }
 
+// bundledPluginPath names where a bundled plugin's published copy lives. It is
+// the unchecked join, for tests naming a path; prepareBundledStore derives the
+// same path through storePath so an unresolved root is refused.
 func (m *Manager) bundledPluginPath(name, digest string) string {
 	return filepath.Join(m.bundledDir(), name+"-"+digest)
 }

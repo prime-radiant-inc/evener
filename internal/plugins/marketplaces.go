@@ -42,17 +42,25 @@ func (m *Manager) catalogRoot(ref MarketplaceRef) string {
 	return ref.InstallLocation
 }
 
+// loadMarketplaces and saveMarketplaces are the only ways this package reaches
+// known_marketplaces.json. Both derive the path through storePath, so
+// ListMarketplaces — which reads without ever taking the store lock — refuses
+// an unresolved root instead of handing back the working directory's file.
 func (m *Manager) loadMarketplaces() (Marketplaces, error) {
-	data, err := marketplaceReadFile(m.marketplacesFile())
+	path, err := m.storePath(marketplacesFileName)
+	if err != nil {
+		return nil, err
+	}
+	data, err := marketplaceReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Marketplaces{}, nil
 		}
-		return nil, fmt.Errorf("reading %s: %w", m.marketplacesFile(), err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var mk Marketplaces
 	if err := json.Unmarshal(data, &mk); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", m.marketplacesFile(), err)
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if mk == nil {
 		mk = Marketplaces{}
@@ -61,11 +69,15 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 }
 
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
+	path, err := m.storePath(marketplacesFileName)
+	if err != nil {
+		return err
+	}
 	body, err := marketplaceMarshalIndent(mk, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling marketplaces: %w", err)
 	}
-	return marketplaceAtomicWriteFile(m.marketplacesFile(), append(body, '\n'), 0o644)
+	return marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644)
 }
 
 // fetchMarketplaceContainer clones/references src into destDir and returns the

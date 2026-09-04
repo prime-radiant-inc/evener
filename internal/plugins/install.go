@@ -29,6 +29,27 @@ var (
 
 func registryKey(plugin, marketplace string) string { return plugin + "@" + marketplace }
 
+// loadRegistry and saveRegistry are the only ways this package reaches
+// installed_plugins.json. Both derive the path through storePath, so a caller
+// that never takes the store lock — List, and the update sweeps, which
+// enumerate the registry before they lock anything — is refused an unresolved
+// root by construction rather than by remembering to ask.
+func (m *Manager) loadRegistry() (Registry, error) {
+	path, err := m.storePath(registryFileName)
+	if err != nil {
+		return Registry{}, err
+	}
+	return installLoadRegistry(path)
+}
+
+func (m *Manager) saveRegistry(reg Registry) error {
+	path, err := m.storePath(registryFileName)
+	if err != nil {
+		return err
+	}
+	return installSaveRegistry(path, reg)
+}
+
 // catalogPlugin finds a named plugin's entry + its marketplace ref, lazily
 // fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
 // already hold m.lockPath(), which ensureFetched requires.
@@ -149,12 +170,12 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		Source:       cp.Source,
 		Note:         note,
 	}
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, err
 	}
 	reg.Plugins[registryKey(plugin, marketplace)] = []InstallEntry{entry}
-	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
+	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, err
 	}
 	return entry, nil
@@ -206,7 +227,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	}
 
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
@@ -256,7 +277,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	prev.Source = cp.Source
 	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
-	if err := installSaveRegistry(m.registryPath(), reg); err != nil {
+	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, false, false, err
 	}
 	return prev, true, false, nil
@@ -269,7 +290,7 @@ func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, f
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -280,7 +301,7 @@ func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, f
 	e := entries[0]
 	fn(&e)
 	reg.Plugins[key] = []InstallEntry{e}
-	return installSaveRegistry(m.registryPath(), reg)
+	return m.saveRegistry(reg)
 }
 
 func (m *Manager) SetEnabled(ctx context.Context, plugin, marketplace string, enabled bool) error {
@@ -300,7 +321,7 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -315,7 +336,7 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 		}
 	}
 	delete(reg.Plugins, key)
-	return installSaveRegistry(m.registryPath(), reg)
+	return m.saveRegistry(reg)
 }
 
 type ListItem struct {
@@ -339,7 +360,7 @@ func splitKey(key string) (plugin, marketplace string) {
 }
 
 func (m *Manager) List() ([]ListItem, error) {
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -375,26 +396,11 @@ func (m *Manager) List() ([]ListItem, error) {
 	return out, nil
 }
 
-// registryForSweep reads the registry that names which plugins a sweep is
-// going to visit. UpdateAll and UpdateAutoUpgrade lock once per plugin rather
-// than once for the pass, so a registry that names nothing is a sweep that
-// never takes a lock and never reaches acquireStoreLock's refusal: against an
-// unresolved root they would read whatever installed_plugins.json the working
-// directory happens to hold, or none at all, and report a clean sweep of
-// somebody's project. This is where a sweep first reads the store, so this is
-// where it asks whether there is one.
-func (m *Manager) registryForSweep() (Registry, error) {
-	if err := m.storeRootError(); err != nil {
-		return Registry{}, err
-	}
-	return installLoadRegistry(m.registryPath())
-}
-
 // UpdateAll upgrades every installed, git-backed plugin (directory/relative
 // sources are inherently current and skipped). Failures are collected but do
 // not stop the others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
-	reg, err := m.registryForSweep()
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

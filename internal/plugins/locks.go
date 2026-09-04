@@ -41,12 +41,11 @@ type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
 // forget the check without also forgetting the lock.
 //
 // Locking is not the whole of it. A caller that reads or creates something
-// before it locks needs its own check and keeps one: resolveForLaunch never
-// locks at all, prepareBundledStore creates the store directories first,
-// SeedDefaultMarketplaces stats an ambient marketplaces file that would answer
-// "already seeded", and the two update sweeps (registryForSweep) enumerate the
-// registry first — on a broken root they wrote nothing, they just reported a
-// clean sweep of a store that was not there.
+// before it locks — resolveForLaunch, which never locks at all; the update
+// sweeps, which enumerate the registry first and on a broken root wrote
+// nothing but reported a clean sweep of a store that was not there; List and
+// ListMarketplaces, which only read — is refused by storePath instead, where
+// the path it would have used is derived.
 func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
 	if err := m.storeRootError(); err != nil {
 		return nil, err
