@@ -158,6 +158,22 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
+// disposeUnadoptedScratch drops every per-session scratch directory env
+// provisioned — the sandbox-owned one and the one an unsandboxed environment
+// mints on its first command — releasing each lease with its directory. Every
+// caller is a path that provisioned an environment and then failed before any
+// session adopted it: both releases belong to a session's own teardown, so
+// without this nothing ever runs them and each failure leaves a directory and a
+// live lease behind. A no-op for an environment with no scratch to drop,
+// including one that is not local. It must run only on an environment built for
+// the failed thing, never on a shared parent's, whose scratch the parent is
+// still working in.
+func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.DisposeUnadoptedScratch()
+	}
+}
+
 // disposeUnadoptedSubagentSession tears down a child that never became a
 // tracked/adopted delegate. It is the create-path twin of
 // discardRestoredCandidate and makes the same decisions it does. Normal teardown
@@ -182,9 +198,7 @@ func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 	if !ownsEnv {
 		return
 	}
-	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		le.DisposeUnadoptedScratch()
-	}
+	disposeUnadoptedScratch(sess.currentEnv())
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
@@ -949,9 +963,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		// first command, which the construction above reaches through its own git
 		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
-			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeUnadoptedScratch()
-			}
+			disposeUnadoptedScratch(subEnv)
 		}
 		return nil, err
 	}

@@ -413,8 +413,8 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 		// belongs to the live parent still working in it. Byte for byte the same
 		// two decisions disposeUnadoptedSubagentSession makes on the create-path
 		// twin of this abort.
-		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && ownsEnv {
-			le.DisposeUnadoptedScratch()
+		if ownsEnv {
+			disposeUnadoptedScratch(s.currentEnv())
 		}
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()

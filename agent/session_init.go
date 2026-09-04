@@ -989,9 +989,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if restoreComplete || reenteredEnv == env {
 			return
 		}
-		if local, ok := reenteredEnv.(*execenv.LocalExecutionEnvironment); ok {
-			local.DisposeUnadoptedScratch()
-		}
+		disposeUnadoptedScratch(reenteredEnv)
 	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)

@@ -1486,13 +1486,11 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	if isolation.ownsFreshEnv {
-		if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-			// Both scratch dirs go. createSubagent leaves a PREPARED environment
-			// alone (it belongs to this isolation step), so this is the only
-			// rollback for the scratch the construction's git snapshot minted on
-			// an unsandboxed lane, as well as for a sandboxed lane's owned one.
-			local.DisposeUnadoptedScratch()
-		}
+		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
+		// belongs to this isolation step), so this is the only rollback for the
+		// scratch the construction's git snapshot minted on an unsandboxed lane,
+		// as well as for a sandboxed lane's owned one.
+		disposeUnadoptedScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -1596,14 +1594,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv := true
 	defer func() {
+		// The construction below runs the child's git snapshot, which is what
+		// mints an unsandboxed environment's scratch, so a failure after that
+		// point has one to drop as surely as a sandboxed restore has its owned one.
 		if discardEnv && ownsFresh {
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				// Both scratch dirs go. The construction below runs the child's
-				// git snapshot, which is what mints an unsandboxed environment's
-				// scratch, so a failure after that point has one to drop as
-				// surely as a sandboxed restore has its owned one.
-				local.DisposeUnadoptedScratch()
-			}
+			disposeUnadoptedScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
