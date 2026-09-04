@@ -65,6 +65,9 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  /* The read-only note and the inline error sit UNDER the label/controls
+     line, full width. */
+  flex-wrap: wrap;
 }
 
 .label {
@@ -94,4 +97,127 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+}
+
+.controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* The chord cell made clickable: same look as the read-only chord run, plus
+   a hover/focus affordance. */
+.chordButton {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  padding: var(--space-1) var(--space-2);
+  margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-2));
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chordButton:hover {
+  border-color: var(--edge);
+}
+
+.chordButton:focus-visible {
+  outline: 2px solid var(--accent-edge);
+  outline-offset: 1px;
+}
+
+/* The row's small text-level actions (Unbind / Reset). */
+.actionButton {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+  cursor: pointer;
+  border-radius: var(--radius-chip);
+}
+
+.actionButton:hover {
+  color: var(--ink-hi);
+  background: var(--surface-inset);
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid var(--accent-edge);
+  outline-offset: 1px;
+}
+
+.note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.rowError {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--danger-ink);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
+/* The capture widget plus its inline error, stacked under the row label. */
+.captureWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The capture widget: an inset box that replaces the row's controls while a
+   chord is being recorded. */
+.capture {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface-inset);
+  border: 1px solid var(--accent-edge);
+  border-radius: var(--radius-chip);
+  padding: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.capture:focus-visible {
+  outline: 2px solid var(--accent-edge);
+  outline-offset: 1px;
+}
+
+.capturePrompt {
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
+.captureHint {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+  white-space: nowrap;
+}
+
+.captureError {
+  margin: 0;
+  color: var(--danger-ink);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
 }
