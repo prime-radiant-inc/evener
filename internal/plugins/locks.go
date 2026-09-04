@@ -22,6 +22,15 @@ var (
 	lockSleep = time.Sleep
 )
 
+// acquireBundledLock takes the bundled cache's lock for one mutation of
+// <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
+// so whatever the acquirer the store lock goes through grows — the store-root
+// check Manager.acquireStoreLock centralizes — has one place to land for this
+// lock too. Callers reaching here have already been through storeRootError.
+func (m *Manager) acquireBundledLock(ctx context.Context, timeout time.Duration) (func(), error) {
+	return acquireLock(ctx, m.bundledLockPath(), timeout)
+}
+
 // acquireLock takes an exclusive flock on lockPath, retrying with capped
 // exponential backoff until ctx is canceled or timeout elapses. The returned
 // release unlocks and closes the file. Callers without a request context pass

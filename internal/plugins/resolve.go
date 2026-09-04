@@ -607,7 +607,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 			// does not get quickly is left to the next launch rather than
 			// making this one queue behind whatever holds it. Whether the
 			// orphans are really abandoned is decided again under the lock.
-			if release, lockErr := acquireLock(ctx, m.bundledLockPath(), bundledSweepLockWait); lockErr == nil {
+			if release, lockErr := m.acquireBundledLock(ctx, bundledSweepLockWait); lockErr == nil {
 				m.reclaimAbandonedStaging(store)
 				release()
 			}
@@ -626,7 +626,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// lock two launches both classify a mismatched destination, and the second
 	// sets aside the copy the first published while deleting the copy the
 	// first preserved.
-	release, err := acquireLock(ctx, m.bundledLockPath(), bundledPublishLockWait)
+	release, err := m.acquireBundledLock(ctx, bundledPublishLockWait)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
