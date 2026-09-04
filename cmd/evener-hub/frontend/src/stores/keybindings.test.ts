@@ -940,3 +940,45 @@ describe("keybindings store: character-key pref in the restore simulation", () =
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
   });
 });
+
+describe("keybindings store: support loss", () => {
+  test("support resolving to UNSUPPORTED un-applies the hub's overrides from the registry", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // The feature set is KNOWN and no longer advertises keybindings: the
+    // section claims "the built-in defaults are in effect", so the registry
+    // must stop firing the override.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+
+    expect(keybindingsStore.getState().hubSupport).toBe("unsupported");
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("a transient disconnect of a SUPPORTED hub keeps the overrides applied", async () => {
+    // The ruled behavior, pinned: while a supported hub is temporarily
+    // unreachable the feature set is unknown, not contradicted - the rows
+    // show the overrides read-only and the chords keep firing.
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    connectionStore.setState({ state: "idle", features: undefined });
+
+    expect(keybindingsStore.getState().hubSupport).toBe("unknown");
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(serializeChord(bindingsFor(ACTIONS.paletteOpen)[0]?.chord ?? [])).toBe("Control+P");
+  });
+});

@@ -298,6 +298,16 @@ function setSupportFromConnection(): void {
     if (state.hubSupport !== support) keybindingsStore.setState({ hubSupport: support });
     return;
   }
+  if (support === "unsupported") {
+    // Support resolving to UNSUPPORTED is not the transient-disconnect case
+    // (a supported hub that is temporarily unreachable keeps its overrides
+    // firing - the ruled behavior): the feature set is KNOWN and does not
+    // advertise keybindings, so the settings section claims "the built-in
+    // defaults are in effect". The registry must match that claim. Un-apply
+    // BEFORE the setState - the character-key reconcile subscribes to the
+    // store and must see the final registry shape (see unapplyAllOverrides).
+    unapplyAllOverrides();
+  }
   // The conflict notice clears with hubError here too (the 2b clear
   // asymmetry): a support drop disconnects the store from the hub state the
   // conflict described, so keeping it would be as stale as keeping hubError.

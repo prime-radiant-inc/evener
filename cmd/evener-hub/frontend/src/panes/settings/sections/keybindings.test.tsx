@@ -614,6 +614,101 @@ test("IME composition events neither record nor save; a non-composing press stil
   });
 });
 
+// Browsers that signal IME input ONLY through keyCode 229 (no isComposing,
+// an ordinary-looking key) hit the dispatcher's second guard; capture must
+// run the same one or composition input / a commit Enter records as a chord.
+test("a keydown reported only via keyCode 229 records nothing and does not save", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: "a", keyCode: 229 });
+  expect(box.textContent).toContain("Press new shortcut…");
+  fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(captureBox()).toBeTruthy();
+
+  // A real press afterwards still records and saves.
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  expect(within(box).getByText("M")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+});
+
+// A save is a hub round trip; a click-away cancel closes the box while the
+// PATCH is in flight. The per-capture generation token keeps the stale
+// continuation from closing or repainting a capture it did not start.
+test("a save resolving after a click-away cancel does not clobber a reopened capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Open a capture and start a save; the PATCH hangs.
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // Click away: the capture cancels while the save is in flight...
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+
+  // ...and the user reopens the same row's capture.
+  const reopened = await enterCapture("Open the command palette");
+  expect(reopened.textContent).toContain("Press new shortcut…");
+
+  // The stale save resolves: the reopened capture stays open and untouched.
+  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+  await waitFor(() => expect(keybindingsStore.getState().revision).toBe(2));
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(reopened);
+  expect(reopened.textContent).toContain("Press new shortcut…");
+});
+
+test("a stale save's error does not surface into a reopened capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let rejectPatch: ((error: Error) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((_resolve, reject) => {
+        rejectPatch = reject;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  fireEvent.pointerDown(document.body);
+  const reopened = await enterCapture("Open the command palette");
+
+  // The old save FAILS: its error belongs to the cancelled capture and must
+  // not surface on the ROW or inside the new capture. (The store still
+  // records the failed patch as hubError - the section-level alert is the
+  // store's contract for any failed patch, capture or not; what the
+  // generation token guards is the row/capture continuation.)
+  rejectPatch?.(new Error("hub exploded"));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(reopened);
+  expect(reopened.textContent).toContain("Press new shortcut…");
+});
+
 // "+" is tinykeys' modifier DELIMITER, so a naive read says a captured "+"
 // chord ("Shift++", "Control++") cannot parse. The installed tinykeys splits
 // modifiers with a lookbehind (/(?<=\w|\])\+/), so a trailing "+" parses as

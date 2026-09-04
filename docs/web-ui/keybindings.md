@@ -403,7 +403,13 @@ it pushes `SETTINGS_SCOPE` and registers `settings.close` in one effect.
 
 Overrides are stored **on the hub**, not in the browser. There is no
 localStorage layer: an unsupported or unreachable hub means built-in
-defaults only, never a local fallback copy.
+defaults only, never a local fallback copy. Live-registry posture follows
+the same claim: when support resolves to **unsupported** (the feature set
+is known and does not advertise keybindings) any applied overrides are
+un-applied through the same atomic unwind the reconcile uses, because the
+settings section tells the user the built-in defaults are in effect. A
+supported hub that is merely **unreachable** (transient disconnect) keeps
+its overrides firing — the rows show them read-only until the hub returns.
 
 ### Server side
 
@@ -525,6 +531,13 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   away cancels, whether or not the click target can take focus. The
   capture box preventDefaults and stopPropagations every keydown, so the
   dispatcher and `settings.close`'s own Escape stay inert while capturing.
+  IME composition keydowns are ignored with the dispatcher's own guard
+  (`isComposing` / `keyCode === 229` / `Process` / `Unidentified`), so a
+  composition or its commit Enter can never record or save. A save is a
+  hub round trip that can outlive the box: a click-away cancel mid-save
+  bumps a per-capture generation token, and the stale save's resolution
+  applies only while its generation is current — it cannot close or
+  repaint a capture the user reopened before it landed.
 - **Single-press only.** Capture records one press — no multi-press
   sequences — matching the all-single-press default map (multi-press
   conflict checking is deliberately coarser). Bare-character chords (a

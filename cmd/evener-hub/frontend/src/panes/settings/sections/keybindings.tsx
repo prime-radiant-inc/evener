@@ -172,7 +172,15 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
     // guard the window dispatcher runs (keybindings/dispatcher.ts); here it
     // precedes preventDefault/stopPropagation, and the dispatcher's own
     // isComposing guard covers the propagation we let through.
-    if (event.nativeEvent.isComposing || event.key === "Process" || event.key === "Unidentified") return;
+    // keyCode 229 is the fallback for browsers that report IME input only
+    // through it (the dispatcher's guard pairs the two the same way).
+    if (
+      event.nativeEvent.isComposing ||
+      event.nativeEvent.keyCode === 229 ||
+      event.key === "Process" ||
+      event.key === "Unidentified"
+    )
+      return;
     event.preventDefault();
     event.stopPropagation();
     if (savingRef.current) return;
@@ -275,6 +283,15 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   // it started. A click-away cancel does NOT set it - focus already went
   // where the user put it.
   const refocusOnCloseRef = useRef(false);
+  // A save is a hub round trip and OUTLIVES the capture that started it: a
+  // click-away cancel closes the box while the PATCH is in flight, and the
+  // user can open a NEW capture before the old save resolves. Every capture
+  // open/cancel bumps this generation; a resolving save applies its result
+  // (closing the box, clearing the row error, refocusing) only while its
+  // generation is still current, so a stale continuation cannot close or
+  // repaint a capture it did not start. Same role as CaptureBox's
+  // savingRef, one level up.
+  const captureGenerationRef = useRef(0);
 
   useEffect(() => {
     if (!capturing && refocusOnCloseRef.current) {
@@ -294,11 +311,16 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   );
 
   async function saveCapture(chord: Chord): Promise<string | null> {
+    const generation = captureGenerationRef.current;
     try {
       await keybindingsStore.getState().patchOverrides(replacementRules(actionId, serializeChord([chord])));
     } catch (saveError) {
       return errorMessage(saveError);
     }
+    // Cancelled (or cancelled-and-reopened) while the PATCH was in flight:
+    // the capture this save belongs to is gone; its resolution must not
+    // touch the row's current capture state.
+    if (captureGenerationRef.current !== generation) return null;
     refocusOnCloseRef.current = true;
     setCapturing(false);
     setError(null);
@@ -306,6 +328,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   }
 
   function cancelCapture(refocus: boolean): void {
+    captureGenerationRef.current += 1;
     refocusOnCloseRef.current = refocus;
     setCapturing(false);
   }
@@ -346,6 +369,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
             className={CLASS.chordButton}
             aria-label={binding === undefined ? `Set a shortcut for ${title}` : `Change the shortcut for ${title}`}
             onClick={() => {
+              captureGenerationRef.current += 1;
               setError(null);
               setCapturing(true);
             }}
