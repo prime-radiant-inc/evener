@@ -1628,6 +1628,8 @@ func (s *Session) resetEnvContextTrackerAfterCompaction() {
 // appendTurnWithTranscriptMessage keeps the live model context and the durable
 // semantic transcript distinct when a tool exposes explicitly private evidence.
 func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
@@ -1677,6 +1679,8 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
@@ -1824,25 +1828,102 @@ func (s *Session) sclock() clock.Clock {
 	return s.clock
 }
 
-// assistantHistoryMessage makes malformed tool arguments replayable in semantic
-// history without changing the provider response used for tool validation.
+// assistantHistoryMessage makes provider tool calls safe and replayable in
+// semantic history without changing the response used for tool routing and
+// validation.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
-		if part.ToolCall == nil || len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments) {
+		if part.ToolCall == nil {
+			continue
+		}
+		validArguments := validHistoryToolArguments(part.ToolCall.Arguments)
+		wireName := tool.WireToolName(part.ToolCall.Name)
+		if validArguments && wireName == part.ToolCall.Name {
 			continue
 		}
 		if content == nil {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
-		call.Arguments = json.RawMessage(`{}`)
+		call.Name = wireName
+		if !validArguments {
+			call.Arguments = json.RawMessage(`{}`)
+		}
 		content[i].ToolCall = &call
 	}
 	if content != nil {
 		message.Content = content
 	}
 	return message
+}
+
+func validHistoryToolArguments(arguments []byte) bool {
+	if len(arguments) == 0 {
+		return true
+	}
+	if err := tool.ValidateRawArguments(arguments); err != nil {
+		return false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(arguments, &decoded); err != nil {
+		return false
+	}
+	return decoded != nil
+}
+
+// providerHistoryMessage returns a replay copy whose tool identities satisfy
+// provider name and argument constraints. Stored turns remain unchanged so
+// request assembly never rewrites durable history or lifecycle state.
+func providerHistoryMessage(message llm.Message) llm.Message {
+	var content []llm.ContentPart
+	for i, part := range message.Content {
+		callName := ""
+		validArguments := true
+		resultName := ""
+		if part.ToolCall != nil {
+			callName = tool.WireToolName(part.ToolCall.Name)
+			validArguments = validHistoryToolArguments(part.ToolCall.Arguments)
+		}
+		// An empty result name is an intentional adapter sentinel: Chat
+		// Completions recovers it from the correlated assistant tool call. Only
+		// project nonempty names that would otherwise be invalid on the wire.
+		if part.ToolResult != nil && part.ToolResult.Name != "" {
+			resultName = tool.WireToolName(part.ToolResult.Name)
+		}
+		if (part.ToolCall == nil || callName == part.ToolCall.Name && validArguments) &&
+			(part.ToolResult == nil || resultName == part.ToolResult.Name) {
+			continue
+		}
+		if content == nil {
+			content = append([]llm.ContentPart(nil), message.Content...)
+		}
+		if part.ToolCall != nil && (callName != part.ToolCall.Name || !validArguments) {
+			call := *part.ToolCall
+			call.Name = callName
+			if !validArguments {
+				call.Arguments = json.RawMessage(`{}`)
+			}
+			content[i].ToolCall = &call
+		}
+		if part.ToolResult != nil && resultName != part.ToolResult.Name {
+			result := *part.ToolResult
+			result.Name = resultName
+			content[i].ToolResult = &result
+		}
+	}
+	if content != nil {
+		message.Content = content
+	}
+	return message
+}
+
+func providerHistoryTurns(history []schema.Turn) []schema.Turn {
+	projected := append([]schema.Turn(nil), history...)
+	for i := range projected {
+		projected[i].Message = providerHistoryMessage(projected[i].Message)
+	}
+	return projected
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response

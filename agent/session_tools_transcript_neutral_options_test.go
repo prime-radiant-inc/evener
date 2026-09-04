@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"reflect"
 	"strings"
@@ -18,6 +20,111 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+// TestReadTranscriptSemanticFailureBreakerReplay replays the intent/default
+// variations from issue #829. All calls retain the same invalid job-ref
+// boundary after #827's retained-default normalization, so the third must be
+// refused even though no raw argument payload repeats.
+func TestReadTranscriptSemanticFailureBreakerReplay(t *testing.T) {
+	reg := tool.NewRegistry()
+	registered := readTranscriptTool(nil)
+	executed := 0
+	originalExec := registered.Exec
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		executed++
+		return originalExec(ctx, env, args)
+	}
+	if err := reg.Register(registered); err != nil {
+		t.Fatalf("register read_transcript: %v", err)
+	}
+	for i := range 20 {
+		args := map[string]any{
+			"transcript_ref": "job:job_829_replay",
+			"range":          "1-2",
+			"intent":         fmt.Sprintf("Trying transcript read variation %d", i),
+		}
+		if i%2 == 0 {
+			args["expand_turn"] = float64(0)
+			args["format"] = "markdown"
+			args["output_match"] = ""
+			args["context_lines"] = float64(0)
+		} else {
+			args["expand_turn"] = nil
+			args["format"] = nil
+			args["output_match"] = nil
+			args["context_lines"] = nil
+		}
+		result := executeReadTranscriptFromRegistry(t, reg, fmt.Sprintf("replay-%02d", i), args)
+		if i < 2 {
+			if !result.IsError || !strings.Contains(result.Output, "range applies only to session transcript refs") {
+				t.Fatalf("replay attempt %d = %#v, want the original ref-mode failure", i+1, result)
+			}
+			continue
+		}
+		if !strings.Contains(result.Output, "semantic failure loop") {
+			t.Fatalf("replay attempt %d did not hit semantic breaker: %q", i+1, result.Output)
+		}
+	}
+	if executed != 2 {
+		t.Fatalf("20-call replay executed %d calls, want semantic breaker to stop after 2 failures", executed)
+	}
+}
+
+func TestSessionReadTranscriptSemanticBreakerTelemetry(t *testing.T) {
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
+	endsCh := make(chan []events.ToolCallEndData, 1)
+	go func() {
+		var ends []events.ToolCallEndData
+		for event := range sess.Events() {
+			if end, ok := event.Data.(events.ToolCallEndData); ok && strings.HasPrefix(end.CallID, "semantic-event-") {
+				ends = append(ends, end)
+			}
+		}
+		endsCh <- ends
+	}()
+
+	for i := range 3 {
+		result := execReadTranscriptThroughSession(t, sess, fmt.Sprintf("semantic-event-%d", i), map[string]any{
+			"transcript_ref": "job:semantic_event_replay",
+			"range":          "1-2",
+			"intent":         fmt.Sprintf("presentation only %d", i),
+		})
+		if i == 2 && !strings.Contains(result.Output, "semantic failure loop") {
+			t.Fatalf("third semantic replay call was not parked: %#v", result)
+		}
+	}
+	sess.Close()
+	ends := <-endsCh
+	if len(ends) != 3 {
+		t.Fatalf("TOOL_CALL_END count = %d, want 3", len(ends))
+	}
+	for i, end := range ends {
+		if end.BreakerExactSignature == "" || end.BreakerSemanticSignature == "" {
+			t.Fatalf("TOOL_CALL_END %d missing breaker signatures: %#v", i+1, end)
+		}
+		if end.BreakerBypassed {
+			t.Fatalf("ordinary semantic replay was recorded as bypassed: %#v", end)
+		}
+		if strings.Contains(end.BreakerExactSignature, "presentation only") || strings.Contains(end.BreakerSemanticSignature, "presentation only") {
+			t.Fatalf("TOOL_CALL_END %d exposes presentation text: %#v", i+1, end)
+		}
+	}
+	if ends[0].BreakerExactSignature == ends[1].BreakerExactSignature {
+		t.Fatalf("intent variants unexpectedly share exact telemetry: %q", ends[0].BreakerExactSignature)
+	}
+	if ends[0].BreakerSemanticSignature != ends[1].BreakerSemanticSignature {
+		t.Fatalf("intent variants have different semantic telemetry: %q != %q", ends[0].BreakerSemanticSignature, ends[1].BreakerSemanticSignature)
+	}
+}
 
 // TestReadTranscriptNeutralMaterializedRetainedOptions covers the provider shape
 // observed in 034HvTCI5LrwbM2ZZpBMqN. The semantically empty options must select
@@ -130,6 +237,61 @@ func TestRegistryExecuteCallNormalizesStringifiedSearchContextZero(t *testing.T)
 		if !result.IsError {
 			t.Fatalf("nonzero string context_lines=%q succeeded: %#v", value, result)
 		}
+	}
+}
+
+func TestCoreReadTranscriptSearchContextZeroNormalizesBeforeSemanticBreaker(t *testing.T) {
+	for _, ref := range []string{"job:retained-search", "artifact:retained-search"} {
+		t.Run(ref, func(t *testing.T) {
+			reg := tool.NewRegistry()
+			registered := readTranscriptTool(nil)
+			calls := 0
+			seen := make([]map[string]any, 0, 2)
+			registered.Exec = func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+				calls++
+				copyArgs := make(map[string]any, len(args))
+				maps.Copy(copyArgs, args)
+				seen = append(seen, copyArgs)
+				return nil, errors.New("invalid_request: retained search unavailable")
+			}
+			if err := reg.Register(registered); err != nil {
+				t.Fatalf("register read_transcript: %v", err)
+			}
+			reg.MarkRegisteredToolsCoreSemanticMetadata()
+
+			variants := []map[string]any{
+				{"transcript_ref": ref, "output_match": "ready"},
+				{"transcript_ref": ref, "output_match": "ready", "context_lines": float64(0)},
+				{"transcript_ref": ref, "output_match": "ready", "context_lines": "0"},
+			}
+			for i, args := range variants {
+				result := executeReadTranscriptFromRegistry(t, reg, fmt.Sprintf("search-zero-%d", i), args)
+				if i == 2 && (!strings.Contains(result.Output, "semantic failure loop") || calls != 2 || result.BreakerSemanticSignature == "") {
+					t.Fatalf("context_lines=0 evaded semantic breaker: calls=%d result=%#v", calls, result)
+				}
+			}
+			for i, args := range seen {
+				if _, present := args["context_lines"]; present {
+					t.Fatalf("executor call %d received neutral context_lines: %#v", i+1, args)
+				}
+			}
+
+			positive := map[string]any{"transcript_ref": ref, "output_match": "ready", "context_lines": float64(1)}
+			normalized, _ := normalizeRetainedReadArgs(positive)
+			if got := normalized["context_lines"]; got != float64(1) {
+				t.Fatalf("positive context_lines normalized to %#v, want 1", got)
+			}
+			if got := positive["context_lines"]; got != float64(1) {
+				t.Fatalf("normalization mutated caller map: %#v", positive)
+			}
+			positiveResult := executeReadTranscriptFromRegistry(t, reg, "search-positive", positive)
+			if strings.Contains(positiveResult.Output, "semantic failure loop") || calls != 3 {
+				t.Fatalf("positive context_lines grouped with omission: calls=%d result=%#v", calls, positiveResult)
+			}
+			if got := seen[len(seen)-1]["context_lines"]; got != float64(1) {
+				t.Fatalf("executor context_lines=%#v, want positive value", got)
+			}
+		})
 	}
 }
 
@@ -318,6 +480,43 @@ func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *test
 	}
 }
 
+func TestSessionSecondPassRetainedNormalizationUsesCommittedSemanticArguments(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	t.Cleanup(sess.Close)
+	jobID := identifier.MustNewJobID(sess.ID())
+	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+
+	variants := []map[string]any{
+		{"transcript_ref": "job:" + jobID, "expand_turn": "0", "offset_bytes": float64(-1)},
+		{"transcript_ref": "job:" + jobID, "expand_turn": float64(0), "offset_bytes": float64(-1)},
+		{"transcript_ref": "job:" + jobID, "offset_bytes": float64(-1)},
+	}
+	semanticSignature := ""
+	for i, args := range variants {
+		result := execReadTranscriptThroughSession(t, sess, fmt.Sprintf("second-pass-semantic-%d", i), args)
+		if i == 0 {
+			semanticSignature = result.BreakerSemanticSignature
+		} else if result.BreakerSemanticSignature != semanticSignature {
+			t.Fatalf("equivalent attempt %d semantic signature = %q, want %q", i+1, result.BreakerSemanticSignature, semanticSignature)
+		}
+		if i < 2 {
+			if !result.IsError || !result.PrevalOnly || strings.Contains(result.Output, "semantic failure loop") {
+				t.Fatalf("attempt %d = %#v, want ordinary prevalidation failure", i+1, result)
+			}
+			continue
+		}
+		if !result.IsError || !result.PrevalOnly || !strings.Contains(result.Output, "semantic failure loop") || result.BreakerSemanticSignature == "" {
+			t.Fatalf("equivalent third attempt did not semantic-park: %#v", result)
+		}
+	}
+}
+
 type retainedReadEventCapture struct {
 	repaired  []events.ToolCallRepairedData
 	startArgs string
@@ -483,7 +682,7 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 			t.Fatal("nonzero job expand_turn succeeded")
 		}
 		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
-		assertReadRepairChanges(t, repaired, "job-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "job-string-zeros", "coerce_type:expand_turn:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "job-null-search-context", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "job-null-output-match", "normalize_default:output_match:")
 	})
@@ -517,7 +716,7 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 			t.Fatal("nonzero artifact expand_turn succeeded")
 		}
 		repaired := closeAndDrainRepairedEvents(sess, repairedCh)
-		assertReadRepairChanges(t, repaired, "artifact-string-zeros", "coerce_type:expand_turn:", "coerce_type:context_lines:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
+		assertReadRepairChanges(t, repaired, "artifact-string-zeros", "coerce_type:expand_turn:", "normalize_default:output_match:", "normalize_default:expand_turn:", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "artifact-null-search-context", "normalize_default:context_lines:")
 		assertReadRepairChanges(t, repaired, "artifact-null-output-match", "normalize_default:output_match:")
 	})
@@ -603,10 +802,12 @@ func TestNormalizeRetainedReadArgsNeutralValues(t *testing.T) {
 		{name: "job absent", ref: "job:abc", args: map[string]any{}},
 		{name: "job null", ref: "job:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}},
 		{name: "job empty and defaults", ref: "job:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}},
+		{name: "job search zero context", ref: "job:abc", args: map[string]any{"output_match": "match", "context_lines": float64(0)}, wantPresent: []string{"output_match"}},
 		{name: "job meaningful", ref: "job:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 		{name: "artifact absent", ref: "artifact:abc", args: map[string]any{}},
 		{name: "artifact null", ref: "artifact:abc", args: map[string]any{"range": nil, "expand_turn": nil, "format": nil, "output_match": nil, "context_lines": nil}, wantPresent: []string{"format"}},
 		{name: "artifact empty and defaults", ref: "artifact:abc", args: map[string]any{"range": "", "expand_turn": float64(0), "format": "markdown", "output_match": "", "context_lines": float64(0)}, wantPresent: []string{"format"}},
+		{name: "artifact search zero context", ref: "artifact:abc", args: map[string]any{"output_match": "match", "context_lines": "0"}, wantPresent: []string{"output_match"}},
 		{name: "artifact meaningful", ref: "artifact:abc", args: map[string]any{"range": "1-2", "expand_turn": float64(1), "format": "outline", "output_match": "match", "context_lines": float64(1)}, wantPresent: fields},
 	}
 	for _, tc := range tests {

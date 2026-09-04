@@ -164,9 +164,13 @@ func (s *ctxTransport) Recv(ctx context.Context) (appwire.Message, error) {
 	return s.stackTransport.Recv(ctx)
 }
 
-type stackCloser struct{ closes int }
+type stackCloser struct {
+	closes    int
+	closeNows int
+}
 
 func (s *stackCloser) Close(websocket.StatusCode, string) error { s.closes++; return nil }
+func (s *stackCloser) CloseNow() error                          { s.closeNows++; return nil }
 
 func exerciseReceiveLoops(t rapidTB) {
 	s := NewServer(ServerConfig{})

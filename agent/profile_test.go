@@ -1095,9 +1095,6 @@ func TestToolNameMapping_NoWireNameCollisions(t *testing.T) {
 	for _, p := range profiles {
 		t.Run(p.ID(), func(t *testing.T) {
 			nameMap := p.ToolNameMap()
-			if len(nameMap) == 0 {
-				return
-			}
 			// Every canonical tool name not explicitly remapped keeps its own
 			// name on the wire. A collision occurs when a mapped wire name equals
 			// another canonical tool's effective wire name (itself unmapped, or
@@ -1107,6 +1104,9 @@ func TestToolNameMapping_NoWireNameCollisions(t *testing.T) {
 				wire := td.Name
 				if mapped, ok := nameMap[td.Name]; ok {
 					wire = mapped
+				}
+				if wire == tool.InvalidToolNameWire {
+					t.Fatalf("tool %q maps to reserved invalid-history wire name %q", td.Name, wire)
 				}
 				if prevCanonical, exists := wireToCanonical[wire]; exists {
 					t.Fatalf("wire name %q claimed by both canonical %q and %q", wire, prevCanonical, td.Name)

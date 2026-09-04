@@ -2056,6 +2056,42 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 	}
 }
 
+func TestConsumeModelStream_MalformedCommunicateNameDoesNotStartPreview(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	call := llm.ToolCallData{
+		ID:        "malformed-communicate",
+		Name:      " communicate ",
+		Type:      "function",
+		Arguments: json.RawMessage(`{"message":"must not stream"}`),
+	}
+	st := llm.NewChanStream(nil)
+	st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{
+		ID:   call.ID,
+		Name: call.Name,
+		Type: call.Type,
+	}})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{
+		ID:        call.ID,
+		Name:      "communicate",
+		Arguments: call.Arguments,
+	}})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+	finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	st.CloseSend()
+
+	resp, _, err := sess.consumeModelStream(context.Background(), llm.Request{Provider: "openai", Model: "test"}, st)
+	if err != nil {
+		t.Fatalf("consumeModelStream: %v", err)
+	}
+	if len(resp.CommunicatePreviewCallIDs) != 0 {
+		t.Fatalf("malformed communicate name opened previews %v", resp.CommunicatePreviewCallIDs)
+	}
+}
+
 func TestPartialJSONStringFieldDecodesUnicodeEscapes(t *testing.T) {
 	t.Parallel()
 	got, ok := partialJSONStringField(`{"message":"Hello \u263A"}`, "message")

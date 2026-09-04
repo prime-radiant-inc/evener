@@ -631,8 +631,6 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 		{
 			name:         "update",
 			hookResponse: `{"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"end_turn":true}}}`,
-			wantError:    true,
-			wantPreval:   true,
 			wantUpdated:  true,
 		},
 	} {

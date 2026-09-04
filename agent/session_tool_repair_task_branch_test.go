@@ -41,6 +41,9 @@ func TestPrepareToolCall_OldTaskListActionShapeRejected(t *testing.T) {
 	if !strings.Contains(res.PrevalErr, "action") {
 		t.Fatalf("error must name the retired action argument: %q", res.PrevalErr)
 	}
+	if res.Boundary != "retired_task_shape" {
+		t.Fatalf("boundary = %q, want retired_task_shape", res.Boundary)
+	}
 }
 
 // An update entry misfiled into the add array must fail validation with an
