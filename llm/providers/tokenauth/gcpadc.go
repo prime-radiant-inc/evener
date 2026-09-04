@@ -63,7 +63,7 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 // external_account, …). The hub calls it when a credential is pasted so a
 // bad paste fails at set time, not at the first request (spec §4.4).
 func ValidateCredentialJSON(data []byte) error {
-	_, err := google.CredentialsFromJSON(context.Background(), data, cloudPlatformScope)
+	_, err := google.CredentialsFromJSON(context.Background(), data, cloudPlatformScope) //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
 	return err
 }
 
@@ -93,7 +93,7 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (oauth2
 	if res.Credential.Source == "store" {
 		fromJSON := a.CredentialsFromJSON
 		if fromJSON == nil {
-			fromJSON = google.CredentialsFromJSON
+			fromJSON = google.CredentialsFromJSON //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
 		}
 		creds, err = fromJSON(bg, []byte(res.Credential.Value), cloudPlatformScope)
 	} else {
