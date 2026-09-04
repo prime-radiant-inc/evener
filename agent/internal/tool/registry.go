@@ -969,9 +969,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	currentGeneration := r.lifetimeLocked(name)
-	prevalidated := prepared != nil && prepared.registry == r && prepared.name == name &&
+	snapshotCurrent := prepared != nil && prepared.registry == r && prepared.name == name &&
 		prepared.lifetime == currentGeneration && ok && t.generation == currentGeneration
-	if prepared != nil && !prevalidated {
+	prevalidated := snapshotCurrent && preparedArguments != nil
+	if prepared != nil && !snapshotCurrent {
 		call.Arguments = originalArguments
 	}
 	callID := call.ID
@@ -983,8 +984,10 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
 			fingerprint, boundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)
 			message := failureParkText(name, snippets)
-			if fingerprint != "" {
+			if r.semanticBreaker.countForFingerprint(fingerprint) >= breakerThreshold {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, boundary)
+			} else {
+				fingerprint = ""
 			}
 			res := truncateResult(name, callID, message, true, defaultToolLimit(name))
 			res.BreakerSemanticSignature = fingerprint
@@ -1220,8 +1223,10 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
 			message := failureParkText(name, snippets)
 			fingerprint, recordedBoundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)
-			if fingerprint != "" {
+			if r.semanticBreaker.countForFingerprint(fingerprint) >= breakerThreshold {
 				message = failureParkWithSemanticText(name, snippets, fingerprint, recordedBoundary)
+			} else {
+				fingerprint = ""
 			}
 			res := truncateResult(name, callID, message, true, defaultToolLimit(name))
 			res.BreakerExactSignature = exactSignature

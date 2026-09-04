@@ -224,7 +224,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			}
 			res.Boundary = "schema_validation"
 			if t.Definition.Name == "ask_user" || len(pendingJSONChanges) > 0 || t.NormalizeArgs != nil {
-				res.SemanticArguments, _ = json.Marshal(args)
+				res.SemanticArguments, _ = json.Marshal(finalErrorArgs)
 			}
 			return res
 		}

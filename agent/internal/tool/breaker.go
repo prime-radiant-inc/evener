@@ -287,6 +287,18 @@ func (l *semanticFailureLedger) check(base string) (count int, boundary, fingerp
 	return count, boundary, fingerprint
 }
 
+func (l *semanticFailureLedger) countForFingerprint(fingerprint string) int {
+	if l == nil || fingerprint == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[fingerprint]; ok {
+		return entry.count
+	}
+	return 0
+}
+
 func (l *semanticFailureLedger) record(base, class, boundary string) (fingerprint string, count int) {
 	if l == nil {
 		return semanticFailureSignature(base, class), 0

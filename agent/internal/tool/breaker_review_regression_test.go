@@ -409,6 +409,33 @@ type reviewCodedError struct {
 func (e reviewCodedError) Error() string        { return e.text }
 func (e reviewCodedError) FailureClass() string { return e.code }
 
+func TestExactFailureParkDoesNotClaimSubthresholdSemanticLoop(t *testing.T) {
+	r := NewRegistry()
+	calls := 0
+	registerSemanticReviewTool(t, r, "exact_distinct_semantics", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+		calls++
+		code := "second_class"
+		if calls == 1 {
+			code = "first_class"
+		}
+		return nil, reviewCodedError{code: code, text: "same rendered failure"}
+	})
+	call := breakerCall("exact-distinct-semantics", "exact_distinct_semantics", `{}`)
+	for i := range 2 {
+		result := r.ExecuteCall(context.Background(), breakerEnv(t), call)
+		if !result.IsError || strings.Contains(result.Output, "semantic failure loop") {
+			t.Fatalf("attempt %d = %#v, want ordinary executed failure", i+1, result)
+		}
+	}
+	parked := r.ExecuteCall(context.Background(), breakerEnv(t), call)
+	if calls != 2 || !parked.IsError || !strings.HasPrefix(parked.Output, failureParkText(call.Name, nil)) {
+		t.Fatalf("third exact call was not parked: calls=%d result=%#v", calls, parked)
+	}
+	if strings.Contains(parked.Output, "semantic failure loop") || parked.BreakerSemanticSignature != "" {
+		t.Fatalf("exact park claimed a subthreshold semantic loop: %#v", parked)
+	}
+}
+
 func TestSemanticBreaker_TypedErrorsIgnorePresentationButUntypedRemainCompatible(t *testing.T) {
 	t.Run("typed class", func(t *testing.T) {
 		r := NewRegistry()

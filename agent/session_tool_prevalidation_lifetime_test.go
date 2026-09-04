@@ -304,6 +304,80 @@ func TestExecTool_HookUpdatedInputSupersedesPreparationFailure(t *testing.T) {
 	}
 }
 
+func TestExecTool_HookUpdatedInputReplacementUsesProviderArguments(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	const name = "hook_updated_replacement"
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: name, Description: "original registration", Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": "integer"},
+			},
+			"required": []any{"value"},
+		}},
+		OmitIntent: true,
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return "original executor ran", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register original: %v", err)
+	}
+
+	var successorNormalizations, successorPrevalidations, successorExecutions int
+	hookClient := llm.NewClient()
+	hookClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		err := sess.reg.Register(tool.RegisteredTool{
+			Definition: llm.ToolDefinition{Name: name, Description: "successor registration", Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"value":  map[string]any{"type": "integer"},
+					"marker": map[string]any{"type": "string"},
+				},
+				"required": []any{"value", "marker"},
+			}},
+			OmitIntent: true,
+			NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+				successorNormalizations++
+				if args["value"] != "7" {
+					return nil, errors.New("successor received predecessor-repaired value")
+				}
+				args["value"] = float64(7)
+				return args, nil
+			},
+			PreValidate: func(args map[string]any) error {
+				successorPrevalidations++
+				if args["marker"] != "hook" {
+					return errors.New("successor did not receive hook update")
+				}
+				return nil
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				successorExecutions++
+				return "successor", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("Register successor: %v", err)
+		}
+		return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"marker":"hook"}}}`)}
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: name, Type: "prompt", Prompt: "add marker"})
+	sess.hookRunner = runner
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "hook-updated-replacement",
+		Name:      name,
+		Arguments: []byte(`{"value":"7"}`),
+	}, "")
+	if res.IsError || successorNormalizations != 1 || successorPrevalidations != 1 || successorExecutions != 1 {
+		t.Fatalf("successor did not validate and execute provider arguments plus hook update: normalize=%d prevalidate=%d execute=%d result=%#v", successorNormalizations, successorPrevalidations, successorExecutions, res)
+	}
+}
+
 func TestExecTool_PreparedCallNormalizesBeforePreValidate(t *testing.T) {
 	sess := newSession(t)
 	t.Cleanup(sess.Close)

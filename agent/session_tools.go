@@ -691,7 +691,6 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	prep.Lifetime = lifetime
 	call = prep.Call
 	displayName := tool.DisplayToolName(call.Name)
-	prevalidated := true
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
 			ToolName: displayName,
@@ -740,13 +739,24 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 					IsError:    true,
 				}
 			}
+			// ExecutePreparedCall selects between this registration's prepared base
+			// and the original provider base under the registry lifetime check. Keep
+			// the hook's partial update on both valid JSON forms so a successor never
+			// inherits repairs produced for its predecessor. A malformed provider base
+			// cannot be merged; if the lifetime changes, the successor must see and
+			// reject those original bytes rather than inherit the repaired form.
+			originalCall := call
+			originalCall.Arguments = originalArguments
+			if applyUpdatedToolInput(&originalCall, preResult.UpdatedInput) == nil {
+				originalArguments = originalCall.Arguments
+			}
 			// Preparation validated the original arguments. A hook may replace
 			// any semantic task field, so dispatch this changed call through the
 			// normal validation path, including when the update corrected an
 			// initial preparation failure. Unchanged prepared calls still avoid
 			// running that validation twice.
 			prep.PrevalErr = ""
-			prevalidated = false
+			prep.PreparedArguments = nil
 		}
 	}
 	s.execToolCheckpoint("after_pre_hook")
@@ -812,11 +822,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if prep.PrevalErr != "" {
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
-		if prevalidated {
-			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments, originalArguments)
-		} else {
-			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
-		}
+		res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments, originalArguments)
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	// M7: on a sandbox denial in an interactive root session, raise a human approval

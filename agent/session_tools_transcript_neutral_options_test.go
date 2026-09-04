@@ -480,6 +480,43 @@ func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *test
 	}
 }
 
+func TestSessionSecondPassRetainedNormalizationUsesCommittedSemanticArguments(t *testing.T) {
+	stateDir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	t.Cleanup(sess.Close)
+	jobID := identifier.MustNewJobID(sess.ID())
+	seedLocalJobRecord(t, stateDir, sess.ID(), jobID, "/decoy", "ready\n", maxJobOutputRetentionBytes, true, int64(len("ready\n")), nil)
+
+	variants := []map[string]any{
+		{"transcript_ref": "job:" + jobID, "expand_turn": "0", "offset_bytes": float64(-1)},
+		{"transcript_ref": "job:" + jobID, "expand_turn": float64(0), "offset_bytes": float64(-1)},
+		{"transcript_ref": "job:" + jobID, "offset_bytes": float64(-1)},
+	}
+	semanticSignature := ""
+	for i, args := range variants {
+		result := execReadTranscriptThroughSession(t, sess, fmt.Sprintf("second-pass-semantic-%d", i), args)
+		if i == 0 {
+			semanticSignature = result.BreakerSemanticSignature
+		} else if result.BreakerSemanticSignature != semanticSignature {
+			t.Fatalf("equivalent attempt %d semantic signature = %q, want %q", i+1, result.BreakerSemanticSignature, semanticSignature)
+		}
+		if i < 2 {
+			if !result.IsError || !result.PrevalOnly || strings.Contains(result.Output, "semantic failure loop") {
+				t.Fatalf("attempt %d = %#v, want ordinary prevalidation failure", i+1, result)
+			}
+			continue
+		}
+		if !result.IsError || !result.PrevalOnly || !strings.Contains(result.Output, "semantic failure loop") || result.BreakerSemanticSignature == "" {
+			t.Fatalf("equivalent third attempt did not semantic-park: %#v", result)
+		}
+	}
+}
+
 type retainedReadEventCapture struct {
 	repaired  []events.ToolCallRepairedData
 	startArgs string
