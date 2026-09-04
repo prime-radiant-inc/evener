@@ -582,11 +582,8 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	continued, err := continuitySource.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: oldCursor,
 	})
-	if err != nil {
-		t.Fatalf("continue with original bounded cursor: %v", err)
-	}
-	if len(continued.Candidates.Candidates) != 1 || continued.Candidates.Candidates[0].Item.ID != "item-00" {
-		t.Fatalf("original bounded cursor result = %+v, want item-00", continued.Candidates.Candidates)
+	if err == nil {
+		t.Fatalf("original bounded cursor was accepted after full materialization: %+v", continued)
 	}
 	partial, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
@@ -620,6 +617,113 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}); err == nil {
 		t.Fatal("cursor from a different authenticated daemon instance was accepted")
 	}
+}
+
+func newLocalDaemonItemTransitionSource(t *testing.T, items []appwire.ThreadItem) (*LocalDaemonSource, func([]appwire.ThreadItem)) {
+	t.Helper()
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	currentItems := items
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		return appwire.ThreadTurnsListResponse{
+			Data: []appwire.Turn{{ID: "turn-1", Items: currentItems, ItemsView: appwire.TurnItemsViewFull}},
+		}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	t.Cleanup(httpServer.Close)
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):],
+		SourceID: "local", ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread",
+		InstanceID: "transition-instance",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry}}
+	}, httpServer.Client())
+	return source, func(next []appwire.ThreadItem) { currentItems = next }
+}
+
+func TestLocalDaemonItemSnapshotTransitionsRotateBoundedPrefix(t *testing.T) {
+	item := func(id string, ordinal uint32) appwire.ThreadItem {
+		position := appwire.ThreadItemPosition{Entry: 0, Item: ordinal}
+		return appwire.ThreadItem{
+			Type: "agentMessage", ID: id, TranscriptKey: "key-" + id, Position: &position, TurnID: "turn-1", Text: id,
+		}
+	}
+	read := func(items []appwire.ThreadItem, olderCursor string) appwire.ThreadReadResponse {
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "thread", Evener: appwire.EvenerThread{Ref: "local:thread"}, Turns: []appwire.Turn{{
+				ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: olderCursor != "",
+			}}},
+			PageUnit: appwire.TranscriptPageUnitItem, OlderCursor: olderCursor,
+		}
+	}
+
+	t.Run("nonempty bounded B,C then full X,B,C", func(t *testing.T) {
+		source, setItems := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)})
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("B", 1), item("C", 2)}, "daemon-cursor"))
+		if err != nil {
+			t.Fatalf("bounded conversion: %v", err)
+		}
+		oldCursor, err := appitempaging.EncodeCursor(bounded.Identity, bounded.Candidates.Candidates[0].Position)
+		if err != nil {
+			t.Fatalf("encode bounded cursor: %v", err)
+		}
+		full, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)}, ""))
+		if err != nil {
+			t.Fatalf("full conversion: %v", err)
+		}
+		if full.Identity.Incarnation == bounded.Identity.Incarnation {
+			t.Fatalf("bounded-to-full incarnation = %q, want rotation from %q", full.Identity.Incarnation, bounded.Identity.Incarnation)
+		}
+		setItems([]appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)})
+		if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: oldCursor, ItemLimit: 40}); err == nil {
+			t.Fatal("cursor from bounded prefix was accepted after full prefix materialization")
+		}
+	})
+
+	t.Run("empty bounded then full", func(t *testing.T) {
+		source, setItems := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("X", 0)})
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read(nil, "daemon-cursor"))
+		if err != nil {
+			t.Fatalf("empty bounded conversion: %v", err)
+		}
+		oldCursor, err := appitempaging.EncodeCursor(bounded.Identity, appwire.ThreadItemPosition{Entry: 0, Item: 0})
+		if err != nil {
+			t.Fatalf("encode empty bounded cursor: %v", err)
+		}
+		full, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("X", 0)}, ""))
+		if err != nil {
+			t.Fatalf("full conversion after empty bounded: %v", err)
+		}
+		if full.Identity.Incarnation == bounded.Identity.Incarnation {
+			t.Fatalf("empty-bounded-to-full incarnation = %q, want rotation from %q", full.Identity.Incarnation, bounded.Identity.Incarnation)
+		}
+		setItems([]appwire.ThreadItem{item("X", 0)})
+		if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: oldCursor, ItemLimit: 40}); err == nil {
+			t.Fatal("cursor from empty bounded prefix was accepted after full prefix materialization")
+		}
+	})
+
+	t.Run("full unchanged and append preserve incarnation", func(t *testing.T) {
+		source, _ := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("A", 0), item("B", 1)})
+		first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""))
+		if err != nil {
+			t.Fatalf("initial full conversion: %v", err)
+		}
+		unchanged, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""))
+		if err != nil {
+			t.Fatalf("unchanged full conversion: %v", err)
+		}
+		if unchanged.Identity.Incarnation != first.Identity.Incarnation {
+			t.Fatalf("unchanged full incarnation = %q, want %q", unchanged.Identity.Incarnation, first.Identity.Incarnation)
+		}
+		appended, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1), item("C", 2)}, ""))
+		if err != nil {
+			t.Fatalf("appended full conversion: %v", err)
+		}
+		if appended.Identity.Incarnation != first.Identity.Incarnation {
+			t.Fatalf("appended full incarnation = %q, want %q", appended.Identity.Incarnation, first.Identity.Incarnation)
+		}
+	})
 }
 
 func TestLocalDaemonItemPagingIsolatesSharedWorkspaceAliases(t *testing.T) {

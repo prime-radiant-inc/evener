@@ -134,23 +134,14 @@ func transcriptItemDigest(candidates []appitempaging.TranscriptItemCandidate, co
 // bounded newest windows may only append through one exact tail-to-head overlap.
 func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempaging.TranscriptItemCandidate, prefix bool) (itemSnapshotState, bool) {
 	current := itemSnapshotStateForCandidates(previous.ThreadRef, previous.Incarnation, previous.SourceIdentity, candidates, prefix)
+	if prefix && !previous.Prefix {
+		return current, false
+	}
 	if previous.ItemCount == 0 {
 		return current, prefix || len(candidates) == 0
 	}
 	if prefix {
 		start := 0
-		if !previous.Prefix {
-			start = -1
-			for index, candidate := range candidates {
-				if candidate.Position == previous.FirstPosition {
-					start = index
-					break
-				}
-			}
-			if start < 0 {
-				return current, false
-			}
-		}
 		end := start + previous.ItemCount
 		if end > len(candidates) || candidates[end-1].Position != previous.LastPosition {
 			return current, false

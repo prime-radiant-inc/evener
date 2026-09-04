@@ -2381,7 +2381,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       current.ref !== capturedRef ||
       current.olderCursor !== capturedCursor ||
       (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
-      (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration
+      (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+      pendingThreadHydrations.has(ref)
     )
       return;
     olderPageGenerations.set(ref, capturedPageGeneration + 1);

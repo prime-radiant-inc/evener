@@ -400,6 +400,13 @@ func registerThreadHandlers(
 				resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
 			}
 		}
+		if params.PageUnit == appwire.TranscriptPageUnitItem && !params.IncludeTurns {
+			resp.PageUnit = appwire.TranscriptPageUnitItem
+			if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
+				read.finish(false)
+				return appwire.ThreadReadResponse{}, err
+			}
+		}
 		read.response = resp
 		if read.handoff != nil {
 			if !relays.captureThreadRead(ctx, params, read) {

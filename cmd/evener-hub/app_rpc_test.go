@@ -406,6 +406,69 @@ func (s *itemPackingRPCSource) ListItemCandidates(ctx context.Context, params ap
 	return s.readCandidates, nil
 }
 
+type metadataItemReadRPCSource struct {
+	itemPackingRPCSource
+	metadata appwire.ThreadReadResponse
+}
+
+func (s *metadataItemReadRPCSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if !params.IncludeTurns {
+		return s.metadata, nil
+	}
+	return s.read, nil
+}
+
+func TestHubRPCItemMetadataReadSetsAndValidatesPageUnit(t *testing.T) {
+	metadata := appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{ID: "item-metadata", SessionID: "item-metadata", Source: "codex", Evener: appwire.EvenerThread{Ref: "codex:item-metadata"}},
+		OlderCursor: "metadata-cursor",
+	}
+	newServer := func(metadata appwire.ThreadReadResponse) *appserver.Server {
+		source := &metadataItemReadRPCSource{
+			read:     appwire.ThreadReadResponse{Thread: metadata.Thread},
+			metadata: metadata,
+		}
+		sources := appsource.NewRegistry()
+		sources.Add(source)
+		return newHubAppServer(hubcore.WebConfig{}, sources)
+	}
+
+	t.Run("successful metadata response stamps item mode", func(t *testing.T) {
+		value, err := newServer(metadata).Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+			Params: mustJSON(t, appwire.ThreadReadParams{Ref: "codex:item-metadata", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 7}),
+		})
+		if err != nil {
+			t.Fatalf("metadata item read: %v", err)
+		}
+		response, ok := value.(appwire.ThreadReadResponse)
+		if !ok {
+			t.Fatalf("metadata item read response = %T", value)
+		}
+		if response.PageUnit != appwire.TranscriptPageUnitItem {
+			t.Fatalf("metadata page unit = %q, want item", response.PageUnit)
+		}
+		if response.Thread.Turns != nil {
+			t.Fatalf("metadata turns = %+v, want nil", response.Thread.Turns)
+		}
+		if response.OlderCursor != metadata.OlderCursor {
+			t.Fatalf("metadata cursor = %q, want %q", response.OlderCursor, metadata.OlderCursor)
+		}
+	})
+
+	t.Run("metadata response carrying a full turn is rejected", func(t *testing.T) {
+		invalid := metadata
+		invalid.Thread.Turns = []appwire.Turn{{ID: "full-turn", ItemsView: appwire.TurnItemsViewFull}}
+		_, err := newServer(invalid).Router().Dispatch(context.Background(), appwire.Request{
+			ID: appwire.NewIntID(2), Method: appwire.MethodThreadRead,
+			Params: mustJSON(t, appwire.ThreadReadParams{Ref: "codex:item-metadata", PageUnit: appwire.TranscriptPageUnitItem}),
+		})
+		if err == nil {
+			t.Fatal("metadata item read accepted a full turn while IncludeTurns was false")
+		}
+	})
+}
+
 type metadataErrorItemTurnsSource struct {
 	itemPackingRPCSource
 	metadataErr error

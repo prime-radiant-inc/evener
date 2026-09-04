@@ -6697,6 +6697,76 @@ describe("useThreadsStore.loadOlderTurns", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("resync-cursor");
   });
 
+  test("a successful pre-resync older page does not merge while a same-epoch targeted resync is pending", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    let resolveResync!: (response: ThreadReadResponse) => void;
+    let announceResyncRequest!: () => void;
+    const resyncRequested = new Promise<void>((resolve) => (announceResyncRequest = resolve));
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) {
+        return {
+          thread: testThread("ref_a", {
+            turns: [{ id: "before-resync", status: "completed", itemsView: "full", items: [] }],
+          }),
+          olderCursor: "shared-cursor",
+        };
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveResync = resolve;
+        announceResyncRequest();
+      });
+    });
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    let announcePageRequest!: () => void;
+    const pageRequested = new Promise<void>((resolve) => (announcePageRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((resolve) => {
+          resolvePage = resolve;
+          announcePageRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await pageRequested;
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await resyncRequested;
+
+    resolvePage({
+      data: [{ id: "stale-older-page", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "page-cursor",
+      pageUnit: "item",
+    });
+    await loading;
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["before-resync"]);
+
+    const resyncPublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-resync") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    resolveResync({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-resync", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "resync-cursor",
+    });
+    await resyncPublished;
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("resync-cursor");
+  });
+
   test("an ordinary older-page failure rejects so the inline retry UI can surface it", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
