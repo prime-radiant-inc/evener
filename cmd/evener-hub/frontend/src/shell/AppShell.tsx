@@ -32,7 +32,7 @@ import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { urlToPane } from "./routing";
+import { navigate, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -483,6 +483,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   // cycling no-ops (fewer than two session panes): Alt+ArrowLeft is the
   // browser's Back shortcut, and declining would navigate the SPA's history
   // underneath a user who has one session open.
+  //
+  // ⌘, (settings.open, Phase 4a) joins this desktop-only group per the p4
+  // plan's mobile-inert constraint. Its behavior IS the palette "settings"
+  // command's - the action id reuses that command's id (keybindings/
+  // actions.ts), and navigate("/settings") is exactly its run body
+  // (shell/palette/commands.ts); same shared-seam precedent as
+  // next-needs-you above.
   useEffect(() => {
     if (isMobile) return undefined;
     installKeybindings();
@@ -490,6 +497,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
+      registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
       for (const dispose of unregister) dispose();

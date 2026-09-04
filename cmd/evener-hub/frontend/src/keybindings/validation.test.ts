@@ -256,9 +256,9 @@ describe("validateOverrideRules dropped-override restorations", () => {
 
 describe("validateOverrideRules overlap conflicts", () => {
   test("flags an override whose exact chord overlaps a default's OPTIONAL modifiers (dispatch would shadow it)", () => {
-    // palette.open's default is Control+[Meta]+[Shift]+[Alt]+K: a plain
-    // Control+K matches it at dispatch time, and the earlier-registered
-    // default would win - so this is a conflict, not a valid remap.
+    // palette.open's default is Control+[Meta]+K: a plain Control+K matches
+    // it at dispatch time, and the earlier-registered default would win -
+    // so this is a conflict, not a valid remap.
     const registry = withDefaults();
     const result = validateOverrideRules([{ action: ACTIONS.composerFocus, chord: "Control+K" }], registry);
     expect(result.rules).toHaveLength(0);

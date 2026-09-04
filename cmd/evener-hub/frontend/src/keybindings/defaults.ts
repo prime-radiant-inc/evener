@@ -1,8 +1,10 @@
 // The default binding map: the six legacy shell chords that lived in six
 // independent keydown listeners (AppShell, RailHost, SelectionQuote,
 // Settings), plus the Phase 3 navigation chords (session-pane cycling and
-// transcript scroll). For the legacy six, per-binding policy per chord
-// matches the pre-dispatcher behavior:
+// transcript scroll) and the Phase 4a additions (settings.open and
+// transcript.scrollTop/scrollBottom - the p4 plan's Design decision 2). For
+// the legacy six, per-binding policy per chord matches the pre-dispatcher
+// behavior:
 //
 //   - ⌘K / ⌘I / ⌘J / ⌘' fire from editable targets (allowInEditable: true):
 //     none of today's listeners for these chords guards on the target.
@@ -21,19 +23,19 @@
 //     handler, which the dispatcher's per-binding defaultPrevented gate
 //     reproduces.
 //
-// Extra-modifier semantics are equally legacy-faithful (tinykeys matches
-// strictly, so each chord lists as OPTIONAL exactly the modifiers the legacy
-// listener ignored):
+// Extra-modifier semantics (tinykeys matches strictly, so each chord lists as
+// OPTIONAL exactly the modifiers it should tolerate):
 //
-//   - ⌘K / ⌘I / ⌘J: the legacy AppShell listener checked only
-//     metaKey||ctrlKey + key - NO shift/alt guard - so ⌘⇧K, ⌘⌥I,
-//     Ctrl+Shift+J etc. all fired, on either OR BOTH of Meta/Ctrl. Chords
-//     are $mod+[Shift]+[Alt]+… plus legacyEitherMod (the other of
-//     Meta/Ctrl also optional on the entry and its twin). RATIONALE: this
-//     permissiveness means these chords keep hijacking the browser's
-//     DevTools shortcuts (⌘⌥I, Ctrl+Shift+J) exactly like the legacy
-//     listeners did - deliberately revisiting THAT is Phase 3 policy, not
-//     this PR.
+//   - ⌘K / ⌘I / ⌘J: STRICT single-press chords since Phase 4a. The 2a map
+//     kept the legacy AppShell listener's missing shift/alt guard as
+//     OPTIONAL Shift/Alt - so ⌘⌥I fired composer.focus and Ctrl+Shift+J
+//     fired next-needs-you, hijacking the browser's DevTools chords.
+//     docs/superpowers/plans/2026-09-04-webui-keybindings-p4-plan.md
+//     (Design decision 1) is the authority for dropping that optionality;
+//     ⌘⌥I, Ctrl+Shift+J and ⌘⇧J now revert to the browser. legacyEitherMod
+//     STAYS (the other of Meta/Ctrl optional on the entry and its twin):
+//     every legacy listener accepted metaKey||ctrlKey on every platform,
+//     and no browser-reserved chord collides with Meta+Ctrl.
 //   - ⌘': extra Shift allowed ([Shift] - the legacy listener had no shift
 //     guard), extra Alt NOT (the legacy !event.altKey AltGr guard).
 //   - ⌘B: strict - the legacy listener guarded !event.altKey &&
@@ -73,7 +75,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     id: ACTIONS.paletteOpen,
     actionId: ACTIONS.paletteOpen,
     title: "Open the command palette",
-    chord: "$mod+[Shift]+[Alt]+K",
+    chord: "$mod+K",
     allowInEditable: true,
     allowInModal: true,
     legacyEitherMod: true,
@@ -95,7 +97,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     id: ACTIONS.composerFocus,
     actionId: ACTIONS.composerFocus,
     title: "Focus the composer",
-    chord: "$mod+[Shift]+[Alt]+I",
+    chord: "$mod+I",
     allowInEditable: true,
     legacyEitherMod: true,
   },
@@ -103,7 +105,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     id: ACTIONS.nextNeedsYou,
     actionId: ACTIONS.nextNeedsYou,
     title: "Go to the next session needing you",
-    chord: "$mod+[Shift]+[Alt]+J",
+    chord: "$mod+J",
     allowInEditable: true,
     legacyEitherMod: true,
   },
@@ -118,6 +120,19 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     allowInEditable: true,
     allowInModal: true,
     legacyEitherMod: true,
+  },
+  // Phase 4a (the p4 plan's Design decision 2): settings.open's action id IS
+  // the palette's "settings" command id, whose run owns the behavior
+  // (shell/palette/commands.ts; AppShell registers the action against the
+  // registry). Strict $mod chord - NO legacyEitherMod, only the plain
+  // cross-platform modPair twin. allowInEditable: ⌘, never collides with
+  // typing; the default modal suppression stays.
+  {
+    id: ACTIONS.settingsOpen,
+    actionId: ACTIONS.settingsOpen,
+    title: "Open settings",
+    chord: "$mod+,",
+    allowInEditable: true,
   },
   // Phase 3 navigation chords (the webui-keybindings-p3 approved map). All
   // six are strict single-modifier-family Alt chords with NO optional
@@ -168,6 +183,24 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     actionId: ACTIONS.transcriptPageDown,
     title: "Scroll the transcript down one page",
     chord: "Alt+Shift+ArrowDown",
+  },
+  // Phase 4a completes the Alt-scroll family (Alt = transcript, Shift =
+  // bigger step, Home/End = the ends) with the SAME plain policy as the
+  // Alt-arrow entries above: suppressed in editable targets so Home/End keep
+  // their native caret meaning there. The per-pane handlers were registered
+  // in Phase 3 (panes/session/transcript/flow/useTranscriptScrollKeys.ts);
+  // these entries only assign the chords.
+  {
+    id: ACTIONS.transcriptScrollTop,
+    actionId: ACTIONS.transcriptScrollTop,
+    title: "Scroll the transcript to the top",
+    chord: "Alt+Home",
+  },
+  {
+    id: ACTIONS.transcriptScrollBottom,
+    actionId: ACTIONS.transcriptScrollBottom,
+    title: "Scroll the transcript to the bottom",
+    chord: "Alt+End",
   },
   {
     id: ACTIONS.settingsClose,
