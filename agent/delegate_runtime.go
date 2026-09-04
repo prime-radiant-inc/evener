@@ -498,12 +498,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		candidate := sub
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			finishRestore(nil, trackErr)
 			return nil, trackErr
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -669,7 +669,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 		return false, errors.New("owed candidate conflicts with controller runtime state")
 	}
 	start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
-	start.sub.sess.discardRestoredCandidate()
+	start.sub.sess.discardRestoredCandidate(start.sub.ownsEnv)
 	return false, persistErr
 }
 
@@ -847,13 +847,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		})
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
 				finishRestore(nil, trackErr)
 			})
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -1661,12 +1661,12 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
-		child.discardRestoredCandidate()
+		child.discardRestoredCandidate(ownsFresh)
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
-			child.discardRestoredCandidate()
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
@@ -1683,7 +1683,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
-			child.discardRestoredCandidate()
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 	}

@@ -129,7 +129,7 @@ func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
 	tmp := local.Wrapper.SessionTmp()
-	child.discardRestoredCandidate()
+	child.discardRestoredCandidate(true)
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Errorf("discarded restore candidate retained sandbox scratch: %v", err)
 	}
@@ -158,12 +158,54 @@ func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
 		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to dispose")
 	}
 
-	candidate.discardRestoredCandidate()
+	candidate.discardRestoredCandidate(true)
 
 	// The lease file lives inside the scratch dir, so the directory's removal is
 	// the lease's removal too.
 	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
 		t.Errorf("discarded restore candidate retained unsandboxed scratch %s: stat err = %v", scratch, err)
+	}
+}
+
+// A candidate does not always OWN what it holds: prepareSubagentEnvironment
+// hands back the parent's environment untouched when the delegate needs neither
+// a working-dir re-root nor a box of its own. close() already guards its scratch
+// handoff on the subagent's ownsEnv for exactly that reason, and the discard path
+// has to make the same distinction — otherwise aborting one candidate deletes the
+// scratch dir out from under the live parent still working in it.
+func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
+	}
+	if _, err := shared.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	sharedScratch := shared.SessionScratchDir()
+	if sharedScratch == "" {
+		t.Fatal("the parent minted no session scratch, so there is nothing to protect")
+	}
+
+	// A candidate on the parent's own environment, exactly as a delegate with no
+	// working dir and no per-delegate box gets one.
+	candidate, err := NewSession(client, parent.currentProfile(), shared, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the parent's environment: %v", err)
+	}
+
+	candidate.discardRestoredCandidate(false)
+
+	if _, err := os.Stat(sharedScratch); err != nil {
+		t.Errorf("discarding a candidate on the parent's shared environment removed its scratch %s: %v", sharedScratch, err)
+	}
+	if got := shared.SessionScratchDir(); got != sharedScratch {
+		t.Errorf("parent scratch = %q after the discard, want the one it is still using %q", got, sharedScratch)
 	}
 }
 
