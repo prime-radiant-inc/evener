@@ -707,16 +707,16 @@ func genericExecutionClass(output string) string {
 // remain semantic identity rather than being mistaken for presentation noise.
 func stripPresentationTraceSuffix(line string) string {
 	trimmed := strings.TrimSpace(line)
-	const marker = " [trace "
+	const marker = "[trace "
 	if !strings.HasSuffix(trimmed, "]") {
 		return line
 	}
 	open := strings.LastIndexByte(trimmed, '[')
-	start := open - 1
-	if start < 0 || open+len(marker)-1 > len(trimmed) || !strings.EqualFold(trimmed[start:open+len(marker)-1], marker) {
+	markerEnd := open + len(marker)
+	if open < 1 || trimmed[open-1] != ' ' || markerEnd > len(trimmed) || !strings.EqualFold(trimmed[open:markerEnd], marker) {
 		return line
 	}
-	token := trimmed[open+len(marker)-1 : len(trimmed)-1]
+	token := trimmed[markerEnd : len(trimmed)-1]
 	if token == "" || len(token) > 64 {
 		return line
 	}
@@ -725,7 +725,7 @@ func stripPresentationTraceSuffix(line string) string {
 			return line
 		}
 	}
-	return strings.TrimSpace(trimmed[:start])
+	return strings.TrimSpace(trimmed[:open-1])
 }
 
 // failureBoundary is the stable, presentation-free category displayed by the
