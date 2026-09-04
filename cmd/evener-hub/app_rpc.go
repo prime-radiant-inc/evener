@@ -482,9 +482,6 @@ func registerThreadHandlers(
 		}
 		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
-			if liveItemHandled && liveErr == nil {
-				return live, nil
-			}
 			return appwire.ThreadTurnsListResponse{}, pastErr
 		}
 		if ok {

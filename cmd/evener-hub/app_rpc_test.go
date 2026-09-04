@@ -280,7 +280,7 @@ func TestHubRPCInitialItemReadRejectsCompleteLegacyV3Metadata(t *testing.T) {
 	}
 }
 
-func TestHubRPCItemListPreservesTerminalSourcePageAndSavedCursorFallback(t *testing.T) {
+func TestHubRPCItemListPreservesSavedErrorsAndCursorFallback(t *testing.T) {
 	cfg, entry := seedPastItemPagingThread(t)
 	sessionID := entry.Meta.ID
 	ref := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
@@ -341,12 +341,14 @@ func TestHubRPCItemListPreservesTerminalSourcePageAndSavedCursorFallback(t *test
 		return response, nil
 	}
 
-	terminal, err := dispatch(liveCursor)
-	if err != nil {
-		t.Fatalf("source-accepted terminal cursor: %v", err)
+	_, err = dispatch(liveCursor)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("source-accepted terminal cursor error = %T %v, want saved stale-cursor WireError", err, err)
 	}
-	if terminal.PageUnit != appwire.TranscriptPageUnitItem || len(terminal.Data) != 0 || terminal.NextCursor != "" {
-		t.Fatalf("source terminal page = %+v, want empty exhausted item page", terminal)
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("source-accepted terminal cursor error data = %#v, want stale-cursor info", wireErr.Data)
 	}
 
 	fallback, err := dispatch(savedFirst.OlderCursor)
