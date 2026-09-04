@@ -210,24 +210,30 @@ func TestNormalDrainStillWaitsOnWatchSendResidue(t *testing.T) {
 	}
 }
 
-// awaitQueuedJobNotification spins until a job notification is queued on the
-// session's own rail, which armFinalizedJob does only after the job has left
-// the running map with its NotifyPending record durable. It may run on the
-// goroutine a scripted provider step is called from, so a miss is reported
-// with t.Error and false, never t.Fatal.
-func awaitQueuedJobNotification(t *testing.T, sess *Session) bool {
+// finalizeShell releases a controlled shell and blocks until its finalization
+// has closed the job's done channel, which armFinalizedJob does only after the
+// owner notification is enqueued: on return the completion is queued and the
+// job has left the running map. The channel is taken before the release, so a
+// finalization that outruns the lookup cannot pass for one that has not
+// started. It may run on the goroutine a scripted provider step is called
+// from, so a miss is reported with t.Error and false, never t.Fatal.
+func finalizeShell(t *testing.T, jm *jobManager, jobID string, release func()) bool {
 	t.Helper()
-	// TRIPWIRE: the enqueue is one goroutine hop and a few store appends past
-	// the shell's release; 30s only fires if finalization never lands.
-	deadline := time.Now().Add(30 * time.Second)
-	for sess.peekNotifications() == 0 {
-		if time.Now().After(deadline) {
-			t.Error("completion never queued on the rail")
-			return false
-		}
-		time.Sleep(2 * time.Millisecond)
+	done, live := shellDoneChannel(jm, jobID)
+	if !live {
+		t.Errorf("job %s was not running before its release", jobID)
+		return false
 	}
-	return true
+	release()
+	select {
+	case <-done:
+		return true
+	// TRIPWIRE: hang guard only; finalization is one goroutine hop and a few
+	// store appends past the release.
+	case <-time.After(30 * time.Second):
+		t.Errorf("job %s never finalized", jobID)
+		return false
+	}
 }
 
 // requireNeverConsumed fails if the durable ledger holds a consumed
@@ -267,13 +273,13 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 	const firstAnswer = "first answer, written before the build finished"
 	const finalAnswer = "FINAL-ANSWER: the build passed"
 	var sess *Session
+	var jobID string
 	var releaseShell func()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			// The final-answer request is built; finish the job before the reply
 			// so the completion lands inside the answer's generation window.
-			releaseShell()
-			awaitQueuedJobNotification(t, sess)
+			finalizeShell(t, sess.jobManager, jobID, releaseShell)
 			return finalResponse(firstAnswer)
 		},
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
@@ -282,7 +288,6 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	var jobID string
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: scripted adapter and a controlled in-process shell; 30s only
@@ -330,11 +335,11 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	const firstAnswer = "first answer, written before the build finished"
 	const finalAnswer = "FINAL-ANSWER: both jobs done"
 	var sess *Session
+	var firstJobID string
 	var releaseShell func()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
-			releaseShell()
-			awaitQueuedJobNotification(t, sess)
+			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
 			return finalResponse(firstAnswer)
 		},
 		func(llm.Request) llm.Response {
@@ -350,7 +355,6 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	var firstJobID string
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: scripted adapter, a controlled shell and one real printf; 30s
@@ -415,8 +419,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 		TurnEndsProcess:  true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
-	releaseShell()
-	if !awaitQueuedJobNotification(t, sess) {
+	if !finalizeShell(t, sess.jobManager, jobID, releaseShell) {
 		t.FailNow()
 	}
 
