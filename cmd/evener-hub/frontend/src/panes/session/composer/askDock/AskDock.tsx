@@ -45,9 +45,28 @@
 //   - Failure feedback for a local durable-enqueue error is a toast (the
 //     wave's decided convention, T1's loadOlder reference implementation);
 //     network outcomes are rendered by recovery state, not an inline banner.
+//
+// Phase 3 keyboard operation (webui-keybindings-p3): on top of the per-batch
+// keys above, Alt+PageDown/Alt+PageUp jump focus between BATCHES directly,
+// wrapping at both ends (landing on the target batch's selected tab when it
+// has a tab strip, else its first answer control). Alt+Page* rather than
+// Alt+Arrow* because the Phase 3 transcript-scroll bindings own
+// Alt+ArrowUp/Down with allowInEditable: false - and the dispatcher's
+// editable test only covers INPUT/TEXTAREA/SELECT, so from the dock's tab
+// and send BUTTONS those chords would still scroll the transcript - and
+// rather than bare PageUp/PageDown, which keep their native meaning (the
+// dock is its own overflow-y scroller). Escape stays a deliberate NO-OP:
+// parity-m5-composer.md:120 documents that the dock is the one canonical
+// response surface with no collapse state to escape to, so this component
+// installs no Escape handler at all (AskDock.test.tsx pins both halves). A
+// send returns focus: to the composer via composerFocus.ts's
+// requestComposerFocus seam when the dock just emptied, or to the next
+// still-pending batch's entry control when it has not (the composer input
+// row is hidden/inert until the last batch resolves - Composer.tsx).
 import { useEffect, useId, useRef } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskResolution } from "./askCompose";
 import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
@@ -73,6 +92,25 @@ export interface AskDockProps {
 const NO_BATCHES: AskBatch[] = [];
 const NO_ANSWERS: Record<string, AskAnswerState> = {};
 const UNTOUCHED_ANSWER: AskAnswerState = { resolution: null, note: "" };
+
+// FIRST_CONTROL_SELECTOR names a batch's first answer control. Two callers:
+// the activation auto-focus effect (scoped to [data-ask-question] so a
+// multi-question batch's TAB BUTTONS - which sit before the card in DOM
+// order, kata 99yf - never win over the first actual answer control) and
+// focusBatchEntry's no-tab-strip fallback below.
+const FIRST_CONTROL_SELECTOR =
+  '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button';
+
+// focusBatchEntry moves focus into a batch at its orientation point: the
+// selected tab when the batch has a tab strip (the tab announces where in
+// the walk the reader is - "2. Second, tab, selected"), else the first
+// answer control, matching the dock-activation auto-focus below.
+function focusBatchEntry(batchEl: HTMLElement): void {
+  const entry =
+    batchEl.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
+    batchEl.querySelector<HTMLElement>(FIRST_CONTROL_SELECTOR);
+  entry?.focus();
+}
 
 // useAskDockPending is the seam T2 (or any other composer-surface owner)
 // reads to decide whether to hide/inert the plain composer for `ref` -
@@ -203,8 +241,11 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   }
 
   return (
+    // data-ask-batch lets the dock-level batch jump (Alt+PageUp/Down) and the
+    // post-send focus move locate each batch's card without depending on the
+    // CSS-module class name.
     // biome-ignore lint/a11y/noStaticElementInteractions: catches Mod+Enter/Enter bubbling up from the batch's own controls (radios, the free-text input) - the div is a layout container, not itself interactive, same precedent as Settings.tsx's own Escape-catching wrapper
-    <div className={CLASS.batch} onKeyDown={handleBatchKeyDown}>
+    <div className={CLASS.batch} onKeyDown={handleBatchKeyDown} data-ask-batch={batch.id}>
       {total > 1 && (
         // key="tabs"/key="panel" on both siblings: when a late ask_user call
         // grows a single-question batch past one question, the tab strip
@@ -312,9 +353,7 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     const wasEmpty = wasEmptyRef.current;
     wasEmptyRef.current = isEmpty;
     if (!wasEmpty || isEmpty) return;
-    const first = dockRef.current?.querySelector<HTMLElement>(
-      '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
-    );
+    const first = dockRef.current?.querySelector<HTMLElement>(FIRST_CONTROL_SELECTOR);
     first?.focus();
   }, [batches.length]);
 
@@ -327,14 +366,59 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
       // that can still tell a failed send from the failed session resume
       // behind it (askDockStore's SendBatchOutcome).
       toasts.push("error", outcome.message);
+      return;
     }
-    // "sent"/"stale": nothing further to do here - a successful send's own
-    // batch removal, and a stale click's own no-op, are both already
-    // reflected by askDockStore's reactive state.
+    // "stale": nothing further to do here - the dock re-checked and found
+    // nothing left to send, and that no-op is already reflected by
+    // askDockStore's reactive state.
+    if (outcome.outcome !== "sent") return;
+    // Focus return (Phase 3): the sent batch's card - including whichever
+    // control had focus - unmounts with it, and without an explicit move
+    // keyboard focus drops to <body>. removeBatch has already run inside
+    // sendBatch, so the store (not the not-yet-flushed DOM) says what
+    // remains. Dock empty: ask the composer to take focus back through the
+    // composerFocus.ts seam (the request survives until the input row's
+    // hidden/inert lifts - exactly the transition this send just caused).
+    // Batches remain: the composer input row is still hidden/inert, so move
+    // focus to the next pending batch's entry control instead. That
+    // batch's DOM element still exists pre-flush and survives it (keyed),
+    // so the query is safe at either flush ordering.
+    const remaining = askDockStore.getState().byRef.get(sessionRef)?.batches ?? [];
+    const nextBatch = remaining[0];
+    if (nextBatch === undefined) {
+      requestComposerFocus(sessionRef);
+      return;
+    }
+    const nextEl = dockRef.current?.querySelector<HTMLElement>(`[data-ask-batch="${nextBatch.id}"]`);
+    if (nextEl) focusBatchEntry(nextEl);
+  }
+
+  // Batch jump (Phase 3): Alt+PageDown/Alt+PageUp move focus between batch
+  // cards directly, wrapping at both ends - the tab strip's ArrowLeft/Right
+  // walk only moves within ONE batch. Strict Alt-only chord (an extra
+  // modifier or an IME composition lets the key keep whatever other meaning
+  // it has). Fewer than two batches: nothing to jump to, and the event is
+  // left alone rather than claimed.
+  function handleDockKeyDown(event: React.KeyboardEvent) {
+    if (event.nativeEvent.isComposing) return;
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const delta = event.key === "PageDown" ? 1 : event.key === "PageUp" ? -1 : 0;
+    if (delta === 0) return;
+    const root = dockRef.current;
+    if (!root) return;
+    const batchEls = Array.from(root.querySelectorAll<HTMLElement>("[data-ask-batch]"));
+    if (batchEls.length < 2) return;
+    event.preventDefault();
+    const current = batchEls.findIndex((el) => event.target instanceof Node && el.contains(event.target));
+    const next =
+      current === -1 ? (delta === 1 ? 0 : batchEls.length - 1) : (current + delta + batchEls.length) % batchEls.length;
+    const target = batchEls[next];
+    if (target) focusBatchEntry(target);
   }
 
   return (
-    <div className={CLASS.dock} ref={dockRef} data-ask-response-dock>
+    // biome-ignore lint/a11y/noStaticElementInteractions: catches Alt+PageUp/Down bubbling up from any control inside any batch - the div is a layout container, not itself interactive, same precedent as the batch-level Enter handler above
+    <div className={CLASS.dock} ref={dockRef} data-ask-response-dock onKeyDown={handleDockKeyDown}>
       <div className={CLASS.anchor} role="status" aria-live="polite">
         Answer the agent’s questions.
       </div>
