@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
@@ -1460,3 +1462,104 @@ func TestMaterializeBundledPlugin_PutsASetAsideBackWhenStagingCannotBeCreated(t 
 		t.Errorf("warnings = %v, want one naming the restore", warnings)
 	}
 }
+
+// A regular file bigger than maxBundledFileBytes is never a copy of anything
+// this build ships — the docstring on maxBundledFileBytes says as much — so
+// digestFS classifies it as a mismatch by its declared size alone, without
+// reading it, and classifyBundledDestination in turn reports the destination
+// as a conflict. The file is Truncated to size rather than written, so
+// growing it past the bound never allocates the bytes in between: the test
+// stays fast regardless of how large the bound is. This assumes the test
+// filesystem supports sparse files, true of the APFS/ext4/tmpfs filesystems
+// development machines and CI run on; on one that does not, the Truncate
+// would still produce a correctly sized file, just by writing zeroes for
+// real, so the test would still pass, only slower.
+func TestClassifyBundledDestination_ATreeWithAFileOverTheBoundIsAConflict(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "widget-somedigest")
+	writePlugin(t, dest, "widget", nil)
+	big, err := os.Create(filepath.Join(dest, "big.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(maxBundledFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// digestFS is what actually enforces the bound, asserted directly so the
+	// test is sensitive to that specifically: read to completion, the
+	// oversized file's own read count would still fall short of its declared
+	// size and get caught the same way a shrinking file does, so asserting
+	// only on classifyBundledDestination's conflict state below — which is
+	// also what an ordinary digest mismatch produces — would not prove the
+	// bound was what did the catching.
+	if _, err := digestFS(os.DirFS(dest)); !errors.Is(err, errIrregularContent) {
+		t.Fatalf("digestFS err = %v, want errIrregularContent for a file over the bound", err)
+	}
+
+	// classifyBundledDestination is what a launch actually calls; confirmed
+	// here to translate that mismatch into the conflict state a launch acts
+	// on. The digest is otherwise irrelevant: an oversized file forces a
+	// conflict before classifyBundledDestination ever gets to compare a
+	// computed digest against this one.
+	state, err := classifyBundledDestination(dest, "irrelevant")
+	if err != nil {
+		t.Fatalf("classifyBundledDestination: %v", err)
+	}
+	if state != bundledDestinationConflict {
+		t.Errorf("state = %v, want bundledDestinationConflict for a file over the bound", state)
+	}
+}
+
+// digestFS streams a file no further than the size its directory entry
+// declared, and treats a read that comes up short of that size the same way
+// it treats a file over the bound: whatever is really there is not the copy
+// it claims to be. A file that shrinks between being listed and being read
+// would take this path, but reproducing that on a real filesystem needs a
+// goroutine racing the walk, which is not deterministic. digestFS takes an
+// fs.FS rather than a path, so the branch is reachable directly and
+// deterministically instead: shortReadFS lists "short.bin" at 10 bytes but
+// only ever delivers 5 before EOF, no race required.
+func TestDigestFS_AFileShorterThanItsDeclaredSizeIsAMismatch(t *testing.T) {
+	fsys := shortReadFS{MapFS: fstest.MapFS{
+		"short.bin": &fstest.MapFile{Data: make([]byte, 10)},
+	}}
+	if _, err := digestFS(fsys); !errors.Is(err, errIrregularContent) {
+		t.Fatalf("digestFS err = %v, want errIrregularContent for a file that reads short of its declared size", err)
+	}
+}
+
+// shortReadFS is an fstest.MapFS whose "short.bin" entry is opened through a
+// shortReadFile instead of the map's own file: the directory listing still
+// declares the size the map records, but the opened file's Read delivers
+// fewer bytes than that before EOF.
+type shortReadFS struct {
+	fstest.MapFS
+}
+
+func (fsys shortReadFS) Open(name string) (fs.File, error) {
+	if name == "short.bin" {
+		return &shortReadFile{}, nil
+	}
+	return fsys.MapFS.Open(name)
+}
+
+// shortReadFile delivers "short" (5 bytes) and then EOF, regardless of what
+// its directory entry declared its size to be.
+type shortReadFile struct{ read bool }
+
+func (f *shortReadFile) Stat() (fs.FileInfo, error) {
+	return fstest.MapFS{"short.bin": {Data: make([]byte, 10)}}.Stat("short.bin")
+}
+
+func (f *shortReadFile) Read(p []byte) (int, error) {
+	if f.read {
+		return 0, io.EOF
+	}
+	f.read = true
+	return copy(p, "short"), io.EOF
+}
+
+func (f *shortReadFile) Close() error { return nil }
