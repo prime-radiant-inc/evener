@@ -160,22 +160,25 @@ type preparedSubagentRun struct {
 
 // disposeUnadoptedSubagentSession tears down a child that never became a
 // tracked/adopted delegate. It is the create-path twin of
-// discardRestoredCandidate and makes the same two decisions it does. Normal
-// cleanup RETAINS both of a session's scratch dirs for the human handoff — Close
-// releases the leases and keeps the directories — but an unadopted child has no
-// owner left to hand anything to, so both go: the sandbox-owned one and the one
-// an unsandboxed environment (the default shape) mints on its first command.
-// Only for an environment built FOR this child, though: a shared one belongs to
-// the live parent still working in it.
+// discardRestoredCandidate and makes the same decisions it does. Normal teardown
+// RETAINS both of a session's scratch dirs for the human handoff — the leases go,
+// the directories stay — but an unadopted child has no owner left to hand
+// anything to, so both go: the sandbox-owned one and the one an unsandboxed
+// environment (the default shape) mints on its first command. Only for an
+// environment built FOR this child, though: a shared one belongs to the live
+// parent still working in it.
 func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 	if sess == nil {
 		return
 	}
-	// The environment's Cleanup belongs to whoever owns it: on a shared one it
-	// would release the LIVE parent's scratch leases and signal the processes the
-	// parent tracks. Skipping it for a non-owned env is the same call the
-	// parent's own teardown makes for its children (close(ctx, false)).
-	sess.close(context.Background(), ownsEnv)
+	// The environment's Cleanup is never this child's to run, whichever
+	// environment it holds. A shared one is the live parent's outright; a FRESH
+	// clone still shares the parent's PROCESS TABLE, since WithWorkingDirectory
+	// copies runningPIDs by pointer, so cleaning up a clone signals the parent's
+	// in-flight tools too. The child's own processes live in that same map and
+	// end with the environment that owns it — the same skip the parent's own
+	// teardown makes for its children.
+	sess.close(context.Background(), false)
 	if !ownsEnv {
 		return
 	}
