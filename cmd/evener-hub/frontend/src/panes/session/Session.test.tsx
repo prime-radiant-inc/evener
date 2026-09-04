@@ -22,10 +22,12 @@ import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import * as SessionChromeModule from "./chrome/SessionChrome";
+import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
+import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -177,6 +179,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetAskDockStoreForTests();
   resetNavigationStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
@@ -190,6 +193,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
+  resetAskDockStoreForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
@@ -1739,4 +1743,130 @@ test("a dormant session's transcript follows new content the instant its first r
 
   const pill = await screen.findByTestId("new-content-pill");
   expect(pill.textContent).toContain("1");
+});
+
+// The pending-questions widget is a scrollable part of the transcript, not a
+// footer-anchored composer surface: while a batch is pending it renders as
+// the LAST row of the transcript's virtual list, so scrolling back to read
+// context scrolls it away with the content. The composer keeps its own
+// half of the contract (hiding its input row while a question is pending),
+// proven in Composer.test.tsx; here the composer is the stubbed slot, which
+// is exactly what lets this test pin "the dock is NOT the composer's child".
+test("a pending ask_user batch renders as the transcript's last row, not inside the composer", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+
+  // Same notification sequence AskDock.test.tsx's hydrateWithOneAsk drives:
+  // a completed, unanswered ask_user call after the last user message is a
+  // live pending question (deriveAskQuestions).
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    });
+    const item = {
+      type: "commandExecution",
+      id: "item_1",
+      turnId: "turn_1",
+      toolName: "ask_user",
+      callId: "call_1",
+      argumentsJson: JSON.stringify({
+        questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+      }),
+    };
+    fake.emitNotification({
+      method: "item/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+    });
+  });
+
+  let dock: HTMLElement | null = null;
+  await waitFor(() => {
+    dock = document.querySelector("[data-ask-response-dock]");
+    expect(dock).not.toBeNull();
+  });
+
+  // Inside the transcript's virtual list, as its LAST row...
+  const list = screen.getByTestId("transcript-virtual-list");
+  expect(list.contains(dock)).toBe(true);
+  const rows = screen.getAllByTestId("transcript-row");
+  expect(rows.at(-1)?.contains(dock)).toBe(true);
+
+  // ...while its one aria-live region stays OUTSIDE the list, so a
+  // virtualized remount of the row never re-announces unchanged text.
+  const announcements = screen.getByTestId("ask-dock-announcements");
+  expect(list.contains(announcements)).toBe(false);
+
+  // ...and not inside the composer slot.
+  expect(screen.getByTestId("composer-slot").contains(dock)).toBe(false);
+});
+
+// The dock row is a real virtual row, so every scroll coordinator that
+// targets "the last row" - initial end positioning, jump-to-bottom, pill
+// jumps - must count it. useTranscriptScroll receives the row count from
+// this pane; with a pending ask that count must include the synthetic
+// ask-dock row, or those targets land one row short (roborev PR #854).
+test("a pending ask counts the dock row in the scroll coordinator's rendered row count", async () => {
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const capturedCounts: Array<number | undefined> = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      capturedCounts.push(options.renderedRowCount);
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+
+    act(() => {
+      fake.emitNotification({
+        method: "turn/started",
+        params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+      });
+      const item = {
+        type: "commandExecution",
+        id: "item_1",
+        turnId: "turn_1",
+        toolName: "ask_user",
+        callId: "call_1",
+        argumentsJson: JSON.stringify({
+          questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+        }),
+      };
+      fake.emitNotification({
+        method: "item/started",
+        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+      });
+      fake.emitNotification({
+        method: "item/completed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+      });
+    });
+
+    // The dock row is on screen (placement contract), and the last options
+    // the coordinator saw count it: one turn row + the synthetic dock row.
+    await waitFor(() => expect(document.querySelector("[data-ask-response-dock]")).not.toBeNull());
+    expect(capturedCounts.at(-1)).toBe(2);
+  } finally {
+    spy.mockRestore();
+  }
 });

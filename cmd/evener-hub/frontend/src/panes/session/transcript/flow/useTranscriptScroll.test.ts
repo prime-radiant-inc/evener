@@ -1985,3 +1985,143 @@ describe("no-model / not-yet-mounted safety", () => {
     expect(result.current.pillCount).toBe(0);
   });
 });
+
+describe("ask dock activation edge (roborev PR #854)", () => {
+  // The pending-questions dock is a virtual row now (TranscriptBody's
+  // trailingRow), and an in-progress ask_user item COMPLETING activates it
+  // without any turn/item shape change - neither itemCount nor firstTurnId
+  // nor failedTurns moves, so the content-changed effect never fires for
+  // it. Without a dedicated edge, the dock would appear invisibly below a
+  // scrolled-away reader while the composer's input row is hidden, leaving
+  // no visible path to the answer controls.
+  test("a dock activating while the reader is scrolled away surfaces the new-content pill as needs-you", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending, epoch, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending,
+          askDockActivationEpoch: epoch,
+          renderedRowCount: rowCount,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0, rowCount: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0);
+
+    // The item completes: the transcript's shape is unchanged, only the
+    // dock activates (and the wire's askPending flips, which is what makes
+    // the pill needs-you). The row count grows by the synthetic dock row.
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true, epoch: 1, rowCount: 2 });
+
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillNeedsYou).toBe(true);
+
+    // The pill's jump lands on the dock row itself (the count fix's half).
+    act(() => result.current.jumpToBottom());
+    expect(scrollToIndex).toHaveBeenLastCalledWith(1, { align: "end" });
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a dock activating while the reader is at the bottom adds no pill", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m, askDockPending, epoch }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending,
+          askDockActivationEpoch: epoch,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0 } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), askDockPending: true, epoch: 1 });
+
+    // The end-anchored list already followed the appended row into view -
+    // a pill would claim there is something unseen when there is not.
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a session opened with an already-pending ask does not fire the edge", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        askDockPending: true,
+        askDockActivationEpoch: 1,
+      }),
+    );
+    // Initial mount scrolls to the end (the dock row is visible) - nothing
+    // is unseen, so no pill.
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("an atomic pending-set replacement re-fires the edge for a scrolled-away reader", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, epoch }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          askDockPending: true,
+          askDockActivationEpoch: epoch,
+        }),
+      // Pending throughout: a snapshot resync swapped the old (answered
+      // elsewhere) batch for a new one. askDockPending never leaves true,
+      // so a boolean edge could never re-fire - the epoch is the signal.
+      { initialProps: { m: model([turn("t1", ["i1"])], { askPending: true }), epoch: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0); // mount: no edge
+
+    rerender({ m: model([turn("t1", ["i1"])], { askPending: true }), epoch: 2 });
+
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillNeedsYou).toBe(true);
+  });
+});
+
+test("the pill is needs-you on the dock edge even when the wire's snapshot-only askPending has not landed", () => {
+  const { ref } = makeListHandle();
+  const { measure } = makeMeasure(SCROLLED_AWAY);
+  const { result, rerender } = renderHook(
+    ({ m, askDockPending, epoch }) =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: m,
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        askDockPending,
+        askDockActivationEpoch: epoch,
+      }),
+    // model.askPending stays FALSE throughout: the field is
+    // snapshot-authoritative (only hydrateThread sets it - no notification
+    // carries it, per reducer.test.ts), so a live-arriving ask leaves it
+    // unset until the next snapshot. The dock's own pending signal is the
+    // live one.
+    { initialProps: { m: model([turn("t1", ["i1"])]), askDockPending: false, epoch: 0 } },
+  );
+
+  rerender({ m: model([turn("t1", ["i1"])]), askDockPending: true, epoch: 1 });
+
+  expect(result.current.pillCount).toBe(1);
+  expect(result.current.pillNeedsYou).toBe(true);
+});

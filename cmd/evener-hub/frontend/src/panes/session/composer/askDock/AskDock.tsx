@@ -26,26 +26,31 @@
 // enabled, an unanswered question composes as skipped) since there is
 // nowhere else to walk.
 //
-// Mount expectations for whoever wires this into Composer.tsx's tree (T2,
-// at merge - see that file's own header, "T3/T4 render inside Composer's
-// own tree"):
+// Mount expectations (Session.tsx wires this in as TranscriptBody's
+// trailingRow - the transcript's last virtual row, so the answering surface
+// scrolls with the content instead of covering the footer):
 //   - <AskDock ref={ref} /> - `ref` matches Composer/SessionChrome's own
 //     established prop-name convention (a plain prop, not React's ref -
 //     fine under this project's React 19).
+//   - All interactive state lives in askDockStore, NOT component state: the
+//     virtual list unmounts this row when the reader scrolls far enough
+//     away, and remounts it on return - answers, notes, and the active tab
+//     must survive that, and they do.
 //   - Answer text follows the same durable send path as the main composer.
 //     Network outcomes are owned by the outbox/recovery surfaces and never
 //     restore text into the main composer.
 //   - This component does NOT hide/inert the plain composer surface or
 //     own its mode-switch status announcement ("Message composer ready.")
-//     - that is the composer's own surface to show/hide, and T2 owns it.
-//     Call the exported useAskDockPending(ref) hook to decide whether to
-//     hide/inert the plain composer for a given ref; this component's own
-//     internal status region only announces ENTERING ask-response mode
-//     (there is content to hide FOR, once this returns non-null).
+//     - that is the composer's own surface to show/hide, and Composer.tsx
+//     owns it. Call the exported useAskDockPending(ref) hook to decide
+//     whether to hide/inert the plain composer for a given ref; this
+//     component's own internal status region only announces ENTERING
+//     ask-response mode (there is content to hide FOR, once this returns
+//     non-null).
 //   - Failure feedback for a local durable-enqueue error is a toast (the
 //     wave's decided convention, T1's loadOlder reference implementation);
 //     network outcomes are rendered by recovery state, not an inline banner.
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskQuestionCard } from "./AskQuestionCard";
@@ -79,6 +84,14 @@ const UNTOUCHED_ANSWER: AskAnswerState = { resolution: null, note: "" };
 // see this file's own header.
 export function useAskDockPending(ref: string): boolean {
   return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
+}
+
+// useAskDockActivationEpoch is the pending set's activation counter
+// (askDockStore's activationEpoch) - the signal the transcript's
+// new-content pill edges on, since a pending boolean alone cannot express
+// "still pending, but atomically replaced by a different question".
+export function useAskDockActivationEpoch(ref: string): number {
+  return useAskDockStore((s) => s.byRef.get(ref)?.activationEpoch ?? 0);
 }
 
 function answerFor(answers: Record<string, AskAnswerState>, key: string): AskAnswerState {
@@ -268,7 +281,9 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
         <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
       )}
       <div className={CLASS.footer}>
-        <span className={CLASS.count} aria-live="polite" aria-atomic="true">
+        {/* Visual count only - NOT a live region (virtualized remounts would
+            re-announce it; AskDockAnnouncements owns count announcements). */}
+        <span className={CLASS.count}>
           {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
         </span>
         {/* Blue primary, same pattern as sandboxEscalation's Allow button
@@ -287,36 +302,132 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   );
 }
 
+// AskDockAnnouncements is this surface's ONE aria-live region, mounted
+// OUTSIDE the virtual list (Session.tsx, beside the transcript view
+// announcements). The dock row is virtualized, so a live region inside it
+// re-inserts on every scroll-away/scroll-back remount and re-announces
+// unchanged text (roborev PR #854) - this component never unmounts with the
+// row and announces only real transitions: a pending set arriving ("Answer
+// the agent's questions.", the old in-row anchor's text), the answered
+// count moving (the old in-row count span's text), and resolution clearing
+// the region. The composer owns the exit half ("Message composer ready.")
+// for the same reason it always has.
+export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
+  const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
+  const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
+  const epoch = useAskDockStore((s) => s.byRef.get(sessionRef)?.activationEpoch ?? 0);
+  const [announcement, setAnnouncement] = useState({ text: "", key: 0 });
+  const prevRef = useRef<{ ref: string; pending: boolean; count: string; epoch: number }>({
+    ref: sessionRef,
+    pending: false,
+    count: "",
+    epoch: 0,
+  });
+
+  const pending = batches.length > 0;
+  const total = batches.reduce((n, batch) => n + batch.questions.length, 0);
+  const answered = batches.reduce(
+    (n, batch) => n + batch.questions.filter((q) => answerFor(answers, q.key).resolution !== null).length,
+    0,
+  );
+  const count = pending ? `${answered} of ${total} ${total === 1 ? "question" : "questions"} answered` : "";
+
+  const announce = useCallback((text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 })), []);
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = { ref: sessionRef, pending, count, epoch };
+    // A pane can be reused across refs (a sidebar click swaps the session
+    // on a persistent pane): treat that as a fresh activation. The keyed
+    // content remount below is what makes an identical-text re-announcement
+    // audible at all - a live region announces content mutations, and
+    // unchanged text is no mutation.
+    if (prev.ref !== sessionRef) {
+      announce(pending ? "Answer the agent’s questions." : "");
+      return;
+    }
+    // Every activation announces the prompt - including an atomic
+    // pending-set REPLACEMENT, which the epoch alone can see: pending stays
+    // true throughout and the new set may carry an identical answered
+    // count, so neither other signal moves.
+    if (epoch !== prev.epoch && epoch > 0) {
+      announce("Answer the agent’s questions.");
+      return;
+    }
+    if (pending && count !== prev.count) {
+      announce(count);
+    } else if (!pending && prev.pending) {
+      announce("");
+    }
+  }, [sessionRef, pending, count, epoch, announce]);
+
+  return (
+    <div className={CLASS.visuallyHidden} role="status" aria-live="polite" data-testid="ask-dock-announcements">
+      <span key={announcement.key}>{announcement.text}</span>
+    </div>
+  );
+}
+
 export function AskDock({ ref: sessionRef }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
+  const pendingGreeted = useAskDockStore((s) => s.byRef.get(sessionRef)?.pendingGreeted ?? false);
   const toasts = useToasts();
   const dockRef = useRef<HTMLDivElement>(null);
-  const wasEmptyRef = useRef(true);
 
-  // Auto-focuses the first answer control the moment the dock activates
-  // (empty -> non-empty) - edge-triggered on batches.length so a LATER
-  // ask_user call that only grows an already-open batch, or that mints a
-  // sibling batch while another is sending, never steals focus from an
-  // answer already in progress (test-ask-card.js: "a later ask_user call
-  // that adds more questions does not steal focus from an answer input
-  // currently being edited"). No ref threads down into AskQuestionCard for
-  // this - querying the dock's own root for the first focusable control is
-  // simpler and this is a one-time, edge-triggered action, not an ongoing
-  // focus-management relationship. Scoped to [data-ask-question] (the
+  // Auto-focuses the first answer control the moment a pending set
+  // activates (no batches -> some batches) AND the dock is actually visible.
+  // Two separate protections, both because the dock is the transcript's
+  // trailing virtual row:
+  //  - The EDGE lives in askDockStore (pendingGreeted), not a component ref:
+  //    scrolling far away unmounts the row and scrolling back remounts it,
+  //    and a component-level edge would treat every remount as a fresh
+  //    activation. A fresh question after a fully resolved set re-activates
+  //    because the store resets the flag when the pending set empties; a
+  //    later ask_user call that grows an already-open batch never
+  //    re-triggers (test-ask-card.js's no-steal contract).
+  //  - The VISIBILITY gate (IntersectionObserver): overscan mounts the row
+  //    while the reader is scrolled away, and focusing then would move the
+  //    reader's context to an off-screen control. Focus waits for the dock
+  //    to actually intersect the viewport, which composes with the
+  //    new-content pill: its jump brings the dock into view, and the
+  //    intersection is what lands focus. Once the dock IS visible, plain
+  //    focus() is intentional - the browser reveals the focused control,
+  //    which a tall dock needs: the pill's jump aligns the dock's END, so
+  //    the first control of a tall batch can still sit above the fold, and
+  //    focusing it there without the reveal would strand it invisibly.
+  //    jsdom has no IntersectionObserver - the fallback keeps tests without
+  //    a stub on the immediate-focus path.
+  // No ref threads down into AskQuestionCard for this - querying the dock's
+  // own root for the first focusable control is simpler and this is a
+  // one-time, edge-triggered action. Scoped to [data-ask-question] (the
   // question card) so a multi-question batch's TAB BUTTONS - which sit
   // before the card in DOM order (kata 99yf) - never win this query over
   // the first actual answer control.
   useEffect(() => {
-    const isEmpty = batches.length === 0;
-    const wasEmpty = wasEmptyRef.current;
-    wasEmptyRef.current = isEmpty;
-    if (!wasEmpty || isEmpty) return;
-    const first = dockRef.current?.querySelector<HTMLElement>(
-      '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
-    );
-    first?.focus();
-  }, [batches.length]);
+    if (batches.length === 0 || pendingGreeted) return;
+    const dock = dockRef.current;
+    if (!dock) return;
+    const focusFirst = () => {
+      askDockStore.getState().markPendingGreeted(sessionRef);
+      dock
+        .querySelector<HTMLElement>(
+          '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button',
+        )
+        ?.focus();
+    };
+    if (typeof IntersectionObserver !== "function") {
+      focusFirst();
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      focusFirst();
+    });
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, [batches.length, pendingGreeted, sessionRef]);
 
   if (batches.length === 0) return null;
 
@@ -335,9 +446,11 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
 
   return (
     <div className={CLASS.dock} ref={dockRef} data-ask-response-dock>
-      <div className={CLASS.anchor} role="status" aria-live="polite">
-        Answer the agent’s questions.
-      </div>
+      {/* Visual caption only - NOT a live region. The row is virtualized, so
+          an aria-live region here would re-insert and re-announce on every
+          scroll-away/scroll-back remount; the one live region for this
+          surface is AskDockAnnouncements, mounted outside the virtual list. */}
+      <div className={CLASS.anchor}>Answer the agent’s questions.</div>
       {batches.map((batch) => (
         <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
       ))}

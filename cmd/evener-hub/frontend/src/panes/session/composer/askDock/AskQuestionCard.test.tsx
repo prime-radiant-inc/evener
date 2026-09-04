@@ -320,3 +320,16 @@ test("every option row gets comfortable padding, and reaches the tap floor on a 
   expect(rule, "the coarse-pointer block must override .option").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
+
+// The dock is a virtualized transcript row (Session.tsx), so scrolling away
+// unmounts this card and scrolling back REMOUNTS it. With an already-active
+// free answer, a mount is not the "kind changed to free" transition the
+// focus effect exists for - refocusing the answer input would steal focus
+// from wherever the reader moved it (roborev PR #854).
+test("mounting with an already-active free answer does not steal focus to the answer input", () => {
+  render(<Harness q={question()} initial={{ resolution: { kind: "free", text: "draft" }, note: "" }} />);
+
+  const input = screen.getByPlaceholderText(/type your answer/i);
+  expect(input).toBeTruthy();
+  expect(document.activeElement).not.toBe(input);
+});

@@ -56,6 +56,31 @@ export interface UseTranscriptScrollOptions {
   renderedRowCount?: number;
   /** Source turn id to active transformed-row index. */
   sourceTurnRowIndexes?: ReadonlyMap<string, number>;
+  /**
+   * The session pane's pending-questions dock is a virtual row
+   * (TranscriptBody's trailingRow), and an in-progress ask_user item
+   * COMPLETING activates it without any turn/item shape change - neither
+   * itemCount nor firstTurnId nor failedTurns moves, so the content-changed
+   * effect never fires for it. This option carries the dock's own pending
+   * signal (askDockStore via Session.tsx's useAskDockPending) so the hook
+   * can treat its rising edge as new content: a reader who is not at the
+   * bottom gets the new-content pill (needs-you styling comes free -
+   * isAttentionWorthy reads the wire's askPending), and jumpToBottom lands
+   * on the dock row because renderedRowCount counts it (same PR's count
+   * fix). A reader at the bottom gets nothing: the end-anchored list
+   * already followed the appended row into view.
+   */
+  askDockPending?: boolean;
+  /**
+   * The dock pending set's activation counter (askDockStore's
+   * activationEpoch). The pill edge keys on THIS, not the boolean: a
+   * snapshot resync can atomically replace the pending set (old batch
+   * answered elsewhere, new one pending) without the boolean ever leaving
+   * true, and that replacement is exactly the moment a scrolled-away reader
+   * most needs the pill. Same-set additions don't bump it - the reader was
+   * already told.
+   */
+  askDockActivationEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -563,6 +588,8 @@ export function useTranscriptScroll({
   anchorEntries,
   renderedRowCount: renderedRowCountInput,
   sourceTurnRowIndexes,
+  askDockPending = false,
+  askDockActivationEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -999,6 +1026,25 @@ export function useTranscriptScroll({
     restoreViewAnchorAfterMeasurement();
   }, [viewKey, restoreViewAnchorAfterMeasurement]);
 
+  // The ask dock's activation edge (see the options' own doc comments): new
+  // answerable content appeared below without any transcript shape change.
+  // Keyed on the activation EPOCH, not the pending boolean, so an atomic
+  // pending-set replacement (a resync swapping an answered-elsewhere batch
+  // for a new one) re-fires it while the boolean never left true. Declared
+  // AFTER the mount effect above so a ref change (which resets
+  // wasAtBottomRef to true for the fresh open) is already reflected when
+  // this edge evaluates, and a session OPENED with an already-pending ask
+  // never fires it - initial mount scrolls to the end, so the dock starts
+  // visible and there is nothing unseen to count.
+  const prevAskDockEpochRef = useRef(askDockActivationEpoch);
+  useLayoutEffect(() => {
+    const previous = prevAskDockEpochRef.current;
+    prevAskDockEpochRef.current = askDockActivationEpoch;
+    if (askDockActivationEpoch === previous || askDockActivationEpoch === 0) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [askDockActivationEpoch]);
+
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn
   // count, all primitives) - never on a pure streaming-text delta, which
@@ -1136,8 +1182,12 @@ export function useTranscriptScroll({
     pillVisible,
     // needs-you is gated on VISIBILITY, not on a nonzero count: an awaiting
     // flip that lands after the reader scrolled away (no new items at all)
-    // still upgrades the on-offer pill in place.
-    pillNeedsYou: pillVisible && isAttentionWorthy(model),
+    // still upgrades the on-offer pill in place. The dock's own pending
+    // signal is part of the predicate, not just the model: model.askPending
+    // is snapshot-authoritative (only hydrateThread sets it - no
+    // notification carries it), so a live-arriving ask would otherwise read
+    // as generic "new" content until the next snapshot.
+    pillNeedsYou: pillVisible && (isAttentionWorthy(model) || askDockPending),
     pillError: errorAnchorIndex !== null,
     pillArrowDirection,
     jumpToBottom,

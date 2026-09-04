@@ -45,6 +45,26 @@ export interface AskDockRefState {
   // original ask_user item from resurfacing before the eventual resolving
   // reply is reflected in the transcript.
   excludedKeys: Set<string>;
+  // True once the dock has auto-focused for the current pending set. The
+  // dock is the transcript's trailing virtual row, so scrolling far away
+  // unmounts it and scrolling back remounts it - a component-level edge
+  // (useRef) would treat every remount as a fresh activation and steal
+  // focus again. Living here, the edge survives remounts exactly like
+  // answers/active do; it resets to false whenever the pending set empties
+  // OR is atomically replaced (a resync can swap an answered-elsewhere
+  // batch for a new one without ever reading empty - activationEpoch's
+  // comment), so a genuinely new question re-activates auto-focus.
+  pendingGreeted: boolean;
+  // Monotonic per-ref count of pending-set ACTIVATIONS: bumps when the set
+  // goes empty -> non-empty, and when one reconcile atomically replaces the
+  // whole set (disjoint batch ids, never empty in between - the reconnect/
+  // resync case: another client answered the old ask while the agent posted
+  // a new one). Same-set additions (a sibling batch while one is sending)
+  // deliberately do NOT bump it: the reader was already told. This is the
+  // signal the transcript's new-content pill edges on
+  // (useTranscriptScroll's askDockActivationEpoch) - a boolean pending flag
+  // cannot express "still pending, but a different question now".
+  activationEpoch: number;
 }
 
 // sendBatch's outcome is a discriminated union rather than a thrown error:
@@ -65,6 +85,10 @@ export interface AskDockState {
   // does not belong to the named batch is a no-op (never navigate the reader
   // to a question that is not there).
   setActive(ref: string, batchId: string, key: string): void;
+  // markPendingGreeted records that the dock has auto-focused for this ref's
+  // current pending set (AskDock's activation effect). No-op while nothing
+  // is pending - there is nothing to greet.
+  markPendingGreeted(ref: string): void;
   // sendBatch composes `batchId`'s current answers and submits them through
   // the plain threadsStore.send() path (spec: no dedicated wire method for
   // answers exists - verified). Re-checks the batch still exists and isn't
@@ -74,7 +98,14 @@ export interface AskDockState {
   sendBatch(ref: string, batchId: string): Promise<SendBatchOutcome>;
 }
 
-const EMPTY_REF_STATE: AskDockRefState = { batches: [], answers: {}, active: {}, excludedKeys: new Set() };
+const EMPTY_REF_STATE: AskDockRefState = {
+  batches: [],
+  answers: {},
+  active: {},
+  excludedKeys: new Set(),
+  pendingGreeted: false,
+  activationEpoch: 0,
+};
 
 // Batch ids are purely local identifiers (never sent over the wire) - a
 // monotonic counter is simplest and sufficient; resetAskDockStoreForTests
@@ -126,12 +157,18 @@ function removeBatch(ref: string, batchId: string): void {
     }
     const nextExcluded = new Set(refState.excludedKeys);
     for (const key of removedKeys) nextExcluded.add(key);
+    const remainingBatches = refState.batches.filter((b) => b.id !== batchId);
     const nextByRef = new Map(s.byRef);
     nextByRef.set(ref, {
-      batches: refState.batches.filter((b) => b.id !== batchId),
+      batches: remainingBatches,
       answers: nextAnswers,
       active: nextActive,
       excludedKeys: nextExcluded,
+      // An emptied pending set ends the greeting: the next question to
+      // arrive is a fresh activation and auto-focuses again. The epoch does
+      // not move here - the bump happens when the new set actually arrives.
+      pendingGreeted: remainingBatches.length === 0 ? false : refState.pendingGreeted,
+      activationEpoch: refState.activationEpoch,
     });
     return { byRef: nextByRef };
   });
@@ -240,6 +277,16 @@ export const askDockStore = createStore<AskDockState>(() => ({
     });
   },
 
+  markPendingGreeted(ref) {
+    askDockStore.setState((s) => {
+      const refState = s.byRef.get(ref);
+      if (!refState || refState.batches.length === 0 || refState.pendingGreeted) return s;
+      const nextByRef = new Map(s.byRef);
+      nextByRef.set(ref, { ...refState, pendingGreeted: true });
+      return { byRef: nextByRef };
+    });
+  },
+
   async sendBatch(ref, batchId) {
     const refState = askDockStore.getState().byRef.get(ref);
     const batch = refState?.batches.find((b) => b.id === batchId);
@@ -316,12 +363,25 @@ function reconcileRef(ref: string, model: ThreadModel): void {
       if (batch?.questions.some((q) => q.key === key)) nextActive[batchId] = key;
     }
 
+    // Fresh activation = empty -> non-empty, or an atomic REPLACEMENT (one
+    // reconcile swapped the whole set: disjoint batch ids, never empty in
+    // between - the reconnect/resync case where another client answered the
+    // old ask while the agent posted a new one). Both re-arm the greeting
+    // and bump the epoch; a same-set addition retains a batch id and
+    // deliberately does neither (the reader was already told).
+    const retainsPendingBatch = nextBatches.some((b) => refState.batches.some((old) => old.id === b.id));
+    const freshActivation = nextBatches.length > 0 && !retainsPendingBatch;
+
     const nextByRef = new Map(s.byRef);
     nextByRef.set(ref, {
       batches: nextBatches,
       answers: nextAnswers,
       active: nextActive,
       excludedKeys: refState.excludedKeys,
+      // The greeting survives only while at least one greeted batch is
+      // still pending; an emptied set and a full replacement both re-arm.
+      pendingGreeted: retainsPendingBatch ? refState.pendingGreeted : false,
+      activationEpoch: refState.activationEpoch + (freshActivation ? 1 : 0),
     });
     return { byRef: nextByRef };
   });

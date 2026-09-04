@@ -108,20 +108,6 @@
   border-top: 1px solid var(--edge);
 }
 
-/* AskDock is the one footer surface whose content owns an internal scroll.
- * Let only that footer shrink against the pane, leaving other panes' fixed
- * footer contract unchanged. */
-.footer:has([data-ask-response-dock]) {
-  /* Short questions should make the footer only as tall as their content;
-   * the cap still gives a tall question a bounded slot whose own dock can
-   * scroll without stealing the whole pane from the transcript. */
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 70%;
-  display: flex;
-  flex-direction: column;
-}
-
 @media (max-width: 899px) {
   .desktopTitle {
     display: none;

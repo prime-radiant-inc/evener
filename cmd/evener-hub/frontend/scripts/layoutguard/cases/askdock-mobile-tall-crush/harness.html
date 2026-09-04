@@ -19,10 +19,17 @@
      - .host: StackHost's full-bleed phone pane (PaneScaffold .pane:
        height 100%, flex column, overflow hidden) at iPhone width. The
        fixed height deliberately models a pane shorter than the viewport.
-     - .transcript: PaneScaffold .body (flex 1, min-height 0, own scroll).
-     - .paneFooter: PaneScaffold .footer when AskDock is present (a
-       shrinking flex item with a zero minimum) - the Composer/AskDock
-       mount point. */
+     - .transcriptScroll: the VirtualList root (virtuallist.module.css's
+       .root: height 100%, overflow-y auto) - the production transcript's
+       actual scroll owner, nested inside PaneScaffold's .body (flex 1 1 0,
+       min-height 0), which never scrolls in the session pane. The dock is
+       the transcript's trailing row now, so THIS root is the one scroll
+       region a tall batch grows.
+     - .paneFooter: PaneScaffold .footer (flex: none) - back to the plain
+       fixed slot every pane has, with no ask-dock special case.
+     Local mirror classes, not the real .body/.root: the module CSS loads
+     de-scoped here, and askdock.module.css's own .footer (the batch's
+     footer bar) would collide with panescaffold.module.css's .footer. */
   .host {
     width: 360px;
     height: 360px;
@@ -31,20 +38,24 @@
     overflow: hidden;
     background: var(--surface-1);
   }
-  .transcript {
-    flex: 1 1 auto;
+  .transcriptScroll {
+    flex: 1 1 0;
     min-height: 0;
+    height: 100%;
     overflow-y: auto;
     padding: var(--space-4);
   }
   .paneFooter {
-    flex: 0 1 auto;
-    min-height: 0;
-    max-height: 70%;
-    display: flex;
-    flex-direction: column;
+    flex: none;
     padding: var(--space-3) var(--space-4);
     border-top: 1px solid var(--edge);
+  }
+  .statusBar {
+    height: 42px;
+    display: flex;
+    align-items: center;
+    font-size: var(--font-size-caption);
+    color: var(--ink-mid);
   }
   .sendButton {
     font-size: var(--font-size-ui);
@@ -58,12 +69,10 @@
 </head>
 <body>
 <div class="host">
-  <div class="transcript" id="transcript">
+  <div class="transcriptScroll" id="transcript">
     <p>transcript line the reader may still need to see while answering</p>
     <p>transcript line</p>
     <p>transcript line</p>
-  </div>
-  <div class="paneFooter">
     <!-- Mirrors AskDock.tsx's rendered tree with the real class names from
          askdock/askquestioncard .module.css, seeded with the exact content
          from the reported screenshot: three options whose detail text is
@@ -71,7 +80,8 @@
          (ask-dialog UX rework - no chip pills), an accent recommended
          suffix on the first, the Something else alternative, and the note
          row. The recommended option arrives pre-selected, so the footer
-         count reads 1 of 1. -->
+         count reads 1 of 1. The whole dock is the transcript's trailing
+         row: it sizes to its content and the transcript scrolls it. -->
     <div class="dock" data-ask-response-dock>
       <div class="anchor" role="status">Answer the agent’s questions.</div>
       <div class="batch">
@@ -108,6 +118,15 @@
               <span class="optionLabel">A deliberately long valid option label that must wrap onto as many lines as it needs without escaping the card</span>
               <span class="optionDetail">The option label is valid content, not a reason for the card or pane to overflow.</span>
             </label>
+            <label class="option">
+              <input type="radio" name="g">
+              <!-- An UNBROKEN over-long token (a pasted commit-range string):
+                   askquestioncard.module.css's .option { overflow-wrap:
+                   break-word } is the one declaration keeping this inside
+                   the card - the case's mutation target. -->
+              <span class="optionLabel">cherry-pick-a323417b7c9d2e4f6a8b0c1d3e5f7a9b1c3d5e7f9-onto-release/1.4</span>
+              <span class="optionDetail">Model-provided labels can carry unbroken tokens; they must wrap too.</span>
+            </label>
             <div class="alternativeRow">
               <label><input type="radio" name="g"><span>Something else…</span></label>
             </div>
@@ -123,6 +142,9 @@
       </div>
     </div>
   </div>
+  <footer class="paneFooter" id="pane-footer">
+    <div class="statusBar">Session status</div>
+  </footer>
 </div>
 <script>
 function rectOf(el) {
@@ -150,6 +172,7 @@ function lineBoxesOf(el) {
 window.measure = function () {
   const host = document.querySelector(".host");
   const transcript = document.getElementById("transcript");
+  const footer = document.getElementById("pane-footer");
   const dock = document.querySelector(".dock");
   const card = document.querySelector(".card");
   const sendButton = document.getElementById("send-button");
@@ -164,28 +187,46 @@ window.measure = function () {
       label: label.textContent,
       rowWidth: rectOf(option).width,
       labelOverlapsDetail: labelBoxes.some((a) => detailBoxes.some((b) => intersects(a, b))),
-      // The whole row - label included, however long - stays inside the
-      // card: inline text WRAPS instead of escaping, which is what replaced
-      // the old fixed-height chip this case was authored against.
+      // The whole row - label included, however long or unbroken - stays
+      // inside the card: inline text WRAPS instead of escaping, which is
+      // what replaced the old fixed-height chip this case was authored
+      // against.
       escapesCard:
         rectOf(option).right > cardRect.right + 1 || labelBoxes.some((b) => b.right > cardRect.right + 1),
     };
   });
 
-  const hostRect = rectOf(host);
-  const dockRect = rectOf(dock);
-  return {
-    viewport: { w: window.innerWidth, h: window.innerHeight },
-    host: hostRect,
-    transcriptHeight: rectOf(transcript).height,
-    options,
+  const withDock = {
+    transcriptClientHeight: transcript.clientHeight,
+    transcriptScrollHeight: transcript.scrollHeight,
+    transcriptOverflowY: getComputedStyle(transcript).overflowY,
+    transcriptRect: rectOf(transcript),
+    footerRect: rectOf(footer),
     dock: {
-      rect: dockRect,
+      rect: rectOf(dock),
       scrollHeight: dock.scrollHeight,
       clientHeight: dock.clientHeight,
       overflowY: getComputedStyle(dock).overflowY,
-      containedInHost: dockRect.top >= hostRect.top - 1 && dockRect.bottom <= hostRect.bottom + 1,
     },
+  };
+
+  // The pending ask must not change the pane's allocations at all: hiding
+  // the dock row (the no-pending-ask state) leaves the transcript's client
+  // height and the footer's position untouched.
+  dock.style.display = "none";
+  const withoutDock = {
+    transcriptClientHeight: transcript.clientHeight,
+    footerRect: rectOf(footer),
+  };
+  dock.style.display = "";
+
+  return {
+    viewport: { w: window.innerWidth, h: window.innerHeight },
+    documentHeight: document.documentElement.scrollHeight,
+    host: rectOf(host),
+    options,
+    withDock,
+    withoutDock,
     sendButtonPresent: Boolean(sendButton),
   };
 };

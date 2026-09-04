@@ -3,18 +3,18 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-2) 0;
-  /* The pane and session footer flex chain supplies the available height;
-   * percentage sizing keeps this dock tied to that pane instead of the
-   * viewport. The dock owns scrolling so the transcript and fixed footer
-   * chrome keep their allocations when a batch is tall. */
-  /* The composer owns the filled replacement slot and bottom-aligns its
-   * active child. Growing here would consume that free space and leave the
-   * question surface top-aligned instead. Shrink only when a tall batch needs
-   * the dock's existing internal scroll boundary. */
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 100%;
-  overflow-y: auto;
+  /* The dock is the transcript's trailing virtual row now (Session.tsx
+   * passes it as TranscriptBody's trailingRow): it sizes to its content so
+   * the list's measureElement can measure it, and it scrolls away with the
+   * transcript instead of owning a footer slot with its own internal
+   * scroll. Centered on the same 76rem reading measure as .turn
+   * (turnblock.module.css's --session-measure, a sibling stream's file -
+   * keep the two literals in sync until both consolidate onto a shared
+   * tokens.css property). */
+  width: 100%;
+  max-width: 76rem;
+  margin-inline: auto;
+  min-width: 0;
 }
 
 .anchor {

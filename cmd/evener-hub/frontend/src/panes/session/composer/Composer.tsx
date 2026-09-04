@@ -56,7 +56,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
-import { AskDock, useAskDockPending } from "./askDock";
+import { useAskDockPending } from "./askDock";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
@@ -1150,10 +1150,13 @@ export function Composer({ ref }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
-      {/* T4: ask dock - renders above the queue strip.
-          useAskDockPending(ref) (askPending, above) hides/inerts the input
-          row below while a question is pending. */}
-      <AskDock ref={ref} />
+      {/* The ask dock no longer renders here: pending questions are the
+          transcript's trailing row (Session.tsx passes AskDock as
+          TranscriptBody's trailingRow), so the answering surface scrolls
+          with the content instead of covering the footer. This component's
+          own half of the contract is unchanged: useAskDockPending(ref)
+          (askPending, above) hides/inerts the input row below while a
+          question is pending. */}
       {/* Screen-reader-only: announces the OTHER half of parity-m5-
           composer.md line 118's status-region transition - AskDock's own
           anchor announces "Answer the agent's questions." on entry but
