@@ -1,10 +1,11 @@
+//go:build unix
+
 package agent
 
 import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -20,9 +21,6 @@ import (
 // owns a minted scratch and holds its lease.
 func scratchFollowsReentryFixture(t *testing.T, id string) (*scriptedLaneRepo, schema.SessionMeta, *execenv.LocalExecutionEnvironment, string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("flock-based lease verification is unix-only")
-	}
 	sr := newScriptedLaneRepo(t)
 	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {

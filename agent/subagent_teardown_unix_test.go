@@ -1,3 +1,5 @@
+//go:build unix
+
 package agent
 
 import (
@@ -6,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"syscall"
 	"testing"
@@ -116,9 +117,6 @@ func assertParentScratchUntouched(t *testing.T, what, scratch string) {
 // retains only the sandbox-provisioned kind holds this lease for the rest of
 // the daemon's uptime.
 func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("flock-based lease verification is unix-only")
-	}
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -168,9 +166,6 @@ func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
 // must close the child's own resources and nothing else — not the parent's
 // in-flight processes, not the parent's scratch lease.
 func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process and flock probes are unix-only")
-	}
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -226,9 +221,6 @@ func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
 // and the root is mid-create when this runs, so closing the runtime must not
 // reach that environment.
 func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process and flock probes are unix-only")
-	}
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	shared, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -269,9 +261,6 @@ func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 // mid-tool when this runs. The child's own scratch is retained for the
 // handoff like any other child close.
 func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process and flock probes are unix-only")
-	}
 	r := newWorktreeRepo(t)
 	root := r.s
 	id, lanePath, _ := r.seedStableIsolationLane(t)
