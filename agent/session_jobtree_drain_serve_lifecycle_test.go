@@ -68,7 +68,19 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(root.Close)
-	t.Cleanup(wedge.releaseRead)
+	// t.Cleanup is LIFO, so this runs BEFORE root.Close and before t.TempDir
+	// removes StateDir. Releasing the wedged read restarts the delegate run the
+	// drain abandoned, and nothing else joins it: abandonment is precisely the
+	// parent giving up on that child, and Close's own join of the detached
+	// senders is bounded by LaneClosePassBudget, cut to 10ms above. The
+	// restarted run finalizes its child session, which rewrites
+	// StateDir/sessions/<child>.meta.json — a create that lands after Close has
+	// given up and, when it falls inside the RemoveAll walk, fails the temp-dir
+	// cleanup with "sessions: directory not empty". Join the run instead.
+	t.Cleanup(func() {
+		wedge.releaseRead()
+		root.sendersWG.Wait()
+	})
 
 	created := root.createDelegate(context.Background(), delegateArgs{Task: "read the wedged path"})
 	if created.Err != nil {
