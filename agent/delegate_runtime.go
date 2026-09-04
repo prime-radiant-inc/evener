@@ -1832,9 +1832,17 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 	plans, claimedForClose, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, runtimeForClose)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
-		if prepared != nil && (!controllerAttached || claimedForClose) {
-			prepared.runCancel()
-			prepared.disposeUnadopted()
+		// The stop settled the generation, so this exit owns the rollback of
+		// whatever nobody else holds: the unadopted child, unless the controller
+		// kept its runtime for its own close, and with it the isolation the
+		// construction was building on. The lane and its clone's scratch have no
+		// other owner once the start is dead, whether or not a child was built.
+		if prepared == nil || !controllerAttached || claimedForClose {
+			if prepared != nil {
+				prepared.runCancel()
+				prepared.disposeUnadopted()
+			}
+			isolation.cleanup(runtime.owner, started.lease.delegateID)
 		}
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 	}
