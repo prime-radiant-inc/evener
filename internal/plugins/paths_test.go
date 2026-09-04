@@ -22,6 +22,8 @@ func TestManagerPaths(t *testing.T) {
 		m.marketplacesDir():                      "/store/marketplaces",
 		m.cacheDir():                             "/store/cache",
 		m.lockPath():                             "/store/.lock",
+		m.bundledDir():                           "/store/bundled",
+		m.bundledLockPath():                      "/store/bundled/.lock",
 		m.marketplaceDir("acme"):                 "/store/marketplaces/acme",
 		m.pluginCacheDir("acme", "widget", "ab"): "/store/cache/acme/widget/ab",
 	}

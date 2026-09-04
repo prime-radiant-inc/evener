@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -370,6 +371,9 @@ func TestPluginPreviewBundledPluginPublishesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the bundled store after a preview: %v", err)
 	}
+	// The bundled cache keeps its own lock file, which readying the store
+	// opens; it is not something a preview published.
+	entries = slices.DeleteFunc(entries, func(e os.DirEntry) bool { return e.Name() == ".lock" })
 	if len(entries) != 0 {
 		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}

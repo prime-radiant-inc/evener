@@ -383,10 +383,7 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if !os.SameFile(before, after) {
 		t.Fatal("published copy was replaced by a new directory")
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 1 {
 		t.Fatalf("bundled store has %d entries, want only the published copy: %v", len(entries), entries)
 	}
@@ -415,10 +412,7 @@ func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths[0], ".claude-plugin", "plugin.json")); err != nil {
 		t.Fatalf("published copy incomplete: %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 1 {
 		t.Fatalf("bundled store has %d entries after a race, want one: %v", len(entries), entries)
 	}
@@ -444,10 +438,7 @@ func TestPreviewForLaunch_PublishesNothing(t *testing.T) {
 	if len(res.Candidates) != 1 || res.Candidates[0].Path != want || res.Candidates[0].Source != LaunchPluginSourceBundled || res.Candidates[0].AgentCount < 7 {
 		t.Fatalf("Candidates = %+v, want the bundled coordinator-workflow at %s", res.Candidates, want)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatalf("read the bundled store after a preview: %v", err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 0 {
 		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}
@@ -902,10 +893,7 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 			if len(res.Candidates) != 1 || res.Candidates[0].Path != published || res.Candidates[0].AgentCount < 7 {
 				t.Fatalf("Candidates = %+v, want the published copy at %s", res.Candidates, published)
 			}
-			entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			entries := bundledStoreEntries(t, m.bundledDir())
 			if len(entries) != 1 {
 				t.Errorf("bundled store holds %v, want only the published copy", entries)
 			}
@@ -1013,10 +1001,7 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(aside, "first.md")); !os.IsNotExist(err) {
 			t.Errorf("an earlier set-aside copy survived (stat err = %v), want one slot per plugin", err)
 		}
-		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		entries := bundledStoreEntries(t, m.bundledDir())
 		if len(entries) != 2 {
 			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
 		}
@@ -1178,10 +1163,7 @@ func TestSetAsideBundledConflict_RecoversAnInterruptedSetAside(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest+conflictSuffix, "newer.md")); err != nil {
 			t.Errorf("the slot does not hold the conflict this launch found: %v", err)
 		}
-		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		entries := bundledStoreEntries(t, m.bundledDir())
 		if len(entries) != 2 {
 			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
 		}
