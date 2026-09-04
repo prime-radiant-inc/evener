@@ -1,0 +1,57 @@
+{
+  "case": "vertex-express-gemini-stream",
+  "ref": "google-vertex-express/gemini-2.5-flash",
+  "stream": true,
+  "method": "POST",
+  "url": "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Goog-Api-Key": "\u003ccredential\u003e"
+  },
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "What is the weather in Oslo?"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 65536
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are terse."
+        }
+      ]
+    },
+    "toolConfig": {
+      "functionCallingConfig": {
+        "mode": "ANY"
+      }
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "description": "Current weather",
+            "name": "weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "pruned_fields": null
+}
