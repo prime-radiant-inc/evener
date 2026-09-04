@@ -455,6 +455,23 @@ func TestSemanticBreaker_TypedErrorsIgnorePresentationButUntypedRemainCompatible
 			t.Fatalf("calls=%d, want distinct typed classes to execute", calls)
 		}
 	})
+	t.Run("typed class precedes rendered boundary", func(t *testing.T) {
+		r := NewRegistry()
+		calls := 0
+		registerSemanticReviewTool(t, r, "typed_boundary", map[string]any{"type": "object"}, func(map[string]any) (any, error) {
+			calls++
+			return nil, reviewCodedError{code: []string{"backend_a", "backend_b", "backend_a"}[calls-1], text: "invalid_request: backend failure"}
+		})
+		for i := range 3 {
+			res := r.ExecuteCall(context.Background(), breakerEnv(t), breakerCall(fmt.Sprintf("typed-boundary-%d", i), "typed_boundary", fmt.Sprintf(`{"intent":"%d"}`, i)))
+			if strings.Contains(res.Output, "semantic failure loop") {
+				t.Fatalf("rendered boundary collapsed distinct typed classes: %#v", res)
+			}
+		}
+		if calls != 3 {
+			t.Fatalf("calls=%d, want distinct typed classes to execute", calls)
+		}
+	})
 }
 
 func TestSemanticBreaker_TelemetryComponentsAreSessionKeyed(t *testing.T) {

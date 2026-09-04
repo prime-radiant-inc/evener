@@ -372,6 +372,12 @@ func repetitionNudgeText(count int) string {
 // the same way. It shows the failures themselves so the model can see what it
 // is being asked to stop repeating.
 func failureParkText(name string, snippets []string) string {
+	if !readableBreakerToolName(name) {
+		name = "invalid tool name"
+		// Unknown-tool failure snippets repeat the raw provider-supplied name.
+		// Keep invalid names out of both model-facing and retained breaker text.
+		snippets = nil
+	}
 	var b strings.Builder
 	b.WriteString(parkPrefix)
 	b.WriteString(name)
@@ -399,6 +405,9 @@ func semanticFailureNudgeText(boundary string) string {
 // session telemetry, so this must remain useful without repeating secrets or
 // arbitrary user-provided bodies.
 func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
+	if !readableBreakerToolName(name) {
+		name = "invalid tool name"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, fingerprint, attempts, boundary)
 	b.WriteString("\n\nTake a materially different valid action: ")
@@ -608,13 +617,13 @@ type FailureClasser interface {
 }
 
 func semanticErrorClassFor(err error, output string) string {
-	boundary := failureBoundary(output)
-	if boundary != "tool_execution" {
-		return boundary
-	}
 	var classer FailureClasser
 	if errors.As(err, &classer) && strings.TrimSpace(classer.FailureClass()) != "" {
 		return "typed:" + strings.ToLower(strings.TrimSpace(classer.FailureClass()))
+	}
+	boundary := failureBoundary(output)
+	if boundary != "tool_execution" {
+		return boundary
 	}
 	switch {
 	case errors.Is(err, context.Canceled):

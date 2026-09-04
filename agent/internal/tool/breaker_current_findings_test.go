@@ -153,7 +153,11 @@ func TestBreaker_InvalidToolNamesUsePrivateBoundedIdentity(t *testing.T) {
 		t.Fatalf("same invalid name parked before its third call: first=%q second=%q", first.Output, second.Output)
 	}
 	if !strings.Contains(third.Output, "did not execute") {
-		t.Fatalf("third call for the same invalid name was not parked: %#v", third)
+		t.Fatal("third call for the same invalid name was not parked")
+	}
+	outputRunes, fullOutputRunes := utf8.RuneCountInString(third.Output), utf8.RuneCountInString(third.FullOutput)
+	if strings.Contains(third.Output, secret) || strings.Contains(third.FullOutput, secret) || outputRunes > 512 || fullOutputRunes > 512 {
+		t.Fatalf("exact breaker message is not private and bounded: output_runes=%d full_output_runes=%d", outputRunes, fullOutputRunes)
 	}
 	if strings.Contains(other.Output, "You just ran") || strings.Contains(other.Output, "did not execute") {
 		t.Fatalf("different invalid name inherited the first name's breaker history: %#v", other)
@@ -247,6 +251,34 @@ func TestBreaker_WhitespacePaddedToolNameUsesPrivateIdentity(t *testing.T) {
 		if len(key) > 81 || strings.Contains(key, secret) {
 			t.Fatalf("exact ledger key is unbounded or leaks the raw name: %q", key)
 		}
+	}
+}
+
+func TestBreaker_InvalidToolNameSemanticParkUsesPrivateBoundedDisplay(t *testing.T) {
+	secret := "SEMANTIC_INVALID_TOOL_NAME_FRAGMENT"
+	name := strings.Repeat(secret, 200)
+	r := NewRegistry()
+	var parked ExecResult
+	for i, args := range []json.RawMessage{
+		json.RawMessage(`{"value":"same"}`),
+		json.RawMessage(`{ "value" : "same" }`),
+		json.RawMessage(`{"value":"same" }`),
+	} {
+		parked = r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{
+			ID:        "invalid-semantic-" + string(rune('1'+i)),
+			Name:      name,
+			Arguments: args,
+		})
+		if i < 2 && strings.Contains(parked.Output, "semantic failure loop") {
+			t.Fatal("invalid name parked before third semantic attempt")
+		}
+	}
+	if !strings.Contains(parked.Output, "semantic failure loop") {
+		t.Fatal("third equivalent invalid-name call was not parked")
+	}
+	outputRunes, fullOutputRunes := utf8.RuneCountInString(parked.Output), utf8.RuneCountInString(parked.FullOutput)
+	if strings.Contains(parked.Output, secret) || strings.Contains(parked.FullOutput, secret) || outputRunes > 512 || fullOutputRunes > 512 {
+		t.Fatalf("semantic breaker message is not private and bounded: output_runes=%d full_output_runes=%d", outputRunes, fullOutputRunes)
 	}
 }
 
