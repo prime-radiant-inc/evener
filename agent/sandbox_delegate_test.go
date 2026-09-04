@@ -453,10 +453,10 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 	}
 }
 
-// A stable delegate's construction hands createSubagent an environment the
-// isolation step already prepared, so the spawn's own rollback deliberately
-// leaves that environment alone and delegateIsolation.cleanup is what rolls it
-// back. The construction it wraps runs the child's git snapshot, which mints an
+// A stable delegate's construction hands prepareSubagentRunFromSelection an
+// environment the isolation step already prepared, so the spawn's own rollback
+// deliberately leaves that environment alone and delegateIsolation.cleanup is
+// what rolls it back. The construction it wraps runs the child's git snapshot, which mints an
 // unsandboxed environment's scratch, so this rollback has to drop both dirs too.
 func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
 	client := llm.NewClient()
