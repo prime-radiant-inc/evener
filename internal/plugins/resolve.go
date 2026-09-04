@@ -442,8 +442,19 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 	// publisher is let in to look at the store.
 	defer staging.release()
 	defer func() { _ = os.RemoveAll(staging.dir) }()
+	// A publish that took a name by moving its occupant aside owes that
+	// occupant the name back if it then fails: nothing else is going to put it
+	// there, and a session reading the path for a hook, a skill or an MCP
+	// server command would find nothing at all.
+	setAside := staging.setAside
+	failed := func(warnings []string, err error) (string, []string, error) {
+		if setAside {
+			warnings = append(warnings, restoreBundledConflict(dest)...)
+		}
+		return "", warnings, err
+	}
 	if err := copyBundledPayload(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
-		return "", warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
+		return failed(warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err))
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
 		// The store lock keeps every other publisher out, so a destination
@@ -453,24 +464,47 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 		// retried into the name that frees.
 		state, classifyErr := classifyBundledDestination(dest, staging.digest)
 		if classifyErr != nil {
-			return "", warnings, classifyErr
+			return failed(warnings, classifyErr)
 		}
 		if state == bundledDestinationPublished {
 			return publishedForCaller(ctx, dest, warnings)
 		}
 		if state != bundledDestinationConflict {
-			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
+			return failed(warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err))
 		}
 		asideWarnings, asideErr := setAsideBundledConflict(dest)
 		warnings = append(warnings, asideWarnings...)
 		if asideErr != nil {
-			return "", warnings, asideErr
+			return failed(warnings, asideErr)
 		}
+		setAside = true
 		if err := os.Rename(staging.payload, dest); err != nil {
-			return "", warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err)
+			return failed(warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err))
 		}
 	}
 	return publishedForCaller(ctx, dest, warnings)
+}
+
+// restoreBundledConflict puts back what a publish set aside, after that publish
+// failed to put anything in the name it freed. The destination is the one path
+// live sessions hold — hooks, skills, MCP server commands — so leaving it
+// empty is worse than leaving the mismatched copy that was there. Nothing is
+// restored over a destination that is occupied again: under the store lock the
+// only thing that could have filled it is something outside this package, and
+// that is a conflict for the next launch to classify rather than something to
+// overwrite here.
+func restoreBundledConflict(dest string) []string {
+	aside := dest + conflictSuffix
+	if _, err := os.Lstat(dest); err == nil {
+		return nil
+	}
+	if _, err := os.Lstat(aside); err != nil {
+		return nil
+	}
+	if err := os.Rename(aside, dest); err != nil {
+		return []string{fmt.Sprintf("publishing the bundled plugin failed and the copy set aside at %s could not be put back at %s: %v", aside, dest, err)}
+	}
+	return []string{fmt.Sprintf("publishing the bundled plugin failed, so the copy set aside at %s was put back at %s", aside, dest)}
 }
 
 // publishedForCaller hands back the published path only while the caller is

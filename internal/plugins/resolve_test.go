@@ -1376,3 +1376,45 @@ func TestPreviewForLaunch_LeavesAMismatchedDestinationWhereItIs(t *testing.T) {
 		t.Fatalf("Diagnostics = %+v, want one saying what a launch would do about the conflict", res.Diagnostics)
 	}
 }
+
+// Publishing takes a name whose previous occupant was moved to the conflict
+// slot, and a publish that then fails must not leave that name empty: live
+// sessions read the destination path for hooks, skills and MCP server
+// commands, so a path that vanishes breaks them until some later launch
+// happens to repair it. What was set aside goes back, and the caller hears
+// both the failure and the restore.
+func TestMaterializeBundledPlugin_PutsASetAsideBackWhenPublishingFails(t *testing.T) {
+	m := NewManager(t.TempDir())
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := m.bundledPluginPath("coordinator-workflow", digest)
+	writePlugin(t, dest, "coordinator-workflow", map[string]string{"theirs.md": "someone else's data"})
+
+	original := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = original })
+	copyBundledPayload = func(string, fs.FS) error { return errors.New("the disk went away") }
+
+	published, warnings, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	if err == nil {
+		t.Fatal("publishing reported success with a copy it could not make")
+	}
+	if published != "" {
+		t.Errorf("published = %q, want nothing published", published)
+	}
+	content, readErr := os.ReadFile(filepath.Join(dest, "theirs.md"))
+	if readErr != nil || string(content) != "someone else's data" {
+		t.Fatalf("destination content = %q (err %v), want the occupant put back", content, readErr)
+	}
+	if _, statErr := os.Stat(dest + conflictSuffix); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the copy is still set aside at %s: stat err = %v", dest+conflictSuffix, statErr)
+	}
+	restored := false
+	for _, warning := range warnings {
+		restored = restored || strings.Contains(warning, "put back")
+	}
+	if !restored {
+		t.Errorf("warnings = %v, want one naming the restore", warnings)
+	}
+}
