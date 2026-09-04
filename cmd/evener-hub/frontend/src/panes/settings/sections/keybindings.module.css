@@ -128,7 +128,7 @@
 }
 
 .chordButton:focus-visible {
-  outline: 2px solid var(--accent-edge);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -151,7 +151,7 @@
 }
 
 .actionButton:focus-visible {
-  outline: 2px solid var(--accent-edge);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -198,7 +198,7 @@
 }
 
 .capture:focus-visible {
-  outline: 2px solid var(--accent-edge);
+  outline: var(--focus-ring);
   outline-offset: 1px;
 }
 
