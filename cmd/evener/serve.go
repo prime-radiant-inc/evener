@@ -1021,7 +1021,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		newSess, err := deps.newClearSession(client, profile, clearEnv, clearCfg)
 		if err != nil {
+			// Cleanup stops whatever the failed construction left running and
+			// RETAINS the session scratch — the handoff convention for a session
+			// someone may still want to inspect. No session was built to hand
+			// anything to here, so the scratch this env provisioned (and the one
+			// an unsandboxed env minted on its first command) is disposed
+			// outright; otherwise every failed clear leaves a directory and a
+			// live flock lease behind for the daemon's whole uptime.
 			clearEnv.Cleanup()
+			clearEnv.DisposeUnadoptedScratch()
 			return fmt.Errorf("new session: %w", err)
 		}
 		// Everything that can fail happens before anything shared moves, so the

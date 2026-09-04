@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -895,6 +896,54 @@ func TestRunServeClearRendezvousFailureKeepsOldIdentity(t *testing.T) {
 	assertClearKeptOldIdentity(t, obs)
 	if len(obs.steps) < 2 || obs.steps[0] != "prepare" || obs.steps[1] != "rendezvous" {
 		t.Fatalf("clear steps = %v, want prepare then rendezvous before any install", obs.steps)
+	}
+}
+
+// TestRunServeClearSessionFailureDisposesUnadoptedScratch drives the clear that
+// provisions a fresh environment and then fails to build the session that would
+// have owned it. Cleanup() RETAINS a session scratch -- the handoff convention
+// for a session someone might still want to inspect -- so a clear that never
+// produced a session has to dispose it instead, or every failed clear leaves a
+// directory and a live flock lease behind for the daemon's whole uptime.
+func TestRunServeClearSessionFailureDisposesUnadoptedScratch(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var clearScratch string
+	deps.newClearSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Errorf("clear environment = %T, want a local environment", env)
+			return nil, errClearProbe
+		}
+		// The real NewSession runs commands through the environment (the git
+		// snapshot among them) before it can fail, and an unsandboxed env mints
+		// its session scratch, with the lease under it, on that first command.
+		if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("mint the cleared session scratch: %v", err)
+		}
+		clearScratch = local.SessionScratchDir()
+		return nil, errClearProbe
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+
+	// This failure lands before any replacement session exists, so the shared
+	// assertion (which inspects one) does not apply; the old session stays live.
+	if !errors.Is(obs.clearErr, errClearProbe) {
+		t.Fatalf("clear error = %v, want %v", obs.clearErr, errClearProbe)
+	}
+	if obs.currentSessionID != obs.oldSessionID {
+		t.Errorf("current session = %q, want the old session %q", obs.currentSessionID, obs.oldSessionID)
+	}
+	if obs.oldSessionState == agent.SessionClosed {
+		t.Error("old session was closed by an aborted clear")
+	}
+	if clearScratch == "" {
+		t.Fatal("the cleared session environment minted no scratch, so there is nothing to dispose")
+	}
+	// The lease file lives inside the scratch dir, so the directory's removal is
+	// the lease's removal too.
+	if _, err := os.Stat(clearScratch); !os.IsNotExist(err) {
+		t.Errorf("failed clear retained the unadopted scratch %s: stat err = %v", clearScratch, err)
 	}
 }
 
