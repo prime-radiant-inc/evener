@@ -42,8 +42,14 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// child ever persists a worktree — delegate lanes belong to the parent's
 	// lifecycle and a child cannot call manage_worktree — so a child meta naming
 	// one is a corrupted or hand-edited record. Refuse loudly: re-entering would
-	// take the parent's scratch out from under the parent.
-	if parentID := s.cfg.spawn.parentSessionID; parentID != "" {
+	// take the parent's scratch out from under the parent. isSubagentSession
+	// reads the persisted flag as well as the live spawn carrier: a bare
+	// `serve --resume <child-id>` restores with an empty carrier.
+	if s.isSubagentSession() {
+		parentID := s.cfg.spawn.parentSessionID
+		if parentID == "" {
+			parentID = meta.ParentSessionID
+		}
 		return fmt.Errorf("worktree re-entry: child session %s of %s cannot re-enter %s: a child never persists a worktree", s.id, parentID, path)
 	}
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
@@ -209,9 +215,11 @@ func worktreeGitEntryExists(path string) bool {
 // session cannot be un-launched (spec §5: "if the lane is foreign-locked the
 // session continues but warns loudly that it is co-occupying").
 //
-// Scoped to root sessions (s.cfg.spawn.parentSessionID == "") only: a
-// delegate or an ordinary subagent spawned with a cwd inside a managed
-// worktree does not take an independent lock here. Delegate lane locks are
+// Scoped to root sessions (isSubagentSession false: no live spawn parent and
+// no persisted subagent flag, since a bare `serve --resume <child-id>` restores
+// with an empty spawn carrier) only: a delegate or an ordinary subagent spawned
+// with a cwd inside a managed worktree does not take an independent lock here.
+// Delegate lane locks are
 // owned by the parent's own §9 create/revive/dispose lifecycle, not by the
 // child session's init (spec §5: "The evener:dlg: lock on a delegate lane is
 // owned by the parent's disposal lifecycle, not the child"); an ordinary
@@ -234,7 +242,7 @@ func worktreeGitEntryExists(path string) bool {
 // there is no unlocked window for this function to (mis)detect on the
 // child's own init.
 func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
-	if !isGitRepo || s.cfg.spawn.parentSessionID != "" {
+	if !isGitRepo || s.isSubagentSession() {
 		return
 	}
 	s.mu.Lock()

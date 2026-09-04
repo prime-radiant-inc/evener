@@ -141,3 +141,65 @@ func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
 		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
 	}
 }
+
+// A bare `serve --resume <child-id>` restores a persisted child with an empty
+// spawn carrier; only the persisted meta says it is a subagent. The refusal
+// has to read that flag too, or a resumed child re-enters a parent-owned
+// worktree and adopts the scratch of the environment it was handed.
+func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *testing.T) {
+	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHBARECHILD01")
+	meta.IsSubagent = true
+	meta.ParentSessionID = "01PARENTSESSION00000000002"
+
+	sess, err := sr.restoreSessionOn(env, meta, sr.restoreConfig())
+	if err == nil {
+		sess.Close()
+		t.Fatal("a bare resume of a persisted child re-entered a worktree, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "child") || !strings.Contains(err.Error(), meta.WorktreePath) {
+		t.Fatalf("refusal = %v, want it to name the child session and the worktree %s", err, meta.WorktreePath)
+	}
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatalf("the handed-in environment's scratch %s lease was released by the refused restore", scratch)
+	}
+	env.DisposeUnadoptedScratch()
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the handed-in environment no longer owns its scratch %s: stat err after its disposal = %v", scratch, err)
+	}
+}
+
+// The init-inside occupancy lock is a root session's: a child launched inside
+// a managed worktree never takes one (the lane is its parent's lifecycle). A
+// bare resume of a persisted child has an empty spawn carrier, so that rule
+// has to read the persisted subagent flag as well.
+func TestInitInside_BareResumeOfAPersistedChildTakesNoLock(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	sr.unlockLane(t, path)
+	meta := schema.SessionMeta{
+		ID:              "01RESUMEINITINSIDECHILD001",
+		IsSubagent:      true,
+		ParentSessionID: "01PARENTSESSION00000000003",
+	}
+
+	// Launched inside the lane, in a checkout: the shape the init-inside rule
+	// reacts to (launchInside's seam).
+	cfg := sr.restoreConfig()
+	cfg.testOnly.environmentInfo = scriptedGitRepoEnvironmentInfo
+	sess, err := sr.restoreSessionOn(execenv.NewLocalExecutionEnvironment(path), meta, cfg)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	if _, locked, reason := sr.laneLocked(t, path); locked {
+		t.Errorf("a resumed child took the init-inside lock on %s (%q), want the lane left unlocked", path, reason)
+	}
+	if got := sess.Meta().WorktreePath; got != "" {
+		t.Errorf("a resumed child recorded worktree occupancy %q, want none", got)
+	}
+}
