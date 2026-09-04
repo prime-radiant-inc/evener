@@ -121,8 +121,9 @@ type LocalExecutionEnvironment struct {
 	// the human handoff; DisposeSandboxScratch is the explicit removal operation.
 	// It is provisioned at sandbox construction (EnableSandbox) and deliberately
 	// NOT copied by WithWorkingDirectory — a re-rooted clone shares the wrapper's
-	// tmp path but must never dispose the owner's dir out from under it. nil for off
-	// and for re-rooted clones.
+	// tmp path but must never dispose the owner's dir out from under it. nil for
+	// off and for a fresh clone; a clone owns one only once a session that swaps
+	// onto it moves ownership there (AdoptSessionScratch).
 	ownedSessionTmp *sandbox.SessionScratch
 
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
@@ -161,7 +162,9 @@ type LocalExecutionEnvironment struct {
 	// export rather than blocking the spawn (unsandboxedScratchFailed is sticky
 	// so a broken base is not re-probed on every spawn). Not copied by
 	// WithWorkingDirectory or WithSandboxInvocationGrant, matching
-	// ownedSessionTmp — a re-rooted clone provisions its own on first use.
+	// ownedSessionTmp — a re-rooted clone provisions its own on first use unless
+	// a session swapping onto it moves the original's there first
+	// (AdoptSessionScratch).
 	unsandboxedScratch       *sandbox.SessionScratch
 	unsandboxedScratchFailed bool
 }
@@ -195,7 +198,8 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 // $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
 // one. It reads through Wrapper rather than ownedSessionTmp because a re-rooted
 // clone (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper
-// without owning it (ownedSessionTmp is nil there — see its doc comment).
+// without necessarily owning it (ownedSessionTmp is nil on a fresh clone — see
+// its doc comment).
 //
 // A write-blocked policy with no OS sandbox (a read-only delegate on a host with
 // no sandbox backend) never builds a wrapper to read through, so it falls back to
@@ -631,8 +635,8 @@ func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 // the scratch dir is not leaked — the failed env is never handed to a session that
 // would Cleanup it. It must run only on such a freshly-provisioned env, never on the
 // shared parent env, whose live children's caches point into ITS scratch dir; a
-// re-rooted clone never owns the parent's tmp (WithWorkingDirectory does not copy
-// it), so disposing a clone's OWN scratch cannot touch the parent's.
+// fresh re-rooted clone owns nothing of the parent's (WithWorkingDirectory does
+// not copy it), so disposing a clone's OWN scratch cannot touch the parent's.
 func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	e.sbMu.Lock()
 	if e.sbfs != nil {
@@ -716,7 +720,8 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 // nil (off stays byte-identical to before). A re-root the host cannot satisfy is
 // captured in sandboxReRootErr (Sandbox/Wrapper left nil) and surfaced via
 // SandboxReRootError() — the infallible signature is preserved for the wide caller
-// set. The owned session tmp is NOT copied: only the constructing env disposes it.
+// set. The owned session tmp is NOT copied: only the env that owns it disposes it,
+// and ownership moves only explicitly (AdoptSessionScratch).
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
 	child := &LocalExecutionEnvironment{
 		RootDir:          dir,
@@ -854,8 +859,9 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	// dir becomes eligible for sweepCrashedSessionScratch's 24h reclaim instead of
 	// holding its lease open for the rest of the daemon's uptime). Off/unsandboxed
 	// is the DEFAULT mode, so without the unsandboxed half every ordinary session
-	// close would leak one held lease indefinitely. Re-rooted clones never own the
-	// sandbox one, so a clone's Cleanup never retains or removes the owner's tmp.
+	// close would leak one held lease indefinitely. A clone owns the sandbox one
+	// only if a session moved ownership onto it (AdoptSessionScratch), so a
+	// clone's Cleanup never retains or removes a tmp some other env still owns.
 	defer e.RetainSessionScratch()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a

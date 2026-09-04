@@ -220,7 +220,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// registered here (and cancelled below) or observes closing and refuses —
 		// there is no window for a late goroutine to escape the drain. The map is
 		// cleared under the lock; children are closed OUTSIDE the lock
-		// (sub.sess.Close() acquires its own mu).
+		// (teardownChildSession's close acquires the child's own mu).
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		subs := s.subagents.drainForClose()
