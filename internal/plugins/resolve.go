@@ -80,14 +80,14 @@ func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, e
 // store the way a launch does, so a destination a launch would reject fails
 // preview the same way, a store a launch could not publish into fails preview
 // too, and an already published copy is the one preview describes. Exactly
-// what it touches: it creates <Root>/bundled if that is missing, it takes the
-// bundled cache's lock while it works there, and for a requested bundled
-// plugin not yet published it stages a marked copy there, reads it, and
-// removes it before returning. A destination holding content this build did
-// not publish is reported as the conflict a launch would act on and left
-// exactly where it is: repairing the store belongs to a launch, and a preview
-// that moved that directory would take a path live sessions read out from
-// under them. It publishes nothing, and it reclaims nothing: collecting
+// what it touches: it creates <Root>/bundled and the lock file the cache keeps
+// there if either is missing, it takes that lock while it works there, and for
+// a requested bundled plugin not yet published it stages a marked copy there,
+// reads it, and removes it before returning. A destination holding content
+// this build did not publish is reported as the conflict a launch would act on
+// and left exactly where it is: repairing the store belongs to a launch, and a
+// preview that moved that directory would take a path live sessions read out
+// from under them. It publishes nothing, and it reclaims nothing: collecting
 // abandoned staging belongs to a launch. Removing what it staged is part of
 // the promise, so a removal that fails is reported as a diagnostic on the
 // inventory it returns rather than as an error that would throw the inventory

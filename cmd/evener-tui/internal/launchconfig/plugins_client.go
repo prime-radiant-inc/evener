@@ -171,9 +171,9 @@ func CmdPluginList(client *appwire.Client) tea.Cmd {
 func CmdPluginPreview(client *appwire.Client, params appwire.PluginPreviewParams, key string) tea.Cmd {
 	return func() tea.Msg {
 		// Not a quick read: previewing a bundled plugin readies the store the
-		// way a launch does, which waits on the same flock every mutation
-		// takes. A client deadline under that wait would report a failure the
-		// hub is still working through.
+		// way a launch does, which waits on the bundled cache's flock for the
+		// same budget a publish gets. A client deadline under that wait would
+		// report a failure the hub is still working through.
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.PluginPreview(ctx, params)
