@@ -410,6 +410,9 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 
 	disposeUnadoptedSubagentSession(owned, true)
 
+	if got := owned.State(); got != SessionClosed {
+		t.Errorf("unadopted child state = %q, want %q", got, SessionClosed)
+	}
 	if _, err := os.Stat(ownedScratch); !os.IsNotExist(err) {
 		t.Errorf("unadopted child retained its scratch %s: stat err = %v", ownedScratch, err)
 	}
@@ -437,6 +440,9 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 
 	disposeUnadoptedSubagentSession(sharing, false)
 
+	if got := sharing.State(); got != SessionClosed {
+		t.Errorf("child sharing the parent's environment was left %q, want %q", got, SessionClosed)
+	}
 	if got := counted.count(); got != 0 {
 		t.Errorf("unadopted child ran Cleanup %d time(s) on the parent's environment, releasing the parent's live scratch lease and signalling the processes it tracks", got)
 	}
