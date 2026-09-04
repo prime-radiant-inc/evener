@@ -1594,7 +1594,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	defer func() {
 		if discardEnv && ownsFresh {
 			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.DisposeSandboxScratch()
+				// Both scratch dirs go. The construction below runs the child's
+				// git snapshot, which is what mints an unsandboxed environment's
+				// scratch, so a failure after that point has one to drop as
+				// surely as a sandboxed restore has its owned one.
+				local.DisposeUnadoptedScratch()
 			}
 		}
 	}()
