@@ -1389,47 +1389,126 @@ func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *tes
 	}
 }
 
-// Seeding marketplaces waits on the plugin store lock, so an interrupt can
-// land there — and seeding reports its own failures as warnings, which is
-// right for a marketplace it could not fetch and wrong for a caller that has
-// gone. A run that walks past it builds a client and a session on a context
-// that is already dead.
-func TestRunStopsWhenTheInterruptLandsDuringSeeding(t *testing.T) {
-	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
-	oldEnsure, oldSeed, oldNew := runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession
-	t.Cleanup(func() {
-		runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession = oldEnsure, oldSeed, oldNew
-	})
-	runEnsureUserConfigDirs = func() error { return nil }
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var seedCtx context.Context
-	runSeedMarketplaces = func(ctx context.Context) error {
-		cancel()
-		seedCtx = ctx
-		return nil
+// An interrupt that arrives during startup ends the startup. The steps between
+// resolving plugins and the first turn are the slow ones — seeding waits on
+// the plugin store lock, probing the login shell PATH and provisioning the
+// sandbox run subprocesses, and building a session reads a transcript off disk
+// — and none of them reads the context for itself. Seeding even reports what
+// it could not do as a warning, which is right for a marketplace it failed to
+// fetch and wrong for a caller that has left.
+func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
+		arm  func(t *testing.T, interrupt func())
+	}{
+		{
+			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
+			arm: func(t *testing.T, interrupt func()) {
+				var seedCtx context.Context
+				runSeedMarketplaces = func(ctx context.Context) error {
+					interrupt()
+					seedCtx = ctx
+					return nil
+				}
+				t.Cleanup(func() {
+					if seedCtx == nil || seedCtx.Err() == nil {
+						t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+					}
+				})
+			},
+		},
+		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the client work just before it) is only noticed by
+				// the gate that follows it.
+				attach := runAttachAPILogger
+				runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func(string) error, func() error, error) {
+					interrupt()
+					return attach(client, stateDir, warnings)
+				}
+			},
+		},
+		{
+			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
+			arm: func(t *testing.T, interrupt func()) {
+				runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+					if err := launchScratchThatMustBeDisposed(t, env); err != nil {
+						return err
+					}
+					interrupt()
+					return nil
+				}
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, interrupt func()) {
+				newSession := runNewSession
+				var sess *agent.Session
+				runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the run has to take it down: a session left
+				// running holds its environment and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the run ended", state, agent.SessionClosed)
+					}
+				})
+			},
+		},
 	}
-	created := false
-	runNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
-		created = true
-		return nil, errors.New("a session was created after the interrupt")
-	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			oldEnsure, oldSeed, oldNew := runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession
+			oldProvision, oldAttach, oldProcess := runProvisionSandbox, runAttachAPILogger, runProcessInput
+			t.Cleanup(func() {
+				runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession = oldEnsure, oldSeed, oldNew
+				runProvisionSandbox, runAttachAPILogger, runProcessInput = oldProvision, oldAttach, oldProcess
+			})
+			runEnsureUserConfigDirs = func() error { return nil }
+			runSeedMarketplaces = func(context.Context) error { return nil }
+			processed := false
+			runProcessInput = func(*agent.Session, context.Context, string) (string, error) {
+				processed = true
+				return "", errors.New("input was processed after the interrupt")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			test.arm(t, func() { cancel() })
 
-	dir := t.TempDir()
-	err := run(ctx, runConfig{
-		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
-		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("run error = %v, want the interrupt that ended the run", err)
-	}
-	if want := "interrupted while seeding default marketplaces"; !strings.Contains(err.Error(), want) {
-		t.Errorf("run error = %q, want it to say %q", err, want)
-	}
-	if created {
-		t.Error("created a session for a run an interrupt had already ended")
-	}
-	if seedCtx == nil || seedCtx.Err() == nil {
-		t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+			dir := t.TempDir()
+			err := run(ctx, runConfig{
+				prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+				stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("run error = %v, want the interrupt that ended the run", err)
+			}
+			if want := "interrupted while " + test.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("run error = %q, want it to say %q", err, want)
+			}
+			if processed {
+				t.Error("processed input for a run an interrupt had already ended")
+			}
+		})
 	}
 }

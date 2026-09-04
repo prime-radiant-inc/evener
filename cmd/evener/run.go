@@ -289,6 +289,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
@@ -340,6 +343,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		if err := runProvisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the lease under it,
+		// which nothing releases until a session owns this environment.
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeUnadoptedScratch()
+			return err
+		}
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
@@ -381,6 +390,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 	defer sess.Close()
+	// The session is live, and everything past here is the turn itself. An
+	// interrupt that arrived while it was being built ends the run instead,
+	// and the deferred Close takes the session down on the way out.
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		return err
+	}
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
