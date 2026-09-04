@@ -374,6 +374,24 @@ func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
 	}
 }
 
+func TestCredential_GCPADCStoreSourceNeverReportsShadowedEnvVar(t *testing.T) {
+	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
+	env := noADCEnv(t)
+	env["VERTEX_API_KEY"] = "placeholder"
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.ShadowedEnvVar != "" {
+		t.Fatalf("instance = %+v ok=%v; want no shadowed env var (gcp-adc never consults api_key_env)", inst, ok)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ShadowedEnvVar != "" {
+		t.Fatalf("resolved.ShadowedEnvVar = %q, want empty", res.ShadowedEnvVar)
+	}
+}
+
 func TestCredential_GCPADCWithoutStoreOrFileIsNoneAndNamesTheRemedies(t *testing.T) {
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{}))
 	inst, ok := r.Instance("vertex")

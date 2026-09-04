@@ -378,14 +378,19 @@ func consumedEnvVars(rec *record, source string) []string {
 // shadowedEnvVar names an environment variable that is set but loses to
 // cred, the credential that actually resolved (spec §10: api_key >
 // credential_headers > store > env). Only those three sources can shadow
-// anything: oauth-openai-codex and gcp-adc are terminal branches in
-// credential that never consult api_key_env at all (whether they resolve,
-// giving "oauth"/"adc", or not, giving "none" the same as every other
-// unresolved scheme), so naming a candidate against any of them - including
-// "none" - would blame a source that was never actually in contention.
+// anything, and only outside the gcp-adc scheme: oauth-openai-codex and
+// gcp-adc are terminal branches in credential that never consult
+// api_key_env at all - gcp-adc's own store lookup is keyed by instance
+// name, not by any api_key_env/InstanceKeyEnvVar candidate - so naming a
+// candidate against either of them, for any of their sources ("oauth",
+// "adc", "store", or "none"), would blame a variable that was never
+// actually in contention.
 // Empty when nothing shadows it: no remaining candidate is set, or an env
 // source is itself what won.
 func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
+	if rec.head.Transport.Auth == AuthGCPADC {
+		return ""
+	}
 	switch cred.Source {
 	case "api_key", "credential_headers", "store":
 	default:
