@@ -982,3 +982,213 @@ describe("keybindings store: support loss", () => {
     expect(serializeChord(bindingsFor(ACTIONS.paletteOpen)[0]?.chord ?? [])).toBe("Control+P");
   });
 });
+
+describe("keybindings store: support flap discards hub state", () => {
+  test("a lower-revision refresh after an unsupported flap is ACCEPTED, and edits compose from the new payload", async () => {
+    const client = new FakeClient("ready");
+    let current = overridesPayload(7, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    client.on("evener/settings/keybindings/get", () => current);
+    client.on("evener/settings/keybindings/patch", (params) =>
+      overridesPayload(params.expectedRevision + 1, params.config.rules),
+    );
+    await wireClient(client, true);
+    expect(keybindingsStore.getState().revision).toBe(7);
+
+    // Support drops: the registry un-applies AND the hub payload state
+    // resets - a retained revision 7 would eat the returning hub's
+    // lower-revision refresh via the stale guard.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    const dropped = keybindingsStore.getState();
+    expect(dropped.hubSupport).toBe("unsupported");
+    expect(dropped.loaded).toBe(false);
+    expect(dropped.revision).toBe(0);
+    expect(dropped.overrides).toEqual([]);
+    expect(dropped.rawOverrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+
+    // The same hub returns at a LOWER revision (restored backup, reset
+    // state file): the refresh must not be discarded as stale.
+    current = overridesPayload(3, [{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+    expect(keybindingsStore.getState().revision).toBe(3);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([`${ACTIONS.composerFocus}#override`]);
+
+    // An edit composes from the NEW hub's payload with the NEW revision.
+    await keybindingsStore
+      .getState()
+      .patchOverrides([
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.paletteOpen, chord: "Control+Y" },
+      ]);
+    const patchCalls = client.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
+    expect(patchCalls).toHaveLength(1);
+    expect(patchCalls[0]?.params).toEqual({
+      expectedRevision: 3,
+      config: {
+        version: 1,
+        rules: [
+          { action: ACTIONS.composerFocus, chord: "Control+M" },
+          { action: ACTIONS.paletteOpen, chord: "Control+Y" },
+        ],
+      },
+    });
+  });
+
+  test("a changed notification arriving while UNSUPPORTED does not touch the registry or the store", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+
+    // A late notification from before the support drop must not re-install
+    // overrides into the registry that was just un-applied.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(9, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
+    });
+
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+    const state = keybindingsStore.getState();
+    expect(state.revision).toBe(0);
+    expect(state.loaded).toBe(false);
+    expect(state.hubError).toBeNull();
+  });
+
+  test("a patch response landing after support loss does not apply", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    await wireClient(client, true);
+
+    const patch = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    await waitFor(() => expect(resolvePatch).toBeDefined());
+
+    // Support drops while the PATCH is in flight: the response must not
+    // re-apply over the un-applied registry and reset hub state.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    const result = await patch;
+
+    expect(result.revision).toBe(0);
+    expect(keybindingsStore.getState().revision).toBe(0);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+});
+
+describe("keybindings store: write serialization", () => {
+  test("concurrent patches serialize: each composes expectedRevision and payload after the previous lands", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    client.on("evener/settings/keybindings/patch", (params) =>
+      overridesPayload(params.expectedRevision + 1, params.config.rules),
+    );
+    await wireClient(client, true);
+
+    // Two edits in the SAME tick. Both thunks compose against the raw set,
+    // but the second runs only after the first has fully landed, so it
+    // folds the first edit's confirmed payload in instead of racing it with
+    // the same expectedRevision (a self-inflicted conflict).
+    const first = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.paletteOpen, chord: "Control+P" },
+      ]);
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.revision).toBe(2);
+    expect(secondResult.revision).toBe(3);
+    const patchCalls = client.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
+    expect(patchCalls).toHaveLength(2);
+    expect(patchCalls[0]?.params).toEqual({
+      expectedRevision: 1,
+      config: { version: 1, rules: [{ action: ACTIONS.paletteOpen, chord: "Control+P" }] },
+    });
+    expect(patchCalls[1]?.params).toEqual({
+      expectedRevision: 2,
+      config: {
+        version: 1,
+        rules: [
+          { action: ACTIONS.paletteOpen, chord: "Control+P" },
+          { action: ACTIONS.composerFocus, chord: "Control+M" },
+        ],
+      },
+    });
+    expect(keybindingsStore.getState().revision).toBe(3);
+    expect(keybindingsStore.getState().conflict).toBeNull();
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([`${ACTIONS.composerFocus}#override`]);
+  });
+
+  test("a failed write does not block the queue: the next write runs against the post-failure state", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let failFirst = true;
+    client.on("evener/settings/keybindings/patch", (params) => {
+      if (failFirst) {
+        failFirst = false;
+        throw new Error("socket went away");
+      }
+      return overridesPayload(params.expectedRevision + 1, params.config.rules);
+    });
+    await wireClient(client, true);
+
+    const first = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+
+    await expect(first).rejects.toThrow("socket went away");
+    // The first write failed WITHOUT touching the hub: the second still
+    // composes from revision 1 and lands.
+    const secondResult = await second;
+    expect(secondResult.revision).toBe(2);
+    const patchCalls = client.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
+    expect(patchCalls).toHaveLength(2);
+    expect(patchCalls[1]?.params).toEqual({
+      expectedRevision: 1,
+      config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+    });
+  });
+});

@@ -313,7 +313,11 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   async function saveCapture(chord: Chord): Promise<string | null> {
     const generation = captureGenerationRef.current;
     try {
-      await keybindingsStore.getState().patchOverrides(replacementRules(actionId, serializeChord([chord])));
+      // A THUNK: the store serializes writes, so this composition must run
+      // when the write executes (against the raw set the previous write left
+      // behind), not now - composing at call time would race an in-flight
+      // edit from another row with a stale expectedRevision and payload.
+      await keybindingsStore.getState().patchOverrides(() => replacementRules(actionId, serializeChord([chord])));
     } catch (saveError) {
       return errorMessage(saveError);
     }
@@ -333,7 +337,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     setCapturing(false);
   }
 
-  async function applyRules(rules: OverrideRule[]): Promise<void> {
+  async function applyRules(rules: readonly OverrideRule[] | (() => readonly OverrideRule[])): Promise<void> {
     try {
       await keybindingsStore.getState().patchOverrides(rules);
       setError(null);
@@ -380,7 +384,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
             <button
               type="button"
               className={CLASS.actionButton}
-              onClick={() => void applyRules(replacementRules(actionId, null))}
+              onClick={() => void applyRules(() => replacementRules(actionId, null))}
             >
               Unbind
             </button>
@@ -389,7 +393,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
             <button
               type="button"
               className={CLASS.actionButton}
-              onClick={() => void applyRules(replacementRules(actionId, undefined))}
+              onClick={() => void applyRules(() => replacementRules(actionId, undefined))}
             >
               Reset
             </button>

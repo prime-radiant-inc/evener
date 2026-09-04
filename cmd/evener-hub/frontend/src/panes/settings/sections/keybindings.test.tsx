@@ -709,6 +709,70 @@ test("a stale save's error does not surface into a reopened capture", async () =
   expect(reopened.textContent).toContain("Press new shortcut…");
 });
 
+// Writes serialize at the store: an edit made while ANOTHER row's write is
+// in flight queues behind it (no controls are disabled - the queue absorbs
+// the concurrency), composes its expectedRevision and payload from the
+// first write's confirmed state, and - via the finding-13 generation token
+// - still cannot touch a capture that was cancelled while it queued.
+test("a save queued behind another row's in-flight write lands in order and ignores its cancelled capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () =>
+    overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  let firstExpectedRevision: number | undefined;
+  let resolveFirstPatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (firstExpectedRevision === undefined) {
+      firstExpectedRevision = params.expectedRevision;
+      return new Promise<KeybindingsOverrides>((resolve) => {
+        resolveFirstPatch = resolve;
+      });
+    }
+    return overridesPayload(params.expectedRevision + 1, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Row B (command palette) Reset starts PATCH #1, which hangs in flight.
+  const resetButton = within(rowFor("Open the command palette")).getByRole("button", { name: "Reset" });
+  await userEvent.setup().click(resetButton);
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // While it hangs, the composer row's controls stay ENABLED (the queue
+  // absorbs the concurrency - nothing is disabled during a write)...
+  const chordButton = screen.getByRole("button", { name: "Change the shortcut for Focus the composer" });
+  expect((chordButton as HTMLButtonElement).disabled).toBe(false);
+  await userEvent.setup().click(chordButton);
+  const box = captureBox();
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  // ...and the save QUEUES: no second PATCH has hit the wire yet.
+  expect(patchCallsOf(client)).toHaveLength(1);
+
+  // The capture is cancelled before its save executes.
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+
+  // PATCH #1 lands: the queued save composes against the post-Reset state
+  // (expectedRevision 2, rules WITHOUT the dropped palette override) and
+  // applies to the store...
+  resolveFirstPatch?.(overridesPayload((firstExpectedRevision ?? 0) + 1, []));
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(2));
+  expect(patchCallsOf(client)[1]?.params).toEqual({
+    expectedRevision: 2,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().revision).toBe(3));
+
+  // ...but the cancelled capture is never touched: it stays closed, no row
+  // error appears, focus is not stolen back to the chord button.
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(within(rowFor("Focus the composer")).queryByRole("alert")).toBeNull();
+  expect(document.activeElement).not.toBe(
+    screen.getByRole("button", { name: "Change the shortcut for Focus the composer" }),
+  );
+});
+
 // "+" is tinykeys' modifier DELIMITER, so a naive read says a captured "+"
 // chord ("Shift++", "Control++") cannot parse. The installed tinykeys splits
 // modifiers with a lookbehind (/(?<=\w|\])\+/), so a trailing "+" parses as

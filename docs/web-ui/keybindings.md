@@ -407,9 +407,15 @@ defaults only, never a local fallback copy. Live-registry posture follows
 the same claim: when support resolves to **unsupported** (the feature set
 is known and does not advertise keybindings) any applied overrides are
 un-applied through the same atomic unwind the reconcile uses, because the
-settings section tells the user the built-in defaults are in effect. A
-supported hub that is merely **unreachable** (transient disconnect) keeps
-its overrides firing — the rows show them read-only until the hub returns.
+settings section tells the user the built-in defaults are in effect — and
+the hub payload state (`loaded`/`revision`/`overrides`/`rawOverrides`) is
+discarded with them, so a supported reconnect accepts the returning hub's
+revision whatever it is (a restored backup can be LOWER than the old hub's)
+and edits compose from the new payload. Late `changed` notifications and
+in-flight PATCH responses landing during an unsupported window are dropped,
+not applied. A supported hub that is merely **unreachable** (transient
+disconnect) keeps its overrides firing — the rows show them read-only
+until the hub returns.
 
 ### Server side
 
@@ -493,6 +499,15 @@ not the store; the store carries `hubSupport`, `revision`, the validated
   and `hubError`, and rethrows. The store rejects a patch while any refresh
   is in flight (`hubLoading`): the in-flight payload can land at any
   revision, and a concurrent PATCH's `expectedRevision` would race it.
+  Writes also **serialize at the store**: `patchOverrides` calls chain onto
+  a pending-write queue, so at most one PATCH is in flight and each write
+  runs only after the previous one settles. Callers pass a composition
+  THUNK (`() => replacementRules(...)`) so the whole-payload rule set is
+  composed at execution time against the raw set the previous write left
+  behind — composing at call time would race the queued-ahead write with a
+  stale `expectedRevision` and a payload missing its confirmed change (a
+  self-inflicted conflict). A failed write settles the queue entry without
+  blocking the next one.
 
 ### Failure posture
 

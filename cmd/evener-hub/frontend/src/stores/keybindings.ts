@@ -53,7 +53,13 @@ export interface KeybindingsStoreState {
    * to the server's current state when this is non-null. */
   conflict: string | null;
   refreshOverrides(): Promise<void>;
-  patchOverrides(rules: readonly OverrideRule[]): Promise<KeybindingsOverrides>;
+  /** Writes SERIALIZE at the store: at most one PATCH is in flight, and each
+   * write runs only after the previous one has fully landed. Pass a THUNK
+   * to compose the whole-payload rule set at execution time (against the
+   * then-current rawOverrides) - a rules array composed at call time would
+   * race the in-flight write it queues behind: same expectedRevision, and a
+   * payload missing the first edit's confirmed change. */
+  patchOverrides(rules: readonly OverrideRule[] | (() => readonly OverrideRule[])): Promise<KeybindingsOverrides>;
 }
 
 function initialState(): Omit<KeybindingsStoreState, "refreshOverrides" | "patchOverrides"> {
@@ -78,6 +84,11 @@ let activeReadyClient: AppwireClientLike | null = null;
 let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
+/** The write-serialization chain: every patchOverrides queues behind the
+ * previous write's full settlement (success OR failure). Reset with the
+ * rest of the store's wiring state in resetKeybindingsStoreForTests so a
+ * never-resolving write cannot leak into the next test. */
+let writeQueue: Promise<void> = Promise.resolve();
 
 /** The action -> effective override (serialized chord, or null for an unbind)
  * currently applied to the registry. Module-level like the template's wiring
@@ -308,15 +319,40 @@ function setSupportFromConnection(): void {
     // store and must see the final registry shape (see unapplyAllOverrides).
     unapplyAllOverrides();
   }
+  // The unsupported drop also discards the hub PAYLOAD state: retaining
+  // loaded/revision/rawOverrides across a flap would let a later supported
+  // reconnect's refresh be eaten by the stale guard (the retained revision
+  // can be HIGHER than the returning hub's - a restored backup, a reset
+  // state file) and would leave edits composing from the old hub's raw set
+  // with the old expectedRevision. The setState stays AFTER the registry
+  // mutation, per the reconcile ordering contract.
+  const dropHubState =
+    support === "unsupported" &&
+    (state.loaded || state.revision !== 0 || state.overrides.length > 0 || state.rawOverrides.length > 0);
   // The conflict notice clears with hubError here too (the 2b clear
   // asymmetry): a support drop disconnects the store from the hub state the
   // conflict described, so keeping it would be as stale as keeping hubError.
-  if (state.hubSupport !== support || state.hubLoading || state.hubError !== null || state.conflict !== null)
-    keybindingsStore.setState({ hubSupport: support, hubLoading: false, hubError: null, conflict: null });
+  if (
+    state.hubSupport !== support ||
+    state.hubLoading ||
+    state.hubError !== null ||
+    state.conflict !== null ||
+    dropHubState
+  )
+    keybindingsStore.setState({
+      hubSupport: support,
+      hubLoading: false,
+      hubError: null,
+      conflict: null,
+      ...(dropHubState ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [] } : {}),
+    });
 }
 
 function onNotification(notification: AnyNotification): void {
   if (notification.method !== "evener/settings/keybindings/changed") return;
+  // A late notification landing during an unsupported window must not
+  // re-install overrides into a registry the support drop just un-applied.
+  if (currentSupport() !== "supported") return;
   const payload = fromWireOverrides(notification.params);
   if (payload === undefined) return;
   try {
@@ -430,83 +466,100 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     if (client === null || client !== wiredClient || activeReadyClient !== client) return;
     await refreshFor(client, activeReadyEpoch);
   },
-  patchOverrides: async (rules): Promise<KeybindingsOverrides> => {
-    const state = keybindingsStore.getState();
-    const client = currentClient();
-    const generation = client === activeReadyClient ? activeReadyEpoch : -1;
-    if (
-      state.hubSupport !== "supported" ||
-      state.loaded !== true ||
-      state.hubLoading ||
-      currentSupport() !== "supported" ||
-      client === null ||
-      client !== wiredClient ||
-      generation < 0 ||
-      client.state !== "ready"
-    ) {
-      // `loaded` is the defense-in-depth half of the editor's gate: the UI
-      // is not the store's contract, and a patch composed from a STALE
-      // generation's raw set (client replaced, refresh not yet landed) would
-      // send the old hub's expectedRevision and rules to the new hub.
-      // `hubLoading` is the same race WITHIN one generation: an in-flight
-      // refresh is about to land a payload whose revision may differ from
-      // the one a concurrent PATCH would send as expectedRevision.
-      const error = "Hub keybindings settings are unavailable.";
-      keybindingsStore.setState({ hubError: error });
-      throw new Error(error);
-    }
-    // Pre-flight semantic validation (the parked 2b minor the settings
-    // editor makes live): the SAME simulation the reconcile path runs on a
-    // confirmed payload, run BEFORE the hub write. A rule the reconcile
-    // would skip - unknown action, unparseable or platform-reserved chord,
-    // or a conflict on the simulated final map - would otherwise be accepted
-    // by the hub (the server validates structure only) and then silently not
-    // apply. Reject instead, with the validation layer's own message, and
-    // leave hubError/conflict untouched: nothing hub-sourced happened. The
-    // payload is composed from the hub's RAW rules (rawOverrides), so it can
-    // carry a PRESERVED rule validation skips - an unknown action from a
-    // newer client, say. That is a pre-existing condition, not a defect this
-    // call introduced: reject only on warnings the CURRENT raw set does not
-    // already produce, keyed by action+message (the baseline simulation runs
-    // against the same live registry and applied set, so a preserved rule
-    // reproduces its apply-time warning verbatim).
-    const applied = new Set(appliedOverrides.keys());
-    const pref = prefsStore.getState().characterKeyTriggers;
-    const baseline = validateOverrideRules(state.rawOverrides, keybindingsRegistry, undefined, applied, pref);
-    const baselineKeys = new Set(baseline.warnings.map((warning) => `${warning.rule.action} ${warning.message}`));
-    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, applied, pref);
-    const introduced = preflight.warnings.filter(
-      (warning) => !baselineKeys.has(`${warning.rule.action} ${warning.message}`),
-    );
-    if (introduced.length > 0) {
-      throw new Error(introduced.map((warning) => warning.message).join("\n"));
-    }
-    const token = ++patchSerial;
-    try {
-      const result = await client.request("evener/settings/keybindings/patch", {
-        expectedRevision: state.revision,
-        config: { version: 1, rules: rules.map((rule) => ({ action: rule.action, chord: rule.chord })) },
-      });
-      if (token !== patchSerial || !isCurrentReady(client, generation)) {
-        const current = keybindingsStore.getState();
-        return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
+  patchOverrides: (rulesOrCompose): Promise<KeybindingsOverrides> => {
+    const run = async (): Promise<KeybindingsOverrides> => {
+      // Compose at EXECUTION time: a thunk reads the raw set as the
+      // previous write left it, folding its confirmed payload into this
+      // write's rules instead of racing it.
+      const rules = typeof rulesOrCompose === "function" ? rulesOrCompose() : rulesOrCompose;
+      const state = keybindingsStore.getState();
+      const client = currentClient();
+      const generation = client === activeReadyClient ? activeReadyEpoch : -1;
+      if (
+        state.hubSupport !== "supported" ||
+        state.loaded !== true ||
+        state.hubLoading ||
+        currentSupport() !== "supported" ||
+        client === null ||
+        client !== wiredClient ||
+        generation < 0 ||
+        client.state !== "ready"
+      ) {
+        // `loaded` is the defense-in-depth half of the editor's gate: the UI
+        // is not the store's contract, and a patch composed from a STALE
+        // generation's raw set (client replaced, refresh not yet landed) would
+        // send the old hub's expectedRevision and rules to the new hub.
+        // `hubLoading` is the same race WITHIN one generation: an in-flight
+        // refresh is about to land a payload whose revision may differ from
+        // the one a concurrent PATCH would send as expectedRevision.
+        const error = "Hub keybindings settings are unavailable.";
+        keybindingsStore.setState({ hubError: error });
+        throw new Error(error);
       }
-      const payload = fromWireOverrides(result);
-      if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
-      applyHubOverrides(payload);
-      return payload;
-    } catch (error) {
-      if (token === patchSerial && isCurrentReady(client, generation)) {
-        const current = conflictCurrent(error);
-        if (current !== undefined) applyHubOverrides(current);
-        const message = error instanceof Error ? error.message : String(error);
-        keybindingsStore.setState({
-          hubError: message,
-          ...(current === undefined ? {} : { conflict: message }),
+      // Pre-flight semantic validation (the parked 2b minor the settings
+      // editor makes live): the SAME simulation the reconcile path runs on a
+      // confirmed payload, run BEFORE the hub write. A rule the reconcile
+      // would skip - unknown action, unparseable or platform-reserved chord,
+      // or a conflict on the simulated final map - would otherwise be accepted
+      // by the hub (the server validates structure only) and then silently not
+      // apply. Reject instead, with the validation layer's own message, and
+      // leave hubError/conflict untouched: nothing hub-sourced happened. The
+      // payload is composed from the hub's RAW rules (rawOverrides), so it can
+      // carry a PRESERVED rule validation skips - an unknown action from a
+      // newer client, say. That is a pre-existing condition, not a defect this
+      // call introduced: reject only on warnings the CURRENT raw set does not
+      // already produce, keyed by action+message (the baseline simulation runs
+      // against the same live registry and applied set, so a preserved rule
+      // reproduces its apply-time warning verbatim).
+      const applied = new Set(appliedOverrides.keys());
+      const pref = prefsStore.getState().characterKeyTriggers;
+      const baseline = validateOverrideRules(state.rawOverrides, keybindingsRegistry, undefined, applied, pref);
+      const baselineKeys = new Set(baseline.warnings.map((warning) => `${warning.rule.action} ${warning.message}`));
+      const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, applied, pref);
+      const introduced = preflight.warnings.filter(
+        (warning) => !baselineKeys.has(`${warning.rule.action} ${warning.message}`),
+      );
+      if (introduced.length > 0) {
+        throw new Error(introduced.map((warning) => warning.message).join("\n"));
+      }
+      const token = ++patchSerial;
+      try {
+        const result = await client.request("evener/settings/keybindings/patch", {
+          expectedRevision: state.revision,
+          config: { version: 1, rules: rules.map((rule) => ({ action: rule.action, chord: rule.chord })) },
         });
+        if (token !== patchSerial || !isCurrentReady(client, generation) || currentSupport() !== "supported") {
+          // A response landing after support loss must not re-apply: the
+          // unsupported branch already un-applied and reset the hub state.
+          const current = keybindingsStore.getState();
+          return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
+        }
+        const payload = fromWireOverrides(result);
+        if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
+        applyHubOverrides(payload);
+        return payload;
+      } catch (error) {
+        if (token === patchSerial && isCurrentReady(client, generation) && currentSupport() === "supported") {
+          const current = conflictCurrent(error);
+          if (current !== undefined) applyHubOverrides(current);
+          const message = error instanceof Error ? error.message : String(error);
+          keybindingsStore.setState({
+            hubError: message,
+            ...(current === undefined ? {} : { conflict: message }),
+          });
+        }
+        throw error;
       }
-      throw error;
-    }
+    };
+    // Chain behind the previous write's SETTLEMENT: a failed write must not
+    // block the queue, and the next write composes against whatever state
+    // the failure left (the conflict path already refreshed it).
+    const result = writeQueue.then(run, run);
+    writeQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   },
 }));
 
@@ -521,6 +574,7 @@ export function resetKeybindingsStoreForTests(): void {
   wiredClient = null;
   refreshSerial += 1;
   patchSerial += 1;
+  writeQueue = Promise.resolve();
   // Restore defaults for every applied override so the registry singleton
   // cannot leak overrides into the next test (the next test rebuilds the
   // registry from scratch, which removes any binding a wedged restore left).
