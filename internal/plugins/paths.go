@@ -49,16 +49,21 @@ const (
 // against whatever directory the process happens to be in — an empty root
 // (none could be resolved) or a relative one.
 //
-// acquireStoreLock is the same refusal for everything a writer does while it
-// holds the store lock. This is the refusal for the store access that never
-// takes a lock: reading the registry or the marketplaces file, and preparing
-// the bundled store. A reader has no lock to inherit the check from, and List
-// and ListMarketplaces used to hand back whatever installed_plugins.json or
-// known_marketplaces.json the working directory happened to hold. Deriving the
-// path here is what refuses, so a new reader cannot forget.
+// Deriving the path is what refuses, so a caller cannot forget: List and
+// ListMarketplaces used to hand back whatever installed_plugins.json or
+// known_marketplaces.json the working directory happened to hold, because a
+// reader has no store lock to inherit a check from. Every access that reaches
+// the filesystem without holding the lock derives here — the registry and
+// marketplaces accessors, the bundled store, Doctor's writability probe, and
+// the marketplaces stat that seeding does before it locks.
 //
-// The plain joins below stay unchecked: their callers either already hold the
-// store lock or are tests naming a path to plant a file at.
+// The plain joins below stay unchecked, and the invariant that keeps them safe
+// is that each is only reached once the root is known to be usable: under the
+// store lock, which acquireStoreLock would not have granted otherwise (the
+// cache, marketplace and plugin directories in install, gc and the marketplace
+// verbs); past Doctor's own refusal (doctorOrphanCacheDirs walks cacheDir with
+// no lock at all); or in a test naming a path to plant a file at. A new caller
+// that fits none of those derives here instead.
 func (m *Manager) storePath(parts ...string) (string, error) {
 	if err := m.storeRootError(); err != nil {
 		return "", err
