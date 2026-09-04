@@ -375,11 +375,26 @@ func (m *Manager) List() ([]ListItem, error) {
 	return out, nil
 }
 
+// registryForSweep reads the registry that names which plugins a sweep is
+// going to visit. UpdateAll and UpdateAutoUpgrade lock once per plugin rather
+// than once for the pass, so a registry that names nothing is a sweep that
+// never takes a lock and never reaches acquireStoreLock's refusal: against an
+// unresolved root they would read whatever installed_plugins.json the working
+// directory happens to hold, or none at all, and report a clean sweep of
+// somebody's project. This is where a sweep first reads the store, so this is
+// where it asks whether there is one.
+func (m *Manager) registryForSweep() (Registry, error) {
+	if err := m.storeRootError(); err != nil {
+		return Registry{}, err
+	}
+	return installLoadRegistry(m.registryPath())
+}
+
 // UpdateAll upgrades every installed, git-backed plugin (directory/relative
 // sources are inherently current and skipped). Failures are collected but do
 // not stop the others.
 func (m *Manager) UpdateAll(ctx context.Context) ([]InstallEntry, error) {
-	reg, err := installLoadRegistry(m.registryPath())
+	reg, err := m.registryForSweep()
 	if err != nil {
 		return nil, err
 	}
