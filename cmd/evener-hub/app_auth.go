@@ -651,7 +651,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
 	if !c.instanceUsesGCPADC(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; use evener/auth/apiKey/set")
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start")
 	}
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))

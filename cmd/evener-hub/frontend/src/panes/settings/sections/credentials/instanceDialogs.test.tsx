@@ -44,6 +44,13 @@ const VERTEX = provider({
   varsEnv: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
 });
 const BEDROCK = provider({ id: "amazon-bedrock", protocol: "anthropic", auth: "gcp-adc", varsEnv: ["AWS_REGION"] });
+const VERTEX_EXPRESS = provider({
+  id: "google-vertex-express",
+  protocol: "google",
+  auth: "header",
+  apiKeyEnv: ["GOOGLE_VERTEX_API_KEY"],
+  varsEnv: ["GOOGLE_VERTEX_EXPRESS_BASE_URL"],
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -87,6 +94,17 @@ describe("AddInstanceDialog", () => {
     await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
     expect(screen.getByLabelText("GOOGLE_VERTEX_PROJECT")).toBeTruthy();
     expect(screen.getByLabelText("GOOGLE_VERTEX_LOCATION")).toBeTruthy();
+  });
+
+  test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
+    connectFakeClient();
+    render(
+      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
+    );
+    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
+    expect(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL")).toBeTruthy();
+    expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
+    expect(screen.queryByLabelText("GOOGLE_VERTEX_LOCATION")).toBeNull();
   });
 
   test("switching base providers clears the previous base's variable inputs and values", async () => {

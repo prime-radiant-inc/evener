@@ -78,6 +78,10 @@ func TestAuth_CredentialJsonSet_RefusesNonGCPADCInstance(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "apiKey/set") {
 		t.Fatalf("err = %v; want a refusal pointing at apiKey/set", err)
 	}
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if _, ok := store.Get("work-ant"); ok {
+		t.Fatal("a refused credential JSON must not be stored")
+	}
 }
 
 func TestAuth_ApiKeySet_RefusesGCPADCInstance(t *testing.T) {

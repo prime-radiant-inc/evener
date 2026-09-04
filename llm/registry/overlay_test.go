@@ -343,10 +343,14 @@ func TestGoogleVertexExpressExistsOnlyWithItsOwnKey(t *testing.T) {
 	if names := instanceNames(fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "g"}, "")); slices.Contains(names, "google-vertex-express") {
 		t.Fatalf("GEMINI_API_KEY alone created google-vertex-express: %v", names)
 	}
-	if names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k"}, "")); !slices.Contains(names, "google-vertex-express") {
+	if names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_API_KEY": "g"}, "")); slices.Contains(names, "google-vertex-express") {
+		t.Fatalf("GOOGLE_API_KEY alone created google-vertex-express: %v", names)
+	}
+	names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k"}, ""))
+	if !slices.Contains(names, "google-vertex-express") {
 		t.Fatalf("GOOGLE_VERTEX_API_KEY did not create google-vertex-express: %v", names)
 	}
-	if names := instanceNames(fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k"}, "")); slices.Contains(names, "google") {
+	if slices.Contains(names, "google") {
 		t.Fatalf("GOOGLE_VERTEX_API_KEY must not create the google instance: %v", names)
 	}
 }
