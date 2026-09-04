@@ -202,7 +202,7 @@ func FuzzSessionLifecycleTeardownCoverage(f *testing.F) {
 
 		discard := sltcNewSession(t, false, false)
 		discard.mcpMgr = &mcp.Manager{}
-		discard.discardRestoredCandidate()
+		discard.discardRestoredCandidate(true)
 
 		parent := sltcNewSession(t, false, false)
 		parent.mcpMgr = &mcp.Manager{}

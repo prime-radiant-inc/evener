@@ -459,7 +459,7 @@ func TestSessionArtifactStoreDiscardOwnedRestoredCandidateClosesStore(t *testing
 	if err != nil {
 		t.Fatalf("restore candidate: %v", err)
 	}
-	candidate.discardRestoredCandidate()
+	candidate.discardRestoredCandidate(true)
 	if got := store.closeCount.Load(); got != 1 {
 		t.Fatalf("discard owned candidate close count = %d, want 1", got)
 	}

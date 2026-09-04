@@ -369,7 +369,15 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	})
 }
 
-func (s *Session) discardRestoredCandidate() {
+// discardRestoredCandidate tears down a restore candidate nothing ever adopted.
+// ownsEnv says whether the candidate's execution environment is one built FOR it
+// (a working-dir re-root and/or a per-delegate box) rather than the parent's own:
+// prepareSubagentEnvironment returns the parent's environment untouched when the
+// delegate needs neither, and a shared environment belongs to the live parent
+// still working in it. It is the same distinction close() makes before retaining
+// a child's scratch (subagent.ownsEnv), read here so an aborted candidate never
+// deletes a scratch dir out from under its parent.
+func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -390,25 +398,22 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.jobManager.store.Close()
 		}
 		for _, sub := range subs {
-			sub.sess.discardRestoredCandidate()
+			sub.sess.discardRestoredCandidate(sub.ownsEnv)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// A restore always hands the candidate a FRESH environment (a re-rooted
-		// clone, and its own per-lane sandbox scratch when sandboxed) — never the
-		// parent's shared one: prepareSubagentEnvironment re-roots for the
-		// descriptor's working dir, which every committed delegate carries. A
-		// discarded candidate was never adopted by anything, so unlike close()'s
+		// A discarded candidate was never adopted by anything, so unlike close()'s
 		// RetainSandboxScratch (which hands a normally torn-down delegate's
 		// scratch to a human), there is no one left to retain it for; dispose it
 		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
 		// discipline on the create-path twin of this abort. Both scratch dirs go:
 		// the sandbox-owned one AND the one an unsandboxed env — the default
 		// shape — mints on its first command, whose lease would otherwise be held
-		// for the life of the process. A no-op on an env that minted neither.
-		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
+		// for the life of the process. Only ever for an env built FOR this
+		// candidate: a shared one belongs to the live parent still working in it.
+		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && ownsEnv {
 			le.DisposeUnadoptedScratch()
 		}
 		if s.mcpMgr != nil {

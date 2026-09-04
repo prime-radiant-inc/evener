@@ -1024,7 +1024,7 @@ func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeClean
 	// This boundary models process loss, not a graceful shutdown. A graceful
 	// Close now durably stops committed generations and therefore waits for the
 	// construction owner that a crash fixture intentionally does not retain.
-	root.discardRestoredCandidate()
+	root.discardRestoredCandidate(true)
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
 	if err != nil {
