@@ -306,6 +306,24 @@ func TestExpandHistoryProjectsLegacyUnreadableToolNamesForProviderWire(t *testin
 	}
 }
 
+func TestProviderHistoryMessagePreservesEmptyToolResultNameForAdapterRecovery(t *testing.T) {
+	message := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "recover-name",
+			Content:    "result",
+		},
+	}}}
+
+	projected := providerHistoryMessage(message)
+	if got := projected.Content[0].ToolResult.Name; got != "" {
+		t.Errorf("projected empty tool-result name = %q, want empty sentinel for adapter recovery", got)
+	}
+	if got := message.Content[0].ToolResult.Name; got != "" {
+		t.Errorf("projection mutated source tool-result name to %q", got)
+	}
+}
+
 func TestPrepareModelRequestProjectsLegacyUnreadableToolNamesBeforeContextManagement(t *testing.T) {
 	const secret = "LEGACY_CONTEXT_PRIVATE_TOOL_NAME"
 	rawName := strings.Repeat(secret, 300)

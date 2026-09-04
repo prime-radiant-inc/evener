@@ -1844,7 +1844,10 @@ func providerHistoryMessage(message llm.Message) llm.Message {
 		if part.ToolCall != nil {
 			callName = tool.WireToolName(part.ToolCall.Name)
 		}
-		if part.ToolResult != nil {
+		// An empty result name is an intentional adapter sentinel: Chat
+		// Completions recovers it from the correlated assistant tool call. Only
+		// project nonempty names that would otherwise be invalid on the wire.
+		if part.ToolResult != nil && part.ToolResult.Name != "" {
 			resultName = tool.WireToolName(part.ToolResult.Name)
 		}
 		if (part.ToolCall == nil || callName == part.ToolCall.Name) &&
