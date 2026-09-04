@@ -28,6 +28,31 @@ func (e *cleanupCountingEnv) Cleanup() {
 
 func (e *cleanupCountingEnv) count() int32 { return e.cleanups.Load() }
 
+// apiLogRouteReleases records the sessions whose API-log route was released. A
+// session releases its route exactly once, when it closes, so this proves a
+// session was closed without holding a reference to it — and without going
+// through its execution environment, which an unadopted child must not touch.
+type apiLogRouteReleases struct {
+	mu       sync.Mutex
+	released []string
+}
+
+func (r *apiLogRouteReleases) WrapComplete(next llm.CompleteFunc) llm.CompleteFunc { return next }
+func (r *apiLogRouteReleases) WrapStream(next llm.StreamFunc) llm.StreamFunc       { return next }
+
+func (r *apiLogRouteReleases) ReleaseSession(sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released = append(r.released, sessionID)
+	return nil
+}
+
+func (r *apiLogRouteReleases) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.released)
+}
+
 // fakeEmit records the events forwarded through a manager's emit closure.
 type fakeEmit struct {
 	mu     sync.Mutex
@@ -209,6 +234,8 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	routes := &apiLogRouteReleases{}
+	c.Use(routes)
 	env := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir)}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		MaxSubagentDepth: 1,
@@ -225,6 +252,7 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 
 	before := countTracked(sess.subagents)
 	cleanupsBefore := env.count()
+	releasesBefore := routes.count()
 
 	_, err = sess.spawnAgent(context.Background(), "overflow", "", "", 0, "", "", nil, nil)
 	if err == nil {
@@ -248,6 +276,11 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	// TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns.
 	if got := env.count() - cleanupsBefore; got != 0 {
 		t.Errorf("failed spawn ran Cleanup %d time(s) on the live parent's environment, want 0", got)
+	}
+	// And it IS closed: closing releases the session's API-log route, which the
+	// child holds alone, so exactly one release lands during the spawn call.
+	if got := routes.count() - releasesBefore; got != 1 {
+		t.Errorf("failed spawn must Close the created child session (API-log route releases = %d, want 1)", got)
 	}
 }
 
