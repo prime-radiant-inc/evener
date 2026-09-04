@@ -481,6 +481,12 @@ type Session struct {
 	// one second (captureTerminalNotificationCut).
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// jobNotifsDelivered counts the job notifications acceptNotificationInput
+	// has delivered to the model over the session's lifetime. The one-shot
+	// drain reads it across an undisposed-job announcement turn: growth means a
+	// completion rode that request, so the reply is an answer, not
+	// housekeeping. Guarded by pendingJobNotifsMu.
+	jobNotifsDelivered uint64
 	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
 	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
 	// finalizer from crossing its durable-pending/running-map boundary.
@@ -924,6 +930,25 @@ func (s *Session) peekNotifications() int {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
 	return len(s.pendingJobNotifs)
+}
+
+// countJobNotificationsDelivered records n job notifications delivered to the
+// model by the turn that just accepted them.
+func (s *Session) countJobNotificationsDelivered(n int) {
+	if n <= 0 {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	s.jobNotifsDelivered += uint64(n)
+}
+
+// jobNotificationsDelivered reports the lifetime count of job notifications
+// delivered to the model.
+func (s *Session) jobNotificationsDelivered() uint64 {
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	return s.jobNotifsDelivered
 }
 
 // SetNotifyFunc registers the callback the server uses to wake an idle session
