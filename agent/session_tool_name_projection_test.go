@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -500,6 +501,7 @@ func TestSessionToolCallHistoryProjectsUnsafeArgumentsWithoutMutatingSource(t *t
 					Content:    "rejected",
 				}}}}),
 			}
+			initialRevision := sess.historyRevision
 			sess.mu.Unlock()
 
 			var timings events.RoundTimings
@@ -521,7 +523,211 @@ func TestSessionToolCallHistoryProjectsUnsafeArgumentsWithoutMutatingSource(t *t
 			if !bytes.Equal(legacyCall.Arguments, tc.arguments) {
 				t.Error("provider replay mutated stored legacy arguments")
 			}
+			sess.mu.Lock()
+			storedArguments := append([]byte(nil), sess.history[1].Message.Content[0].ToolCall.Arguments...)
+			storedRevision := sess.historyRevision
+			sess.mu.Unlock()
+			if !bytes.Equal(storedArguments, tc.arguments) {
+				t.Errorf("provider replay replaced durable legacy arguments with %d bytes", len(storedArguments))
+			}
+			if storedRevision != initialRevision {
+				t.Errorf("provider replay advanced history revision from %d to %d without a context change", initialRevision, storedRevision)
+			}
 		})
+	}
+}
+
+type retainProjectedTailStrategy struct {
+	arguments []byte
+}
+
+func (*retainProjectedTailStrategy) Name() string                 { return "retain-projected-tail" }
+func (*retainProjectedTailStrategy) Tools() []tool.RegisteredTool { return nil }
+func (*retainProjectedTailStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
+	return nil
+}
+
+func (s *retainProjectedTailStrategy) ManageContext(_ context.Context, history *[]schema.Turn, _ int, _ func(events.EventKind, events.EventData)) error {
+	s.arguments = append([]byte(nil), (*history)[1].Message.Content[0].ToolCall.Arguments...)
+	encoded, err := json.Marshal((*history)[1:])
+	if err != nil {
+		return err
+	}
+	var retained []schema.Turn
+	if err := json.Unmarshal(encoded, &retained); err != nil {
+		return err
+	}
+	*history = retained
+	return nil
+}
+
+type unchangedCompactionStrategy struct{}
+
+func (*unchangedCompactionStrategy) Name() string                 { return "unchanged-compaction" }
+func (*unchangedCompactionStrategy) Tools() []tool.RegisteredTool { return nil }
+func (*unchangedCompactionStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
+	return nil
+}
+
+func (*unchangedCompactionStrategy) ManageContext(_ context.Context, history *[]schema.Turn, _ int, emit func(events.EventKind, events.EventData)) error {
+	turns := len(*history)
+	emit(events.EventContextCompaction, events.ContextCompactionData{TurnsBefore: turns, TurnsAfter: turns})
+	return nil
+}
+
+func TestPrepareModelRequestPublishesUnchangedCompactionEffects(t *testing.T) {
+	sess := newSession(t, withoutGitSnapshot())
+	defer sess.Close()
+	sess.strategy = &unchangedCompactionStrategy{}
+	sess.mu.Lock()
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("unchanged"))}
+	initialRevision := sess.historyRevision
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.historyRevision != initialRevision+1 {
+		t.Fatalf("history revision = %d, want %d after staged compaction", sess.historyRevision, initialRevision+1)
+	}
+}
+
+func TestRestoreUnchangedProjectedTurnsUsesRetainedTurnOrigin(t *testing.T) {
+	unsafeArguments := func(b byte) []byte {
+		arguments := append([]byte(`{"value":"`), b)
+		return append(arguments, []byte(`"}`)...)
+	}
+	durable := make([]schema.Turn, 2)
+	for i, b := range []byte{0xfe, 0xff} {
+		durable[i] = schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        "duplicate-after-projection",
+					Name:      "read_file",
+					Arguments: unsafeArguments(b),
+				},
+			}}},
+		}
+	}
+	projected := providerHistoryTurns(durable)
+	if !reflect.DeepEqual(projected[0], projected[1]) {
+		t.Fatal("fixture turns remain distinguishable after projection")
+	}
+	snapshots := snapshotProjectedTurns(projected)
+
+	managed := []schema.Turn{projected[1], projected[1]}
+	restored := restoreUnchangedProjectedTurns(managed, snapshots, durable)
+	got := restored[0].Message.Content[0].ToolCall.Arguments
+	if !bytes.Equal(got, durable[1].Message.Content[0].ToolCall.Arguments) {
+		t.Fatalf("restored arguments = %v, want retained second origin %v", got, durable[1].Message.Content[0].ToolCall.Arguments)
+	}
+	if got := restored[1].Message.Content[0].ToolCall.Arguments; !bytes.Equal(got, []byte(`{}`)) {
+		t.Fatalf("duplicated projected arguments = %v, want safe projected value after origin was consumed", got)
+	}
+}
+
+func TestPrepareModelRequestKeepsRawRetainedHistoryAfterProjectedCompaction(t *testing.T) {
+	invalidUTF8 := append([]byte(`{"value":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	strategy := &retainProjectedTailStrategy{}
+	sess := newSession(t, withoutGitSnapshot())
+	defer sess.Close()
+	sess.strategy = strategy
+	sess.mu.Lock()
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drop this turn")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "retained-unsafe-call",
+				Name:      "read_file",
+				Arguments: append([]byte(nil), invalidUTF8...),
+			},
+		}}}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("retained-unsafe-call", "read_file", "rejected", true)),
+	}
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings)
+	if err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	if !bytes.Equal(strategy.arguments, []byte(`{}`)) {
+		t.Fatalf("context strategy arguments = %q, want safe empty object", strategy.arguments)
+	}
+	var requestArguments []byte
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == "retained-unsafe-call" {
+				requestArguments = part.ToolCall.Arguments
+			}
+		}
+	}
+	if !bytes.Equal(requestArguments, []byte(`{}`)) {
+		t.Fatalf("provider request arguments = %q, want safe empty object", requestArguments)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.history) != 2 {
+		t.Fatalf("published history has %d turns, want transformed two-turn tail", len(sess.history))
+	}
+	if got := sess.history[0].Message.Content[0].ToolCall.Arguments; !bytes.Equal(got, invalidUTF8) {
+		t.Fatalf("retained durable arguments = %q, want original invalid UTF-8 bytes", got)
+	}
+}
+
+type mutateProjectedTailStrategy struct{}
+
+func (*mutateProjectedTailStrategy) Name() string                 { return "mutate-projected-tail" }
+func (*mutateProjectedTailStrategy) Tools() []tool.RegisteredTool { return nil }
+func (*mutateProjectedTailStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
+	return nil
+}
+
+func (*mutateProjectedTailStrategy) ManageContext(_ context.Context, history *[]schema.Turn, _ int, _ func(events.EventKind, events.EventData)) error {
+	(*history)[1].Message.Content[0].ToolCall.Arguments = []byte(`{"strategy":"changed"}`)
+	*history = (*history)[1:]
+	return nil
+}
+
+func TestPrepareModelRequestPublishesProjectedInPlaceStrategyChanges(t *testing.T) {
+	invalidUTF8 := append([]byte(`{"value":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	sess := newSession(t, withoutGitSnapshot())
+	defer sess.Close()
+	sess.strategy = &mutateProjectedTailStrategy{}
+	sess.mu.Lock()
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drop this turn")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "changed-projected-call",
+				Name:      "read_file",
+				Arguments: append([]byte(nil), invalidUTF8...),
+			},
+		}}}),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("changed-projected-call", "read_file", "rejected", true)),
+	}
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.history) != 2 {
+		t.Fatalf("published history has %d turns, want changed retained call/result pair", len(sess.history))
+	}
+	if got := sess.history[0].Message.Content[0].ToolCall.Arguments; !bytes.Equal(got, []byte(`{"strategy":"changed"}`)) {
+		t.Fatalf("published strategy arguments = %q, want the strategy's in-place change", got)
 	}
 }
 
