@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,4 +307,75 @@ func TestParseSandboxNet(t *testing.T) {
 			t.Errorf("parseSandboxNet(%q) = %v, %v; want %v, nil", tc.in, got, err, tc.want)
 		}
 	}
+}
+
+// backendlessSandboxHost resolves a mode successfully and then has no binary to
+// enforce it with: EnableSandbox mints the session scratch it would have wrapped
+// and only THEN refuses. It is the one provisioning failure that could leave a
+// scratch directory, and the lease under it, behind.
+func backendlessSandboxHost(t *testing.T) sandbox.HostFacts {
+	t.Helper()
+	return sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true}
+}
+
+// TestLaunchProvisioningFailureLeavesNoScratch pins why the provisioning-failure
+// return in run and serve disposes nothing: there is nothing there to dispose. A
+// session scratch appears in exactly two ways -- EnableSandbox provisions one for
+// an enforced (or write-blocked) policy, and an unsandboxed environment mints one
+// the first time it builds a command environment -- and neither has happened when
+// provisioning fails: no command runs through the environment before it, and
+// EnableSandbox disposes the scratch it minted on every way out. A step added
+// before provisioning that DOES spawn a command fails here rather than silently
+// leaking a directory and a live lease per failed launch.
+func TestLaunchProvisioningFailureLeavesNoScratch(t *testing.T) {
+	assertNoScratch := func(t *testing.T, err error, env *execenv.LocalExecutionEnvironment) {
+		t.Helper()
+		if !errors.As(err, new(*sandbox.RefusalError)) {
+			t.Fatalf("launch error = %v, want a provisioning refusal", err)
+		}
+		// Pin WHICH refusal: the one EnableSandbox raises after it has already
+		// minted the scratch. A refusal from the resolver instead would never
+		// have created one, and the assertion below would prove nothing.
+		if !strings.Contains(err.Error(), "no bwrap backend binary is available") {
+			t.Fatalf("launch error = %v, want the refusal that follows the scratch mint", err)
+		}
+		if env == nil {
+			t.Fatal("provisioning never ran, so the launch failed somewhere else")
+		}
+		if scratch := env.SessionScratchDir(); scratch != "" {
+			t.Errorf("environment holds scratch %q after a failed provisioning, which nothing on this path disposes", scratch)
+		}
+	}
+
+	t.Run("run", func(t *testing.T) {
+		installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+		facts := backendlessSandboxHost(t)
+		var provisioned *execenv.LocalExecutionEnvironment
+		old := runProvisionSandbox
+		runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
+			provisioned = env
+			return provisionSandboxWithHost(env, cfg, cwd, facts)
+		}
+		t.Cleanup(func() { runProvisionSandbox = old })
+
+		err := run(context.Background(), runConfig{
+			prompt: "prompt", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(),
+			noDefaultMarketplaces: true, sandboxMode: "restricted",
+			stdout: io.Discard, stderr: io.Discard,
+		})
+		assertNoScratch(t, err, provisioned)
+	})
+
+	t.Run("serve", func(t *testing.T) {
+		deps, _, args := newClearServeDeps(t)
+		facts := backendlessSandboxHost(t)
+		var provisioned *execenv.LocalExecutionEnvironment
+		deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, cwd string) error {
+			provisioned = env
+			return provisionSandboxWithHost(env, cfg, cwd, facts)
+		}
+
+		err := runServeWithDeps(append(args, "--sandbox", "restricted"), deps)
+		assertNoScratch(t, err, provisioned)
+	})
 }
