@@ -633,6 +633,55 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}
 }
 
+func TestLocalDaemonNativeSuccessorCursorIdentityMismatchStales(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
+	nativeIdentityOne := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-one", ProjectionVersion: 1}
+	nativeIdentityTwo := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-two", ProjectionVersion: 1}
+	nativeCursorOne, err := appitempaging.EncodeCursor(nativeIdentityOne, appwire.ThreadItemPosition{Entry: 0})
+	if err != nil {
+		t.Fatalf("encode request native cursor: %v", err)
+	}
+	nativeCursorTwo, err := appitempaging.EncodeCursor(nativeIdentityTwo, appwire.ThreadItemPosition{Entry: 0})
+	if err != nil {
+		t.Fatalf("encode successor native cursor: %v", err)
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		response := positionedItemReadResponse(1, 2, "")
+		response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
+		return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem, NextCursor: nativeCursorTwo}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local",
+		ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread", InstanceID: "instance-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+	first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 4}, positionedItemReadResponse(3, 4, nativeCursorOne))
+	if err != nil {
+		t.Fatalf("bounded item read: %v", err)
+	}
+	browserCursor, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode browser cursor: %v", err)
+	}
+	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: browserCursor})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("successor identity mismatch error = %T %v, want typed stale cursor", err, err)
+	}
+	stale := false
+	switch data := wireErr.Data.(type) {
+	case appwire.ErrorData:
+		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	}
+	if !stale {
+		t.Fatalf("successor identity mismatch error data = %#v, want stale cursor", wireErr.Data)
+	}
+}
+
 func TestLocalDaemonNativeItemCursorBridgeRebasesBoundary(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
 	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
@@ -687,6 +736,120 @@ func TestLocalDaemonNativeItemCursorBridgeRebasesBoundary(t *testing.T) {
 	}
 	if !older.Exhausted {
 		t.Fatal("rebased continuation reported another page after item 1..2")
+	}
+}
+
+func TestLocalDaemonNativeCursorFenceStalesAfterDestructiveReset(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
+	nativeIdentityOne := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-one", ProjectionVersion: 1}
+	nativeIdentityTwo := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-two", ProjectionVersion: 1}
+	nativeCursorOne, err := appitempaging.EncodeCursor(nativeIdentityOne, appwire.ThreadItemPosition{Entry: 0})
+	if err != nil {
+		t.Fatalf("encode first native cursor: %v", err)
+	}
+	nativeCursorTwo, err := appitempaging.EncodeCursor(nativeIdentityTwo, appwire.ThreadItemPosition{Entry: 0})
+	if err != nil {
+		t.Fatalf("encode second native cursor: %v", err)
+	}
+	var sawFirst bool
+	var sawSecond bool
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		if _, err := appitempaging.DecodeCursor(params.Cursor, nativeIdentityOne); err == nil {
+			sawFirst = true
+			return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		if _, err := appitempaging.DecodeCursor(params.Cursor, nativeIdentityTwo); err == nil {
+			sawSecond = true
+			response := positionedItemReadResponse(0, 0, "")
+			response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
+			return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem}, nil
+		}
+		return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local",
+		ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread", InstanceID: "instance-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+	first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5}, positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14"}, []uint64{10, 11, 12, 13, 14}, nativeCursorOne))
+	if err != nil {
+		t.Fatalf("initial bounded item read: %v", err)
+	}
+	oldCursor, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode browser cursor: %v", err)
+	}
+	if _, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5}, positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14"}, []uint64{10, 11, 12, 13, 14}, nativeCursorTwo)); err != nil {
+		t.Fatalf("observe destructive bounded response: %v", err)
+	}
+	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5, Cursor: oldCursor})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("destructive native continuation error = %T %v, want typed stale cursor", err, err)
+	}
+	stale := false
+	switch data := wireErr.Data.(type) {
+	case appwire.ErrorData:
+		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	}
+	if !stale {
+		t.Fatalf("destructive native continuation error data = %#v, want stale cursor", wireErr.Data)
+	}
+	if !sawFirst || sawSecond {
+		t.Fatalf("native identity observations = first %v/second %v, want old native cursor only", sawFirst, sawSecond)
+	}
+}
+
+func TestLocalDaemonNativeCursorFencePreservesSameIncarnationTailAppend(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-one", ProjectionVersion: 1}
+	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
+	var sawNative bool
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		if _, err := appitempaging.DecodeCursor(params.Cursor, nativeIdentity); err != nil {
+			return appwire.ThreadTurnsListResponse{}, appwire.TranscriptItemCursorStale()
+		}
+		sawNative = true
+		response := positionedItemReadResponse(0, 0, "")
+		response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
+		return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):], SourceID: "local",
+		ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread", InstanceID: "instance-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return []LocalDaemonEntry{{Entry: entry}} }, httpServer.Client())
+	initial := positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14"}, []uint64{10, 11, 12, 13, 14}, nativeCursor)
+	first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5}, initial)
+	if err != nil {
+		t.Fatalf("initial bounded item read: %v", err)
+	}
+	oldCursor, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode browser cursor: %v", err)
+	}
+	tail := positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14", "item-15"}, []uint64{10, 11, 12, 13, 14, 15}, nativeCursor)
+	second, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 6}, tail)
+	if err != nil {
+		t.Fatalf("observe same-incarnation tail append: %v", err)
+	}
+	if second.Identity != first.Identity {
+		t.Fatalf("tail append identity = %+v, want unchanged %+v", second.Identity, first.Identity)
+	}
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5, Cursor: oldCursor}); err != nil {
+		t.Fatalf("same-incarnation tail continuation: %v", err)
+	}
+	if !sawNative {
+		t.Fatal("same-incarnation tail continuation did not reach native daemon")
 	}
 }
 
@@ -763,6 +926,45 @@ func TestLocalDaemonNativeItemCursorBridgeFailsSafely(t *testing.T) {
 		_, err := source.ListItemCandidates(context.Background(), listParams("browser-cursor"))
 		assertStale(t, err, "browser-cursor")
 	})
+}
+
+func TestLocalDaemonNativeCursorStalesAfterSnapshotStateEviction(t *testing.T) {
+	const target = "evicted-thread"
+	entries := make([]LocalDaemonEntry, 0, defaultItemSnapshotStateEntries+1)
+	for i := range defaultItemSnapshotStateEntries + 1 {
+		threadID := target
+		if i > 0 {
+			threadID = fmt.Sprintf("evictor-%02d", i)
+		}
+		entries = append(entries, LocalDaemonEntry{Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://unused.test", SourceID: "local", ThreadID: threadID, SessionID: threadID,
+			WorkspaceRef: "local:" + threadID, InstanceID: "instance-1",
+		}})
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return entries }, nil)
+	first, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + target, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2}, positionedItemReadResponse(0, 1, "native-target"))
+	if err != nil {
+		t.Fatalf("initial bounded item read: %v", err)
+	}
+	browserCursor, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode browser cursor: %v", err)
+	}
+	for i := 1; i < len(entries); i++ {
+		threadID := entries[i].Entry.ThreadID
+		if _, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2}, positionedItemReadResponse(0, 1, "native-evictor")); err != nil {
+			t.Fatalf("bounded item read %s: %v", threadID, err)
+		}
+	}
+	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:" + target, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: browserCursor})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("evicted native cursor error = %T %v, want typed stale cursor", err, err)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("evicted native cursor error data = %#v, want stale cursor", wireErr.Data)
+	}
 }
 
 func newLocalDaemonItemTransitionSource(t *testing.T, items []appwire.ThreadItem) (*LocalDaemonSource, func([]appwire.ThreadItem)) {

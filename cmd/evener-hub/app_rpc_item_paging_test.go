@@ -552,6 +552,84 @@ func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
 	}
 }
 
+func TestHubRPCRealLocalExhaustedNativePageSplitsByteFit(t *testing.T) {
+	const sessionID = "bounded-exhausted-native-page"
+	const itemCount = 70
+	const itemBytes = 30000
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	daemon.SetAppIdentity("local", sessionID)
+	for i := range itemCount {
+		daemon.RecordAppEvent(events.SessionEvent{
+			Kind:      events.EventUserInput,
+			SessionID: sessionID,
+			Data:      events.UserInputData{Text: fmt.Sprintf("item-%02d-%s", i, strings.Repeat("x", itemBytes))},
+		})
+	}
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	initial, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, Subscribe: true, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatalf("exhausted-page initial item read: %v", err)
+	}
+	if len(flattenTestItems(initial.Thread.Turns)) == 0 || initial.OlderCursor == "" {
+		t.Fatalf("exhausted-page initial response = items %d/cursor %q, want nonempty cursor page", len(flattenTestItems(initial.Thread.Turns)), initial.OlderCursor)
+	}
+	first, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: initial.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("exhausted native first continuation: %v", err)
+	}
+	if len(flattenTestItems(first.Data)) == 0 || first.NextCursor == "" {
+		t.Fatalf("exhausted native first response = items %d/cursor %q, want another hub cursor", len(flattenTestItems(first.Data)), first.NextCursor)
+	}
+	second, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: first.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("exhausted native second continuation: %v", err)
+	}
+	if second.NextCursor != "" {
+		t.Fatalf("exhausted native second cursor = %q, want exhausted", second.NextCursor)
+	}
+	all := append(flattenTestItems(initial.Thread.Turns), flattenTestItems(first.Data)...)
+	all = append(all, flattenTestItems(second.Data)...)
+	seen := make(map[string]struct{}, len(all))
+	for _, item := range all {
+		if _, duplicate := seen[item.Text]; duplicate {
+			t.Fatalf("exhausted native duplicate item text %q", item.Text[:min(len(item.Text), 16)])
+		}
+		seen[item.Text] = struct{}{}
+	}
+	if len(all) != itemCount {
+		t.Fatalf("exhausted native combined item count = %d, want %d", len(all), itemCount)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Text < all[j].Text })
+	for i, item := range all {
+		prefix := fmt.Sprintf("item-%02d-", i)
+		if !strings.HasPrefix(item.Text, prefix) {
+			t.Fatalf("exhausted native item %d text prefix = %q, want %q", i, item.Text[:min(len(item.Text), 12)], prefix)
+		}
+	}
+}
+
 func TestPackTranscriptItemPageByteFitOwnsContinuation(t *testing.T) {
 	const count = 45
 	const payloadBytes = 30000

@@ -137,14 +137,17 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	previous, exists := s.itemSnapshots.get(resolved.pagingRef)
 	incarnation := previous.Incarnation
 	next, extends := itemSnapshotStateAdvance(previous, candidates, response.OlderCursor == "")
-	if !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends {
+	rotated := !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends
+	if rotated {
 		incarnation = fmt.Sprintf("local-daemon-incarnation-%d", localDaemonItemIncarnationSequence.Add(1))
 		next = itemSnapshotStateForCandidates(resolved.pagingRef, incarnation, daemonIdentity, candidates, response.OlderCursor == "")
 	}
 	next.ThreadRef = resolved.pagingRef
 	next.Incarnation = incarnation
 	next.SourceIdentity = daemonIdentity
-	next.NativeCursor = response.OlderCursor
+	if rotated {
+		next.NativeCursor = response.OlderCursor
+	}
 	s.itemSnapshots.put(resolved.pagingRef, next)
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
@@ -345,15 +348,26 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		if len(candidates) == 0 {
 			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
-		if _, err := appitempaging.RebaseCursor(response.NextCursor, candidates[0].Position); err != nil {
+		boundary := candidates[0].Position
+		requestCanonical, err := appitempaging.RebaseCursor(nativeCursor, boundary)
+		if err != nil {
 			return ItemCandidateResult{}, err
+		}
+		nextCanonical, err := appitempaging.RebaseCursor(response.NextCursor, boundary)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		if requestCanonical != nextCanonical {
+			return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 		}
 	}
 	selected := localDaemonCandidatesBefore(candidates, before, itemLimit)
 	if len(selected) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
-	state.NativeCursor = response.NextCursor
+	if response.NextCursor != "" {
+		state.NativeCursor = response.NextCursor
+	}
 	s.itemSnapshots.put(resolved.pagingRef, state)
 	return ItemCandidateResult{
 		Candidates: appitempaging.TranscriptItemWindow{Candidates: selected},
