@@ -79,11 +79,18 @@ const MODIFIER_DISPLAY: Record<string, string> = {
   Meta: "⌘",
 };
 
+/** One press as display tokens, in KeyHint's `keys` shape: ["⌘","K"] on Apple
+ * platforms (the AST was `$mod`-resolved at parse time), ["Ctrl","K"]
+ * elsewhere. Optional modifiers are NOT included - they describe match
+ * permissiveness, not the key the user presses. */
+export function chordDisplayKeys(chord: Chord): string[] {
+  const key = chord.key instanceof RegExp ? chord.key.source : chord.key;
+  return [...chord.modifiers.map((m) => MODIFIER_DISPLAY[m] ?? m), key];
+}
+
 /** One press as speakable words: "⌘+K" on Apple platforms, "Ctrl+K" elsewhere. */
 export function formatChord(chord: Chord): string {
-  const mods = chord.modifiers.map((m) => MODIFIER_DISPLAY[m] ?? m);
-  const key = chord.key instanceof RegExp ? chord.key.source : chord.key;
-  return [...mods, key].join("+");
+  return chordDisplayKeys(chord).join("+");
 }
 
 /** A whole sequence as words, presses space-separated: "Shift+A b". */

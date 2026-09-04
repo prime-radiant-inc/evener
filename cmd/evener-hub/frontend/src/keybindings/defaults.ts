@@ -51,6 +51,12 @@ export const SETTINGS_SCOPE = "settings";
 /** A default-map entry: a BindingInput plus the module-internal
  * legacyEitherMod marker (stripped before registerBinding - see modPair). */
 interface DefaultBindingInput extends BindingInput {
+  /** The action's user-facing title, shown by the Settings keybindings
+   * section. Kept on the default-map entry itself so the section's action
+   * list is sourced live from this map - a new action appears there
+   * automatically, and no second hand-maintained list can go stale (the
+   * survey's stale-HELP_ROWS lesson). */
+  title: string;
   /** Legacy "either or both of Meta/Ctrl" permissiveness: the AppShell
    * ⌘K/⌘I/⌘J listener checked metaKey||ctrlKey with no regard for the OTHER
    * modifier's state, so Meta+Ctrl+K fired. The complement of $mod is added
@@ -62,6 +68,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.paletteOpen,
     actionId: ACTIONS.paletteOpen,
+    title: "Open the command palette",
     chord: "$mod+[Shift]+[Alt]+K",
     allowInEditable: true,
     allowInModal: true,
@@ -73,6 +80,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.railToggle,
     actionId: ACTIONS.railToggle,
+    title: "Toggle the sidebar",
     chord: "$mod+B",
     allowInEditable: false,
     allowInModal: true,
@@ -81,6 +89,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.composerFocus,
     actionId: ACTIONS.composerFocus,
+    title: "Focus the composer",
     chord: "$mod+[Shift]+[Alt]+I",
     allowInEditable: true,
     legacyEitherMod: true,
@@ -88,6 +97,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.nextNeedsYou,
     actionId: ACTIONS.nextNeedsYou,
+    title: "Go to the next session needing you",
     chord: "$mod+[Shift]+[Alt]+J",
     allowInEditable: true,
     legacyEitherMod: true,
@@ -98,6 +108,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.selectionQuote,
     actionId: ACTIONS.selectionQuote,
+    title: "Quote the selection into the composer",
     chord: "$mod+[Shift]+'",
     allowInEditable: true,
     allowInModal: true,
@@ -105,6 +116,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.settingsClose,
     actionId: ACTIONS.settingsClose,
+    title: "Close settings",
     chord: "[Control]+[Alt]+[Shift]+[Meta]+Escape",
     scope: SETTINGS_SCOPE,
     allowInEditable: true,
@@ -133,7 +145,7 @@ function modPair(input: DefaultBindingInput): [BindingInput, BindingInput] | nul
     if (serializeChord(parseChord(candidate)) !== resolved) twinString = candidate;
   }
   if (twinString === null) return null;
-  const { legacyEitherMod: _legacyEitherMod, ...base } = input;
+  const { legacyEitherMod: _legacyEitherMod, title: _title, ...base } = input;
   const twin: BindingInput = { ...base, id: `${base.id}#mod-twin`, chord: twinString };
   if (!input.legacyEitherMod) return [base, twin];
   return [
