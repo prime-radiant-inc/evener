@@ -191,9 +191,10 @@ const (
 
 // teardownChildSession closes a child session and settles what it owned. It is
 // the one teardown every child takes — the parent's own close, the eviction of
-// a retained terminal child, the disposal of a child that never became a
-// tracked delegate, and the disposal of an isolation lane — so every path
-// makes the same two decisions.
+// a retained terminal child, the stable controller's reclamation of a retained
+// runtime, the disposal of a child that never became a tracked delegate, and
+// the disposal of an isolation lane — so every path makes the same two
+// decisions.
 //
 // Invariant: a session runs Cleanup only on an environment whose process table
 // it constructed, at its own close, and never on a child's. A child's

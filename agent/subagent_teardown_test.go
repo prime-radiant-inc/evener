@@ -37,6 +37,74 @@ func scratchLeaseHeld(t *testing.T, dir string) bool {
 	return false
 }
 
+// startInFlightProcess runs a shell through env that reports its PID and then
+// waits to be released, standing in for a parent tool's in-flight process. done
+// receives ExecCommand's error once the shell exits; release lets it exit.
+func startInFlightProcess(t *testing.T, env *execenv.LocalExecutionEnvironment) (pid int, done <-chan error, release func()) {
+	t.Helper()
+	signals := t.TempDir()
+	pidPath := filepath.Join(signals, "pid")
+	releasePath := filepath.Join(signals, "release")
+	command := fmt.Sprintf("printf '%%s' $$ > %s; while test ! -e %s; do sleep 0.01; done",
+		strconv.Quote(pidPath), strconv.Quote(releasePath))
+	execDone := make(chan error, 1)
+	go func() {
+		_, err := env.ExecCommand(context.Background(), command, 30_000, "", nil)
+		execDone <- err
+	}()
+	release = func() { _ = os.WriteFile(releasePath, nil, 0o600) }
+	t.Cleanup(release)
+	waitForCondition(t, 5*time.Second, "the in-flight process to report its PID", func() bool {
+		data, err := os.ReadFile(pidPath)
+		if err != nil || len(data) == 0 {
+			return false
+		}
+		pid, err = strconv.Atoi(string(data))
+		return err == nil
+	})
+	return pid, execDone, release
+}
+
+// assertInFlightProcessSurvived fails the test if the process
+// startInFlightProcess launched has been ended by what.
+func assertInFlightProcessSurvived(t *testing.T, what string, pid int, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("%s ended the parent's in-flight process %d: %v", what, pid, err)
+	default:
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("the parent's in-flight process %d is gone after %s: %v", pid, what, err)
+	}
+}
+
+// heldParentScratch returns the scratch the parent's environment is working in,
+// failing unless the parent still holds its lease.
+func heldParentScratch(t *testing.T, env *execenv.LocalExecutionEnvironment) string {
+	t.Helper()
+	scratch := env.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the parent minted no session scratch, so there is nothing to protect")
+	}
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatal("the parent's scratch lease is not held while it is working")
+	}
+	return scratch
+}
+
+// assertParentScratchUntouched fails the test if what removed the parent's
+// scratch or released the lease the parent is still holding.
+func assertParentScratchUntouched(t *testing.T, what, scratch string) {
+	t.Helper()
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("%s removed the parent's scratch %s: %v", what, scratch, err)
+	}
+	if !scratchLeaseHeld(t, scratch) {
+		t.Errorf("%s released the parent's scratch %s lease while the parent is still working in it", what, scratch)
+	}
+}
+
 // A child spawned into its own working directory owns a clone of the parent's
 // environment. Its teardown at parent close must never Cleanup that clone (the
 // clone shares the parent's process table), but it has to release the scratch
@@ -107,37 +175,8 @@ func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
 	}
-
-	// A parent tool's in-flight process: a shell that reports its PID and then
-	// waits to be released.
-	signals := t.TempDir()
-	pidPath := filepath.Join(signals, "pid")
-	releasePath := filepath.Join(signals, "release")
-	command := fmt.Sprintf("printf '%%s' $$ > %s; while test ! -e %s; do sleep 0.01; done",
-		strconv.Quote(pidPath), strconv.Quote(releasePath))
-	execDone := make(chan error, 1)
-	go func() {
-		_, err := shared.ExecCommand(context.Background(), command, 30_000, "", nil)
-		execDone <- err
-	}()
-	release := func() { _ = os.WriteFile(releasePath, nil, 0o600) }
-	t.Cleanup(release)
-	var pid int
-	waitForCondition(t, 5*time.Second, "the parent's process to report its PID", func() bool {
-		data, err := os.ReadFile(pidPath)
-		if err != nil || len(data) == 0 {
-			return false
-		}
-		pid, err = strconv.Atoi(string(data))
-		return err == nil
-	})
-	sharedScratch := shared.SessionScratchDir()
-	if sharedScratch == "" {
-		t.Fatal("the parent minted no session scratch, so there is nothing to protect")
-	}
-	if !scratchLeaseHeld(t, sharedScratch) {
-		t.Fatal("the parent's scratch lease is not held while it is working")
-	}
+	pid, done, release := startInFlightProcess(t, shared)
+	sharedScratch := heldParentScratch(t, shared)
 
 	// A finished child on the parent's own environment, exactly as a delegate
 	// with neither a working dir nor a box of its own gets one.
@@ -149,9 +188,9 @@ func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
 		t.Fatalf("NewSession on the parent's environment: %v", err)
 	}
 	ended := time.Now()
-	done := make(chan struct{})
-	close(done)
-	terminal := &subagent{id: finished.id, sess: finished, status: SubagentCompleted, resultConsumed: true, endedAt: &ended, done: done}
+	finishedDone := make(chan struct{})
+	close(finishedDone)
+	terminal := &subagent{id: finished.id, sess: finished, status: SubagentCompleted, resultConsumed: true, endedAt: &ended, done: finishedDone}
 	parent.cfg.testOnly.subagentReserveSlot = func(*Session) ([]*subagent, error) {
 		return []*subagent{terminal}, nil
 	}
@@ -169,23 +208,116 @@ func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
 	if got := finished.State(); got != SessionClosed {
 		t.Errorf("evicted child state = %q, want %q", got, SessionClosed)
 	}
-	select {
-	case err := <-execDone:
-		t.Fatalf("eviction ended the parent's in-flight process %d: %v", pid, err)
-	default:
-	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Errorf("the parent's in-flight process %d is gone after eviction: %v", pid, err)
-	}
-	if _, err := os.Stat(sharedScratch); err != nil {
-		t.Errorf("eviction removed the parent's scratch %s: %v", sharedScratch, err)
-	}
-	if !scratchLeaseHeld(t, sharedScratch) {
-		t.Errorf("eviction released the parent's scratch %s lease while the parent is still working in it", sharedScratch)
-	}
+	assertInFlightProcessSurvived(t, "eviction", pid, done)
+	assertParentScratchUntouched(t, "eviction", sharedScratch)
 
 	release()
-	if err := <-execDone; err != nil {
+	if err := <-done; err != nil {
 		t.Fatalf("the parent's process after release: %v", err)
+	}
+}
+
+// Stable-controller reclamation closes retained terminal delegate runtimes to
+// admit a new one. Like eviction it is a child teardown: the runtime's
+// environment is the root's own or a clone sharing the root's process table,
+// and the root is mid-create when this runs, so closing the runtime must not
+// reach that environment.
+func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process and flock probes are unix-only")
+	}
+	root, client, profile := newDelegateResourceBootstrapSession(t)
+	shared, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
+	}
+	pid, done, release := startInFlightProcess(t, shared)
+	sharedScratch := heldParentScratch(t, shared)
+
+	resident, err := NewSession(client, profile, shared, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the root's environment: %v", err)
+	}
+	root.delegateController.maxRetainedTerminal = 1
+	seedDelegateReclaimRuntimeSession(t, root.delegateController, "dlg_old", "", time.Unix(5, 0).UTC(), false, false, resident)
+
+	if err := root.reclaimDelegateRuntimeCapacity(1); err != nil {
+		t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
+	}
+
+	if got := resident.State(); got != SessionClosed {
+		t.Errorf("reclaimed runtime state = %q, want %q", got, SessionClosed)
+	}
+	assertInFlightProcessSurvived(t, "reclamation", pid, done)
+	assertParentScratchUntouched(t, "reclamation", sharedScratch)
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the root's process after release: %v", err)
+	}
+}
+
+// Disposing a stable delegate's isolation lane closes its resident child
+// first. The child owns a clone rooted in the lane, and the clone shares the
+// root's process table, so the disposal must not Cleanup it: the root is
+// mid-tool when this runs. The child's own scratch is retained for the
+// handoff like any other child close.
+func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process and flock probes are unix-only")
+	}
+	r := newWorktreeRepo(t)
+	root := r.s
+	id, lanePath, _ := r.seedStableIsolationLane(t)
+	rootLocal, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
+	}
+	childEnv := rootLocal.WithWorkingDirectory(lanePath)
+	child, err := NewSession(root.client, root.currentProfile(), childEnv, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the lane clone: %v", err)
+	}
+	if _, err := childEnv.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand on the lane clone: %v", err)
+	}
+	childScratch := childEnv.SessionScratchDir()
+	if childScratch == "" {
+		t.Fatal("the lane child minted no session scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(childScratch) })
+	ended := time.Now()
+	root.subagents.track(&subagent{id: "child-" + id, sess: child, ownsEnv: true, status: SubagentFailed, endedAt: &ended, done: make(chan struct{})})
+	pid, done, release := startInFlightProcess(t, rootLocal)
+	rootScratch := heldParentScratch(t, rootLocal)
+
+	if _, err := root.worktreeDispose(context.Background(), id, false, false); err != nil {
+		t.Fatalf("worktreeDispose: %v", err)
+	}
+
+	if got := child.State(); got != SessionClosed {
+		t.Errorf("disposed lane child state = %q, want %q", got, SessionClosed)
+	}
+	if laneWorktreePresent(lanePath) {
+		t.Errorf("disposal retained the lane %s", lanePath)
+	}
+	if _, err := os.Stat(childScratch); err != nil {
+		t.Errorf("disposal removed the child's scratch %s, want it retained for the handoff: %v", childScratch, err)
+	}
+	if scratchLeaseHeld(t, childScratch) {
+		t.Errorf("the child's scratch %s lease is still held after the disposal", childScratch)
+	}
+	assertInFlightProcessSurvived(t, "lane disposal", pid, done)
+	assertParentScratchUntouched(t, "lane disposal", rootScratch)
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the root's process after release: %v", err)
 	}
 }

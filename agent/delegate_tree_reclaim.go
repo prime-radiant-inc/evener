@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -366,13 +367,20 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		if entry.runtime == nil {
 			continue
 		}
+		// The owner's record says whether the runtime's environment was built
+		// for it; a runtime with no record is treated as sharing, which touches
+		// nothing beyond the session's own resources.
+		ownsEnv := false
 		if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
+			if sub := entry.ownerRuntime.subagents.get(entry.childSessionID); sub != nil && sub.sess == entry.runtime {
+				ownsEnv = sub.ownsEnv
+			}
 			entry.ownerRuntime.subagents.removeSession(entry.childSessionID, entry.runtime)
 		}
 		if closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose; closeRuntime != nil {
 			closeRuntime(entry.runtime)
 		} else {
-			entry.runtime.Close()
+			teardownChildSession(context.Background(), entry.runtime, ownsEnv, retainChildScratch)
 		}
 		closed[entry.delegateID] = entry.runtime
 	}
