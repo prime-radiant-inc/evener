@@ -54,7 +54,10 @@ func startInFlightProcess(t *testing.T, env *execenv.LocalExecutionEnvironment) 
 	}()
 	release = func() { _ = os.WriteFile(releasePath, nil, 0o600) }
 	t.Cleanup(release)
-	waitForCondition(t, 5*time.Second, "the in-flight process to report its PID", func() bool {
+	// The shell writes its PID within milliseconds of the spawn and nothing in
+	// process signals that write, so this is a poll with a hang guard only.
+	// TRIPWIRE: 30s sits orders of magnitude above the spawn-to-write time.
+	waitForCondition(t, 30*time.Second, "the in-flight process to report its PID", func() bool {
 		data, err := os.ReadFile(pidPath)
 		if err != nil || len(data) == 0 {
 			return false
