@@ -110,6 +110,17 @@ func DisplayToolName(name string) string {
 	return "invalid tool name"
 }
 
+// InvalidToolNameWire is reserved for projecting invalid historical tool names
+// onto the provider wire. Registry.Register rejects it so projected history can
+// never become indistinguishable from a callable tool definition.
+const InvalidToolNameWire = "invalid_tool_name"
+
+// IsReservedToolName reports whether name aliases an internal provider-wire
+// placeholder that must never identify a callable tool.
+func IsReservedToolName(name string) bool {
+	return strings.TrimSpace(name) == InvalidToolNameWire
+}
+
 // WireToolName returns a provider-valid tool identity for replayed assistant
 // calls and tool results. It keeps readable names and replaces every other raw
 // or display identity with one fixed placeholder.
@@ -117,7 +128,7 @@ func WireToolName(name string) string {
 	if IsReadableToolName(name) {
 		return name
 	}
-	return "invalid_tool_name"
+	return InvalidToolNameWire
 }
 
 // semanticCallSignature returns the call half of a semantic failure

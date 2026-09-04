@@ -719,6 +719,9 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
+	if IsReservedToolName(t.Definition.Name) {
+		return fmt.Errorf("tool name %q is reserved for invalid history projection", t.Definition.Name)
+	}
 	if t.OmitIntent {
 		t.Definition = WithoutIntentParameter(t.Definition)
 	} else {

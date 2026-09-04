@@ -3,13 +3,56 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+func TestNewSessionRejectsReservedResultToolName(t *testing.T) {
+	for _, name := range []string{tool.InvalidToolNameWire, " " + tool.InvalidToolNameWire + " "} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{name: "openai"})
+
+			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+				NoProjectPrompts: true,
+				ResultToolName:   name,
+			})
+			if sess != nil {
+				sess.Close()
+				t.Fatal("NewSession returned a session with a reserved result-tool name")
+			}
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("NewSession error = %v, want reserved result-tool name rejection", err)
+			}
+		})
+	}
+}
+
+func TestRestoreSessionRejectsReservedResultToolName(t *testing.T) {
+	for _, name := range []string{tool.InvalidToolNameWire, " " + tool.InvalidToolNameWire + " "} {
+		t.Run(name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			meta := resumeIntegrityMeta("reserved-result-tool-name")
+			meta.Config.ResultToolName = name
+
+			sess, err := restoreIntegritySession(stateDir, meta)
+			if sess != nil {
+				sess.Close()
+				t.Fatal("RestoreSessionFromMetaWithConfig returned a session with a reserved result-tool name")
+			}
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("RestoreSessionFromMetaWithConfig error = %v, want reserved result-tool name rejection", err)
+			}
+		})
+	}
+}
 
 // TestChildRegistryKeepsDelegateWithAllowance verifies seam 3 (spec §1): the
 // registry strip at child init is gated on delegationAllowance, not depth.

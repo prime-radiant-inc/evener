@@ -18,7 +18,7 @@ import (
 
 const (
 	invalidToolNameDisplay = "invalid tool name"
-	invalidToolNameWire    = "invalid_tool_name"
+	invalidToolNameWire    = tool.InvalidToolNameWire
 )
 
 type toolNameProjectionObservation struct {
@@ -214,6 +214,37 @@ func TestSessionReadableUnknownToolNameExternalProjectionIsPreserved(t *testing.
 	const name = "readable_unknown_tool"
 	obs := observeUnknownToolNameProjection(t, name)
 	assertProjectedToolNames(t, obs, name, "")
+}
+
+func TestSessionCustomToolCannotShadowInvalidHistoryProjection(t *testing.T) {
+	sess := newSession(t)
+	defer sess.Close()
+
+	called := false
+	err := sess.RegisterTool(invalidToolNameWire, "must not shadow invalid history", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		called = true
+		return "unexpected", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("RegisterTool error = %v, want actionable reserved-name rejection", err)
+	}
+	if registered := sess.reg.Get(invalidToolNameWire); registered != nil {
+		t.Fatalf("reserved history placeholder was registered: %#v", registered)
+	}
+	for _, definition := range sess.reg.Definitions() {
+		if definition.Name == invalidToolNameWire {
+			t.Fatal("reserved history placeholder appeared in provider tool definitions")
+		}
+	}
+
+	result := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "projected-history",
+		Name:      invalidToolNameWire,
+		Arguments: []byte(`{}`),
+	}, "")
+	if !result.IsError || called {
+		t.Fatalf("projected invalid-history call reached custom executor: result=%#v called=%t", result, called)
+	}
 }
 
 func TestSyntheticToolResultsProjectUnreadableToolName(t *testing.T) {

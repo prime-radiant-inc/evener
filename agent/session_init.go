@@ -160,6 +160,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
 	}
+	if err := validateResultToolName(cfg.ResultToolName); err != nil {
+		return nil, err
+	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
@@ -656,6 +659,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			_ = client.ReleaseSessionAPILog(meta.ID)
 		}
 	}()
+	if err := validateResultToolName(meta.Config.ResultToolName); err != nil {
+		return nil, err
+	}
 
 	cfg := configFromSnapshot(meta.Config)
 	// A pre-normalization meta.json may carry a mixed-case level or disable
@@ -1208,6 +1214,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	restoreComplete = true
 	closeDelegateStoreOnError = false
 	return s, nil
+}
+
+func validateResultToolName(name string) error {
+	if tool.IsReservedToolName(name) {
+		return fmt.Errorf("result tool name %q is reserved for invalid history projection", name)
+	}
+	return nil
 }
 
 // cacheReadPtr converts a persisted CumulativeUsage cache-read count back to

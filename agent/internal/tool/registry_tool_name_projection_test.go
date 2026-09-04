@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
 )
 
@@ -52,4 +53,31 @@ func TestExecuteCallUnknownToolNameProjectionIsPrivateAndBounded(t *testing.T) {
 			t.Errorf("readable unknown name missing from diagnostics: output=%q full=%q", res.Output, res.FullOutput)
 		}
 	})
+}
+
+func TestRegistryRejectsReservedInvalidToolNameWire(t *testing.T) {
+	name := WireToolName("not a valid tool name")
+	if err := llm.ValidateToolName(name); err != nil {
+		t.Fatalf("history placeholder %q must remain provider-valid: %v", name, err)
+	}
+
+	for _, candidate := range []string{name, " " + name + " "} {
+		reg := NewRegistry()
+		err := reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        candidate,
+				Description: "must not shadow invalid historical calls",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "unexpected", nil
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("Register(%q) error = %v, want reserved-name rejection", candidate, err)
+		}
+		if got := reg.Get(candidate); got != nil {
+			t.Errorf("reserved placeholder alias %q was registered: %#v", candidate, got)
+		}
+	}
 }
