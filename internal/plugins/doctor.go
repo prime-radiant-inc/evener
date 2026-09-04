@@ -81,7 +81,7 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 			Level:       LevelFail,
 			Category:    catEnvironment,
 			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
-			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME, or pass --plugin-root",
+			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME to an absolute directory, or pass an absolute --store-root to evener-doctor (--plugin-root to evener serve)",
 		}}, nil
 	}
 
