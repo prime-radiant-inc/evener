@@ -64,8 +64,24 @@ type DoctorFinding struct {
 // or known_marketplaces.json) failed to parse — the same failure every other
 // Manager verb would hit. A per-plugin or per-marketplace problem is never
 // returned as an error; it becomes a FAIL finding instead, so the rest of the
-// report is still useful.
+// report is still useful. A store root that cannot be used is a finding too,
+// and the only one: there is nothing under such a root to report on.
 func (m *Manager) Doctor() ([]DoctorFinding, error) {
+	// A root that cannot be used is an environment problem, and Doctor reports
+	// those as findings — this is the one it exists to report, since it
+	// explains every other check that cannot run. There is nothing to check
+	// under such a root either: the registry and the marketplaces file would
+	// be read from, and the writability probe written into, whatever directory
+	// the process happens to be in.
+	if err := m.storeRootError(); err != nil {
+		return []DoctorFinding{{
+			Level:       LevelFail,
+			Category:    catEnvironment,
+			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
+			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME, or pass --plugin-root",
+		}}, nil
+	}
+
 	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
@@ -331,7 +347,16 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 // exist, it is probed with a throwaway temp file, without disturbing any real
 // state.
 func (m *Manager) checkStoreWritable() (exists bool, err error) {
-	info, statErr := doctorStat(m.Root)
+	// Deriving the root is what refuses an unresolved one, before the probe
+	// creates its temp file. Under a relative root that file landed in the
+	// working directory, which is a write from the one verb that promises to
+	// make none. Doctor turns the root away before it gets here; this keeps
+	// the promise for any caller that does not.
+	root, err := m.storePath()
+	if err != nil {
+		return false, err
+	}
+	info, statErr := doctorStat(root)
 	if statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return false, nil
@@ -339,10 +364,10 @@ func (m *Manager) checkStoreWritable() (exists bool, err error) {
 		return false, statErr
 	}
 	if !info.IsDir() {
-		return true, fmt.Errorf("%s is not a directory", m.Root)
+		return true, fmt.Errorf("%s is not a directory", root)
 	}
 
-	f, err := doctorCreateTemp(m.Root, ".doctor-write-test-*")
+	f, err := doctorCreateTemp(root, ".doctor-write-test-*")
 	if err != nil {
 		return true, err
 	}
