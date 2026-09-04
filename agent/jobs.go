@@ -100,13 +100,6 @@ type jobManager struct {
 	// self-influence depth metric consults so a coalesced-away (never delivered)
 	// predecessor cannot inflate depth. Guarded by jm.mu.
 	deliveredWatchSendIDs map[string]struct{}
-	// watchLineage remembers, per watch key, the watchID lineage of configs
-	// that ENDED in that slot (cleared/replaced/expired) so the next install
-	// for the same key inherits it and a clear-and-recreate loop cannot reset
-	// the runaway fuse. Bounded (watchLineageKeyCap keys, oldest evicted);
-	// in-memory like the volume-budget counter. Guarded by jm.mu.
-	watchLineage      map[watchKey][]string
-	watchLineageOrder []watchKey
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
@@ -633,7 +626,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		watches:               make(map[watchKey]*watchConfig),
 		lastFedOffset:         make(map[string]int64),
 		deliveredWatchSendIDs: make(map[string]struct{}),
-		watchLineage:          make(map[watchKey][]string),
 		appendEvent:           store.Append,
 		appendEvents:          store.AppendBatch,
 		createOutput:          createOutput,

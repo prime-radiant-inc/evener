@@ -15,12 +15,12 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-// FuzzJobWatchEventsOutput exercises the event, lineage, output, terminal
+// FuzzJobWatchEventsOutput exercises the event, output, terminal
 // catch-up, and progress-timer rails against a real manager and store. The byte
 // selects a deterministic scenario; the seeds keep every edge in the default
 // fuzz corpus.
 func FuzzJobWatchEventsOutput(f *testing.F) {
-	for scenario := uint8(0); scenario < 24; scenario++ {
+	for scenario := uint8(0); scenario < 21; scenario++ {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {
@@ -30,7 +30,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			_ = jm.close()
 		})
 
-		switch scenario % 24 {
+		switch scenario % 21 {
 		case 0:
 			dec := evaluateWatchEvent(watchEventSnapshot{
 				target: runtimeMessageAliasCaller, targetActive: true,
@@ -41,29 +41,8 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatalf("send-to-watched session decision = %+v", dec)
 			}
 		case 1:
-			cfg := &watchConfig{watchID: "latest"}
-			for i := 0; i <= watchLineageCap; i++ {
-				cfg.lineageWatchIDs = append(cfg.lineageWatchIDs, string(rune('a'+i)))
-			}
-			if got := inheritWatchLineage(cfg); len(got) != watchLineageCap || got[len(got)-1] != "latest" {
-				t.Fatalf("capped lineage = %#v", got)
-			}
-		case 2:
-			jm.watchLineage = nil
-			jm.rememberWatchLineageLocked(watchKey{Target: "job_a"}, &watchConfig{watchID: "w"})
-			if jm.watchLineage == nil {
-				t.Fatal("lineage map not initialized")
-			}
-		case 3:
-			for i := 0; i <= watchLineageKeyCap; i++ {
-				jm.rememberWatchLineageLocked(watchKey{Target: "job_" + string(rune(i+1))}, &watchConfig{watchID: "w"})
-			}
-			if len(jm.watchLineageOrder) != watchLineageKeyCap {
-				t.Fatalf("lineage order length = %d", len(jm.watchLineageOrder))
-			}
-		case 4:
 			jm.feedJobOutput("missing", nil, 0)
-		case 5:
+		case 2:
 			rec := createWatchOutputJob(t, jm)
 			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
@@ -73,7 +52,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: rec.JobID}] = cfg
 			jm.feedJobOutput(rec.JobID, []byte("hit\n"), 4)
-		case 6:
+		case 3:
 			rec := createWatchOutputJob(t, jm)
 			cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
@@ -88,7 +67,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if gotErr == nil {
 				t.Fatal("missing output did not fail attach preparation")
 			}
-		case 7:
+		case 4:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
@@ -96,7 +75,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if jm.completeAttachScan(cfg, "job_x", nil, true, errors.New("read failed")) {
 				t.Fatal("failed attach preparation fired")
 			}
-		case 8:
+		case 5:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
@@ -107,17 +86,17 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if !jm.fireAttachScan(cfg, "job_x", []byte("hit\n")) {
 				t.Fatal("attach scan did not fire")
 			}
-		case 9:
+		case 6:
 			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_x", OutputMatch: "["}, watchKey{Target: "job_x"}, jobstore.StatusCompleted)
 			if err == nil {
 				t.Fatal("invalid terminal regexp accepted")
 			}
-		case 10:
+		case 7:
 			_, err := jm.runTerminalCatchup(watchArgs{Target: "job_missing", OutputMatch: "hit"}, watchKey{Target: "job_missing"}, jobstore.StatusCompleted)
 			if err == nil {
 				t.Fatal("missing terminal output accepted")
 			}
-		case 11:
+		case 8:
 			key := watchKey{Target: "job_x"}
 			cfg := &watchConfig{target: "job_x"}
 			jm.watches[key] = &watchConfig{}
@@ -125,11 +104,11 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if jm.watches[key] == nil {
 				t.Fatal("replacement watch removed")
 			}
-		case 12:
+		case 9:
 			if dec := decideProgressTick(progressTickSnapshot{stillRegistered: true, target: "job_gone"}); dec.keepAlive {
 				t.Fatalf("dead concrete target kept progress timer alive: %+v", dec)
 			}
-		case 13:
+		case 10:
 			filter := &watchEventFilter{ToolName: "wanted", Status: "error"}
 			cases := []events.SessionEvent{
 				{Kind: events.EventError},
@@ -141,7 +120,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			for _, ev := range cases {
 				_ = watchEventFilterMatches(filter, ev)
 			}
-		case 14:
+		case 11:
 			for _, data := range []events.EventData{
 				events.JobStartedData{JobID: "job_started"},
 				events.JobFinishedData{JobID: "job_finished"},
@@ -153,7 +132,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if got := watchEventWatchedIdentity("job_concrete", events.ErrorData{}); got != "job_concrete" {
 				t.Fatal(got)
 			}
-		case 15:
+		case 12:
 			snap := watchEventSnapshot{target: "*", targetActive: true, eventKinds: map[events.EventKind]bool{events.EventError: true}, triggerKind: events.EventError, triggerEvery: 2}
 			if dec := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventError}); dec.matched || dec.eventCount != 1 {
 				t.Fatalf("throttled decision = %+v", dec)
@@ -162,7 +141,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if dec := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventError}); !dec.matched || dec.notifyJobID != "" {
 				t.Fatalf("session notify decision = %+v", dec)
 			}
-		case 16:
+		case 13:
 			cfg, err := newWatchConfig(watchArgs{Target: "*", Events: []string{"communicate"}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
@@ -171,10 +150,10 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: "*"}] = cfg
 			jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate})
-		case 17:
+		case 14:
 			jm.feedJobOutput("job_x", []byte("later"), 10)
 			jm.feedJobOutput("job_x", []byte("earlier"), 5)
-		case 18:
+		case 15:
 			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit"}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
@@ -188,13 +167,13 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if scan || prepErr == nil || !strings.Contains(prepErr.Error(), "no readable output store") {
 				t.Fatalf("output-less run scan=%v err=%v", scan, prepErr)
 			}
-		case 19:
+		case 16:
 			rec := createWatchOutputJob(t, jm)
 			res, err := jm.runTerminalCatchup(watchArgs{Target: rec.JobID, OutputMatch: "absent"}, watchKey{Target: rec.JobID}, jobstore.StatusCompleted)
 			if err != nil || res.Fired {
 				t.Fatalf("unmatched catchup = %+v, %v", res, err)
 			}
-		case 20:
+		case 17:
 			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
 			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
 			if err != nil {
@@ -206,7 +185,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if len(deliveries) != 1 {
 				t.Fatalf("terminal flush deliveries = %d", len(deliveries))
 			}
-		case 21:
+		case 18:
 			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
 			cfg := &watchConfig{target: "job_x", watchID: "w", generation: "g", pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{{}: {}}}
 			jm.watches[key] = cfg
@@ -214,7 +193,7 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if !jm.terminalFlush[cfg] {
 				t.Fatal("pending watch not detached")
 			}
-		case 22:
+		case 19:
 			clk := agenttest.NewFakeClockAt(time.Unix(1000, 0).UTC())
 			jm.clock = clk
 			fired := make(chan struct{}, 1)
@@ -252,8 +231,8 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 				t.Fatal("inactive progress watch stayed alive")
 			}
 			close(stop)
-		case 23:
-			// The send twin of case 8. The attach scan's send rail counts its
+		case 20:
+			// The send twin of case 5. The attach scan's send rail counts its
 			// fire at the match and its delivery only when the frame settles,
 			// which nothing here drains, so the breaker has to latch at the
 			// match or the watch matches without bound.

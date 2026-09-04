@@ -232,44 +232,6 @@ func TestLiveWatchSummariesForReceiver(t *testing.T) {
 	}
 }
 
-// TestRememberWatchLineageEviction covers the eviction branch of
-// rememberWatchLineageLocked (job_watch.go:2352-2356) which fires when the
-// lineage key order exceeds watchLineageKeyCap (64).
-func TestRememberWatchLineageEviction(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-
-	// Fill the lineage beyond the cap to trigger eviction.
-	for i := range watchLineageKeyCap + 2 {
-		key := watchKey{
-			VisibleSessionID: jm.sessionID,
-			Target:           "job_evict_" + string(rune('a'+i%26)) + string(rune('a'+i/26)),
-			SendTo:           runtimeMessageAliasCaller,
-		}
-		cfg, err := newWatchConfig(watchArgs{
-			Target: key.Target,
-			Events: []string{"assistant.tool"},
-			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "m"},
-		}, jm.now(), "")
-		if err != nil {
-			t.Fatalf("newWatchConfig: %v", err)
-		}
-		jm.mu.Lock()
-		jm.rememberWatchLineageLocked(key, cfg)
-		jm.mu.Unlock()
-	}
-
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	if len(jm.watchLineageOrder) > watchLineageKeyCap {
-		t.Fatalf("lineage order = %d, want <= %d", len(jm.watchLineageOrder), watchLineageKeyCap)
-	}
-	// The first two keys should have been evicted.
-	if len(jm.watchLineage) != len(jm.watchLineageOrder) {
-		t.Fatalf("lineage map size %d != order size %d", len(jm.watchLineage), len(jm.watchLineageOrder))
-	}
-}
-
 // TestClearReceiverWatchByIDTerminalFlushLookup covers the terminalFlush
 // lookup branch in clearReceiverWatchByID (job_watch.go:1442-1448) which
 // finds a watch config in the terminalFlush set when it's not in jm.watches.
