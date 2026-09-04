@@ -577,7 +577,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
-	dest := filepath.Join(store, name+"-"+digest)
+	dest := filepath.Join(store, bundledPluginDirName(name, digest))
 	// A launch resolves plugins before the startup call that creates the user
 	// config tree privately, so any parent this is first to create gets that
 	// call's own 0o700 rather than the store root's readable mode. They are
@@ -959,11 +959,19 @@ func (m *Manager) storeRootError() error {
 	return nil
 }
 
+// bundledPluginDirName is the directory a bundled plugin's published copy sits
+// in inside the bundled store: the plugin's name and the digest of the
+// contents published under it, so a build whose contents changed publishes
+// alongside the copy a running session still holds rather than over it.
+func bundledPluginDirName(name, digest string) string {
+	return name + "-" + digest
+}
+
 // bundledPluginPath names where a bundled plugin's published copy lives. It is
 // the unchecked join, for tests naming a path; prepareBundledStore derives the
 // same path through storePath so an unresolved root is refused.
 func (m *Manager) bundledPluginPath(name, digest string) string {
-	return filepath.Join(m.bundledDir(), name+"-"+digest)
+	return filepath.Join(m.bundledDir(), bundledPluginDirName(name, digest))
 }
 
 // bundledPluginDigest identifies the embedded contents of the bundled plugin

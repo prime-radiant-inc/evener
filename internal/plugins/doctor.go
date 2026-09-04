@@ -65,16 +65,19 @@ type DoctorFinding struct {
 // Manager verb would hit. A per-plugin or per-marketplace problem is never
 // returned as an error; it becomes a FAIL finding instead, so the rest of the
 // report is still useful. A store root that cannot be used is a finding too,
-// and the only one: there is nothing under such a root to report on.
+// and the report is then that finding and the git check, which is the only
+// other one that does not need the store.
 func (m *Manager) Doctor() ([]DoctorFinding, error) {
 	// A root that cannot be used is an environment problem, and Doctor reports
 	// those as findings — this is the one it exists to report, since it
-	// explains every other check that cannot run. There is nothing to check
-	// under such a root either: the registry and the marketplaces file would
-	// be read from, and the writability probe written into, whatever directory
-	// the process happens to be in.
+	// explains every other check that cannot run. There is nothing under such
+	// a root to check either: the registry and the marketplaces file would be
+	// read from, and the writability probe written into, whatever directory
+	// the process happens to be in. git is the exception, because it is on
+	// PATH rather than in the store, and a report that dropped it would hide a
+	// second thing the user has to fix.
 	if err := m.storeRootError(); err != nil {
-		return []DoctorFinding{{
+		return []DoctorFinding{doctorGitFinding(), {
 			Level:       LevelFail,
 			Category:    catEnvironment,
 			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
@@ -308,19 +311,24 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": healthy"}
 }
 
+// doctorGitFinding reports whether git is on PATH. It is the one check that
+// does not look at the store, so it is also the one Doctor can still make when
+// the store root is unusable.
+func doctorGitFinding() DoctorFinding {
+	if doctorGitAvailable() {
+		return DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"}
+	}
+	return DoctorFinding{
+		Level: LevelWarn, Category: catEnvironment,
+		Message:     "git not found on PATH",
+		Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
+	}
+}
+
 // doctorEnvironment checks the two preconditions every other operation
 // depends on: git for fetch/clone/pull, and a writable store root.
 func (m *Manager) doctorEnvironment() []DoctorFinding {
-	var findings []DoctorFinding
-	if doctorGitAvailable() {
-		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"})
-	} else {
-		findings = append(findings, DoctorFinding{
-			Level: LevelWarn, Category: catEnvironment,
-			Message:     "git not found on PATH",
-			Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
-		})
-	}
+	findings := []DoctorFinding{doctorGitFinding()}
 
 	switch exists, err := m.checkStoreWritable(); {
 	case err != nil:
