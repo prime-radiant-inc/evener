@@ -529,16 +529,12 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		}
 	}
 	if delivered && s.cfg.TurnEndsProcess {
-		// The model has explicitly ended the turn that ends the process. Capture
-		// the exact notification cut before the boundary transition so the
-		// one-shot drain cannot mistake a completion landing before its own entry
-		// for a pre-terminal leftover (issue #329).
-		if hook := s.cfg.testOnly.beforeTerminalCommunicateAccept; hook != nil {
-			hook()
-		}
-		if err := s.acceptTerminalCommunicate(); err != nil {
-			return false, "", fmt.Errorf("capture terminal notification cut: %w", err)
-		}
+		// The model has explicitly ended the turn that ends the process. Record
+		// it before the boundary transition: the one-shot drain reads it to
+		// abandon residue with no live work behind it (issue #329). A completion
+		// that landed during this answer is not residue; it is still delivered
+		// on a later notification turn (#865).
+		s.acceptTerminalCommunicate()
 	}
 	s.finishProcessingAtBoundary(ctx, boundaryState)
 	if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {

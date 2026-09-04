@@ -916,16 +916,6 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
 
-	// A terminal communicate means the turn that just ended is the run's last:
-	// leftovers already pending at this point have no future model turn to be
-	// delivered to, so they are discarded up front (issue #329). Anything live
-	// work produces from here on is fresh and still drains as always.
-	if cut, accepted := s.acceptedTerminalNotificationCut(); accepted {
-		if err := s.discardTerminalDrainLeftovers(cut); err != nil {
-			return "", err
-		}
-	}
-
 	lastResult := ""
 	var stallStart time.Time
 	// drainStartedAt is the instant the root declared the work over: in a

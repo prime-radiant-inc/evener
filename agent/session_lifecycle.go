@@ -896,7 +896,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
+		// After a terminal communicate, notification work is left to the one-shot
+		// drain rather than run here: a completion the model was never shown is
+		// delivered there, so its reply REPLACES the run's answer instead of
+		// being joined onto it as a further output of this call (#865). Every
+		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
+		// drainForFinalization), and the drain's own turn gate reads the same
+		// two signals.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{

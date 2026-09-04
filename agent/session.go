@@ -396,17 +396,12 @@ type Session struct {
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
 	// explicitly ended the turn that ends the process. Unlike comm it is never
-	// reset — the one-shot drain and the round loop read it to refuse to
-	// resurrect a run the model already declared over (issue #329). Guarded by
-	// mu.
+	// reset — the one-shot drain reads it to abandon residue with no live work
+	// behind it, and the round loop reads it to finish an empty post-terminal
+	// notification turn idle instead of retrying (issue #329). A completion
+	// the model was never shown is still delivered after it (#865). Guarded
+	// by mu.
 	terminalCommunicateAccepted bool
-	// terminalNotificationCut is captured at the same acceptance boundary. It
-	// identifies exactly which durable terminal generations and in-memory queue
-	// entries existed before the terminal communicate, so a completion that
-	// lands before DrainJobTree enters cannot be mistaken for a leftover.
-	// Guarded by mu; queue sequence assignment is guarded separately by
-	// pendingJobNotifsMu.
-	terminalNotificationCut terminalNotificationCut
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -478,7 +473,7 @@ type Session struct {
 	//
 	// Guarded by its own mutex; never taken while holding sub.mu. Where it is
 	// held together with the job manager mutex, jm.mu is taken FIRST and this
-	// one second (captureTerminalNotificationCut).
+	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
