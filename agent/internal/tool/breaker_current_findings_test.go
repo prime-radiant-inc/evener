@@ -155,9 +155,17 @@ func TestBreaker_InvalidToolNamesUsePrivateBoundedIdentity(t *testing.T) {
 	if !strings.Contains(third.Output, "did not execute") {
 		t.Fatal("third call for the same invalid name was not parked")
 	}
-	outputRunes, fullOutputRunes := utf8.RuneCountInString(third.Output), utf8.RuneCountInString(third.FullOutput)
-	if strings.Contains(third.Output, secret) || strings.Contains(third.FullOutput, secret) || outputRunes > 512 || fullOutputRunes > 512 {
-		t.Fatalf("exact breaker message is not private and bounded: output_runes=%d full_output_runes=%d", outputRunes, fullOutputRunes)
+	for resultLabel, result := range map[string]ExecResult{
+		"first": first, "second": second, "other": other, "third": third,
+	} {
+		for fieldLabel, value := range map[string]string{
+			"output": result.Output, "full output": result.FullOutput, "recoverable output": result.RecoverableOutput,
+		} {
+			runes := utf8.RuneCountInString(value)
+			if strings.Contains(value, secret) || runes > 512 {
+				t.Fatalf("%s %s is not private and bounded: runes=%d", resultLabel, fieldLabel, runes)
+			}
+		}
 	}
 	if strings.Contains(other.Output, "You just ran") || strings.Contains(other.Output, "did not execute") {
 		t.Fatalf("different invalid name inherited the first name's breaker history: %#v", other)
@@ -223,6 +231,9 @@ func TestBreaker_InvalidToolNamesUsePrivateBoundedIdentity(t *testing.T) {
 	if !strings.HasPrefix(valid.BreakerExactSignature, validName+":") || !strings.HasPrefix(valid.BreakerSemanticSignature, validName+":") {
 		t.Fatalf("valid tool name lost its readable signature prefix: %#v", valid)
 	}
+	if !strings.Contains(valid.Output, validName) || !strings.Contains(valid.FullOutput, validName) {
+		t.Fatal("valid unknown tool name was not retained in diagnostics")
+	}
 }
 
 func TestBreaker_WhitespacePaddedToolNameUsesPrivateIdentity(t *testing.T) {
@@ -236,6 +247,14 @@ func TestBreaker_WhitespacePaddedToolNameUsesPrivateIdentity(t *testing.T) {
 	})
 	if !res.IsError {
 		t.Fatalf("unknown whitespace-padded tool unexpectedly succeeded: %#v", res)
+	}
+	for label, value := range map[string]string{
+		"output": res.Output, "full output": res.FullOutput, "recoverable output": res.RecoverableOutput,
+	} {
+		runes := utf8.RuneCountInString(value)
+		if strings.Contains(value, secret) || runes > 512 {
+			t.Fatalf("%s is not private and bounded: runes=%d", label, runes)
+		}
 	}
 	for label, value := range map[string]string{
 		"exact":    res.BreakerExactSignature,
@@ -316,6 +335,33 @@ func TestFinalizePrevalidationFailure_InvalidUTF8UsesEncodingBoundary(t *testing
 		if res.BreakerExactSignature == "" || res.BreakerSemanticSignature == "" || len(res.BreakerExactSignature) > 98 || len(res.BreakerSemanticSignature) > 98 {
 			t.Fatalf("invalid UTF-8 failure %d has missing or unbounded identity: %#v", i+1, res)
 		}
+	}
+}
+
+func TestExecuteCall_InvalidUTF8UsesEncodingBoundary(t *testing.T) {
+	const name = "utf8_direct"
+	r := NewRegistry()
+	calls := 0
+	registerUTF8CollisionTool(t, r, name, &calls)
+
+	results := make([]ExecResult, 0, 3)
+	for i, invalid := range []byte{0xff, 0xfe, 0xfd} {
+		raw := append([]byte(`{"value":"`), invalid)
+		raw = append(raw, []byte(`"}`)...)
+		results = append(results, r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{
+			ID:        "direct-invalid-utf8-" + string(rune('1'+i)),
+			Name:      name,
+			Arguments: raw,
+		}))
+	}
+	if calls != 0 {
+		t.Fatalf("invalid UTF-8 calls dispatched executor %d times", calls)
+	}
+	if !strings.Contains(results[1].Output, "normalized failure boundary (arguments_encoding)") {
+		t.Fatalf("second invalid UTF-8 failure has wrong guidance: %q", results[1].Output)
+	}
+	if !strings.Contains(results[2].Output, "semantic failure loop") || !strings.Contains(results[2].Output, "normalized boundary arguments_encoding") {
+		t.Fatalf("third invalid UTF-8 failure did not park at encoding boundary: %q", results[2].Output)
 	}
 }
 

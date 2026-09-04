@@ -408,8 +408,8 @@ type RegisteredTool struct {
 
 // PrevalidationSnapshot is an immutable registry observation captured before
 // session-level repair. Its contents are intentionally opaque: callers may
-// carry it to FinalizePrevalidationFailure, but cannot forge or alter the
-// lifetime it represents.
+// carry it to FinalizePrevalidationFailure or ExecutePreparedCall, but cannot
+// forge or alter the lifetime it represents.
 type PrevalidationSnapshot struct {
 	registry   *Registry
 	name       string
@@ -466,7 +466,7 @@ func (r *Registry) telemetryExactSignature(name string, args []byte) string {
 // and internal ledger keys: equal invalid names still group within a session,
 // but neither raw-name disclosure nor cross-session correlation is possible.
 func (r *Registry) breakerToolIdentity(name string) string {
-	if readableBreakerToolName(name) {
+	if IsReadableToolName(name) {
 		return name
 	}
 	return "invalid_" + r.telemetryComponent("invalid-tool-name", name)
@@ -928,17 +928,18 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
-	return r.executeCall(ctx, env, call, false)
+	return r.executeCall(ctx, env, call, nil)
 }
 
 // ExecutePreparedCall runs a session-prepared call. Preparation has already
-// normalized and prevalidated arguments, so it preserves ExecuteCall's generic
-// execution behavior without applying a RegisteredTool.PreValidate twice.
-func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
-	return r.executeCall(ctx, env, call, true)
+// normalized and prevalidated arguments for snapshot's registration lifetime.
+// If that lifetime is no longer current, execution falls back to the successor
+// registration's normal normalization and prevalidation path.
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, snapshot PrevalidationSnapshot) ExecResult {
+	return r.executeCall(ctx, env, call, &snapshot)
 }
 
-func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prevalidated bool) ExecResult {
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prepared *PrevalidationSnapshot) ExecResult {
 	name := call.Name
 	ledgerName := r.breakerToolIdentity(name)
 	callID := call.ID
@@ -961,6 +962,8 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	r.mu.RLock()
 	t, ok := r.tools[name]
 	currentGeneration := r.lifetimeLocked(name)
+	prevalidated := prepared != nil && prepared.registry == r && prepared.name == name &&
+		prepared.lifetime == currentGeneration && ok && t.generation == currentGeneration
 	if judged {
 		if failStreak, _, snippets := r.breaker.check(ledgerName, call.Arguments); failStreak >= breakerThreshold {
 			fingerprint, boundary := r.breaker.semanticMetadata(ledgerName, call.Arguments)
@@ -1000,7 +1003,11 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		if res, blocked := park(); blocked {
 			return res
 		}
-		msg := "unknown tool: " + name
+		visibleName := name
+		if !IsReadableToolName(name) {
+			visibleName = "invalid tool name"
+		}
+		msg := "unknown tool: " + visibleName
 		return finish(truncateResult(name, callID, msg, true, defaultToolLimit(name)))
 	}
 
@@ -1008,7 +1015,8 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		if res, blocked := park(); blocked {
 			return res
 		}
-		return finish(truncateResult(name, callID, err.Error(), true, defaultToolLimit(name)))
+		res := truncateResult(name, callID, err.Error(), true, defaultToolLimit(name))
+		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, prevalidationBoundary(name, call.Arguments, true))
 	}
 
 	var args map[string]any
@@ -1056,6 +1064,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 				return res
 			}
 			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			res.Err = err
 			return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, prevalidationBoundary(name, call.Arguments, true))
 		}
 	}

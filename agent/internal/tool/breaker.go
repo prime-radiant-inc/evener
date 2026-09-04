@@ -86,17 +86,17 @@ func signature(name string, args []byte) string {
 // Registry's session-private identity. Registry dispatch does replace it first;
 // this fallback is internal-only and exists to preserve the key-size invariant.
 func boundedLedgerToolIdentity(name string) string {
-	if readableBreakerToolName(name) {
+	if IsReadableToolName(name) {
 		return name
 	}
 	return "invalid_" + shortHash([]byte(name))
 }
 
-// readableBreakerToolName is stricter than ValidateToolName because that
+// IsReadableToolName is stricter than ValidateToolName because that
 // configuration validator tolerates surrounding whitespace. Incoming call names
 // are never normalized before lookup, so only the exact provider grammar is safe
-// to retain as a readable breaker identity.
-func readableBreakerToolName(name string) bool {
+// to retain in user- or model-visible diagnostics.
+func IsReadableToolName(name string) bool {
 	return name == strings.TrimSpace(name) && len(name) <= 64 && llm.ValidateToolName(name) == nil
 }
 
@@ -372,7 +372,7 @@ func repetitionNudgeText(count int) string {
 // the same way. It shows the failures themselves so the model can see what it
 // is being asked to stop repeating.
 func failureParkText(name string, snippets []string) string {
-	if !readableBreakerToolName(name) {
+	if !IsReadableToolName(name) {
 		name = "invalid tool name"
 		// Unknown-tool failure snippets repeat the raw provider-supplied name.
 		// Keep invalid names out of both model-facing and retained breaker text.
@@ -405,7 +405,7 @@ func semanticFailureNudgeText(boundary string) string {
 // session telemetry, so this must remain useful without repeating secrets or
 // arbitrary user-provided bodies.
 func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
-	if !readableBreakerToolName(name) {
+	if !IsReadableToolName(name) {
 		name = "invalid tool name"
 	}
 	var b strings.Builder

@@ -178,6 +178,17 @@ func TestSession_InvalidToolNamesEmitPrivateBoundedBreakerIdentity(t *testing.T)
 	if len(emitted.ends) != len(results) {
 		t.Fatalf("TOOL_CALL_END count = %d, want %d", len(emitted.ends), len(results))
 	}
+	for i, res := range results {
+		for label, value := range map[string]string{
+			"output": res.Output, "full output": res.FullOutput, "recoverable output": res.RecoverableOutput,
+			"TOOL_CALL_END error": emitted.ends[i].Error,
+		} {
+			runes := utf8.RuneCountInString(value)
+			if strings.Contains(value, secret) || runes > 2048 {
+				t.Fatalf("call %d %s is not private and bounded: runes=%d", i+1, label, runes)
+			}
+		}
+	}
 	if len(emitted.repaired) != 0 {
 		t.Fatalf("invalid names unexpectedly emitted repair telemetry: %+v", emitted.repaired)
 	}
@@ -211,6 +222,11 @@ func TestSession_InvalidToolNamesEmitPrivateBoundedBreakerIdentity(t *testing.T)
 	if len(otherEvents.ends) != 1 || otherEvents.ends[0].BreakerExactSignature != other[0].BreakerExactSignature || otherEvents.ends[0].BreakerSemanticSignature != other[0].BreakerSemanticSignature {
 		t.Fatalf("other session event did not carry its private breaker identities: results=%#v events=%+v", other, otherEvents.ends)
 	}
+	const validName = "readable_unknown_tool"
+	valid, validEvents := run(t, []string{validName})
+	if len(valid) != 1 || len(validEvents.ends) != 1 || !strings.Contains(valid[0].Output, validName) || !strings.Contains(valid[0].FullOutput, validName) || !strings.Contains(validEvents.ends[0].Error, validName) {
+		t.Fatal("valid unknown tool name was not retained in Session diagnostics")
+	}
 }
 
 func TestSession_WhitespacePaddedToolNameEmitsPrivateIdentity(t *testing.T) {
@@ -228,6 +244,15 @@ func TestSession_WhitespacePaddedToolNameEmitsPrivateIdentity(t *testing.T) {
 	emitted := <-eventsCh
 	if !res.IsError || len(emitted.ends) != 1 {
 		t.Fatalf("result/event = %#v / %+v, want one failed call event", res, emitted.ends)
+	}
+	for label, value := range map[string]string{
+		"output": res.Output, "full output": res.FullOutput, "recoverable output": res.RecoverableOutput,
+		"TOOL_CALL_END error": emitted.ends[0].Error,
+	} {
+		runes := utf8.RuneCountInString(value)
+		if strings.Contains(value, secret) || runes > 2048 {
+			t.Fatalf("%s is not private and bounded: runes=%d", label, runes)
+		}
 	}
 	for label, value := range map[string]string{
 		"result exact":    res.BreakerExactSignature,

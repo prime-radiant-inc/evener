@@ -664,6 +664,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
+	if !tool.IsReadableToolName(call.Name) {
+		requestedVisible = "invalid tool name"
+	}
 	registered, lifetime := s.reg.SnapshotPrevalidation(call.Name)
 	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	prep.Lifetime = lifetime
@@ -788,7 +791,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
 		if prevalidated {
-			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
+			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 		}
