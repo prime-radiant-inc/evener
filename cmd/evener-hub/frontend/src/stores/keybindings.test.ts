@@ -346,6 +346,108 @@ describe("keybindings store: patch", () => {
     expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
     expect(bindingsFor(ACTIONS.nextNeedsYou)).toHaveLength(2);
   });
+
+  // The store retains the hub's RAW rules (rawOverrides) so a PATCH composed
+  // from them preserves rules validation skips; pre-flight then tolerates
+  // warnings the current raw set already produces (baseline), rejecting only
+  // what the edit itself introduced.
+  test("the raw rule set is retained verbatim while the validated set drives application", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [
+        { action: "no.such.action", chord: "Control+P" },
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]),
+    );
+    await wireClient(client, true);
+
+    const state = keybindingsStore.getState();
+    expect(state.rawOverrides).toEqual([
+      { action: "no.such.action", chord: "Control+P" },
+      { action: ACTIONS.composerFocus, chord: "Control+M" },
+    ]);
+    // Application/display still see only the validated rule.
+    expect(state.overrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    expect(state.warnings.map((w) => w.message)).toEqual(['unknown keybinding action "no.such.action"']);
+  });
+
+  test("a patch carrying a preserved invalid rule passes pre-flight and the rule reaches the hub verbatim", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: "no.such.action", chord: "Control+P" }]),
+    );
+    client.on("evener/settings/keybindings/patch", (params) => overridesPayload(4, params.config.rules));
+    await wireClient(client, true);
+
+    // Composed the way the editor composes: raw rules with one swapped. The
+    // unknown-action warning is baseline (the current raw set already
+    // produces it), so it must NOT reject the edit.
+    const result = await keybindingsStore.getState().patchOverrides([
+      { action: "no.such.action", chord: "Control+P" },
+      { action: ACTIONS.composerFocus, chord: "Control+M" },
+    ]);
+
+    expect(result.revision).toBe(4);
+    const patchCalls = client.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
+    expect(patchCalls).toHaveLength(1);
+    expect(patchCalls[0]?.params).toEqual({
+      expectedRevision: 3,
+      config: {
+        version: 1,
+        rules: [
+          { action: "no.such.action", chord: "Control+P" },
+          { action: ACTIONS.composerFocus, chord: "Control+M" },
+        ],
+      },
+    });
+    // The preserved rule is still skipped (never applied) after the confirm.
+    expect(keybindingsStore.getState().rawOverrides).toEqual([
+      { action: "no.such.action", chord: "Control+P" },
+      { action: ACTIONS.composerFocus, chord: "Control+M" },
+    ]);
+    expect(keybindingsStore.getState().overrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+  });
+
+  test("baseline tolerance does NOT mask a conflict the edit itself introduces", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: "no.such.action", chord: "Control+P" }]),
+    );
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    // palette.open's default overlaps a strict Control+K claim: a NEW
+    // warning, not one the raw set already produces.
+    await expect(
+      keybindingsStore.getState().patchOverrides([
+        { action: "no.such.action", chord: "Control+P" },
+        { action: ACTIONS.composerFocus, chord: "Control+K" },
+      ]),
+    ).rejects.toThrow(`chord "Control+K" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`);
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
+  });
+
+  test("the edited action's own invalid chord still rejects pre-flight alongside a preserved invalid rule", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: "no.such.action", chord: "Control+P" }]),
+    );
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    await expect(
+      keybindingsStore.getState().patchOverrides([
+        { action: "no.such.action", chord: "Control+P" },
+        { action: ACTIONS.railToggle, chord: "Control+W" }, // reserved on this platform
+      ]),
+    ).rejects.toThrow('chord "Control+W" is reserved');
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: "no.such.action", chord: "Control+P" }]);
+  });
 });
 
 describe("keybindings store: reconcile resilience", () => {

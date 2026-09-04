@@ -84,9 +84,13 @@ function errorMessage(error: unknown): string {
 /** The full replacement rule set a single-action edit produces: the store's
  * patch semantics are whole-payload (an action the payload drops gets its
  * defaults restored), so every edit re-sends the current overrides with this
- * action's rule swapped - or REMOVED (chord undefined) for reset-to-default. */
+ * action's rule swapped - or REMOVED (chord undefined) for reset-to-default.
+ * Composition is from the hub's RAW rules (rawOverrides), NOT the validated
+ * `overrides`: a rule validation skipped (an unknown action from a newer
+ * client, an unparseable chord) is still the hub's state and passes through
+ * untouched - composing from the validated set would silently delete it. */
 function replacementRules(actionId: string, chord: string | null | undefined): OverrideRule[] {
-  const current = keybindingsStore.getState().overrides;
+  const current = keybindingsStore.getState().rawOverrides;
   const rest = current.filter((rule) => rule.action !== actionId);
   if (chord === undefined) return [...rest];
   return [...rest, { action: actionId, chord }];
@@ -128,6 +132,24 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
     boxRef.current?.focus();
   }, []);
 
+  // Click-away cancels even when the click target is not focusable: onBlur
+  // alone only fires when focus MOVES (to another control), so clicking
+  // non-focusable text or empty space would leave the capture live. A
+  // document-level pointerdown in the capture phase sees every press,
+  // wherever it lands; a press outside the box cancels with refocus:false
+  // (focus goes where the user put it - or stays, for a non-focusable
+  // target). The listener dies with the box (unmount on cancel/save).
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent): void {
+      const box = boxRef.current;
+      if (box !== null && event.target instanceof Node && !box.contains(event.target)) {
+        onCancel(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [onCancel]);
+
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     event.preventDefault();
     event.stopPropagation();
@@ -154,15 +176,17 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
       return;
     }
     setError(null);
-    // Single-character keys normalize to uppercase: KeyboardEvent.key for a
+    // ASCII letters normalize to uppercase: KeyboardEvent.key for a
     // mod chord arrives lowercase ("p" for Ctrl+P) while the default map
     // writes letters uppercase, and tinykeys matches case-insensitively, so
     // normalizing keeps display and serialization consistent with the
-    // existing rows without changing what matches.
+    // existing rows without changing what matches. The test is ASCII-only on
+    // purpose: String.toUpperCase can CHANGE LENGTH on non-ASCII input
+    // ("ß".toUpperCase() === "SS"), which would corrupt the chord.
     setCaptured({
       modifiers,
       optionalModifiers: [],
-      key: event.key.length === 1 ? event.key.toUpperCase() : event.key,
+      key: /^[a-z]$/.test(event.key) ? event.key.toUpperCase() : event.key,
     });
   }
 
@@ -173,7 +197,9 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   return (
     <div className={CLASS.captureWrap}>
       {/* Clicking away cancels: the box is modal-ish, and focus leaving it
-          (another row's chord button, the toggle) ends the capture. The
+          (another row's chord button, the toggle) ends the capture via
+          onBlur; the pointerdown listener above covers clicks that never
+          move focus (non-focusable text, empty space). The
           textbox role names what it is - a keyboard-capture surface in the
           spirit of HotkeyRecorder's input; aria-readonly because every key
           is intercepted rather than typed. */}

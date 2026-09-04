@@ -32,6 +32,12 @@ export interface KeybindingsStoreState {
   revision: number;
   /** The validated rules currently applied to the registry. */
   overrides: readonly OverrideRule[];
+  /** The hub payload's rules VERBATIM, before validation filtering. The
+   * editor composes whole-payload PATCHes from THIS set, not from
+   * `overrides`: a rule validation skips (an unknown action from a newer
+   * client, an unparseable chord) is still the hub's state, and a PATCH
+   * composed from the validated set would silently delete it. */
+  rawOverrides: readonly OverrideRule[];
   /** Semantic-validation warnings from the last applied payload. */
   warnings: readonly ValidationWarning[];
   /** Set when a patch lost the revision race; the store has already refreshed
@@ -48,6 +54,7 @@ function initialState(): Omit<KeybindingsStoreState, "refreshOverrides" | "patch
     hubError: null,
     revision: 0,
     overrides: [],
+    rawOverrides: [],
     warnings: [],
     conflict: null,
   };
@@ -169,7 +176,17 @@ function applyHubOverrides(payload: KeybindingsOverrides): void {
   // at this payload either way. Clearing one without the other was the
   // parked 2b asymmetry: a stale conflict notice outlived the state it
   // described (only a successful PATCH cleared it).
-  keybindingsStore.setState({ revision: payload.revision, hubError: null, conflict: null });
+  // rawOverrides is retained VERBATIM (validation filtering already happened
+  // inside applyOverrideRules): an edit's whole-payload PATCH is composed
+  // from this set so a rule validation skips survives an unrelated edit.
+  // Only a successful reconcile advances it - a failed apply leaves the last
+  // good raw set beside the last good revision.
+  keybindingsStore.setState({
+    rawOverrides: payload.rules.map((rule) => ({ action: rule.action, chord: rule.chord })),
+    revision: payload.revision,
+    hubError: null,
+    conflict: null,
+  });
 }
 
 function currentSupport(): "unknown" | "supported" | "unsupported" {
@@ -347,12 +364,22 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     // by the hub (the server validates structure only) and then silently not
     // apply. Reject instead, with the validation layer's own message, and
     // leave hubError/conflict untouched: nothing hub-sourced happened. The
-    // currently-applied set re-validates clean (it did at apply time and the
-    // reserved lists are platform-static), so a warning always names a rule
-    // this call introduced.
-    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, new Set(appliedOverrides.keys()));
-    if (preflight.warnings.length > 0) {
-      throw new Error(preflight.warnings.map((warning) => warning.message).join("\n"));
+    // payload is composed from the hub's RAW rules (rawOverrides), so it can
+    // carry a PRESERVED rule validation skips - an unknown action from a
+    // newer client, say. That is a pre-existing condition, not a defect this
+    // call introduced: reject only on warnings the CURRENT raw set does not
+    // already produce, keyed by action+message (the baseline simulation runs
+    // against the same live registry and applied set, so a preserved rule
+    // reproduces its apply-time warning verbatim).
+    const applied = new Set(appliedOverrides.keys());
+    const baseline = validateOverrideRules(state.rawOverrides, keybindingsRegistry, undefined, applied);
+    const baselineKeys = new Set(baseline.warnings.map((warning) => `${warning.rule.action} ${warning.message}`));
+    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, applied);
+    const introduced = preflight.warnings.filter(
+      (warning) => !baselineKeys.has(`${warning.rule.action} ${warning.message}`),
+    );
+    if (introduced.length > 0) {
+      throw new Error(introduced.map((warning) => warning.message).join("\n"));
     }
     const token = ++patchSerial;
     try {
@@ -362,7 +389,7 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       });
       if (token !== patchSerial || !isCurrentReady(client, generation)) {
         const current = keybindingsStore.getState();
-        return { version: 1, revision: current.revision, rules: [...current.overrides] };
+        return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
       }
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");

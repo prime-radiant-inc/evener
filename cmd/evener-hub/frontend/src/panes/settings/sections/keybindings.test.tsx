@@ -342,6 +342,161 @@ test("Escape cancels the capture without a hub write and leaves the chord unchan
   );
 });
 
+// Plain Escape is cancel, permanently: it cannot be assigned through the
+// editor (the VS Code keybinding-editor convention), so the built-in Escape
+// bindings come back via Reset, never via capture. Escape WITH a modifier is
+// a normal chord and records. settings.close's own default is Escape with
+// every modifier optional, so overriding THAT action with Shift+Escape
+// conflicts with nothing.
+test("plain Escape cancels but Shift+Escape records as a chord", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  let box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "Escape" });
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+
+  box = await enterCapture("Close settings");
+  fireEvent.keyDown(box, { key: "Escape", shiftKey: true });
+  expect(within(box).getByText("Shift")).toBeTruthy();
+  expect(within(box).getByText("Escape")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.settingsClose, chord: "Shift+Escape" }] },
+  });
+});
+
+// Uppercase normalization is ASCII-only: String.toUpperCase can change
+// LENGTH on non-ASCII input ("ß" -> "SS"), which would corrupt the chord.
+test("a non-ASCII character records verbatim; ASCII letters still normalize to uppercase", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  let box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: "ß" });
+  expect(within(box).getByText("ß")).toBeTruthy();
+  expect(within(box).queryByText("SS")).toBeNull();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "ß" }] },
+  });
+
+  box = await enterCapture("Quote the selection into the composer");
+  fireEvent.keyDown(box, { key: "a" });
+  expect(within(box).getByText("A")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(2));
+  expect(patchCallsOf(client)[1]?.params).toEqual({
+    expectedRevision: 2,
+    config: {
+      version: 1,
+      rules: [
+        { action: ACTIONS.composerFocus, chord: "ß" },
+        { action: ACTIONS.selectionQuote, chord: "A" },
+      ],
+    },
+  });
+});
+
+// Click-away cancels even when the click target cannot take focus: onBlur
+// alone only fires when focus MOVES, so a document-level pointerdown listener
+// (capture phase) covers non-focusable clicks while the capture is live.
+test("pointerdown outside the capture box cancels without refocusing the chord button", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.pointerDown(document.body);
+
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("K")).toBeTruthy();
+  // refocus:false - a click-away cancel leaves focus where the user put it,
+  // unlike the keyboard cancel which returns focus to the chord button.
+  expect(document.activeElement).not.toBe(
+    within(row).getByRole("button", { name: "Change the shortcut for Open the command palette" }),
+  );
+});
+
+test("pointerdown INSIDE the capture box does not cancel", async () => {
+  await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.pointerDown(box);
+
+  expect(captureBox()).toBeTruthy();
+  expect(screen.getByText("Press new shortcut…")).toBeTruthy();
+});
+
+test("the outside-pointerdown listener is removed when the capture closes", async () => {
+  const addSpy = vi.spyOn(document, "addEventListener");
+  const removeSpy = vi.spyOn(document, "removeEventListener");
+  try {
+    await wireEditableClient();
+    render(<KeybindingsSection />);
+    await enterCapture("Open the command palette");
+
+    // The capture box's listener is the pointerdown one in the capture phase.
+    const added = addSpy.mock.calls.filter((call) => call[0] === "pointerdown" && call[2] === true);
+    expect(added).not.toHaveLength(0);
+    const listener = added[added.length - 1]?.[1];
+
+    fireEvent.keyDown(captureBox(), { key: "Escape" });
+    expect(screen.queryByText("Press new shortcut…")).toBeNull();
+
+    expect(
+      removeSpy.mock.calls.some((call) => call[0] === "pointerdown" && call[1] === listener && call[2] === true),
+    ).toBe(true);
+  } finally {
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  }
+});
+
+// Whole-payload PATCHes are composed from the hub's RAW rules: a rule
+// validation skipped (here: an action this client does not know, written by
+// a newer one) is still the hub's state and must survive an unrelated edit.
+test("an unrelated edit preserves a hub rule validation skips (unknown action survives in the PATCH payload)", async () => {
+  const client = await wireEditableClient([{ action: "future.new.action", chord: "Control+Alt+9" }]);
+  render(<KeybindingsSection />);
+
+  // The skipped rule stays a quiet warning; nothing is customized.
+  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
+  expect(screen.queryByText("Customized")).toBeNull();
+
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  // The unknown-action rule passes through untouched, alongside the edit.
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: {
+      version: 1,
+      rules: [
+        { action: "future.new.action", chord: "Control+Alt+9" },
+        { action: ACTIONS.paletteOpen, chord: "Control+P" },
+      ],
+    },
+  });
+  // The preserved rule's pre-existing warning did not block the save, and
+  // the confirmed payload still lists it as a (skipped) warning.
+  await waitFor(() => expect(within(rowFor("Open the command palette")).getByText("P")).toBeTruthy());
+  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
+});
+
 test("a plain Enter with nothing captured neither saves nor cancels", async () => {
   const client = await wireEditableClient();
   render(<KeybindingsSection />);

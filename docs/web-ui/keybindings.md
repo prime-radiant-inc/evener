@@ -511,8 +511,13 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   or "Set a shortcut" when unbound) swaps the row's controls for a focused
   capture box showing "Press new shortcut…". Held modifiers echo live as
   `KeyHint` chips; the first non-modifier press records the chord. Plain
-  Enter saves, plain Escape cancels, Enter/Escape WITH a modifier record
-  as chords (Escape itself stays bindable). Clicking away cancels. The
+  Enter saves. Plain Escape ALWAYS cancels the capture — bare Escape
+  cannot be assigned through the editor (Escape-as-cancel is the
+  keybinding-editor convention), so the two built-in Escape bindings
+  (Close settings, Close the keyboard shortcuts overlay) are restored via
+  **Reset to default** rather than re-captured. Enter/Escape WITH a
+  modifier still record as chords (Shift+Escape is bindable). Clicking
+  away cancels, whether or not the click target can take focus. The
   capture box preventDefaults and stopPropagations every keydown, so the
   dispatcher and `settings.close`'s own Escape stay inert while capturing.
 - **Single-press only.** Capture records one press — no multi-press
