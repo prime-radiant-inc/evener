@@ -444,3 +444,30 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 		t.Errorf("disposing a child on the parent's shared environment removed its scratch %s: %v", sharedScratch, err)
 	}
 }
+
+// A stable delegate's construction hands createSubagent an environment the
+// isolation step already prepared, so the spawn's own rollback deliberately
+// leaves that environment alone and delegateIsolation.cleanup is what rolls it
+// back. The construction it wraps runs the child's git snapshot, which mints an
+// unsandboxed environment's scratch, so this rollback has to drop both dirs too.
+func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	owner := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	fresh := owner.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(t.TempDir())
+	if _, err := fresh.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	scratch := fresh.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the isolated env minted no session scratch, so there is nothing to dispose")
+	}
+
+	// No worktree path: this is the plain re-rooted/boxed lane, whose rollback is
+	// only the environment.
+	delegateIsolation{env: fresh, ownsFreshEnv: true}.cleanup(owner, "")
+
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Errorf("delegate isolation rollback retained scratch %s: stat err = %v", scratch, err)
+	}
+}

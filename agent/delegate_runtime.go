@@ -1487,7 +1487,11 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	if isolation.ownsFreshEnv {
 		if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-			local.DisposeSandboxScratch()
+			// Both scratch dirs go. createSubagent leaves a PREPARED environment
+			// alone (it belongs to this isolation step), so this is the only
+			// rollback for the scratch the construction's git snapshot minted on
+			// an unsandboxed lane, as well as for a sandboxed lane's owned one.
+			local.DisposeUnadoptedScratch()
 		}
 	}
 	if isolation.worktreePath != "" {
