@@ -216,6 +216,65 @@ func TestSessionReadableUnknownToolNameExternalProjectionIsPreserved(t *testing.
 	assertProjectedToolNames(t, obs, name, "")
 }
 
+func TestSessionMalformedProviderAliasDoesNotDispatchCanonicalTool(t *testing.T) {
+	const malformedAlias = " exec_command "
+	sess := newSession(t, withSteps(
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "malformed-alias",
+				Name:      malformedAlias,
+				Arguments: []byte(`{}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response { return finalResponse("done") },
+	), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+		},
+	}))
+
+	called := false
+	if err := sess.RegisterTool("shell", "test replacement", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		called = true
+		return "unexpected", nil
+	}); err != nil {
+		t.Fatalf("replace shell tool: %v", err)
+	}
+	if _, err := sess.ProcessInput(context.Background(), "run", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if called {
+		t.Fatal("malformed provider alias dispatched the canonical shell tool")
+	}
+
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	var callNames, resultNames []string
+	for _, turn := range history {
+		for _, part := range turn.Message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == "malformed-alias" {
+				callNames = append(callNames, part.ToolCall.Name)
+			}
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == "malformed-alias" {
+				resultNames = append(resultNames, part.ToolResult.Name)
+			}
+		}
+	}
+	if len(callNames) != 1 || callNames[0] != invalidToolNameWire {
+		t.Errorf("provider assistant call names = %q, want [%q]", callNames, invalidToolNameWire)
+	}
+	if len(resultNames) != 1 || resultNames[0] != invalidToolNameWire {
+		t.Errorf("provider tool result names = %q, want [%q]", resultNames, invalidToolNameWire)
+	}
+}
+
 func TestSessionCustomToolCannotShadowInvalidHistoryProjection(t *testing.T) {
 	sess := newSession(t)
 	defer sess.Close()

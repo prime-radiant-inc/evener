@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -1443,9 +1444,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			continue
 		}
 
-		// Reverse-map provider-specific tool names to canonical names for registry lookup.
+		// Reverse-map valid provider-specific tool names to canonical names for
+		// registry lookup. Preserve malformed names exactly so alias normalization
+		// cannot turn a name projected as invalid in history into an executable tool.
 		for i := range calls {
-			calls[i].Name = s.canonicalToolName(calls[i].Name)
+			if tool.IsReadableToolName(calls[i].Name) {
+				calls[i].Name = s.canonicalToolName(calls[i].Name)
+			}
 		}
 
 		// Progress signal for the goal engine: a turn "progressed" iff it made a
