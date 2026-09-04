@@ -274,6 +274,75 @@ test("rows reflect an applied hub override (registry-sourced, not hardcoded)", a
   expect(within(paletteRow).queryByText("K")).toBeNull();
 });
 
+// The override-restore half of the character-key reconcile (the stated
+// reason for its keybindingsStore subscription): removing an override on
+// cheatsheet.toggle re-registers EVERY default entry for the action - "?"
+// included - through registerDefaultBindingsForAction, and the reconcile
+// must then strip "?" again when the pref is off. A regression here is
+// silent, so the invariant is pinned at the registry level in both pref
+// states.
+test("override removal with the pref OFF restores the defaults and strips the ? trigger again", async () => {
+  render(<CheatsheetOverlay />);
+  act(() => prefsStore.getState().setCharacterKeyTriggers(false));
+  expect(questionTriggerRegistered()).toBe(false);
+
+  let payload = overridesPayload(3, [{ action: ACTIONS.cheatsheetToggle, chord: "Control+P" }]);
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => payload);
+  await wireClient(client, true);
+
+  // Overridden: the override owns the action's whole chord set ("?" does not
+  // come back while the override is applied).
+  expect(
+    keybindingsRegistry
+      .getState()
+      .bindings.filter((b) => b.actionId === ACTIONS.cheatsheetToggle)
+      .map((b) => b.id),
+  ).toEqual([`${ACTIONS.cheatsheetToggle}#override`]);
+
+  // Removing the override restores the default map - which re-registers "?"
+  // with no knowledge of the pref - and the reconcile strips it again
+  // without throwing (a rollback would surface as hubError).
+  payload = overridesPayload(4, []);
+  await keybindingsStore.getState().refreshOverrides();
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  expect(questionTriggerRegistered()).toBe(false);
+  expect(
+    keybindingsRegistry
+      .getState()
+      .bindings.filter((b) => b.actionId === ACTIONS.cheatsheetToggle)
+      .map((b) => b.id)
+      .sort(),
+  ).toEqual([ACTIONS.cheatsheetToggle, `${ACTIONS.cheatsheetToggle}#mod-twin`]);
+});
+
+test("override removal with the pref ON restores the defaults with exactly one ? binding (no duplicate-id throw)", async () => {
+  render(<CheatsheetOverlay />);
+  expect(questionTriggerRegistered()).toBe(true);
+
+  let payload = overridesPayload(3, [{ action: ACTIONS.cheatsheetToggle, chord: "Control+P" }]);
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => payload);
+  await wireClient(client, true);
+  expect(questionTriggerRegistered()).toBe(false);
+
+  // The restore re-registers "?" itself; the reconcile must be a no-op here -
+  // re-registering the same id would throw into the store's rollback path.
+  payload = overridesPayload(4, []);
+  await keybindingsStore.getState().refreshOverrides();
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  expect(keybindingsRegistry.getState().bindings.filter((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID)).toHaveLength(
+    1,
+  );
+  expect(
+    keybindingsRegistry
+      .getState()
+      .bindings.filter((b) => b.actionId === ACTIONS.cheatsheetToggle)
+      .map((b) => b.id)
+      .sort(),
+  ).toEqual([ACTIONS.cheatsheetToggle, `${ACTIONS.cheatsheetToggle}#mod-twin`, CHARACTER_KEY_TRIGGER_BINDING_ID]);
+});
+
 test("mobile: nothing mounts, registers, or intercepts on a touch viewport", async () => {
   installMobileViewport();
   resetMobileViewportForTests();
