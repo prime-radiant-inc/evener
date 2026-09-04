@@ -36,16 +36,25 @@ func newFakeClockShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecu
 	return jm, env, clk
 }
 
-func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
-	t.Helper()
+// shellDoneChannel returns the running job's done channel, which
+// armFinalizedJob closes only after the owner notification is enqueued, and
+// false when the job is no longer in the running map.
+func shellDoneChannel(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	run := jm.running[jobID]
 	if run == nil {
-		jm.mu.Unlock()
+		return nil, false
+	}
+	return run.done, true
+}
+
+func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	done, live := shellDoneChannel(jm, jobID)
+	if !live {
 		return
 	}
-	done := run.done
-	jm.mu.Unlock()
 
 	select {
 	case <-done:
