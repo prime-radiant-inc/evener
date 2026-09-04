@@ -236,18 +236,38 @@ func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
 	}
 	// openai-codex has inherit_models = false: only its own rows count.
 	// A provider with no rows of its own (e.g. google-vertex-express) inherits
-	// them through base, so walk that chain before declaring a miss.
+	// them through base, so walk that chain before declaring a miss — but stop
+	// at a provider that explicitly opts out of inheriting models (codex),
+	// rather than silently falling through to its base's rows.
 	has := func(provider, id string) bool {
 		for {
 			if rows[provider][id] {
 				return true
 			}
-			base := l.Providers[provider].Base
-			if base == "" {
+			p := l.Providers[provider]
+			if p.InheritModels != nil && !*p.InheritModels {
 				return false
 			}
-			provider = base
+			if p.Base == "" {
+				return false
+			}
+			provider = p.Base
 		}
+	}
+	// Direct pin: openai-codex must keep inherit_models = false, and its own
+	// default_model/cheap_model must resolve from its own rows alone (not by
+	// walking to openai's base) — the generic loop below would still pass if
+	// this had silently regressed to a walk, since gpt-5.6/gpt-5.6-luna also
+	// exist as openai rows.
+	codex := l.Providers["openai-codex"]
+	if codex.InheritModels == nil || *codex.InheritModels {
+		t.Fatal("openai-codex must have inherit_models = false")
+	}
+	if !rows["openai-codex"][codex.DefaultModel] {
+		t.Errorf("openai-codex: default_model %q is not one of its own rows", codex.DefaultModel)
+	}
+	if !rows["openai-codex"][codex.CheapModel] {
+		t.Errorf("openai-codex: cheap_model %q is not one of its own rows", codex.CheapModel)
 	}
 	for id, p := range l.Providers {
 		for _, ref := range []string{p.DefaultModel, p.CheapModel} {
