@@ -35,12 +35,47 @@ func DefaultRoot() string {
 	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), pluginUserHomeDir), "plugins")
 }
 
-func (m *Manager) registryPath() string { return filepath.Join(m.Root, "installed_plugins.json") }
-func (m *Manager) marketplacesFile() string {
-	return filepath.Join(m.Root, "known_marketplaces.json")
+// The store's own files and directories, named once so storePath and the
+// plain joins below cannot drift apart.
+const (
+	registryFileName     = "installed_plugins.json"
+	marketplacesFileName = "known_marketplaces.json"
+	bundledDirName       = "bundled"
+	cacheDirName         = "cache"
+	marketplacesDirName  = "marketplaces"
+)
+
+// storePath derives a path inside the store, refusing a root that resolves
+// against whatever directory the process happens to be in — an empty root
+// (none could be resolved) or a relative one.
+//
+// acquireStoreLock is the same refusal for everything a writer does while it
+// holds the store lock. This is the refusal for the store access that never
+// takes a lock: reading the registry or the marketplaces file, and preparing
+// the bundled store. A reader has no lock to inherit the check from, and List
+// and ListMarketplaces used to hand back whatever installed_plugins.json or
+// known_marketplaces.json the working directory happened to hold. Deriving the
+// path here is what refuses, so a new reader cannot forget.
+//
+// The plain joins below stay unchecked: their callers either already hold the
+// store lock or are tests naming a path to plant a file at.
+func (m *Manager) storePath(parts ...string) (string, error) {
+	if err := m.storeRootError(); err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{m.Root}, parts...)...), nil
 }
-func (m *Manager) marketplacesDir() string { return filepath.Join(m.Root, "marketplaces") }
-func (m *Manager) cacheDir() string        { return filepath.Join(m.Root, "cache") }
+
+// registryPath and marketplacesFile are the unchecked joins, for tests naming
+// a path to plant a file at. Production reads and writes go through
+// loadRegistry/saveRegistry and loadMarketplaces/saveMarketplaces, which
+// derive the same paths through storePath.
+func (m *Manager) registryPath() string { return filepath.Join(m.Root, registryFileName) }
+func (m *Manager) marketplacesFile() string {
+	return filepath.Join(m.Root, marketplacesFileName)
+}
+func (m *Manager) marketplacesDir() string { return filepath.Join(m.Root, marketplacesDirName) }
+func (m *Manager) cacheDir() string        { return filepath.Join(m.Root, cacheDirName) }
 func (m *Manager) lockPath() string        { return filepath.Join(m.Root, ".lock") }
 
 // bundledDir is evener's content-addressed cache of the plugins the running

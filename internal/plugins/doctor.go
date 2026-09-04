@@ -66,7 +66,7 @@ type DoctorFinding struct {
 // returned as an error; it becomes a FAIL finding instead, so the rest of the
 // report is still useful.
 func (m *Manager) Doctor() ([]DoctorFinding, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}
