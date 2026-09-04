@@ -1192,3 +1192,69 @@ describe("keybindings store: write serialization", () => {
     });
   });
 });
+
+// A queued write is fenced to the ready generation it was CREATED under:
+// compose-at-execution (finding 16) is right within one generation, but a
+// write whose generation ended while it queued carries edit intent made
+// against the hub the user was looking at - it must die with that
+// generation, never land on the new hub.
+describe("keybindings store: write generation fence", () => {
+  test("a write queued behind an in-flight write rejects after a mid-flight client replacement, with no wire request to the new hub", async () => {
+    // Hub A: get lands immediately; the PATCH hangs so a second write queues.
+    const clientA = new FakeClient("ready");
+    clientA.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let resolvePatchA: ((value: KeybindingsOverrides) => void) | undefined;
+    clientA.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatchA = resolve;
+        }),
+    );
+    await wireClient(clientA, true);
+
+    const first = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    await waitFor(() =>
+      expect(clientA.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1),
+    );
+    // Write #2 queues behind the in-flight write, created while hub A's
+    // state is the displayed state.
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+
+    // The client is replaced mid-flight: hub B loads cleanly at revision 1.
+    const clientB = new FakeClient("ready");
+    clientB.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    clientB.on("evener/settings/keybindings/patch", (params) =>
+      overridesPayload(params.expectedRevision + 1, params.config.rules),
+    );
+    connectionStore.getState().connect(clientB);
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+
+    // A's hanging PATCH resolves: its response must not apply (the
+    // post-response staleness branch), and write #2 - created under A's
+    // generation - must REJECT with the unavailable-class error having sent
+    // NO request to B. Without the call-time fence, run #2 would recompute
+    // against B's now-loaded state, pass every execution-time guard, and
+    // land the A-era edit on B.
+    resolvePatchA?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await first;
+    await expect(second).rejects.toThrow(/unavailable/);
+
+    expect(clientB.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    expect(keybindingsStore.getState().revision).toBe(1);
+    expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
+    expect(bindingsFor(ACTIONS.paletteOpen)).toHaveLength(2);
+  });
+
+  // The same-generation half is pinned by "concurrent patches serialize"
+  // (write serialization describe): two writes created in one tick under one
+  // generation both land in order - the fence must not reject them.
+});

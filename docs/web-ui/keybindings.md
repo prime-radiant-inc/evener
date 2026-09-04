@@ -514,7 +514,13 @@ not the store; the store carries `hubSupport`, `revision`, the validated
   behind — composing at call time would race the queued-ahead write with a
   stale `expectedRevision` and a payload missing its confirmed change (a
   self-inflicted conflict). A failed write settles the queue entry without
-  blocking the next one.
+  blocking the next one. Each write is also fenced to the ready generation
+  it was CREATED under: the client and epoch are captured at call time, and
+  a queued write whose generation ended while it waited (client replaced,
+  generation bumped) rejects with the same unavailable-class error before
+  any wire request — compose-at-execution is right within one generation,
+  but an edit made against one hub's displayed state must not land on the
+  next hub's config.
 
 ### Failure posture
 

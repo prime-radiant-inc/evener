@@ -467,6 +467,17 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     await refreshFor(client, activeReadyEpoch);
   },
   patchOverrides: (rulesOrCompose): Promise<KeybindingsOverrides> => {
+    // Fence the write to the ready generation it was CREATED under. A queued
+    // write executes only after the previous write settles, which can be
+    // after a rewire to a NEW hub: the thunk's compose-at-execution is right
+    // WITHIN one generation (finding 16), but a write whose generation has
+    // ended carries edit intent made against the hub whose state the user
+    // was looking at - landing it on the new hub's config is the wrong
+    // default even though the payload would compose cleanly there. It
+    // rejects with the same unavailable-class error instead, before any
+    // wire request.
+    const callClient = currentClient();
+    const callGeneration = callClient !== null && callClient === activeReadyClient ? activeReadyEpoch : -1;
     const run = async (): Promise<KeybindingsOverrides> => {
       // Compose at EXECUTION time: a thunk reads the raw set as the
       // previous write left it, folding its confirmed payload into this
@@ -483,7 +494,10 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
         client === null ||
         client !== wiredClient ||
         generation < 0 ||
-        client.state !== "ready"
+        client.state !== "ready" ||
+        callClient === null ||
+        callGeneration < 0 ||
+        !isCurrentReady(callClient, callGeneration)
       ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
@@ -492,6 +506,8 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
         // `hubLoading` is the same race WITHIN one generation: an in-flight
         // refresh is about to land a payload whose revision may differ from
         // the one a concurrent PATCH would send as expectedRevision.
+        // The call-time fence is the same staleness across the QUEUE: this
+        // write was created under a generation that has since ended.
         const error = "Hub keybindings settings are unavailable.";
         keybindingsStore.setState({ hubError: error });
         throw new Error(error);
