@@ -140,7 +140,8 @@
       "signedIn": true,
       "activeSource": "adc",
       "authModes": [
-        "adc"
+        "adc",
+        "credentialJson"
       ],
       "hasStoredOAuth": false
     }
@@ -398,7 +399,8 @@
         "implicit": false,
         "isDefault": false,
         "authModes": [
-          "adc"
+          "adc",
+          "credentialJson"
         ],
         "activeSource": "adc",
         "hasStoredOAuth": false,

@@ -78,6 +78,7 @@ const (
 	MethodEvenerAuthList              = "evener/auth/list"
 	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
 	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
+	MethodEvenerAuthCredentialJsonSet = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
 	MethodEvenerLaunchResolve         = "evener/launch/resolve"
@@ -2513,6 +2514,14 @@ type AuthApiKeySetParams struct {
 // AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
 type AuthApiKeyClearParams struct {
 	Provider string `json:"provider"`
+}
+
+// AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
+// a Google credential JSON (service-account key or application-default
+// authorized_user file) for a gcp-adc instance.
+type AuthCredentialJsonSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
 }
 
 // AuthDeviceStartParams is the params for evener/auth/device/start.

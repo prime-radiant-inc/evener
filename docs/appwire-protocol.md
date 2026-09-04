@@ -141,6 +141,7 @@ no router (reserved).
 | `evener/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
 | `evener/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts evener/auth/updated. |
 | `evener/auth/apiKey/clear` | hub | `AuthApiKeyClearParams` | `AuthStatusResponse` | Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated. |
+| `evener/auth/credentialJson/set` | hub | `AuthCredentialJsonSetParams` | `AuthStatusResponse` | Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated. |
 | `evener/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
 | `evener/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts evener/auth/updated when authorized. |
 | `evener/launch/resolve` | hub | `LaunchConfigResolveParams` | `LaunchConfigResolved` | Resolves the effective launch config for a cwd. |
@@ -278,6 +279,14 @@ An embedded type contributes its own fields inline.
 
 
 ### `AuthApiKeySetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+| `value` | `string` |  |  |
+
+
+### `AuthCredentialJsonSetParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
