@@ -461,10 +461,23 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 
 // newSessionScratch creates a fresh per-session scratch directory for this env,
 // anchored at its workspace root so the scratch names the project it belongs to.
+//
+// The anchor is resolved STRUCTURALLY and must stay that way: minting runs
+// inside commandEnvironment's overlay, so spawning anything from here re-enters
+// this function through overlaySessionEnv → unsandboxedScratchDir and wedges the
+// process. GitRootOrEmpty's `git rev-parse --show-toplevel` fallback did exactly
+// that whenever structuralWorktreeRoot missed but a .git ancestor existed — it
+// blocked on the scratch mutex its own caller was already holding, and no lock
+// reordering fixes it, since gitRootCache.lookup holds its own mutex across the
+// same probe. structuralWorktreeRoot answers every intact repo shape (a .git
+// directory, a linked-worktree or submodule "gitdir:" pointer); the shapes it
+// cannot answer are ones git's discovery rejects too — it stops at the same
+// first .git entry — so the probe returned "" there anyway and the anchor fell
+// back to RootDir, exactly as it does now.
 func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
-	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
-	if workspaceRoot == "" {
-		workspaceRoot = e.RootDir
+	workspaceRoot := e.RootDir
+	if root, ok := structuralWorktreeRoot(e.RootDir); ok {
+		workspaceRoot = root
 	}
 	return sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
 }
