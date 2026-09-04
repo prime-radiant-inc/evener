@@ -40,6 +40,14 @@ export interface KeybindingsStoreState {
   rawOverrides: readonly OverrideRule[];
   /** Semantic-validation warnings from the last applied payload. */
   warnings: readonly ValidationWarning[];
+  /** True only while the applied state (revision/overrides/rawOverrides and
+   * the registry's effective bindings) was confirmed by the hub for the
+   * CURRENT ready generation. Set on every successful payload apply; cleared
+   * when the ready generation ends (disconnect, client replacement, test
+   * reset). Editing and patchOverrides both gate on it: a PATCH composed
+   * from the previous hub's raw set with the previous hub's revision would
+   * overwrite the new hub's config on a revision collision. */
+  loaded: boolean;
   /** Set when a patch lost the revision race; the store has already refreshed
    * to the server's current state when this is non-null. */
   conflict: string | null;
@@ -56,6 +64,7 @@ function initialState(): Omit<KeybindingsStoreState, "refreshOverrides" | "patch
     overrides: [],
     rawOverrides: [],
     warnings: [],
+    loaded: false,
     conflict: null,
   };
 }
@@ -73,6 +82,32 @@ let patchSerial = 0;
  * currently applied to the registry. Module-level like the template's wiring
  * state: it describes the registry singleton, not store state. */
 const appliedOverrides = new Map<string, string | null>();
+
+/** Restores defaults for every applied override and clears the applied map:
+ * the registry must stop presenting a hub's overrides the moment that hub's
+ * state stops being current (client replacement, test reset) - that
+ * staleness one layer down is the same defect as a stale store payload. A
+ * wedged registry (a foreign binding squatting a default chord) must not
+ * make the reset itself throw; a failed restore leaves the override binding
+ * in place and the next reconcile (or the next test's registry rebuild)
+ * removes it.
+ *
+ * ORDERING (the cheatsheetController contract): this mutates the registry
+ * ONLY. Callers must fire any store setState - which is what the
+ * character-key reconcile subscribes to - AFTER this returns, so the
+ * reconcile sees the final shape (restore re-registers the conditional "?"
+ * entry with no knowledge of the pref; the reconcile then removes it if the
+ * pref is off). */
+function unapplyAllOverrides(): void {
+  for (const action of appliedOverrides.keys()) {
+    try {
+      restoreDefaultBinding(keybindingsRegistry, action);
+    } catch {
+      // See the doc comment: a wedged registry must not make reset throw.
+    }
+  }
+  appliedOverrides.clear();
+}
 
 /** Structural check for a wire payload (get result, changed params, patch
  * response, conflict `current`). The server's own validation already ran; this
@@ -184,6 +219,10 @@ function applyHubOverrides(payload: KeybindingsOverrides): void {
   keybindingsStore.setState({
     rawOverrides: payload.rules.map((rule) => ({ action: rule.action, chord: rule.chord })),
     revision: payload.revision,
+    // Every call site is generation-guarded (refreshFor, the notification
+    // wrapper, patchOverrides), so a successful apply confirms the state for
+    // the CURRENT ready generation - editing and patching gate on this.
+    loaded: true,
     hubError: null,
     conflict: null,
   });
@@ -216,6 +255,9 @@ function invalidateReadyGeneration(): void {
   clientEpoch += 1;
   unwireNotification?.();
   unwireNotification = null;
+  // The ready generation that confirmed the loaded state just ended; nothing
+  // hub-sourced is current until the next generation's refresh lands.
+  if (keybindingsStore.getState().loaded) keybindingsStore.setState({ loaded: false });
 }
 
 function beginReadyGeneration(client: AppwireClientLike): number {
@@ -283,6 +325,25 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
+  // The loaded state belongs to the PREVIOUS hub. Until this client's
+  // refresh lands it must not present as current: a patch composed from the
+  // old raw set with the old expectedRevision can overwrite the new hub's
+  // config on a revision collision, and the registry firing the old hub's
+  // overrides is the same staleness one layer down. Un-apply first, THEN
+  // setState - the character-key reconcile subscribes to the store and must
+  // see the final registry shape (see unapplyAllOverrides). hubSupport is
+  // connection-sourced, not hub state, so it is left to
+  // setSupportFromConnection.
+  unapplyAllOverrides();
+  keybindingsStore.setState({
+    revision: 0,
+    overrides: [],
+    rawOverrides: [],
+    warnings: [],
+    hubLoading: false,
+    hubError: null,
+    conflict: null,
+  });
   unwireReady = client.onReady(() => {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
@@ -346,12 +407,17 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     const generation = client === activeReadyClient ? activeReadyEpoch : -1;
     if (
       state.hubSupport !== "supported" ||
+      state.loaded !== true ||
       currentSupport() !== "supported" ||
       client === null ||
       client !== wiredClient ||
       generation < 0 ||
       client.state !== "ready"
     ) {
+      // `loaded` is the defense-in-depth half of the editor's gate: the UI
+      // is not the store's contract, and a patch composed from a STALE
+      // generation's raw set (client replaced, refresh not yet landed) would
+      // send the old hub's expectedRevision and rules to the new hub.
       const error = "Hub keybindings settings are unavailable.";
       keybindingsStore.setState({ hubError: error });
       throw new Error(error);
@@ -422,17 +488,9 @@ export function resetKeybindingsStoreForTests(): void {
   refreshSerial += 1;
   patchSerial += 1;
   // Restore defaults for every applied override so the registry singleton
-  // cannot leak overrides into the next test. A wedged registry (a foreign
-  // binding squatting a default chord) must not make reset itself throw.
-  for (const action of appliedOverrides.keys()) {
-    try {
-      restoreDefaultBinding(keybindingsRegistry, action);
-    } catch {
-      // The next test rebuilds the registry from scratch; a failed restore
-      // here leaves the override binding in place, which that rebuild removes.
-    }
-  }
-  appliedOverrides.clear();
+  // cannot leak overrides into the next test (the next test rebuilds the
+  // registry from scratch, which removes any binding a wedged restore left).
+  unapplyAllOverrides();
   keybindingsStore.setState({ ...initialState() });
   setSupportFromConnection();
 }

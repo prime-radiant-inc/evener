@@ -450,6 +450,102 @@ describe("keybindings store: patch", () => {
   });
 });
 
+// The stale-hub window: replacing the client must not let the previous
+// hub's payload present as current (a PATCH composed from it would carry
+// the old expectedRevision and rules to the NEW hub), and the registry must
+// not keep firing the old hub's overrides one layer down.
+describe("keybindings store: client replacement (stale-hub window)", () => {
+  /** Replaces the wired client with one whose get never resolves: the
+   * refresh starts (hubLoading) but never lands, holding the store in the
+   * stale window. */
+  async function rewireToHangingClient(): Promise<FakeClient> {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => new Promise<KeybindingsOverrides>(() => {}));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    return client;
+  }
+
+  async function wireClientAWithPaletteOverride(): Promise<FakeClient> {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(7, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(keybindingsStore.getState().revision).toBe(7);
+    expect(keybindingsStore.getState().loaded).toBe(true);
+    return client;
+  }
+
+  test("client replacement un-applies the old hub's overrides from the registry and resets the hub state", async () => {
+    await wireClientAWithPaletteOverride();
+
+    await rewireToHangingClient();
+
+    // Immediately - hub B's refresh is still in flight - the registry is
+    // back on defaults and the store carries none of hub A's payload.
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+    const state = keybindingsStore.getState();
+    expect(state.revision).toBe(0);
+    expect(state.overrides).toEqual([]);
+    expect(state.rawOverrides).toEqual([]);
+    expect(state.warnings).toEqual([]);
+    expect(state.loaded).toBe(false);
+  });
+
+  test("a patch attempted in the stale window throws before any wire request", async () => {
+    await wireClientAWithPaletteOverride();
+    const clientB = await rewireToHangingClient();
+
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
+    ).rejects.toThrow(/unavailable/);
+
+    expect(clientB.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    // Hub A's override stays un-applied: the rejected patch changed nothing.
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("after the new hub's refresh lands, patching works with the NEW hub's revision and rules", async () => {
+    const clientA = await wireClientAWithPaletteOverride();
+
+    // Hub B holds its own state at a COLLIDING revision (the overwrite the
+    // stale window would have caused): the patch must compose from B's
+    // (empty) rule set with B's expectedRevision, never A's payload.
+    const clientB = new FakeClient("ready");
+    clientB.on("evener/settings/keybindings/get", () => overridesPayload(7, []));
+    clientB.on("evener/settings/keybindings/patch", (params) => overridesPayload(8, params.config.rules));
+    connectionStore.getState().connect(clientB);
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
+    await keybindingsStore.getState().refreshOverrides();
+
+    expect(keybindingsStore.getState().loaded).toBe(true);
+    const result = await keybindingsStore
+      .getState()
+      .patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    expect(result.revision).toBe(8);
+    const patchCalls = clientB.calls.filter((c) => c.method === "evener/settings/keybindings/patch");
+    expect(patchCalls).toHaveLength(1);
+    expect(patchCalls[0]?.params).toEqual({
+      expectedRevision: 7,
+      config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+    });
+    // Hub A never saw a patch.
+    expect(clientA.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+  });
+});
+
 describe("keybindings store: reconcile resilience", () => {
   test("dropping an override whose default chord was reclaimed degrades to a warning and restores every action", async () => {
     // The reviewer's reproduction. Payload 1 is legal via freed-chord

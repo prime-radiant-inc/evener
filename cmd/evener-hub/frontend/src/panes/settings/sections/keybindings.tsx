@@ -9,9 +9,12 @@
 // keybindings/display.ts - the same module the cheatsheet overlay reads -
 // never a hand-maintained copy (the survey's stale-HELP_ROWS lesson).
 //
-// Editing requires a hub with synced-override support (hubSupport ===
-// "supported"): the overrides layer is hub-only by design, so unknown and
-// unsupported hubs get the read-only listing with the existing status text.
+// Editing requires a hub with synced-override support whose override state
+// is CURRENT: hubSupport === "supported" plus the store's `loaded` flag (set
+// only by a confirmed apply in the current ready generation, cleared on
+// rewire/disconnect), no in-flight refresh, and no hub error. Anything less
+// gets the read-only listing with a truthful status line - a PATCH composed
+// in the stale window would carry the previous hub's revision and payload.
 //
 // The overrides model owns an action's WHOLE chord set, so the editor edits
 // each action's base chord only; cheatsheet.toggle's conditional "?" entry
@@ -392,17 +395,32 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
 
 export function KeybindingsSection() {
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
+  const hubLoading = useKeybindingsStore((s) => s.hubLoading);
   const hubError = useKeybindingsStore((s) => s.hubError);
+  const loaded = useKeybindingsStore((s) => s.loaded);
   const warnings = useKeybindingsStore((s) => s.warnings);
   const bindings = useStore(keybindingsRegistry, (s) => s.bindings);
   const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
-  const editable = hubSupport === "supported";
+  const editable = hubSupport === "supported" && hubError === null && !hubLoading && loaded;
 
   let status: string | undefined;
   if (hubSupport === "unknown") {
     status = "Waiting for the hub connection to report keybindings support.";
   } else if (hubSupport === "unsupported") {
     status = "This hub does not support synced keybinding overrides. The built-in defaults are in effect.";
+  } else if (hubLoading || !loaded) {
+    // The stale-hub window: a client replacement reset the loaded state and
+    // the new hub's refresh has not landed (or failed - the alert below
+    // carries that message). Read-only until the overrides are current.
+    status =
+      hubError === null
+        ? "Loading this hub's synced keybinding overrides; the shortcuts shown are read-only until they arrive."
+        : "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
+  } else if (hubError !== null) {
+    // A patch or re-refresh failed AFTER a successful load: the listing is
+    // current, but editing waits for a clean reload (the alert carries the
+    // failure itself).
+    status = "Editing is unavailable until this hub's synced keybinding overrides load cleanly.";
   }
 
   return (

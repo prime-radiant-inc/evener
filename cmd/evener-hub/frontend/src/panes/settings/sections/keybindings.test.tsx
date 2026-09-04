@@ -270,6 +270,59 @@ test("an unsupported hub keeps every row read-only (no editing affordances)", as
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
 
+// The stale-hub window: a supported hub whose override state has not landed
+// (or failed to) for the CURRENT client must not offer editing - a PATCH
+// composed there would carry the previous hub's revision and payload.
+test("the section is read-only while the hub's overrides are still loading, then editing unlocks", async () => {
+  const client = new FakeClient("ready");
+  let resolveGet: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/get",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolveGet = resolve;
+      }),
+  );
+  client.on("evener/settings/keybindings/patch", (params) => overridesPayload(2, params.config.rules));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  render(<KeybindingsSection />);
+
+  // hubSupport is "supported" but nothing is loaded for THIS hub yet: no
+  // editing affordances, and a status line says why.
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain("read-only until they arrive");
+  expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
+
+  // The refresh lands: editing unlocks and a save round-trips.
+  // (FakeClient defers the handler to a microtask, like a real RPC.)
+  await waitFor(() => expect(resolveGet).toBeDefined());
+  resolveGet?.(overridesPayload(1, []));
+  const chordButton = await screen.findByRole("button", {
+    name: "Change the shortcut for Open the command palette",
+  });
+  await userEvent.setup().click(chordButton);
+  fireEvent.keyDown(captureBox(), { key: "p", ctrlKey: true });
+  fireEvent.keyDown(captureBox(), { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+});
+
+test("a refresh error leaves the section read-only with a truthful status", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => {
+    throw new Error("socket went away");
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("status").textContent).toContain("Editing is unavailable");
+  expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
+});
+
 test("a hub with unknown support keeps every row read-only", () => {
   render(<KeybindingsSection />);
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
@@ -559,6 +612,54 @@ test("IME composition events neither record nor save; a non-composing press stil
     expectedRevision: 1,
     config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
   });
+});
+
+// "+" is tinykeys' modifier DELIMITER, so a naive read says a captured "+"
+// chord ("Shift++", "Control++") cannot parse. The installed tinykeys splits
+// modifiers with a lookbehind (/(?<=\w|\])\+/), so a trailing "+" parses as
+// the key, and capture records the modifiers actually held - the chord
+// matches the very keydown that produced it. This test pins that end-to-end
+// through the REAL dispatcher so a tinykeys regression turns red here.
+test("capturing + saves a chord that round-trips and fires on a real + keydown", async () => {
+  const client = await wireEditableClient();
+  const focusSpy = vi.fn();
+  const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.composerFocus, focusSpy);
+  try {
+    await withDispatcher(async () => {
+      render(<KeybindingsSection />);
+      const box = await enterCapture("Focus the composer");
+
+      // US layout: "+" is Shift+=, so the keydown carries Shift.
+      fireEvent.keyDown(box, { key: "+", shiftKey: true });
+      // KeyHint renders "+" SEPARATORS between kbds, so assert the kbd run
+      // itself rather than a bare text match.
+      expect([...box.querySelectorAll("kbd")].map((kbd) => kbd.textContent)).toEqual(["Shift", "+"]);
+      fireEvent.keyDown(box, { key: "Enter" });
+
+      await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+      expect(patchCallsOf(client)[0]?.params).toEqual({
+        expectedRevision: 1,
+        config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Shift++" }] },
+      });
+      // The serialized chord parses back to itself (a delimiter collision
+      // would throw or misparse the key).
+      expect(serializeChord(parseChord("Shift++"))).toBe("Shift++");
+      expect(serializeChord(parseChord("Control++"))).toBe("Control++");
+
+      // The confirmed payload reconciled, and the REAL dispatcher's matcher
+      // fires the action on the + keydown.
+      await waitFor(() =>
+        expect([...rowFor("Focus the composer").querySelectorAll("kbd")].map((kbd) => kbd.textContent)).toEqual([
+          "Shift",
+          "+",
+        ]),
+      );
+      fireEvent.keyDown(document.body, { key: "+", shiftKey: true });
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+    });
+  } finally {
+    unregister();
+  }
 });
 
 test("a conflicting chord is rejected pre-flight: inline message, no hub write, capture stays open", async () => {
