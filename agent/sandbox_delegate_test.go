@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -131,6 +132,38 @@ func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
 	child.discardRestoredCandidate()
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Errorf("discarded restore candidate retained sandbox scratch: %v", err)
+	}
+}
+
+// The DEFAULT session environment is unsandboxed, and it mints a session scratch
+// of its own on its first command rather than at construction. A discarded
+// candidate was never adopted, so no Close is ever coming to release that
+// directory or the flock lease under it: disposing only the sandbox-owned
+// scratch leaves the unsandboxed one, and its lease, for the life of the process.
+func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	candidate := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	local, ok := candidate.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("restore candidate env = %T, want a local environment", candidate.currentEnv())
+	}
+	// Running a command is what mints the unsandboxed scratch, exactly as a
+	// restore's own first command does.
+	if _, err := local.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	scratch := local.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to dispose")
+	}
+
+	candidate.discardRestoredCandidate()
+
+	// The lease file lives inside the scratch dir, so the directory's removal is
+	// the lease's removal too.
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Errorf("discarded restore candidate retained unsandboxed scratch %s: stat err = %v", scratch, err)
 	}
 }
 

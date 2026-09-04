@@ -396,18 +396,20 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// restoreDelegateChildEnvironment always hands a restored delegate a
-		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
-		// scratch when sandboxed) — never the parent's shared one. A discarded
-		// candidate was never adopted by anything, so unlike close()'s
+		// A restore always hands the candidate a FRESH environment (a re-rooted
+		// clone, and its own per-lane sandbox scratch when sandboxed) — never the
+		// parent's shared one: prepareSubagentEnvironment re-roots for the
+		// descriptor's working dir, which every committed delegate carries. A
+		// discarded candidate was never adopted by anything, so unlike close()'s
 		// RetainSandboxScratch (which hands a normally torn-down delegate's
 		// scratch to a human), there is no one left to retain it for; dispose it
 		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
-		// discipline on the create-path twin of this abort. A no-op on a shared
-		// or never-sandboxed env (DisposeSandboxScratch is a no-op without an
-		// owned tmp).
+		// discipline on the create-path twin of this abort. Both scratch dirs go:
+		// the sandbox-owned one AND the one an unsandboxed env — the default
+		// shape — mints on its first command, whose lease would otherwise be held
+		// for the life of the process. A no-op on an env that minted neither.
 		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			le.DisposeSandboxScratch()
+			le.DisposeUnadoptedScratch()
 		}
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
