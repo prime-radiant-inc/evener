@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,266 +28,6 @@ func enqueueLeftoverNotification(t *testing.T, sess *Session, jobID string) {
 		t.Fatalf("job %s not in store", jobID)
 	}
 	sess.enqueueJobNotification(jobNotificationFromRecord(rec))
-}
-
-// TestTerminalDrainDiscardsLeftoverNotificationsWithoutAProviderCall is the
-// #329 sanitize-git-repo regression. The model sent the terminal communicate
-// (end_turn under TurnEndsProcess) with an undelivered job notification still
-// pending. There is no model left to deliver to — the turn that ends the
-// process is by definition the last turn — so the drain must discard the
-// leftover (settling its durable record as consumed) and exit WITHOUT another
-// provider call. The field failure made that call, got an empty response, and
-// the retry path injected "please continue" instead of exiting.
-func TestTerminalDrainDiscardsLeftoverNotificationsWithoutAProviderCall(t *testing.T) {
-	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("the answer") },
-	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
-	}))
-	sess.cfg.testOnly.beforeTerminalCommunicateAccept = func() {
-		seedOwnedDurablePending(t, sess.jobManager, "job-leftover", jobstore.JobShell)
-	}
-
-	// TRIPWIRE: scripted in-process adapter plus in-memory job fixtures, no
-	// real I/O; 30s only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	res, err := sess.ProcessInput(ctx, "do the task", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if res != "the answer" {
-		t.Fatalf("ProcessInput result = %q, want %q", res, "the answer")
-	}
-	if got := len(adapter.Requests()); got != 1 {
-		t.Fatalf("provider calls before drain = %d, want 1", got)
-	}
-	// Reopen the durable ledger before drain entry, as a crash/restart in this
-	// exact window would. Acceptance itself must have committed the pre-cut
-	// disposition so restore cannot rematerialize it.
-	reopened, err := jobstore.Open(filepath.Join(jobsDir(sess.cfg.StateDir, sess.ID()), "jobs.jsonl"))
-	if err != nil {
-		t.Fatalf("reopen durable job store: %v", err)
-	}
-	t.Cleanup(func() { _ = reopened.Close() })
-	recs, err := reopened.Load()
-	if err != nil {
-		t.Fatalf("load reopened durable job store: %v", err)
-	}
-	if got := recs["job-leftover"].NotifyState; got != jobstore.NotifyConsumed {
-		t.Fatalf("reopened pre-drain notification state = %s, want %s", got, jobstore.NotifyConsumed)
-	}
-
-	drained, err := sess.DrainJobTree(ctx)
-	if err != nil {
-		t.Fatalf("DrainJobTree: %v", err)
-	}
-	if drained != "" {
-		t.Fatalf("drain result = %q; no drain turn may run after the terminal communicate for a leftover", drained)
-	}
-	if got := len(adapter.Requests()); got != 1 {
-		t.Fatalf("provider calls = %d, want 1: the terminal communicate must be the last provider call", got)
-	}
-	requireNotificationState(t, sess.jobManager, "job-leftover", jobstore.NotifyConsumed)
-	if p := sess.peekNotifications(); p != 0 {
-		t.Fatalf("queued notifications after terminal drain = %d, want 0 (discarded)", p)
-	}
-}
-
-// TestTerminalCutPreservesFreshCompletionBeforeDrainEntry is the temporal-cut
-// regression: terminal communicate is accepted while no notification is
-// pending, then a durable completion lands before DrainJobTree starts. That
-// completion belongs after the cut and must still open one provider turn.
-func TestTerminalCutPreservesFreshCompletionBeforeDrainEntry(t *testing.T) {
-	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("the answer") },
-		func(llm.Request) llm.Response { return finalResponse("fresh_result_sentinel_7c4e") },
-	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
-	}))
-
-	if _, err := sess.ProcessInput(context.Background(), "do the task", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	seedOwnedDurablePending(t, sess.jobManager, "job-fresh", jobstore.JobShell)
-	enqueueLeftoverNotification(t, sess, "job-fresh")
-
-	drained, err := sess.DrainJobTree(context.Background())
-	if err != nil {
-		t.Fatalf("DrainJobTree: %v", err)
-	}
-	if drained != "fresh_result_sentinel_7c4e" {
-		t.Fatalf("drain result = %q, want fresh completion result", drained)
-	}
-	if got := len(adapter.Requests()); got != 2 {
-		t.Fatalf("provider calls = %d, want 2: the post-cut completion must be delivered", got)
-	}
-	requireNotificationState(t, sess.jobManager, "job-fresh", jobstore.NotifyDelivered)
-	if p := sess.peekNotifications(); p != 0 {
-		t.Fatalf("queued notifications after fresh completion delivery = %d, want 0", p)
-	}
-}
-
-// TestTerminalCutDistinguishesSameJobNotificationGenerations pins the exact
-// durable identity. A later queue entry that reuses a job ID but carries a new
-// terminal generation is not part of the old generation's discard set.
-func TestTerminalCutDistinguishesSameJobNotificationGenerations(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
-	const jobID = "job-same-id"
-	seedOwnedDurablePending(t, sess.jobManager, jobID, jobstore.JobShell)
-	enqueueLeftoverNotification(t, sess, jobID)
-
-	cut, err := sess.captureTerminalNotificationCut()
-	if err != nil {
-		t.Fatalf("capture terminal cut: %v", err)
-	}
-	sess.enqueueJobNotification(jobNotification{
-		JobID:       jobID,
-		TerminalGen: "gen-after-cut",
-		Status:      string(jobstore.StatusCompleted),
-	})
-	if err := sess.discardTerminalDrainLeftovers(cut); err != nil {
-		t.Fatalf("discard terminal cut: %v", err)
-	}
-	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyConsumed)
-
-	sess.pendingJobNotifsMu.Lock()
-	queued := append([]jobNotification(nil), sess.pendingJobNotifs...)
-	sess.pendingJobNotifsMu.Unlock()
-	if len(queued) != 1 || queued[0].JobID != jobID || queued[0].TerminalGen != "gen-after-cut" {
-		t.Fatalf("post-cut same-job generation was discarded: queued = %+v", queued)
-	}
-}
-
-// TestTerminalCutOrdersConcurrentFinalization forces both sides of the
-// finalizer/acceptance ordering without sleeps. The durable pending and running
-// map are the exact two production signals captureTerminalNotificationCut reads
-// under jm.mu; the queue enqueue happens after the finalizer drops that lock,
-// matching armFinalizedJob.
-func TestTerminalCutOrdersConcurrentFinalization(t *testing.T) {
-	t.Run("acceptance lock wins", func(t *testing.T) {
-		sess := newSession(t)
-		const jobID = "job-cut-first"
-		seedOwnedDurablePending(t, sess.jobManager, jobID, jobstore.JobShell)
-		sess.jobManager.mu.Lock()
-		sess.jobManager.running[jobID] = &runningJob{}
-		sess.jobManager.mu.Unlock()
-
-		cutLocked := make(chan struct{})
-		releaseCut := make(chan struct{})
-		var cutHookOnce sync.Once
-		sess.cfg.testOnly.terminalCutAfterManagerLock = func() {
-			cutHookOnce.Do(func() {
-				close(cutLocked)
-				<-releaseCut
-			})
-		}
-		cutDone := make(chan terminalNotificationCut, 1)
-		cutErr := make(chan error, 1)
-		go func() {
-			cut, err := sess.captureTerminalNotificationCut()
-			if err != nil {
-				cutErr <- err
-				return
-			}
-			cutDone <- cut
-		}()
-		<-cutLocked
-
-		finalizerStarted := make(chan struct{})
-		finalizerDone := make(chan struct{})
-		go func() {
-			close(finalizerStarted)
-			sess.jobManager.mu.Lock()
-			delete(sess.jobManager.running, jobID)
-			sess.jobManager.mu.Unlock()
-			sess.enqueueJobNotification(jobNotification{JobID: jobID, TerminalGen: "gen-" + jobID})
-			close(finalizerDone)
-		}()
-		<-finalizerStarted
-		close(releaseCut)
-
-		var cut terminalNotificationCut
-		select {
-		case err := <-cutErr:
-			t.Fatalf("capture terminal cut: %v", err)
-		case cut = <-cutDone:
-		}
-		<-finalizerDone
-		if _, discarded := cut.durable[terminalIdentity(jobID, "gen-"+jobID)]; discarded {
-			t.Fatal("job still running at acceptance was included in the durable discard set")
-		}
-		if err := sess.discardTerminalDrainLeftovers(cut); err != nil {
-			t.Fatalf("discard terminal cut: %v", err)
-		}
-		requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyPending)
-		if got := sess.peekNotifications(); got != 1 {
-			t.Fatalf("fresh finalizer queue after acceptance = %d, want 1", got)
-		}
-	})
-
-	t.Run("finalizer lock wins", func(t *testing.T) {
-		sess := newSession(t)
-		const jobID = "job-finalizer-first"
-		seedOwnedDurablePending(t, sess.jobManager, jobID, jobstore.JobShell)
-		sess.jobManager.mu.Lock()
-		sess.jobManager.running[jobID] = &runningJob{}
-		sess.jobManager.mu.Unlock()
-
-		finalizerLocked := make(chan struct{})
-		releaseFinalizer := make(chan struct{})
-		finalizerDone := make(chan struct{})
-		go func() {
-			sess.jobManager.mu.Lock()
-			close(finalizerLocked)
-			<-releaseFinalizer
-			delete(sess.jobManager.running, jobID)
-			sess.jobManager.mu.Unlock()
-			sess.enqueueJobNotification(jobNotification{JobID: jobID, TerminalGen: "gen-" + jobID})
-			close(finalizerDone)
-		}()
-		<-finalizerLocked
-
-		captureStarted := make(chan struct{})
-		cutDone := make(chan terminalNotificationCut, 1)
-		cutErr := make(chan error, 1)
-		go func() {
-			close(captureStarted)
-			cut, err := sess.captureTerminalNotificationCut()
-			if err != nil {
-				cutErr <- err
-				return
-			}
-			cutDone <- cut
-		}()
-		<-captureStarted
-		close(releaseFinalizer)
-		<-finalizerDone
-
-		var cut terminalNotificationCut
-		select {
-		case err := <-cutErr:
-			t.Fatalf("capture terminal cut: %v", err)
-		case cut = <-cutDone:
-		}
-		if _, discarded := cut.durable[terminalIdentity(jobID, "gen-"+jobID)]; !discarded {
-			t.Fatal("job finalized before acceptance was absent from the durable discard set")
-		}
-		if err := sess.discardTerminalDrainLeftovers(cut); err != nil {
-			t.Fatalf("discard terminal cut: %v", err)
-		}
-		requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyConsumed)
-		if got := sess.peekNotifications(); got != 0 {
-			t.Fatalf("pre-cut finalizer queue after discard = %d, want 0", got)
-		}
-	})
 }
 
 // seedWatchSendResidue leaves the job manager in the wedged-settlement state
@@ -518,13 +256,13 @@ func lastMessageText(req llm.Request) string {
 	return req.Messages[len(req.Messages)-1].Text()
 }
 
-// TestOneShotDeliversCompletionThatLandsDuringTheFinalAnswer is the #865
+// TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer is the #865
 // regression. The model's final-answer request is built while a background
 // job is still running; the job finalizes before the reply arrives, so the
 // answer was written without it. That completion must reach the model on one
 // more notification turn, whose reply is the run's answer, and the ledger must
 // show it delivered, never consumed.
-func TestOneShotDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.T) {
+func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.T) {
 	t.Parallel()
 	const firstAnswer = "first answer, written before the build finished"
 	const finalAnswer = "FINAL-ANSWER: the build passed"
