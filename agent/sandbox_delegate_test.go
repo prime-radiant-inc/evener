@@ -348,3 +348,40 @@ func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
 		t.Errorf("failed delegate restore left scratch %v, which nothing will ever release", leaked)
 	}
 }
+
+// The create path builds a spawning delegate its own environment and then
+// constructs the session on it, running the same git snapshot the restore does.
+// A NewSession that fails after the snapshot leaves nothing to own the scratch
+// that snapshot minted, so the spawn's own rollback has to drop it.
+func TestSpawnedSubagentSessionFailureDisposesTheChildScratch(t *testing.T) {
+	workspace := t.TempDir()
+	// The snapshot only runs commands in a repo, and running commands is what
+	// mints the scratch.
+	sbxGit(t, workspace, "init", "-q")
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	root := newSession(t, withClient(client), withDir(workspace), withoutGitSnapshot())
+
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	// The child takes production's snapshot path, and the fault then fails its
+	// construction after it.
+	boom := errors.New("spawned delegate construction failed")
+	root.cfg.testOnly.skipGitSnapshot = false
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	// A working dir is what makes the child's environment its own rather than
+	// the parent's, which is the case whose scratch nobody else releases.
+	if _, err := root.spawnAgent(context.Background(), "child task", "", workspace, 1, "", "", nil, nil); !errors.Is(err, boom) {
+		t.Fatalf("spawnAgent error = %v, want %v", err, boom)
+	}
+
+	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
+		t.Errorf("failed subagent spawn left scratch %v, which nothing will ever release", leaked)
+	}
+}

@@ -932,11 +932,13 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if err != nil {
 		// A fresh environment that failed before session adoption never reaches the
-		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
-		// re-root has no owned scratch, making this safe when reqSandbox is nil.
+		// session cleanup path, so dispose every scratch it provisioned: the
+		// sandbox-owned one AND the one an unsandboxed environment mints on its
+		// first command, which the construction above reaches through its own git
+		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
 			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeSandboxScratch()
+				le.DisposeUnadoptedScratch()
 			}
 		}
 		return nil, err
