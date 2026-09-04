@@ -16,7 +16,8 @@
     "layoutguard": "node scripts/layoutguard/run.mjs",
     "overflowguard": "node scripts/overflowguard/run.mjs",
     "shellguard": "node scripts/shellguard/run.mjs",
-    "spawnguard": "node scripts/spawnguard/run.mjs"
+    "spawnguard": "node scripts/spawnguard/run.mjs",
+    "transcriptscrollguard": "node scripts/transcriptscrollguard/run.mjs"
   },
   "license": "ISC",
   "dependencies": {

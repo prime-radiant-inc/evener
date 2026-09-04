@@ -41,8 +41,10 @@ Good uses of subagents include:
   are explicit.
 
 Prefer a single well-scoped subagent with a checklist over many tiny subagents
-for one coherent investigation. Prefer several subagents in parallel when the
-questions are genuinely independent.
+for one coherent investigation, and when several delegates' reports only make
+sense together, delegate one coordinator that fans them out and reports once.
+Prefer several subagents in parallel when the questions are genuinely
+independent.
 
 A delegate sees only your brief and its role prompt: none of your
 conversation, not the user's message, not what you have learned. Every brief

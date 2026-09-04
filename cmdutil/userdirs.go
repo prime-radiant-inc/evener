@@ -5,21 +5,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // DefaultConfigRoot returns the user config root for evener:
 // $XDG_CONFIG_HOME/evener, or ~/.config/evener when XDG_CONFIG_HOME is unset.
 func DefaultConfigRoot() string {
-	base := envvars.XDGConfigHome.Getenv()
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		base = filepath.Join(home, ".config")
+	if root := userdirs.DefaultConfigRoot(); root != "" {
+		return root
 	}
-	return filepath.Join(base, "evener")
+	return filepath.Join(".", ".config", "evener")
 }
 
 func DefaultSkillsDir() string {

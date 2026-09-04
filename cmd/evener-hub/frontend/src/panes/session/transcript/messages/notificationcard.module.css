@@ -26,19 +26,44 @@
   display: none;
 }
 
+.headingText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .title {
   font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
 
 .secondary {
+  margin-left: var(--space-2);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
 
-.action {
-  margin-left: auto;
+/* The final word and Open are one atomic inline flex unit, so the unit may move
+ * to the next line but Open can never move there alone. A no-whitespace decoded
+ * secondary still fits: its text child may shrink and wrap inside the unit,
+ * with Open aligned to its final line. */
+.secondaryTail {
   display: inline-flex;
+  align-items: flex-end;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.secondaryTailText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.openTrailing {
+  display: inline-flex;
+  flex: none;
+  margin-left: var(--space-2);
+  vertical-align: middle;
 }
 
 .metadata {
@@ -66,6 +91,21 @@
 
 .excerpt {
   margin-top: var(--space-2);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* A watch card's own prose (a timer's fired sentence and the watch's note).
+ * A <pre> keeps the note on its own line; the UA's monospace default and
+ * margin are overridden back to the excerpt block's sans treatment. */
+.prose {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   white-space: pre-wrap;

@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -239,11 +240,12 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 
 // discoverPastThreadSkillCatalog reconstructs the metadata a session had at
 // start without loading any skill bodies. The order mirrors session startup:
-// embedded skills first, project and configured extra directories next, and
-// finally the skills exposed by configured plugins. Later layers overwrite an
-// earlier canonical key, just as they do during session initialization. Plugin
-// directories use the shared first-manifest-wins selection policy; a later
-// duplicate is skipped even if the selected plugin fails component loading.
+// embedded skills first, automatic user skills next, project and configured
+// extra directories after that, and finally the skills exposed by configured
+// plugins. Later layers overwrite an earlier canonical key, just as they do
+// during session initialization. Plugin directories use the shared
+// first-manifest-wins selection policy; a later duplicate is skipped even if
+// the selected plugin fails component loading.
 //
 // This function is intentionally behind a package variable. Thread-list,
 // transcript-list, and turn-page sweeps must remain metadata-only and cheap;
@@ -254,6 +256,9 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 	all := make(map[string]skill.SkillMeta)
 	if embedded, err := skill.EmbeddedSkills(); err == nil {
 		maps.Copy(all, embedded)
+	}
+	if userSkillsDir := userdirs.Subdir(userdirs.DefaultConfigRoot(), "skills"); userSkillsDir != "" {
+		skill.ScanSkillsDir(userSkillsDir, all)
 	}
 
 	workingDir := strings.TrimSpace(entry.Meta.EnvInfo.WorkingDir)

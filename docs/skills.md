@@ -12,10 +12,10 @@ A markdown template that can run shell commands is code. Evener's rule:
 - **Templates you explicitly installed** (plugins) may execute shell at
   expansion time. Installing a plugin is a trust decision, like installing
   software.
-- **Templates evener discovers automatically** (project `skills/` and
-  `.evener/commands/` directories, your user-global commands directory) never
-  execute shell and never read files at expansion time. Anything in a repo
-  you merely cloned is inert text.
+- **Templates evener discovers automatically** (project and user-global
+  `skills/` directories, project `.evener/commands/`, and your user-global
+  commands directory) never execute shell and never read files at expansion
+  time. Anything in a repo you merely cloned is inert text.
 
 This mirrors codex's posture: in codex, skills and custom prompts are always
 inert, and skill bodies reach the model only through the model's own
@@ -28,8 +28,8 @@ own.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
-| Skill | skills bundled with evener; `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
-| Evener-wide command | `.evener/commands/` (git root→cwd), `~/.config/evener/commands/` | yes, inert text | never — stays literal | never — stays literal |
+| Skill | skills bundled with evener; user-global `skills/`; project `skills/` dirs (git root→cwd); `skills_dirs`; plugins | no | never | never |
+| Evener-wide command | `.evener/commands/` (git root→cwd), `$XDG_CONFIG_HOME/evener/commands/` (`~/.config` fallback) | yes, inert text | never — stays literal | never — stays literal |
 | Plugin command | plugins you installed or configured | yes, inert text | executes (10s timeout, output bounded) | inlines files at cwd-relative paths (symlinks followed) |
 
 Argument substitution is safe in every row: `$ARGUMENTS` and `$1..$9` are
@@ -41,12 +41,14 @@ in plugin commands.
 A skill is a directory containing a `SKILL.md` with YAML frontmatter
 (`name` and `description` required, `allowed-tools` optional). Evener
 discovers skills from the set bundled with evener itself (the base layer),
-from `skills/` directories walking the git root down to your cwd, from any
-`skills_dirs` launch-config entries, and from plugins. Among the bare-named
-sources, later ones shadow earlier ones by name: a project or `skills_dirs`
-skill overrides a bundled skill of the same name. Plugin skills are
-namespaced (`plugin:skill`) and never shadow a bare-named skill — invoke
-them by qualified name, or by bare name when no bare-named skill has it.
+from `skills/` directories walking the git root down to your cwd, from the
+automatic user-global `skills` directory, from any `skills_dirs` launch-config
+entries, and from plugins. Among the bare-named sources, later ones shadow
+earlier ones by name: a project or `skills_dirs` skill overrides a bundled or
+automatic user skill of the same name, and a `skills_dirs` skill overrides a
+project skill of the same name. Plugin skills are namespaced
+(`plugin:skill`) and never shadow a bare-named skill — invoke them by qualified
+name, or by bare name when no bare-named skill has it.
 
 Skill bodies are loaded as text and injected for the model to follow. Evener
 performs no expansion on them: no shell execution, no file inclusion, no
@@ -94,6 +96,10 @@ cwd wins.
   of the palette's commands, Enter sends it to the session as-is — a fuzzy
   near-miss (say `/stat` for `status`) still reaches your command. Project
   commands invoke through that fallthrough.
+- Standalone skills are not command-file entries in the command catalog, but an
+  exact `/skill-name` token is recognized by the session when that skill is
+  loaded and activates the skill body. Skill names and descriptions are shown
+  in the model's skill catalog.
 
 ## Plugin commands
 

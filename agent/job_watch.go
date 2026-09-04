@@ -49,9 +49,14 @@ const (
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
-	// watchDeliveryBudget caps model-facing deliveries per watch config before the
-	// circuit breaker auto-clears it (spec §4 F1). Hard-coded, no config knob.
+	// watchDeliveryBudget caps the condition fires a watch config may deliver
+	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
+	// tick counts a delivery but is a clock rather than a condition, so it never
+	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// maxLiveTimers caps timers per job manager; with the 60-second floor it
+	// bounds a session to eight timer wakes a minute.
+	maxLiveTimers = 8
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
 	// watch send may descend from before the breaker drops it as a runaway. The
 	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
@@ -132,10 +137,13 @@ func watchLostAtRestartStableDelegateMessage(source string) string {
 }
 
 // watchBudgetClearedMessage is the single final notification text emitted when a
-// watch trips the delivery budget (spec §4 F1). The count is the budget itself.
+// watch trips the delivery budget on condition fires (spec §4 F1). The count is
+// the budget itself, so the notice names condition matches rather than
+// deliveries, and offers only the levers that narrow a condition: a longer
+// progress_interval_ms cannot help, because periodic ticks do not count here.
 func watchBudgetClearedMessage(target string) string {
 	return fmt.Sprintf(
-		"watch cleared: %s delivered %d times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)",
+		"watch cleared: %s matched %d times; re-arm with a tighter condition (higher every or narrower output_match)",
 		target, watchDeliveryBudget,
 	)
 }
@@ -146,6 +154,10 @@ type watchKey struct {
 	SendTo             string
 	ReceiverSessionID  string
 	ReceiverDelegateID string
+	// Slot is the watch id for a timer and empty for every other watch, so
+	// each timer create is its own key and never replaces or no-ops against
+	// another watch on the same target. It is compared exactly everywhere.
+	Slot string
 }
 
 type watchConfig struct {
@@ -172,10 +184,24 @@ type watchConfig struct {
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
 	progressIntervalMS int
-	events             []string
-	eventKinds         map[events.EventKind]bool
-	wildcardEvents     bool
-	eventFilter        *watchEventFilter
+	// slot mirrors watchKey.Slot so config-side key predicates compare it.
+	slot string
+	// timer marks a watch created with after_seconds or repeat_seconds; its
+	// progressIntervalMS is timerSeconds*1000. oneShot ends the watch after
+	// its first fire. note rides every fire's block.
+	timer   bool
+	oneShot bool
+	// firedPendingEnd marks a one-shot that has already delivered its single
+	// fire but whose durable teardown did not persist. The ticker stays armed
+	// so the next tick retries the end instead of leaving a registered watch
+	// with a dead timer; the retry never fires again.
+	firedPendingEnd bool
+	timerSeconds    int
+	note            string
+	events          []string
+	eventKinds      map[events.EventKind]bool
+	wildcardEvents  bool
+	eventFilter     *watchEventFilter
 	// every-Nth throttle: set from `every` + the single events[0] when every > 0.
 	triggerKind       events.EventKind
 	triggerEvery      int
@@ -190,15 +216,21 @@ type watchConfig struct {
 	nextUpdateSeq     uint64
 	progressStop      chan struct{}
 	// deliveries counts model-facing deliveries for this watch config (rendered
-	// caller frames + delivered sidecar sends + no-send watch notifications). At
-	// watchDeliveryBudget the watch auto-clears (circuit breaker, spec §4 F1).
-	// Counted jm-side under jm.mu; survives the observation/drain split with the
-	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
+	// caller frames + delivered sidecar sends + no-send watch notifications +
+	// periodic progress ticks). It is the volume job_list reports, not the
+	// breaker's trigger. Counted jm-side under jm.mu; survives the
+	// observation/drain split with the cfg pointer; a replacement cfg from
+	// newWatchConfig starts fresh at 0.
 	deliveries int
 	// conditionFires counts actual condition matches, distinct from deliveries:
-	// progress ticks and teardown notices consume delivery budget but do not
-	// satisfy the condition the model asked this watch to observe.
+	// progress ticks and teardown notices are deliveries but do not satisfy the
+	// condition the model asked this watch to observe. The circuit breaker
+	// latches here — the watch auto-clears on its watchDeliveryBudget-th
+	// condition fire (spec §4 F1) — so a watch that only ever ticks survives.
 	conditionFires int
+	// budgetTripped latches the breaker to one teardown per config, so a send
+	// watch settling several frames at or past the budget reports it just once.
+	budgetTripped bool
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -208,19 +240,24 @@ type watchConfig struct {
 }
 
 type watchArgs struct {
-	Operation            string
-	WatchID              string
-	Source               string
-	Target               string
-	ReceiverSessionID    string
-	ReceiverDelegateID   string
-	ReceiverNotify       func(jobNotification)
-	ReceiverHoldWake     func() func()
-	OutputMatch          string
-	ProgressIntervalMS   int
-	Events               []string
-	Every                int
-	EventFilter          *watchEventFilter
+	Operation          string
+	WatchID            string
+	Source             string
+	Target             string
+	ReceiverSessionID  string
+	ReceiverDelegateID string
+	ReceiverNotify     func(jobNotification)
+	ReceiverHoldWake   func() func()
+	OutputMatch        string
+	ProgressIntervalMS int
+	Events             []string
+	Every              int
+	EventFilter        *watchEventFilter
+	// AfterSeconds and RepeatSeconds are the timer triggers (self only);
+	// Note rides every timer fire. All three are create-only.
+	AfterSeconds         int
+	RepeatSeconds        int
+	Note                 string
 	Send                 *watchSendArgs
 	ReceiverSendInternal bool
 	SourceDelegateID     string
@@ -299,8 +336,14 @@ type watchResult struct {
 	Events             []string
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
-	Send               *watchSendArgs
-	ReplacedExisting   bool
+	// TimerSeconds, OneShot, and Note describe a timer watch; a timer reports
+	// its interval in seconds and leaves ProgressIntervalMS zero so the result
+	// speaks in the units the model asked in.
+	TimerSeconds     int
+	OneShot          bool
+	Note             string
+	Send             *watchSendArgs
+	ReplacedExisting bool
 	// Fired reports that an output_match attach scan found a level match in the
 	// running target's already-retained output and fired once at attach (spec
 	// §7.1). Only a fresh concrete-running output_match install can set this;
@@ -455,7 +498,10 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // The caller is responsible for any error-notification behavior. This is the
 // model-facing completion for both watch-send rails (delegate sidecar sends and
 // caller frames), so it is where the send half of the delivery budget is counted;
-// observation/coalescing does not count (spec §4 F1).
+// observation/coalescing does not count (spec §4 F1). It is not, however, the
+// only place the condition-fire breaker can trip — the match site latches it
+// too, so frames that never settle stay bounded — and the latch keeps the two
+// to one teardown.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
@@ -491,7 +537,7 @@ func (jm *jobManager) watchSendDeliveredLocked(deliveryID string) bool {
 // config. configureWatch routes install validation through it.
 // Event-arg shape (validateWatchEventArgs) and session-target shape are validated by
 // the caller.
-func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
+func (jm *jobManager) validateWatchConfig(a watchArgs, slot string) (*watchConfig, error) {
 	if !watchArgsHasCondition(a) {
 		return nil, errors.New("invalid_request: nothing to watch")
 	}
@@ -500,7 +546,7 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 			return nil, err
 		}
 	}
-	cfg, err := newWatchConfig(a, jm.now())
+	cfg, err := newWatchConfig(a, jm.now(), slot)
 	if err != nil {
 		return nil, err
 	}
@@ -520,6 +566,13 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
+	if a.AfterSeconds != 0 && (a.AfterSeconds < 60 || a.AfterSeconds > 86400) {
+		return errors.New("invalid_request: after_seconds must be between 60 and 86400")
+	}
+	if a.RepeatSeconds != 0 && (a.RepeatSeconds < 60 || a.RepeatSeconds > 3600) {
+		return errors.New("invalid_request: repeat_seconds must be between 60 and 3600")
+	}
+	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
 	// every:1 is the semantic default (fire on each occurrence), so it reads as
 	// unset everywhere downstream; the single-concrete-kind requirement applies
 	// only to every>1, which actually throttles.
@@ -561,6 +614,9 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.ReceiverSendInternal {
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
+	// The Slot is filled in below, once the request has earned an id. Every use
+	// of the key above that point is a clear or a terminal catch-up, and neither
+	// carries a slot: a fresh id would build a key that matches nothing.
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
 		Target:             a.Target,
@@ -624,7 +680,16 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
 	}
-	cfg, err := jm.validateWatchConfig(a)
+	// A timer's id is minted here, after the target, event, and shape checks
+	// that reject most creates. The live-timer cap check below can still
+	// reject after the mint; ids are stateless, so nothing is burned. The id
+	// goes into the key's Slot and through validateWatchConfig into the
+	// config, so the key's Slot, the config's slot, and the config's watchID
+	// are all the same id.
+	if !a.Clear && watchArgsIsTimer(a) {
+		key.Slot = jobstore.NewWatchID()
+	}
+	cfg, err := jm.validateWatchConfig(a, key.Slot)
 	if err != nil {
 		return watchResult{}, err
 	}
@@ -642,6 +707,10 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 			jm.mu.Unlock()
 			return watchResult{}, watchTargetNotFoundError(key.Target)
 		}
+	}
+	if cfg.timer && jm.liveTimerCountLocked() >= maxLiveTimers {
+		jm.mu.Unlock()
+		return watchResult{}, fmt.Errorf("invalid_request: too many timers (%d live); clear one first", maxLiveTimers)
 	}
 	existing := jm.watches[key]
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
@@ -740,20 +809,35 @@ func watchArgsHasCondition(a watchArgs) bool {
 	if strings.TrimSpace(a.ReceiverSessionID) != "" && a.ReceiverSessionID != a.Target && isWatchSessionTarget(a.Target) {
 		return true
 	}
-	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0
+	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0 || watchArgsIsTimer(a)
+}
+
+// watchArgsIsTimer reports whether the request is a timer create: either time
+// field present and nonzero. Timers are ordinary self watches whose progress
+// interval is set from seconds and which carry a note. A negative value is a
+// timer too, so the source still defaults to self and the request reaches
+// normalizeWatchArgs' bounds check, which names the field the caller got wrong
+// instead of reporting a missing source. A present zero reads as absent:
+// providers materialize every optional property, and a zero arms nothing.
+func watchArgsIsTimer(a watchArgs) bool {
+	return a.AfterSeconds != 0 || a.RepeatSeconds != 0
 }
 
 // watchArgsIsOutputMatchOnly reports whether a watch request carries an
 // output_match condition and NO other trigger source — the only shape eligible
 // for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
 // terminal target can never fire, so they still fail target_terminal. Clear
-// requests are never catch-up.
+// requests are never catch-up. A time field or a note is excluded too: catch-up
+// runs before validateWatchTriggerShape, so admitting those shapes would serve a
+// scan instead of the timer rules' correction.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 	return !a.Clear &&
 		a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
-		a.ProgressIntervalMS == 0
+		a.ProgressIntervalMS == 0 &&
+		!watchArgsIsTimer(a) &&
+		a.Note == ""
 }
 
 func validateWatchEventArgs(a watchArgs) error {
@@ -799,6 +883,45 @@ func validateWatchEventArgs(a watchArgs) error {
 }
 
 func validateWatchTriggerShape(a watchArgs) error {
+	// The timer rules run first. A request that named a timer field is answered
+	// in its own terms: told which OTHER field it conflicts with, rather than
+	// pointed at the timer field it already used by the progress-trigger hint
+	// below, which exists for requests that named no timer field at all.
+	if watchArgsIsTimer(a) {
+		if a.Source != "self" {
+			return errors.New("invalid_request: timers apply to source self; delegates and jobs wake you when they finish")
+		}
+		if a.AfterSeconds > 0 && a.RepeatSeconds > 0 {
+			return errors.New("invalid_request: after_seconds and repeat_seconds are mutually exclusive")
+		}
+		name := "after_seconds"
+		if a.RepeatSeconds > 0 {
+			name = "repeat_seconds"
+		}
+		for _, other := range []struct {
+			set  bool
+			name string
+		}{
+			{a.ProgressIntervalMS > 0, "progress_interval_ms"},
+			{a.OutputMatch != "", "output_match"},
+			{len(a.Events) > 0, "events"},
+			{a.Every > 0, "every"},
+			{a.EventFilter != nil, "event_filter"},
+			// A timer has no send rail: watchSendSnapshot and
+			// isCurrentPendingWatchSendLocked rebuild the watch key without the
+			// slot, so a timer's sends would be silently dropped as stale.
+			{a.Send != nil, "send"},
+		} {
+			if other.set {
+				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)
+			}
+		}
+	} else if a.Note != "" {
+		return errors.New("invalid_request: note applies to timers")
+	}
+	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
+		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
+	}
 	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: session event watches use events/event_filter/every; progress_interval_ms is for periodic progress watches")
 	}
@@ -989,11 +1112,14 @@ func isWatchSessionTarget(target string) bool {
 	}
 }
 
-func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
+func newWatchConfig(a watchArgs, createdAt time.Time, slot string) (*watchConfig, error) {
 	applyStableReceiverWatchSend(&a)
 	sourceDelegateID := stableWatchSourceID(a)
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
-	watchID := jobstore.NewWatchID()
+	watchID := slot
+	if watchID == "" {
+		watchID = jobstore.NewWatchID()
+	}
 	cfg := &watchConfig{
 		id:                 watchID,
 		watchID:            watchID,
@@ -1006,6 +1132,11 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
+		slot:               slot,
+		timer:              watchArgsIsTimer(a),
+		oneShot:            a.AfterSeconds > 0,
+		timerSeconds:       max(a.AfterSeconds, a.RepeatSeconds),
+		note:               a.Note,
 		events:             canonicalWatchEvents(a.Events),
 		eventKinds:         eventKinds,
 		wildcardEvents:     wildcardEvents,
@@ -1016,6 +1147,9 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		sourceDelegateID:   sourceDelegateID,
 		sourceGeneration:   a.SourceGeneration,
 		stableReceiver:     a.StableReceiver,
+	}
+	if cfg.timer {
+		cfg.progressIntervalMS = cfg.timerSeconds * 1000
 	}
 	// every is valid only with exactly one event kind (enforced by validation).
 	if a.Every > 0 && len(a.Events) == 1 {
@@ -1057,6 +1191,12 @@ func normalizedWatchConfigHash(a watchArgs) string {
 		SourceDelegateID:         stableWatchSourceID(a),
 		SourceDelegateGeneration: a.SourceGeneration,
 		StableReceiver:           a.StableReceiver,
+		// The timer's own fields, not the interval they derive: a one-shot and a
+		// repeating timer that fire the same number of seconds apart are still
+		// two different watches, and so are two repeats with different notes.
+		AfterSeconds:  a.AfterSeconds,
+		RepeatSeconds: a.RepeatSeconds,
+		Note:          a.Note,
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
@@ -1360,6 +1500,14 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 }
 
 func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchConfig) bool, allowDurable bool) (watchResult, error) {
+	return jm.clearWatchByIDMatchingWithReason(watchID, allow, allowDurable, "cleared")
+}
+
+// clearWatchByIDMatchingWithReason is the teardown clearWatchByIDMatching runs,
+// with the end reason recorded in the durable clear event and the history ring
+// as a parameter: a one-shot timer retires through the same sequence but is
+// recorded as "fired" rather than "cleared".
+func (jm *jobManager) clearWatchByIDMatchingWithReason(watchID string, allow func(*watchConfig) bool, allowDurable bool, endReason string) (watchResult, error) {
 	jm.mu.Lock()
 	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if ok && !allow(cfg) {
@@ -1378,7 +1526,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 		var clearEvent *jobstore.Event
 		if allowDurable {
 			var err error
-			clearEvent, err = jm.durableWatchClearEvent(watchID, "cleared")
+			clearEvent, err = jm.durableWatchClearEvent(watchID, endReason)
 			if err != nil {
 				jm.rollbackWatchConfigsRejecting(detachedCfgs)
 				return watchResult{}, err
@@ -1404,7 +1552,7 @@ func (jm *jobManager) clearWatchByIDMatching(watchID string, allow func(*watchCo
 		key:       key,
 		cfg:       cfg,
 		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: "cleared",
+		endReason: endReason,
 	}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
@@ -1520,6 +1668,9 @@ func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnap
 }
 
 func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
+	if candidate.Slot != request.Slot {
+		return false
+	}
 	if candidate.VisibleSessionID != request.VisibleSessionID || candidate.Target != request.Target {
 		return false
 	}
@@ -1555,20 +1706,77 @@ func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobsto
 	}, nil
 }
 
-// recordWatchDeliveryLocked increments the model-facing delivery count for cfg
-// and reports whether this increment is the one that crossed the delivery
-// budget. The crossing is latched to exactly one true per cfg lifetime: the
-// counter only ever rises, so it equals watchDeliveryBudget on a single
-// increment. The caller must hold jm.mu. A true result means the caller should
-// schedule autoClearWatchOverBudget(cfg) AFTER releasing jm.mu (the auto-clear
-// does durable I/O and re-takes jm.mu; it must never run from inside an
+// tripConditionFireBudgetLocked latches the condition-fire circuit breaker for
+// cfg and reports whether THIS call tripped it. The test is "at or past the
+// budget", latched by budgetTripped to exactly one true per cfg lifetime.
+// Equality would be wrong for the send rail: a send watch counts its fire when
+// it SNAPSHOTS a frame and counts its delivery when that frame SETTLES, so two
+// fires snapshotted before either settles walk conditionFires from 49 to 51 and
+// every later call would compare a counter that already stepped over the
+// budget.
+//
+// Both ends of the send rail consult it: the observation side, where the match
+// is counted, so a watch whose frames never settle still trips; and the settle
+// side, which keeps its delivery accounting. The latch is what makes the second
+// of those a no-op rather than a second teardown.
+//
+// The caller must hold jm.mu. A true result means the caller should schedule
+// autoClearWatchOverBudget(cfg) AFTER releasing jm.mu (the auto-clear does
+// durable I/O and re-takes jm.mu; it must never run from inside an
 // observation's critical section, spec §3).
-func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
-	if cfg == nil {
+func tripConditionFireBudgetLocked(cfg *watchConfig) (crossedBudget bool) {
+	if cfg == nil || cfg.conditionFires < watchDeliveryBudget || cfg.budgetTripped {
 		return false
 	}
+	cfg.budgetTripped = true
+	return true
+}
+
+// noteConditionFireLocked offers one condition match to cfg's breaker. It is the
+// ONLY place conditionFires moves: every match site — the event rail, the live
+// output rail, and both attach-scan rails — goes through it, so no path can
+// count a fire without consulting the breaker.
+//
+// accepted=false means the breaker has already latched and the caller must build
+// NOTHING from this match. The window it closes is the teardown's own durable
+// append: the config is not detached until that append returns, so it is still
+// in jm.watches and still matching. rejectingDelivery stops the send rail at the
+// delivery gate, but a no-send watch's notification has no such gate, so the
+// refusal has to happen where the match is counted. The match that crosses the
+// budget is itself accepted — the budget is a count of allowed fires, and that
+// one is the last of them.
+//
+// crossedBudget=true means the caller must schedule autoClearWatchOverBudget(cfg)
+// after releasing jm.mu, on tripConditionFireBudgetLocked's terms. The caller
+// must hold jm.mu.
+func noteConditionFireLocked(cfg *watchConfig) (accepted, crossedBudget bool) {
+	if cfg == nil || cfg.budgetTripped {
+		return false, false
+	}
+	cfg.conditionFires++
+	return true, tripConditionFireBudgetLocked(cfg)
+}
+
+// countWatchDeliveryLocked increments the model-facing delivery count for cfg.
+// It says nothing about the breaker: the budget bounds CONDITION fires, so a
+// periodic progress tick counts a delivery here and never trips anything, and a
+// condition fire's crossing is reported by noteConditionFireLocked at the match.
+// The caller must hold jm.mu.
+func countWatchDeliveryLocked(cfg *watchConfig) {
+	if cfg == nil {
+		return
+	}
 	cfg.deliveries++
-	return cfg.deliveries == watchDeliveryBudget
+}
+
+// recordWatchDeliveryLocked counts a delivery at the send rail's settle end and
+// reports whether it crossed the condition-fire budget. The send rail counts its
+// fire when it snapshots a frame and its delivery when that frame settles, so
+// this is the second of the two ends that can report the crossing; the latch
+// keeps the pair to one teardown. The caller must hold jm.mu.
+func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
+	countWatchDeliveryLocked(cfg)
+	return tripConditionFireBudgetLocked(cfg)
 }
 
 // watchKeyForConfigLocked finds the live map key holding cfg. ok=false means cfg
@@ -1586,10 +1794,20 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // autoClearWatchOverBudgetNotification tears down exactly the one watch config
 // that tripped the delivery budget and returns its ONE final cleared notification
 // without enqueuing or waking. It is the circuit breaker's teardown: jm-state
-// mutation plus durable drop of pending sends — NO delivery from observation
-// (spec §3). It mirrors clearWatch's terminal-snapshot machinery but operates on
-// a single (key, cfg) pair, so a no-send watch sharing a target with other watches
+// mutation only — NO delivery from observation (spec §3). It works on the single
+// (key, cfg) pair the breaker latched, so a watch sharing a target with others
 // does not over-clear its neighbors.
+//
+// The sequence is mark, persist, detach. It takes no terminal snapshot and drops
+// nothing, which is what separates it from a model-requested clear: the budget
+// bounds how many times a watch may FIRE, and a frame it already produced —
+// including the one whose match crossed the budget, which every rail records
+// before calling this — is persisted as pending and owed to its receiver. All
+// that is persisted here is the watch's own cleared event; the detached config
+// keeps its frames and goes onto the terminal-flush rail, exactly where a watch
+// auto-removed by its target's exit parks them. rejectingDelivery is the freeze
+// that holds across the durable append, so no fire past the crossing can add a
+// frame between the mark and the detach; detachOverBudgetWatch lifts it.
 //
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
@@ -1601,24 +1819,70 @@ func (jm *jobManager) autoClearWatchOverBudgetNotification(cfg *watchConfig) (jo
 		jm.mu.Unlock()
 		return jobNotification{}, false
 	}
-	targets := []watchConfigTerminalSnapshot{{
-		key:       key,
-		cfg:       cfg,
-		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-		endReason: "budget_exhausted",
-	}}
+	targets := []watchConfigTerminalSnapshot{{key: key, cfg: cfg, endReason: "budget_exhausted"}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
 
-	dropped := terminalSnapshots(targets)
-	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+	if err := jm.appendWatchTeardownBatch(nil, targets); err != nil {
+		jm.rollbackWatchBudgetTeardown(targets, cfg)
 		return jobNotification{}, false
 	}
-	jm.detachWatchConfigSnapshots(targets)
-	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.detachOverBudgetWatch(targets[0])
 
 	return jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil), true
+}
+
+// detachOverBudgetWatch removes the over-budget config from the live set and, in
+// the SAME critical section, releases it onto the terminal-flush rail, where
+// drains, restore, and clear-by-id can still see and settle the frames it
+// already produced. The rejecting mark comes off HERE and not earlier: it is
+// what froze the config while the teardown persisted, so no fire past the
+// crossing could slip a frame in, and a config still marked rejecting delivers
+// nothing. Detached, it can gain no new frames — a delivery snapshotted before
+// the teardown no longer resolves to a live watch. A config with nothing pending
+// is left off the rail: terminalFlush holds flushing configs, not ended ones.
+//
+// The release is gated on this call being the one that detached the config, and
+// shares its critical section for the same reason. A model-requested clear that
+// won the key owns that config: it has already dropped those frames under its
+// own rejecting mark, and unmarking it here would hand a config that is in
+// neither jm.watches nor terminalFlush back to a fire still in flight.
+func (jm *jobManager) detachOverBudgetWatch(target watchConfigTerminalSnapshot) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if !jm.detachWatchConfigSnapshotLocked(target) {
+		return
+	}
+	cfg := target.cfg
+	cfg.rejectingDelivery = false
+	if len(cfg.pending) == 0 {
+		return
+	}
+	jm.rememberDetachedPendingLocked(cfg)
+}
+
+// rollbackWatchBudgetTeardown undoes a budget teardown that did not persist:
+// the rejecting marks come off and the once-only budget latch is re-armed. The
+// rollback leaves the watch live and still over budget, so the latch has to come
+// off with the rejecting marks — held set, no later condition fire would report
+// a crossing and nothing would ever retry the auto-clear. Both flip in ONE jm.mu
+// critical section: a condition fire that landed between two acquisitions would
+// find delivery re-enabled with the latch still set and skip its own teardown.
+// Only the failed-teardown path calls this; a teardown that lands detaches the
+// config and the latch goes with it.
+func (jm *jobManager) rollbackWatchBudgetTeardown(targets []watchConfigTerminalSnapshot, cfg *watchConfig) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	rollbackWatchBudgetTeardownLocked(jm, targets, cfg)
+}
+
+// rollbackWatchBudgetTeardownLocked is rollbackWatchBudgetTeardown's body. The
+// caller must hold jm.mu.
+func rollbackWatchBudgetTeardownLocked(jm *jobManager, targets []watchConfigTerminalSnapshot, cfg *watchConfig) {
+	rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
+	if cfg != nil {
+		cfg.budgetTripped = false
+	}
 }
 
 // autoClearWatchOverBudget is the standalone wrapper for attach scans and watch
@@ -1678,6 +1942,17 @@ func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
 	return false
 }
 
+// liveTimerCountLocked counts installed timer watches. Caller holds jm.mu.
+func (jm *jobManager) liveTimerCountLocked() int {
+	n := 0
+	for _, cfg := range jm.watches {
+		if cfg.timer {
+			n++
+		}
+	}
+	return n
+}
+
 func (jm *jobManager) watchConfigByIDLocked(watchID string) (watchKey, *watchConfig, bool) {
 	for key, cfg := range jm.watches {
 		if cfg != nil && cfg.watchID == watchID {
@@ -1723,6 +1998,10 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 	if !cfg.stableReceiver {
 		send = cloneWatchSendArgs(cfg.send)
 	}
+	progressIntervalMS := cfg.progressIntervalMS
+	if cfg.timer {
+		progressIntervalMS = 0
+	}
 	return watchResult{
 		WatchID:            cfg.watchID,
 		Source:             cfg.sourcePublic,
@@ -1731,7 +2010,10 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		OutputMatch:        cfg.outputMatch,
 		Events:             append([]string(nil), cfg.events...),
 		EventFilter:        cloneWatchEventFilter(cfg.eventFilter),
-		ProgressIntervalMS: cfg.progressIntervalMS,
+		ProgressIntervalMS: progressIntervalMS,
+		TimerSeconds:       cfg.timerSeconds,
+		OneShot:            cfg.oneShot,
+		Note:               cfg.note,
 		Send:               send,
 		ReplacedExisting:   replacedExisting,
 	}
@@ -1761,6 +2043,18 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		SourceDelegateID:         cfg.sourceDelegateID,
 		SourceDelegateGeneration: cfg.sourceGeneration,
 		StableReceiver:           cfg.stableReceiver,
+		Note:                     cfg.note,
+	}
+	// A timer keeps only the seconds it derived and which mode derived them, so
+	// the snapshot rebuilds the field the model actually named: inspect and
+	// history have to be able to say "fires once in 10 minutes" apart from
+	// "fires every 10 minutes".
+	if cfg.timer {
+		if cfg.oneShot {
+			snapshot.AfterSeconds = cfg.timerSeconds
+		} else {
+			snapshot.RepeatSeconds = cfg.timerSeconds
+		}
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To
@@ -2177,8 +2471,19 @@ func watchConditionSummary(cfg *watchConfig) string {
 	if cfg.outputMatch != "" {
 		parts = append(parts, "output_match: "+limitWatchText(cfg.outputMatch, watchTriggerMaxChars))
 	}
-	if cfg.progressIntervalMS > 0 {
+	switch {
+	case cfg.timer && cfg.oneShot:
+		parts = append(parts, fmt.Sprintf("after_seconds: %d", cfg.timerSeconds))
+	case cfg.timer:
+		parts = append(parts, fmt.Sprintf("repeat_seconds: %d", cfg.timerSeconds))
+	case cfg.progressIntervalMS > 0:
 		parts = append(parts, fmt.Sprintf("progress_interval_ms: %d", cfg.progressIntervalMS))
+	}
+	// The note is bounded where it is stored, not at the tighter output_match
+	// bound: job_list, formatJobWatch, and the tool description's verbatim claim
+	// must agree on what the model gets back.
+	if cfg.timer && cfg.note != "" {
+		parts = append(parts, "note: "+limitWatchText(cfg.note, watchMessageMaxChars))
 	}
 	if cfg.wildcardEvents {
 		parts = append(parts, "events: [*]")
@@ -2225,7 +2530,15 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
-		cfg.conditionFires++
+		// The match is offered to the breaker before the rails split: the send
+		// rail counts its delivery only when the frame settles, which a frame the
+		// receiver never takes never reaches, so latching at the match is what
+		// bounds an unsettled watch. A refused match is a match this watch is no
+		// longer entitled to, so nothing is built from it.
+		accepted, crossedBudget := noteConditionFireLocked(cfg)
+		if !accepted {
+			continue
+		}
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
@@ -2240,22 +2553,31 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 				n = jobFinishedEventIdentity(n, data)
 			}
 			notifications = append(notifications, n)
-			if jm.recordWatchDeliveryLocked(cfg) {
-				overBudget = append(overBudget, cfg)
-			}
+			countWatchDeliveryLocked(cfg)
+		}
+		if crossedBudget {
+			overBudget = append(overBudget, cfg)
 		}
 	}
 	jm.mu.Unlock()
 
 	// Called from Session.emit; only persist + wake here so watch delivery does
 	// not re-enter session event emission (spec §3).
+	//
+	// The fired sends are recorded BEFORE the over-budget teardown, the way the
+	// output rail and the attach scan already order it, so the frame whose match
+	// crossed the budget is pending by the time its watch is torn down and
+	// leaves on the terminal-flush rail: the budget bounds how many times a
+	// watch may fire, not whether a frame it already produced reaches its
+	// receiver. The teardown's cleared notification still rides out with this
+	// event's matched notifications, so the model is woken once for both.
+	jm.recordWatchSendsAndKick(deliveries)
 	for _, cfg := range overBudget {
 		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
 			notifications = append(notifications, notification)
 		}
 	}
 	jm.enqueueWatchNotifications(notifications)
-	jm.recordWatchSendsAndKick(deliveries)
 }
 
 // watchEventSnapshot is a read-only copy of the per-watch fields that decide
@@ -2569,16 +2891,28 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
-			cfg.conditionFires++
+			accepted, crossedBudget := noteConditionFireLocked(cfg)
+			if !accepted {
+				break
+			}
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
-				if jm.recordWatchDeliveryLocked(cfg) {
-					overBudget = append(overBudget, cfg)
-				}
+				countWatchDeliveryLocked(cfg)
+			}
+			if crossedBudget {
+				overBudget = append(overBudget, cfg)
+				// The matcher hands back every match in the chunk at once, and
+				// the teardown this crossing schedules cannot run until jm.mu is
+				// released. Without this break the rest of the chunk would fire a
+				// watch that is already over budget — one chunk carrying a
+				// thousand matches would deliver a thousand frames. The crossing
+				// match itself has been recorded above: it is inside the budget,
+				// and it is the last one this watch gets.
+				break
 			}
 		}
 	}
@@ -2655,8 +2989,9 @@ func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []
 // once (a level check — "the output already contains the pattern" — not a replay
 // of N lines, spec §7.1 "Attach-scan fire cardinality"). The single fire carries
 // the LAST matching line and routes through the same rail as a live feedJobOutput
-// match: recordWatchSendsAndKick for a send watch, or enqueueWatchNotifications +
-// over-budget handling for a no-send watch. It runs after jm.mu is released.
+// match: recordWatchSendsAndKick for a send watch, enqueueWatchNotifications for a
+// no-send one, and on either rail the same breaker check the live sites make. It
+// runs after jm.mu is released.
 // Returns whether the scan fired.
 func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte) bool {
 	last, matched := cfg.outputMatcher.ScanRetained(data)
@@ -2667,21 +3002,32 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		cfg.conditionFires++
+		accepted, crossedBudget := noteConditionFireLocked(cfg)
+		if !accepted {
+			jm.mu.Unlock()
+			return false
+		}
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+		if crossedBudget {
+			jm.autoClearWatchOverBudget(cfg)
+		}
 		return true
 	}
-	var overBudget []*watchConfig
 	jm.mu.Lock()
-	cfg.conditionFires++
-	if jm.recordWatchDeliveryLocked(cfg) {
-		overBudget = append(overBudget, cfg)
+	accepted, crossedBudget := noteConditionFireLocked(cfg)
+	if accepted {
+		countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
+	if !accepted {
+		return false
+	}
 	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
-	jm.autoClearOverBudgetWatches(overBudget)
+	if crossedBudget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	return true
 }
 
@@ -2709,7 +3055,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
 	// the send through the durable rail with a fresh generation and cloned send.
 	// The scan reuses the config's own matcher so output_match compiles once.
-	cfg, err := newWatchConfig(a, jm.now())
+	cfg, err := newWatchConfig(a, jm.now(), key.Slot)
 	if err != nil {
 		return watchResult{}, err
 	}
@@ -3042,25 +3388,33 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 
 // progressTickSnapshot is the read-only view fireProgressTick gathers under the
 // lock before consulting decideProgressTick. target is the raw watch target,
-// echoed into the notification job id for non-session targets.
+// echoed into the notification job id for non-session targets. oneShot marks a
+// one-shot timer, whose single fire is also its last.
 type progressTickSnapshot struct {
 	closing         bool
 	stillRegistered bool
 	sessionTarget   bool
 	targetRunning   bool
 	hasSend         bool
+	oneShot         bool
+	firedPendingEnd bool
 	target          string
 }
 
 // progressTickDecision is what decideProgressTick returns for one tick: whether
 // the timer goroutine keeps running (keepAlive), whether this tick delivers
-// (fire) and how it routes — a watch send (sendDelivery) or a notification whose
-// delivery counts against the budget (recordBudget), plus the notification job id.
+// (fire) and how it routes — a watch send (sendDelivery) or a notification that
+// counts a delivery (recordBudget), plus the notification job id. A periodic
+// tick is not a condition fire, so its delivery never counts against the budget.
+// endOneShot asks the caller to end a fired one-shot: set together with fire on
+// its first delivery, and alone when a previous end failed to persist and this
+// tick only retries the teardown.
 type progressTickDecision struct {
 	keepAlive    bool
 	fire         bool
 	sendDelivery bool
 	recordBudget bool
+	endOneShot   bool
 	notifyJobID  string
 }
 
@@ -3068,15 +3422,26 @@ type progressTickDecision struct {
 // gates a progress tick on manager/registration/liveness and reports
 // how the surviving tick routes. It locks nothing and mutates nothing; the caller
 // performs the effects. A send tick and a budget-counted notification are mutually
-// exclusive, and a non-keepAlive tick never fires.
+// exclusive. A gated-out tick neither fires nor keeps the goroutine alive; a
+// one-shot timer's tick fires and then ends the goroutine, and a one-shot whose
+// end could not persist keeps the goroutine alive without firing until the
+// retry lands, so fire alone — not keepAlive — decides whether this tick
+// delivers.
 func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 	if snap.closing || !snap.stillRegistered {
 		return progressTickDecision{}
 	}
+	// A one-shot that already fired and could not persist its end retries the
+	// teardown on this tick and delivers nothing. The retry outranks the
+	// liveness gate below: the watch is registered and owes an end, whatever
+	// its target is now doing.
+	if snap.firedPendingEnd {
+		return progressTickDecision{keepAlive: true, endOneShot: true}
+	}
 	if !snap.sessionTarget && !snap.targetRunning {
 		return progressTickDecision{}
 	}
-	dec := progressTickDecision{keepAlive: true, fire: true}
+	dec := progressTickDecision{keepAlive: !snap.oneShot, fire: true, endOneShot: snap.oneShot}
 	if snap.hasSend {
 		dec.sendDelivery = true
 		return dec
@@ -3091,7 +3456,6 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget bool
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, cfg.target)}
 	jm.mu.Lock()
@@ -3101,10 +3465,12 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		sessionTarget:   isWatchSessionTarget(cfg.target),
 		targetRunning:   jm.running[cfg.target] != nil,
 		hasSend:         cfg.send != nil,
+		oneShot:         cfg.oneShot,
+		firedPendingEnd: cfg.firedPendingEnd,
 		target:          cfg.target,
 	}
 	dec := decideProgressTick(snap)
-	if !dec.keepAlive {
+	if !dec.fire && !dec.endOneShot {
 		jm.mu.Unlock()
 		return false
 	}
@@ -3112,17 +3478,64 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
 	}
 	if dec.recordBudget {
-		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, dec.notifyJobID, "progress_tick", root.Provenance))
-		overBudget = jm.recordWatchDeliveryLocked(cfg)
+		reason := "progress_tick"
+		if cfg.timer {
+			reason = "repeat"
+			if cfg.oneShot {
+				reason = "after"
+			}
+		}
+		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
+		if cfg.timer {
+			n.WatchID, n.Fires, n.Note, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.note, cfg.timerSeconds, cfg.oneShot
+		}
+		notifications = append(notifications, n)
+		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
 	}
 	jm.mu.Unlock()
 
+	// A one-shot ends on the tick that fires it, or on a later tick retrying an
+	// end that did not persist. An end that lands stops the ticker with the
+	// watch; one that fails keeps it armed for the next retry.
+	if dec.endOneShot {
+		dec.keepAlive = !jm.endFiredOneShot(cfg)
+		if dec.keepAlive {
+			jm.markOneShotFiredPendingEnd(cfg)
+		}
+	}
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	if overBudget {
-		jm.autoClearWatchOverBudget(cfg)
+	return dec.keepAlive
+}
+
+// endFiredOneShot retires a one-shot timer after its only fire through the
+// same snapshot, persist, detach sequence clearWatch uses, recorded with end
+// reason "fired" so history distinguishes it from a clear. Called with jm.mu
+// released; the fire's notification is enqueued by the caller afterwards. It
+// reports whether the end persisted; a failure is warned about and left for the
+// caller to retry.
+func (jm *jobManager) endFiredOneShot(cfg *watchConfig) bool {
+	if _, err := jm.clearWatchByIDMatchingWithReason(cfg.watchID, func(c *watchConfig) bool { return c == cfg }, true, "fired"); err != nil {
+		if jm.emit != nil {
+			jm.emit(events.EventWarning, events.WarningData{
+				Message: fmt.Sprintf("job_watch: one-shot %s fired but its teardown did not persist: %v", cfg.watchID, err),
+			}, nil)
+		}
+		return false
 	}
 	return true
+}
+
+// markOneShotFiredPendingEnd records that a one-shot has spent its single fire
+// and still owes a durable end, so the next tick retries the teardown without
+// delivering again.
+func (jm *jobManager) markOneShotFiredPendingEnd(cfg *watchConfig) {
+	if cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg.firedPendingEnd = true
 }
 
 func watchNotification(jobID, reason string) jobNotification {
@@ -4034,14 +4447,24 @@ func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSn
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, target := range targets {
-		if target.cfg != nil && jm.watches[target.key] == target.cfg {
-			if target.endReason != "" {
-				jm.recordWatchEndedLocked(target.key, target.cfg, target.endReason)
-			}
-			closeWatchConfig(target.cfg)
-			delete(jm.watches, target.key)
-		}
+		jm.detachWatchConfigSnapshotLocked(target)
 	}
+}
+
+// detachWatchConfigSnapshotLocked removes one target's config from the live set
+// and reports whether THIS call was the one that removed it. False means the key
+// no longer held that config — a concurrent teardown already took it, and owns
+// whatever happens to it next. The caller must hold jm.mu.
+func (jm *jobManager) detachWatchConfigSnapshotLocked(target watchConfigTerminalSnapshot) bool {
+	if target.cfg == nil || jm.watches[target.key] != target.cfg {
+		return false
+	}
+	if target.endReason != "" {
+		jm.recordWatchEndedLocked(target.key, target.cfg, target.endReason)
+	}
+	closeWatchConfig(target.cfg)
+	delete(jm.watches, target.key)
+	return true
 }
 
 func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) watchSendTerminalSnapshot {
@@ -4135,6 +4558,11 @@ func watchSendTerminalSnapshotMatchingKeyLocked(cfg *watchConfig, key watchKey, 
 }
 
 func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bool {
+	// A durable send key carries no slot, and only send-rail configs reach
+	// here, so a timer key never matches a pending send.
+	if key.Slot != "" {
+		return false
+	}
 	if pending.VisibleSessionID != key.VisibleSessionID || pending.WatchTarget != key.Target {
 		return false
 	}
@@ -4148,6 +4576,9 @@ func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bo
 
 func watchConfigMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 	if cfg == nil || cfg.target != key.Target {
+		return false
+	}
+	if cfg.slot != key.Slot {
 		return false
 	}
 	if !watchConfigReceiverMatchesWatchKey(cfg, key) {
@@ -4666,15 +5097,17 @@ func (jm *jobManager) kick() {
 // empty between frames, and inferring from it would re-announce — and eventually
 // kill — a job the model explicitly said it was waiting on. A cleared watch
 // (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
-// counts as undisposed again. A budget-crossing watch is retained as a
-// temporary excuse while its asynchronous teardown persists the clear and
-// queues the final notification; otherwise the drain can announce in that
-// handoff window before it receives the notification that explains the clear.
+// counts as undisposed again. A watch that has just tripped the budget is
+// retained as a temporary excuse while its asynchronous teardown persists the
+// clear and queues the final notification; otherwise the drain can announce in
+// that handoff window before it receives the notification that explains the
+// clear. That window is keyed on conditionFires, the counter the breaker
+// latches on, so it closes when the teardown removes the config.
 func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for key, cfg := range jm.watches {
-		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.deliveries >= watchDeliveryBudget) {
+		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.conditionFires >= watchDeliveryBudget) {
 			return true
 		}
 	}

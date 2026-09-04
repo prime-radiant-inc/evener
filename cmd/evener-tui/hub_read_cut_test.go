@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
@@ -33,15 +34,41 @@ func captureReadServer(app *appserver.Server, reads *[]appwire.ThreadReadParams)
 	})
 }
 
-// barrierAfterBroadcast proves the client has already processed every frame the
-// server sent before this call. One appwire read loop drains the connection in
-// wire order, so a response to a request issued after a broadcast cannot
-// overtake it.
-func barrierAfterBroadcast(t *testing.T, client *appwire.Client) {
+// awaitPostCutFrame waits until the feed has actually observed the broadcast
+// and filed it above the open read's cut. That is the condition the test needs,
+// and a request round trip does not establish it: while a subscription is still
+// buffering after a subscribed read, Subscriptions.Route holds a concurrent
+// broadcast in the subscription buffer, and the buffer is flushed by
+// Server.releaseHydration from the finalizer that runs AFTER the read response
+// is already queued. A later request can be answered out of that window, so its
+// response says nothing about where the broadcast is.
+func awaitPostCutFrame(t *testing.T, feed *hubFrameFeed, text string) {
 	t.Helper()
-	if _, err := client.HarnessList(context.Background(), appwire.HarnessListParams{}); err != nil {
-		t.Fatalf("barrier request: %v", err)
+	// TRIPWIRE: the broadcast is one loopback hop away and normally lands in
+	// microseconds; this bound only fires when it is never coming at all.
+	deadline := time.Now().Add(30 * time.Second)
+	for !feedHoldsPostCutFrame(feed, text) {
+		if time.Now().After(deadline) {
+			t.Fatalf("broadcast %q never reached the read capture's post-cut side", text)
+		}
+		time.Sleep(time.Millisecond)
 	}
+}
+
+// feedHoldsPostCutFrame reports whether the open capture is already holding a
+// frame carrying text on the far side of its cut.
+func feedHoldsPostCutFrame(feed *hubFrameFeed, text string) bool {
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	if feed.capture == nil {
+		return false
+	}
+	for _, notification := range feed.capture.after {
+		if strings.Contains(string(notification.Params), text) {
+			return true
+		}
+	}
+	return false
 }
 
 // pendingHubNotifications reports every notification the model's feed is
@@ -103,7 +130,7 @@ func TestHubModelReReadHoldsPostCutFrameUntilSnapshotApplied(t *testing.T) {
 			Status: "completed",
 		},
 	})
-	barrierAfterBroadcast(t, client)
+	awaitPostCutFrame(t, frames, "rollback finished")
 
 	// Fold whatever the feed offers BEFORE the snapshot. Nothing forbids that
 	// order: bubbletea takes the two goroutines' messages in whichever order
