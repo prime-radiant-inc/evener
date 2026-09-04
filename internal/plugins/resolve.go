@@ -769,6 +769,15 @@ func (m *Manager) storeRootError() error {
 	if m.Root == "" {
 		return errors.New("no plugin store root is configured")
 	}
+	// A relative root is resolved the same way an absent one is: against
+	// whatever directory the process happens to be in, which is somebody's
+	// project rather than a store. Whether it came from a relative
+	// XDG_CONFIG_HOME (which the spec says to ignore) or a hand-typed
+	// --plugin-root, a store that moves with the working directory is not one
+	// this can read or write.
+	if !filepath.IsAbs(m.Root) {
+		return fmt.Errorf("plugin store root %q is not an absolute path", m.Root)
+	}
 	return nil
 }
 
