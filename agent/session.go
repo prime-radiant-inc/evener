@@ -1799,19 +1799,28 @@ func (s *Session) sclock() clock.Clock {
 	return s.clock
 }
 
-// assistantHistoryMessage makes malformed tool arguments replayable in semantic
-// history without changing the provider response used for tool validation.
+// assistantHistoryMessage makes provider tool calls safe and replayable in
+// semantic history without changing the response used for tool routing and
+// validation.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
-		if part.ToolCall == nil || len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments) {
+		if part.ToolCall == nil {
+			continue
+		}
+		validArguments := len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments)
+		displayName := tool.DisplayToolName(part.ToolCall.Name)
+		if validArguments && displayName == part.ToolCall.Name {
 			continue
 		}
 		if content == nil {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
-		call.Arguments = json.RawMessage(`{}`)
+		call.Name = displayName
+		if !validArguments {
+			call.Arguments = json.RawMessage(`{}`)
+		}
 		content[i].ToolCall = &call
 	}
 	if content != nil {

@@ -1003,10 +1003,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		if res, blocked := park(); blocked {
 			return res
 		}
-		visibleName := name
-		if !IsReadableToolName(name) {
-			visibleName = "invalid tool name"
-		}
+		visibleName := DisplayToolName(name)
 		msg := "unknown tool: " + visibleName
 		return finish(truncateResult(name, callID, msg, true, defaultToolLimit(name)))
 	}
@@ -1323,7 +1320,7 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		out += "\n[Tool output was truncated.]"
 	}
 	return ExecResult{
-		ToolName:          toolName,
+		ToolName:          DisplayToolName(toolName),
 		CallID:            callID,
 		Output:            out,
 		FullOutput:        full,

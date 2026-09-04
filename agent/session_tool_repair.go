@@ -207,7 +207,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
 			res.Boundary = "schema_validation"
-			if t.Definition.Name == "ask_user" {
+			if t.Definition.Name == "ask_user" || len(pendingJSONChanges) > 0 {
 				res.SemanticArguments, _ = json.Marshal(args)
 			}
 			return res

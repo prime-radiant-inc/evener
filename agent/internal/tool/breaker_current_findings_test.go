@@ -536,3 +536,86 @@ func TestFinalizePrevalidationFailure_OversizeTrustedNormalizedArgsRetainCanonic
 		}
 	})
 }
+
+func TestExecuteCall_NormalizedSuccessClearsExactSemanticMetadata(t *testing.T) {
+	const name = "normalized_success_metadata"
+	r := NewRegistry()
+	normalizations := 0
+	dispatches := 0
+	if err := r.Register(RegisteredTool{
+		Definition: llm.ToolDefinition{
+			Name:        name,
+			Description: "exercise semantic metadata retirement after normalization",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string"},
+				},
+				"required": []any{"target"},
+			},
+		},
+		OmitIntent: true,
+		NormalizeArgs: func(map[string]any) (map[string]any, error) {
+			normalizations++
+			if normalizations == 1 {
+				return nil, errors.New("invalid_request: normalization failed")
+			}
+			return map[string]any{"target": "same"}, nil
+		},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			dispatches++
+			if dispatches == 1 {
+				return "normalized success", nil
+			}
+			// An empty error has exact failure identity but no semantic error
+			// class. It therefore cannot replace stale exact-entry metadata.
+			return nil, errors.New("")
+		},
+	}); err != nil {
+		t.Fatalf("register normalized tool: %v", err)
+	}
+
+	raw := json.RawMessage(`{"alias":"same"}`)
+	call := func(id string) ExecResult {
+		return r.ExecuteCall(context.Background(), breakerEnv(t), llm.ToolCallData{ID: id, Name: name, Arguments: raw})
+	}
+
+	initialFailure := call("initial-normalization-failure")
+	if !initialFailure.IsError || !strings.Contains(initialFailure.Output, "normalization failed") {
+		t.Fatalf("initial normalization result = %#v, want normalization failure", initialFailure)
+	}
+	retiredFingerprint := initialFailure.BreakerSemanticSignature
+	if retiredFingerprint == "" {
+		t.Fatal("initial normalization failure did not publish a semantic fingerprint")
+	}
+	rawBase := r.semanticSignatureFromRawFor(name, raw, r.Get(name))
+
+	success := call("normalized-success")
+	if success.IsError || success.FullOutput != "normalized success" {
+		t.Fatalf("normalized success = %#v", success)
+	}
+	if success.BreakerSemanticSignature == rawBase {
+		t.Fatalf("normalization did not change semantic identity: %q", rawBase)
+	}
+	if count, _, _ := r.semanticBreaker.check(rawBase); count != 0 {
+		t.Fatalf("successful normalization left raw semantic base at count %d", count)
+	}
+
+	for _, id := range []string{"unclassifiable-failure-1", "unclassifiable-failure-2"} {
+		res := call(id)
+		if !res.IsError || strings.Contains(res.Output, parkPrefix) {
+			t.Fatalf("%s = %#v, want dispatched empty failure", id, res)
+		}
+	}
+	parked := call("exact-park")
+	if normalizations != 4 || dispatches != 3 {
+		t.Fatalf("exact park dispatched: normalizations=%d dispatches=%d, want 4 and 3", normalizations, dispatches)
+	}
+	if !strings.HasPrefix(parked.Output, failureParkText(name, nil)) {
+		t.Fatalf("fifth call did not exact-park: %#v", parked)
+	}
+	if strings.Contains(parked.Output, "semantic failure loop") || parked.BreakerSemanticSignature != "" {
+		t.Fatalf("exact park reused retired semantic metadata %q: %#v", retiredFingerprint, parked)
+	}
+}

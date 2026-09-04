@@ -610,7 +610,13 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
 // RunPreToolUse dispatches PreToolUse hooks and aggregates results.
 // Any deny from any hook means denied.
 func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResult {
-	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
+	return r.RunPreToolUseMatching(ctx, input.ToolName, input)
+}
+
+// RunPreToolUseMatching routes hooks using matchToolName while exposing only
+// input.ToolName to hook commands and prompts.
+func (r *Runner) RunPreToolUseMatching(ctx context.Context, matchToolName string, input Input) PreToolUseResult {
+	outputs := r.runAll(ctx, plugin.HookPreToolUse, matchToolName, input)
 	var result PreToolUseResult
 	for _, o := range outputs {
 		if o.TerminalSequence != "" {
@@ -670,7 +676,13 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 
 // RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
 func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
-	outputs := r.runAll(ctx, plugin.HookPostToolUse, input.ToolName, input)
+	return r.RunPostToolUseMatching(ctx, input.ToolName, input)
+}
+
+// RunPostToolUseMatching routes hooks using matchToolName while exposing only
+// input.ToolName to hook commands and prompts.
+func (r *Runner) RunPostToolUseMatching(ctx context.Context, matchToolName string, input Input) RunResult {
+	outputs := r.runAll(ctx, plugin.HookPostToolUse, matchToolName, input)
 	return collectSystemMessages(plugin.HookPostToolUse, outputs)
 }
 

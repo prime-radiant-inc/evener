@@ -665,16 +665,17 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
 	if !tool.IsReadableToolName(call.Name) {
-		requestedVisible = "invalid tool name"
+		requestedVisible = tool.DisplayToolName(call.Name)
 	}
 	registered, lifetime := s.reg.SnapshotPrevalidation(call.Name)
 	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	prep.Lifetime = lifetime
 	call = prep.Call
+	displayName := tool.DisplayToolName(call.Name)
 	prevalidated := true
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
-			ToolName: call.Name,
+			ToolName: displayName,
 			CallID:   call.ID,
 			Changes:  changeStrings(prep.Changes),
 		})
@@ -683,13 +684,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(displayName)
 		hi.ToolUseID = call.ID
 		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
 
-		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
+		preResult := s.hookRunner.RunPreToolUseMatching(s.apiLogContext(ctx), call.Name, hi)
 		for _, m := range preResult.ModelContext {
 			s.deliverHookContext(m)
 		}
@@ -702,7 +703,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 				denyMsg = preResult.DenyMessage
 			}
 			return tool.ExecResult{
-				ToolName:   call.Name,
+				ToolName:   displayName,
 				CallID:     call.ID,
 				Output:     denyMsg,
 				FullOutput: denyMsg,
@@ -713,7 +714,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
 				return tool.ExecResult{
-					ToolName:   call.Name,
+					ToolName:   displayName,
 					CallID:     call.ID,
 					Output:     msg,
 					FullOutput: msg,
@@ -734,7 +735,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 
 	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := events.ToolCallStartData{
-		ToolName:      call.Name,
+		ToolName:      displayName,
 		CallID:        call.ID,
 		ArgumentsJSON: string(argsJSON),
 	}
@@ -814,11 +815,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Lock()
 	s.execToolCheckpoint("after_side_effect_lock")
 	if err := s.errIfClosing(); err != nil {
+		canceled := skippedToolResult(call, err)
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName:      call.Name,
+			ToolName:      canceled.ToolName,
 			CallID:        call.ID,
 			ArgumentsJSON: string(call.Arguments),
-			Error:         skippedToolResult(call, err).FullOutput,
+			Error:         canceled.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -870,11 +872,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PostToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(displayName)
 		hi.ToolUseID = call.ID
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field
-		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
+		postResult := s.hookRunner.RunPostToolUseMatching(s.apiLogContext(ctx), call.Name, hi)
 		for _, m := range postResult.ModelContext {
 			s.deliverHookContext(m)
 		}
@@ -951,7 +953,7 @@ func skippedToolResult(call llm.ToolCallData, err error) tool.ExecResult {
 		msg = "tool skipped: " + err.Error()
 	}
 	return tool.ExecResult{
-		ToolName:   call.Name,
+		ToolName:   tool.DisplayToolName(call.Name),
 		CallID:     call.ID,
 		Output:     msg,
 		FullOutput: msg,
@@ -975,7 +977,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 		if res.CallID == "" {
 			msg := "tool canceled: " + err.Error()
 			res = tool.ExecResult{
-				ToolName:   call.Name,
+				ToolName:   tool.DisplayToolName(call.Name),
 				CallID:     call.ID,
 				Output:     msg,
 				FullOutput: msg,

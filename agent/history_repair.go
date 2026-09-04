@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
@@ -117,16 +118,17 @@ func assistantToolCalls(msg llm.Message) []llm.ToolCallData {
 func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for _, call := range calls {
+		displayName := tool.DisplayToolName(call.Name)
 		content := fmt.Sprintf(
 			"Tool result unavailable: Evener was interrupted before recording output for tool call %s (%s). The tool was not rerun during recovery; do not assume it ran successfully. Inspect current state before continuing.",
 			call.ID,
-			call.Name,
+			displayName,
 		)
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
 				ToolCallID: call.ID,
-				Name:       call.Name,
+				Name:       displayName,
 				Content:    content,
 				IsError:    true,
 			},

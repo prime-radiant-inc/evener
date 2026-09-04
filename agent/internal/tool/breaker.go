@@ -100,6 +100,16 @@ func IsReadableToolName(name string) bool {
 	return name == strings.TrimSpace(name) && len(name) <= 64 && llm.ValidateToolName(name) == nil
 }
 
+// DisplayToolName returns the tool identity safe to expose outside routing and
+// breaker internals. Readable names remain useful diagnostics; all other raw
+// provider identities collapse to a fixed, bounded label.
+func DisplayToolName(name string) string {
+	if IsReadableToolName(name) {
+		return name
+	}
+	return "invalid tool name"
+}
+
 // semanticCallSignature returns the call half of a semantic failure
 // fingerprint. Registered-tool normalization has already happened when this
 // is called, so it intentionally preserves meaningful zero values such as an
@@ -373,7 +383,7 @@ func repetitionNudgeText(count int) string {
 // is being asked to stop repeating.
 func failureParkText(name string, snippets []string) string {
 	if !IsReadableToolName(name) {
-		name = "invalid tool name"
+		name = DisplayToolName(name)
 		// Unknown-tool failure snippets repeat the raw provider-supplied name.
 		// Keep invalid names out of both model-facing and retained breaker text.
 		snippets = nil
@@ -406,7 +416,7 @@ func semanticFailureNudgeText(boundary string) string {
 // arbitrary user-provided bodies.
 func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
 	if !IsReadableToolName(name) {
-		name = "invalid tool name"
+		name = DisplayToolName(name)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, fingerprint, attempts, boundary)
@@ -490,6 +500,9 @@ func (l *failureLedger) recordWithSemantic(name string, args []byte, isErr bool,
 	if semanticFingerprint != "" {
 		e.semanticFingerprint = semanticFingerprint
 		e.semanticBoundary = semanticBoundary
+	} else {
+		e.semanticFingerprint = ""
+		e.semanticBoundary = ""
 	}
 	l.touch(key)
 
@@ -548,6 +561,8 @@ func (l *failureLedger) clearFailures(name string, args []byte) {
 	e.class = ""
 	e.count = 0
 	e.snippets = nil
+	e.semanticFingerprint = ""
+	e.semanticBoundary = ""
 	l.touch(key)
 }
 
