@@ -482,10 +482,6 @@ type Session struct {
 	// completion rode that request, so the reply is an answer, not
 	// housekeeping. Guarded by pendingJobNotifsMu.
 	jobNotifsDelivered uint64
-	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
-	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
-	// finalizer from crossing its durable-pending/running-map boundary.
-	nextJobNotifSeq uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -824,7 +820,6 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 			}
 		}
 	}
-	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
@@ -899,14 +894,6 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 	}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
-}
-
-func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
-	if n == nil || n.queueSeq != 0 {
-		return
-	}
-	s.nextJobNotifSeq++
-	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
