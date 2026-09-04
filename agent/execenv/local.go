@@ -671,6 +671,30 @@ func (e *LocalExecutionEnvironment) DisposeUnadoptedScratch() {
 	}
 }
 
+// AdoptSessionScratch moves every per-session scratch directory from `from` —
+// the one EnableSandbox provisioned and the one an unsandboxed env minted on
+// its first command — onto this env, leases included, leaving `from` owning
+// none. A session that swaps its environment for a re-rooted clone (a worktree
+// re-entry on resume) keeps working in the scratch the original provisioned:
+// the clone's re-rooted kernel wrapper carries the same session tmp, and an
+// unsandboxed clone exports whatever it is handed. Exactly one environment owns
+// each scratch, and it must be the one the session's own teardown reaches, so
+// ownership follows the swap. This env must not yet own one of either kind; a
+// fresh WithWorkingDirectory clone never does.
+func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvironment) {
+	if from == nil || from == e {
+		return
+	}
+	e.ownedSessionTmp, from.ownedSessionTmp = from.ownedSessionTmp, nil
+	from.unsandboxedScratchMu.Lock()
+	tmp := from.unsandboxedScratch
+	from.unsandboxedScratch = nil
+	from.unsandboxedScratchMu.Unlock()
+	e.unsandboxedScratchMu.Lock()
+	e.unsandboxedScratch = tmp
+	e.unsandboxedScratchMu.Unlock()
+}
+
 // filesystem returns the environment's filesystem, defaulting to the OS
 // filesystem when one was never injected (e.g. a zero-value environment).
 func (e *LocalExecutionEnvironment) filesystem() afero.Fs {

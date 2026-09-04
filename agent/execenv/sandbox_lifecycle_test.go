@@ -575,3 +575,61 @@ func TestRetainSessionScratchReleasesBothLeasesAndKeepsBothDirs(t *testing.T) {
 		}
 	}
 }
+
+// A session that swaps its environment for a re-rooted clone (a worktree
+// re-entry on resume) keeps working in the scratch its original environment
+// provisioned: the clone's re-rooted kernel wrapper carries the same session
+// tmp, and an unsandboxed clone exports whatever it is handed. Ownership has to
+// follow the swap — exactly one environment owns each scratch, and it must be
+// the one the session's teardown reaches — or the original's leases are held
+// for the rest of the daemon's uptime while the clone's teardown releases
+// nothing.
+func TestAdoptSessionScratchMovesBothKindsToTheClone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flock-based lease verification is unix-only")
+	}
+	original := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { original.Cleanup(); original.DisposeUnadoptedScratch() })
+	_ = original.commandEnvironment(nil)
+	unsandboxed := original.SessionScratchDir()
+	if unsandboxed == "" {
+		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to adopt")
+	}
+	if err := original.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	owned := original.SessionScratchDir()
+	if owned == "" || owned == unsandboxed {
+		t.Fatalf("owned scratch = %q, want one of its own beside the unsandboxed %q", owned, unsandboxed)
+	}
+	dirs := map[string]string{"unsandboxed": unsandboxed, "owned": owned}
+	clone := original.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+	if got := clone.SessionScratchDir(); got != "" {
+		t.Fatalf("a fresh clone reports scratch %q, want none of its own", got)
+	}
+
+	clone.AdoptSessionScratch(original)
+
+	if got := clone.SessionScratchDir(); got != owned {
+		t.Errorf("clone scratch = %q after the adoption, want the original's owned %q", got, owned)
+	}
+	// The original owns neither any more: disposing it drops nothing, and the
+	// leases stay held (by the clone now).
+	original.DisposeUnadoptedScratch()
+	for name, dir := range dirs {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("%s scratch %s went with the original's disposal: %v", name, dir, err)
+		}
+		if !scratchLeaseHeld(t, dir) {
+			t.Errorf("%s scratch %s lease was released by the original's disposal", name, dir)
+		}
+	}
+	// The clone owns both: disposing it drops both, leases included.
+	clone.DisposeUnadoptedScratch()
+	for name, dir := range dirs {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s scratch %s survived the clone's disposal: stat err = %v", name, dir, err)
+		}
+	}
+}
