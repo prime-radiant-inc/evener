@@ -1049,12 +1049,21 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// set still undisposed. Announce; announce again naming the
 		// consequence; then stop waiting so Close()'s kill path can run.
 		//
-		// The announcement turns are housekeeping, so their replies never fold
+		// The announcement turns are housekeeping, so their replies do not fold
 		// into lastResult (a run's printed answer must not become "I stopped
 		// job_2"), and their errors never fail the drain — a provider error on
 		// a housekeeping turn must not convert a successful run into a failed
 		// one. A failed turn still advances the escalation: the alternative is
 		// retrying a broken provider forever with the process held open.
+		//
+		// One exception, decided per turn: a job that finishes between this
+		// pass's queue gate above and the turn's own queue drain
+		// (acceptNotificationInput) has its completion queued in time to ride
+		// the announcement request. The model then answers the completion, and
+		// that reply is the run's answer exactly as a notification turn's is —
+		// discarding it printed the pre-drain answer and lost the real one.
+		// The delivered-notification count tells the two apart: the reply is
+		// kept only when the count grew during the turn.
 		//
 		// Under serve the session outlives the turn, background jobs genuinely
 		// report later, and none of this fires (TurnEndsProcess is the gate).
@@ -1117,9 +1126,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 					// before any model call — which is exactly how an earlier
 					// attempt at this shipped inert.
 					s.SteerKind(text, events.SteeringKindNotification)
-					if _, perr := process(ctx, "", nil, EntryNotification); perr != nil {
+					deliveredBefore := s.jobNotificationsDelivered()
+					res, perr := process(ctx, "", nil, EntryNotification)
+					if perr != nil {
 						s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 							"undisposed-background-job announcement turn failed: %v", perr)})
+					} else if res != "" && s.jobNotificationsDelivered() != deliveredBefore {
+						// A completion rode this request: the model answered it,
+						// so this reply is the run's answer (see above).
+						lastResult = res
 					}
 					stallStart = time.Time{}
 					continue

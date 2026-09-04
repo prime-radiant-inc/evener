@@ -1882,6 +1882,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	if len(deliveredFailures) == 0 {
 		s.resetJobNotificationRetry()
 	}
+	s.countJobNotificationsDelivered(len(jobNotifs) - len(deliveredFailures))
 	// Settle caller-targeted watch sends only after the durable reminder turn
 	// persisted (above): the durable pending survives an appendSteeringTurnDurably
 	// failure for re-token (at-least-once contract, spec §4.3).
