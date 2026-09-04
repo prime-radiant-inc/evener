@@ -756,6 +756,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			// initial preparation failure. Unchanged prepared calls still avoid
 			// running that validation twice.
 			prep.PrevalErr = ""
+			prep.Boundary = ""
+			prep.Err = nil
+			prep.RegisteredHookErr = false
+			prep.SemanticArguments = nil
 			prep.PreparedArguments = nil
 		}
 	}
@@ -819,7 +823,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
-	if prep.PrevalErr != "" {
+	if prep.RegisteredHookErr {
+		res = s.reg.FinalizeRegisteredHookFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Err)
+	} else if prep.PrevalErr != "" {
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
 		res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments, originalArguments)

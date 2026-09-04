@@ -79,7 +79,7 @@ func TestExecuteCall_PreValidateFailureUsesBreaker(t *testing.T) {
 			t.Fatalf("equivalent calls did not share semantic failure identity: %#v", results)
 		}
 	}
-	if !strings.Contains(results[2].Output, "semantic failure loop") || !strings.Contains(results[2].Output, "normalized boundary schema_validation") {
-		t.Fatalf("third semantically equivalent PreValidate failure was not parked at the prevalidation boundary: %#v", results[2])
+	if !strings.Contains(results[2].Output, "semantic failure loop") || !strings.Contains(results[2].Output, "normalized boundary tool_execution") {
+		t.Fatalf("third semantically equivalent PreValidate failure was not parked at the registered-hook boundary: %#v", results[2])
 	}
 }

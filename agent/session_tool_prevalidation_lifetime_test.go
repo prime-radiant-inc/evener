@@ -264,7 +264,7 @@ func TestExecTool_HookUpdatedInputSupersedesPreparationFailure(t *testing.T) {
 	t.Cleanup(sess.Close)
 
 	const name = "hook_corrected_prevalidation"
-	var executions int
+	var prevalidations, executions int
 	if err := sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{Name: name, Description: "hook correction probe", Parameters: map[string]any{
 			"type":                 "object",
@@ -275,6 +275,13 @@ func TestExecTool_HookUpdatedInputSupersedesPreparationFailure(t *testing.T) {
 			"required": []any{"value"},
 		}},
 		OmitIntent: true,
+		PreValidate: func(args map[string]any) error {
+			prevalidations++
+			if args["value"] != "corrected" {
+				return errors.New("registered prevalidation rejected original input")
+			}
+			return nil
+		},
 		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			executions++
 			if args["value"] != "corrected" {
@@ -299,8 +306,8 @@ func TestExecTool_HookUpdatedInputSupersedesPreparationFailure(t *testing.T) {
 		Name:      name,
 		Arguments: []byte(`{"value":{"invalid":true}}`),
 	}, "")
-	if res.IsError || executions != 1 {
-		t.Fatalf("hook-corrected call did not execute: executions=%d result=%#v", executions, res)
+	if res.IsError || prevalidations != 2 || executions != 1 {
+		t.Fatalf("hook-corrected call did not revalidate and execute: prevalidations=%d executions=%d result=%#v", prevalidations, executions, res)
 	}
 }
 

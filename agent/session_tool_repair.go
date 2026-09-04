@@ -35,6 +35,7 @@ type prepareResult struct {
 	PrevalErr         string
 	Boundary          string
 	Err               error
+	RegisteredHookErr bool
 	// RawArgumentsRejected keeps unvalidated bytes out of hook input and
 	// prevents a hook from replacing them. It is separate from PrevalErr so an
 	// unknown tool can retain its established unknown-tool diagnostic.
@@ -154,6 +155,8 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			normalized, err := t.NormalizeArgs(args)
 			if err != nil {
 				res.PrevalErr = err.Error()
+				res.Err = err
+				res.RegisteredHookErr = true
 				return false
 			}
 			args = normalized
@@ -162,6 +165,8 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		if t.PreValidate != nil {
 			if err := t.PreValidate(args); err != nil {
 				res.PrevalErr = err.Error()
+				res.Err = err
+				res.RegisteredHookErr = true
 				return false
 			}
 		}

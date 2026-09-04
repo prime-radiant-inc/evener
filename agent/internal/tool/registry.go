@@ -1071,7 +1071,9 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 			if res, blocked := park(); blocked {
 				return res
 			}
-			return finish(truncateResult(name, callID, err.Error(), true, t.Limit))
+			res := truncateResult(name, callID, err.Error(), true, t.Limit)
+			res.Err = err
+			return finish(res)
 		}
 		args = normalized
 	}
@@ -1084,7 +1086,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 			}
 			res := truncateResult(name, callID, err.Error(), true, t.Limit)
 			res.Err = err
-			return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, prevalidationBoundary(name, call.Arguments, true))
+			return finish(res)
 		}
 	}
 
@@ -1182,6 +1184,18 @@ func (r *Registry) clearSemanticIfCurrent(name string, generation uint64, signat
 // returns its original validation error but cannot alter successor telemetry,
 // signatures, or breaker state.
 func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, semanticArgs []byte, message, boundary string, err error) ExecResult {
+	return r.finalizePrevalidationFailure(ctx, snapshot, call, semanticArgs, message, boundary, err, true)
+}
+
+// FinalizeRegisteredHookFailure records a NormalizeArgs or PreValidate error
+// without treating it as a raw argument or JSON Schema failure. Its boundary
+// and semantic class are derived from the preserved error exactly as they are
+// when ExecuteCall runs the same registered hook directly.
+func (r *Registry) FinalizeRegisteredHookFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, semanticArgs []byte, message string, err error) ExecResult {
+	return r.finalizePrevalidationFailure(ctx, snapshot, call, semanticArgs, message, "", err, false)
+}
+
+func (r *Registry) finalizePrevalidationFailure(ctx context.Context, snapshot PrevalidationSnapshot, call llm.ToolCallData, semanticArgs []byte, message, boundary string, err error, inferBoundary bool) ExecResult {
 	name := call.Name
 	ledgerName := r.breakerToolIdentity(name)
 	callID := call.ID
@@ -1216,7 +1230,7 @@ func (r *Registry) FinalizePrevalidationFailure(ctx context.Context, snapshot Pr
 	} else {
 		semanticSignature = r.semanticSignatureFromRawFor(name, call.Arguments, snapshot.registered)
 	}
-	if boundary == "" {
+	if boundary == "" && inferBoundary {
 		boundary = prevalidationBoundary(name, call.Arguments, snapshot.registered != nil)
 	}
 	if judged {
