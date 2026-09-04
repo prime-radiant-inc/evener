@@ -471,11 +471,13 @@ An **instance** is a named, usable provider. Instances come from two places:
   entry for the id or one of the provider's own `APIKeyEnv` variables set;
   `oauth-openai-codex` needs the instance's OAuth record (§9.5) and nothing
   else (`openai-codex` pins `api_key_env = []`, so `OPENAI_API_KEY` alone
-  yields `openai` and not a dead Codex default); `gcp-adc` needs the
-  `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known ADC file (the
-  metadata-server probe in `FindDefaultCredentials` is never run at load; it
-  runs at first request); `none` and `optional-bearer` need nothing beyond
-  the base URL resolving (Ollama's does by default; a pseudo-provider's
+  yields `openai` and not a dead Codex default); `gcp-adc` needs a
+  credentials-store entry under the instance name (a credential JSON;
+  amended 2026-09-04), the `GOOGLE_APPLICATION_CREDENTIALS` variable, or the
+  well-known ADC file (the metadata-server probe in `FindDefaultCredentials`
+  is never run at load; it runs at first request); `none` and
+  `optional-bearer` need nothing beyond the base URL resolving (Ollama's
+  does by default; a pseudo-provider's
   only when its `<ID>_BASE_URL` is set). "Not `Hidden`" means the base URL
   template resolves, so the cloud providers need their variables as well as
   their credential: `google-vertex*` need `GOOGLE_VERTEX_PROJECT` and
@@ -1571,10 +1573,17 @@ scope and would be added only if someone needs those model versions.
   the location. A regional (non-`global`, non-`us`/`eu`) location paired
   with a model newer than Sonnet 4.6 adds a `Warnings` entry (Anthropic:
   "specific regional endpoints support Claude Sonnet 4.6 and earlier").
-- `auth = gcp-adc` (§8.1); `api_key_env` is empty. `ModelsEndpoint = "-"`,
+- `auth = gcp-adc` (§8.1); `api_key_env` is empty. `ModelsEndpoint =
+  "/publishers/google/models"` for `vertex-gemini` (host-relative on
+  v1beta1, amended 2026-09-04; `vertex-anthropic` keeps `"-"`),
   `CountTokensEndpoint = "-"` (Vertex's count-tokens is a separate publisher
   call; estimate-only, exact counting tracked in
   [#565](https://github.com/prime-radiant-inc/evener/issues/565)).
+- **Express mode** (`google-vertex-express`, added 2026-09-04): `base =
+  "google"`, `transport = "vertex-gemini"`, `auth = header` /
+  `x-goog-api-key`, constant base URL
+  `https://aiplatform.googleapis.com/v1`, `ModelsEndpoint = "-"`. See
+  `2026-09-04-google-vertex-express-and-discovery-design.md`.
 - **Gemini** (`google-vertex`): `transport = "vertex-gemini"` (§6.2).
 - **Claude** (`google-vertex-anthropic`, and the thirteen Claude rows under
   `google-vertex`, which the converter gives the same preset): `transport =

@@ -227,7 +227,8 @@ openai/gpt-5.6` work on a machine with no key set.
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` (`https://api.minimax.io/anthropic/v1`) | anthropic protocol, surface `anthropic`; `default_model = MiniMax-M3`, `cheap_model = MiniMax-M2.7` |
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
 | `google-vertex-anthropic` | none — `gcp-adc` (`GOOGLE_APPLICATION_CREDENTIALS` or the well-known ADC file) | n/a — host derived from `GOOGLE_VERTEX_LOCATION` | also needs `GOOGLE_VERTEX_PROJECT` to exist at all; surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5@20251001` |
-| `google-vertex` | none — `gcp-adc` | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.7-flash`, `cheap_model = gemini-2.5-flash-lite` |
+| `google-vertex` | none — `gcp-adc`, or a credential JSON stored under the instance name (see below) | n/a — same host derivation | also needs `GOOGLE_VERTEX_PROJECT`; surface `google`; `default_model = gemini-3.7-flash`, `cheap_model = gemini-2.5-flash-lite` |
+| `google-vertex-express` | `GOOGLE_VERTEX_API_KEY` (a Google Cloud API key, `AQ.…`; sent as `x-goog-api-key`) | `GOOGLE_VERTEX_EXPRESS_BASE_URL` (`https://aiplatform.googleapis.com/v1`) | Vertex AI in express mode: `google`'s Gemini rows on the `vertex-gemini` endpoints, no project or location; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite`. Listing is catalog-only — API keys cannot call the publisher-model listing |
 | `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
 | `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; provider-level `context_window = 131072` |
@@ -487,12 +488,30 @@ tracked as
 
 **Vertex.** Host is derived from location: `global` →
 `aiplatform.googleapis.com`; `us`/`eu` → the `.rep.` regional host; anything
-else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`.
-`google-vertex-anthropic` uses the `vertex-anthropic` transport preset
-(`:rawPredict`/`:streamRawPredict`, `body.anthropic_version =
-"vertex-2023-10-16"`); `google-vertex` uses `vertex-gemini`. A non-`global`/
-`us`/`eu` region paired with a model newer than Sonnet 4.6 gets a `Warnings`
-entry.
+else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-default
+credentials on the host, or a **credential JSON stored under the instance
+name** (a service-account key or an `application_default_credentials.json`,
+pasted in the hub's instance sheet or written into `credentials.toml`), which
+outranks the ADC file. Every request carries `x-goog-user-project` =
+`GOOGLE_VERTEX_PROJECT`, which user credentials need for calls that have no
+project in their path. `google-vertex-anthropic` uses the `vertex-anthropic`
+transport preset (`:rawPredict`/`:streamRawPredict`, `body.anthropic_version =
+"vertex-2023-10-16"`); `google-vertex` uses `vertex-gemini`, whose
+`models_endpoint` lists the project's Gemini publisher models live: `GET
+{host}/v1beta1/publishers/google/models` (host-relative, not project-scoped),
+kept to `gemini-*` ids at launch stage GA or PUBLIC_PREVIEW whose id contains
+none of `tts`, `embedding`, `image`, `live`, `transcribe`, `translate`,
+`omni`, `audio` — the listing carries no capability data, so this is a
+heuristic; the catalog supplies metadata for known ids and unknown ids appear
+as bare rows. A non-`global`/`us`/`eu` region paired with a model newer than
+Sonnet 4.6 gets a `Warnings` entry.
+
+**Vertex express mode** (`google-vertex-express`) is the same Gemini
+publisher endpoints addressed without a project or location and
+authenticated with a Google Cloud API key (`x-goog-api-key`). It is built on
+`google`, so it carries exactly the Gemini catalog rows; Claude is not
+reachable this way. API keys are rejected by the publisher-model listing, so
+express instances never list live.
 
 ## The Codex transport
 
