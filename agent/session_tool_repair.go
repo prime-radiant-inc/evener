@@ -30,6 +30,7 @@ type prepareResult struct {
 	Call              llm.ToolCallData
 	Changes           []repair.Change
 	Lifetime          tool.PrevalidationSnapshot
+	PreparedArguments json.RawMessage
 	SemanticArguments json.RawMessage
 	PrevalErr         string
 	Boundary          string
@@ -148,11 +149,26 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = filled
 	}
-	if t.PreValidate != nil {
-		if err := t.PreValidate(args); err != nil {
-			res.PrevalErr = err.Error()
-			return res
+	runRegisteredHooks := func() bool {
+		if t.NormalizeArgs != nil {
+			normalized, err := t.NormalizeArgs(args)
+			if err != nil {
+				res.PrevalErr = err.Error()
+				return false
+			}
+			args = normalized
+			res.SemanticArguments, _ = json.Marshal(args)
 		}
+		if t.PreValidate != nil {
+			if err := t.PreValidate(args); err != nil {
+				res.PrevalErr = err.Error()
+				return false
+			}
+		}
+		return true
+	}
+	if !t.NormalizeAfterRepair && !runRegisteredHooks() {
+		return res
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
@@ -207,7 +223,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
 			res.Boundary = "schema_validation"
-			if t.Definition.Name == "ask_user" || len(pendingJSONChanges) > 0 {
+			if t.Definition.Name == "ask_user" || len(pendingJSONChanges) > 0 || t.NormalizeArgs != nil {
 				res.SemanticArguments, _ = json.Marshal(args)
 			}
 			return res
@@ -232,6 +248,29 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 	}
+	if t.NormalizeAfterRepair && !runRegisteredHooks() {
+		res.Call.Arguments = call.Arguments
+		res.Changes = nil
+		return res
+	}
+	if t.NormalizeAfterRepair {
+		if err := t.Schema.Validate(args); err != nil {
+			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, args, offendingField(err), offendingKeyword(err))
+			res.Boundary = "schema_validation"
+			res.SemanticArguments, _ = json.Marshal(args)
+			res.Call.Arguments = call.Arguments
+			res.Changes = nil
+			return res
+		}
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		res.PrevalErr = repairCommitError()
+		res.Call.Arguments = call.Arguments
+		res.Changes = nil
+		return res
+	}
+	res.PreparedArguments = encoded
 	return res
 }
 

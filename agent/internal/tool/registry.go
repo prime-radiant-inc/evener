@@ -399,6 +399,11 @@ type RegisteredTool struct {
 	// NormalizeArgs optionally canonicalizes arguments immediately before schema
 	// validation. It must preserve all non-normalized caller values.
 	NormalizeArgs func(map[string]any) (map[string]any, error)
+	// NormalizeAfterRepair asks Session preparation to preserve its observable
+	// repair pass before invoking NormalizeArgs. Direct Registry execution still
+	// normalizes before schema validation. This is intended for core boundary
+	// normalizers whose Session repair equivalent emits change telemetry.
+	NormalizeAfterRepair bool
 	// PreValidate optionally rejects a tool-specific argument shape before the
 	// generic JSON schema validator renders its diagnostic.
 	PreValidate func(args map[string]any) error
@@ -722,6 +727,9 @@ func (r *Registry) Register(t RegisteredTool) error {
 	if IsReservedToolName(t.Definition.Name) {
 		return fmt.Errorf("tool name %q is reserved for invalid history projection", t.Definition.Name)
 	}
+	if strings.TrimSpace(t.Definition.Name) != t.Definition.Name {
+		return fmt.Errorf("invalid tool name %q: surrounding whitespace is not allowed", t.Definition.Name)
+	}
 	if t.OmitIntent {
 		t.Definition = WithoutIntentParameter(t.Definition)
 	} else {
@@ -931,18 +939,18 @@ func (r *Registry) Names() []string {
 // each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
-	return r.executeCall(ctx, env, call, nil)
+	return r.executeCall(ctx, env, call, nil, nil)
 }
 
 // ExecutePreparedCall runs a session-prepared call. Preparation has already
 // normalized and prevalidated arguments for snapshot's registration lifetime.
 // If that lifetime is no longer current, execution falls back to the successor
 // registration's normal normalization and prevalidation path.
-func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, snapshot PrevalidationSnapshot) ExecResult {
-	return r.executeCall(ctx, env, call, &snapshot)
+func (r *Registry) ExecutePreparedCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, snapshot PrevalidationSnapshot, preparedArguments json.RawMessage) ExecResult {
+	return r.executeCall(ctx, env, call, &snapshot, preparedArguments)
 }
 
-func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prepared *PrevalidationSnapshot) ExecResult {
+func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData, prepared *PrevalidationSnapshot, preparedArguments json.RawMessage) ExecResult {
 	name := call.Name
 	ledgerName := r.breakerToolIdentity(name)
 	callID := call.ID
@@ -1019,9 +1027,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		return r.finalizeBreaker(res, name, call.Arguments, exactSignature, semanticSignature, currentGeneration, judged, humanBypassed, prevalidationBoundary(name, call.Arguments, true))
 	}
 
+	arguments := call.Arguments
+	if prevalidated && preparedArguments != nil {
+		arguments = preparedArguments
+	}
 	var args map[string]any
-	if len(call.Arguments) > 0 {
-		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+	if len(arguments) > 0 {
+		if err := json.Unmarshal(arguments, &args); err != nil {
 			if res, blocked := park(); blocked {
 				return res
 			}
@@ -1029,13 +1041,13 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 			return finish(truncateResult(name, callID, msg, true, t.Limit))
 		}
 	}
-	if args == nil {
+	if args == nil && !prevalidated {
 		args = map[string]any{}
 	}
 
 	// Normalize ask_user shorthand form (question + options) into batch form (questions array)
 	// before schema validation, so both forms are validated against the same schema.
-	if name == "ask_user" {
+	if !prevalidated && name == "ask_user" {
 		normalized, err := normalizeAskUserArgs(args)
 		if err != nil {
 			if res, blocked := park(); blocked {
@@ -1046,7 +1058,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 		args = normalized
 		semanticSignature = r.semanticSignatureFor(name, args, &t)
 	}
-	if t.NormalizeArgs != nil {
+	if !prevalidated && t.NormalizeArgs != nil {
 		normalized, err := t.NormalizeArgs(args)
 		if err != nil {
 			if res, blocked := park(); blocked {

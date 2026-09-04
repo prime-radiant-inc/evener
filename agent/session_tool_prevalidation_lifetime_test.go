@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync/atomic"
 	"testing"
 
@@ -83,14 +84,19 @@ func TestExecTool_PreparedCallReplacementRunsSuccessorPreValidate(t *testing.T) 
 		"additionalProperties": false,
 		"properties": map[string]any{
 			"value":      map[string]any{"type": "string"},
-			"normalized": map[string]any{"const": "successor"},
+			"normalized": map[string]any{"type": "string"},
 		},
 		"required": []any{"value"},
 	}
-	var originalPrevalidations, originalExecutions int
+	var originalNormalizations, originalPrevalidations, originalExecutions int
 	if err := sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{Name: name, Description: "original registration", Parameters: params},
 		OmitIntent: true,
+		NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+			originalNormalizations++
+			args["normalized"] = "original"
+			return args, nil
+		},
 		PreValidate: func(map[string]any) error {
 			originalPrevalidations++
 			return nil
@@ -116,6 +122,9 @@ func TestExecTool_PreparedCallReplacementRunsSuccessorPreValidate(t *testing.T) 
 			OmitIntent: true,
 			NormalizeArgs: func(args map[string]any) (map[string]any, error) {
 				successorNormalizations++
+				if _, exists := args["normalized"]; exists {
+					t.Fatalf("successor NormalizeArgs received old registration's normalized arguments: %#v", args)
+				}
 				args["normalized"] = "successor"
 				return args, nil
 			},
@@ -144,6 +153,9 @@ func TestExecTool_PreparedCallReplacementRunsSuccessorPreValidate(t *testing.T) 
 	if !replaced {
 		t.Fatal("successor was not installed between preparation and execution")
 	}
+	if originalNormalizations != 1 {
+		t.Errorf("original NormalizeArgs calls = %d, want 1 during preparation", originalNormalizations)
+	}
 	if originalPrevalidations != 1 {
 		t.Errorf("original PreValidate calls = %d, want 1 during preparation", originalPrevalidations)
 	}
@@ -158,5 +170,114 @@ func TestExecTool_PreparedCallReplacementRunsSuccessorPreValidate(t *testing.T) 
 	}
 	if !res.IsError || !errors.Is(res.Err, wantPrevalidationErr) {
 		t.Errorf("result = %#v, want successor PreValidate error %q", res, wantPrevalidationErr)
+	}
+}
+
+func TestExecTool_PreparedCallNormalizesBeforePreValidate(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	const name = "prepared_normalization_order"
+	var normalizations, prevalidations, executions int
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: name, Description: "normalization order probe", Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"value": map[string]any{"const": "normalized"},
+			},
+			"required": []any{"value"},
+		}},
+		OmitIntent: true,
+		NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+			normalizations++
+			normalized := make(map[string]any, len(args))
+			maps.Copy(normalized, args)
+			delete(normalized, "legacy")
+			normalized["value"] = "normalized"
+			return normalized, nil
+		},
+		PreValidate: func(args map[string]any) error {
+			prevalidations++
+			if args["value"] != "normalized" {
+				return errors.New("prevalidation observed unnormalized arguments")
+			}
+			return nil
+		},
+		Exec: func(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			executions++
+			if args["value"] != "normalized" {
+				t.Fatalf("executor args = %#v, want normalized value", args)
+			}
+			if _, exists := args["legacy"]; exists {
+				t.Fatalf("executor args = %#v, want legacy field removed", args)
+			}
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "normalize-before-prevalidate",
+		Name:      name,
+		Arguments: []byte(`{"legacy":"provider default"}`),
+	}, "")
+	if res.IsError {
+		t.Fatalf("normalized prepared call failed: %#v", res)
+	}
+	if normalizations != 1 || prevalidations != 1 || executions != 1 {
+		t.Fatalf("calls = normalize %d, prevalidate %d, execute %d; want one normalization, one prevalidation, and one execution", normalizations, prevalidations, executions)
+	}
+}
+
+func TestExecTool_PreparedCallRejectsNormalizedArguments(t *testing.T) {
+	sess := newSession(t)
+	t.Cleanup(sess.Close)
+
+	const name = "prepared_normalized_rejection"
+	wantErr := errors.New("normalized zero is forbidden")
+	var normalizations, prevalidations, executions int
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: name, Description: "normalized rejection probe", Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"value": map[string]any{"type": []any{"string", "number"}},
+			},
+			"required": []any{"value"},
+		}},
+		OmitIntent: true,
+		NormalizeArgs: func(args map[string]any) (map[string]any, error) {
+			normalizations++
+			if args["value"] == "0" {
+				args["value"] = float64(0)
+			}
+			return args, nil
+		},
+		PreValidate: func(args map[string]any) error {
+			prevalidations++
+			if args["value"] == float64(0) {
+				return wantErr
+			}
+			return nil
+		},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			executions++
+			return "unexpected", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "reject-normalized-zero",
+		Name:      name,
+		Arguments: []byte(`{"value":"0"}`),
+	}, "")
+	if !res.IsError || !res.PrevalOnly {
+		t.Fatalf("result = %#v, want pre-dispatch normalized rejection", res)
+	}
+	if normalizations != 1 || prevalidations != 1 || executions != 0 {
+		t.Fatalf("calls = normalize %d, prevalidate %d, execute %d; want 1, 1, 0", normalizations, prevalidations, executions)
 	}
 }

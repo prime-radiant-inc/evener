@@ -54,6 +54,40 @@ func TestRestoreSessionRejectsReservedResultToolName(t *testing.T) {
 	}
 }
 
+func TestSessionInitializationRejectsWhitespacePaddedResultToolName(t *testing.T) {
+	const name = " result_tool "
+
+	t.Run("new", func(t *testing.T) {
+		dir := t.TempDir()
+		client := llm.NewClient()
+		client.Register(&fakeAdapter{name: "openai"})
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			NoProjectPrompts: true,
+			ResultToolName:   name,
+		})
+		if sess != nil {
+			sess.Close()
+			t.Fatal("NewSession returned a session with a whitespace-padded result-tool name")
+		}
+		if err == nil || !strings.Contains(err.Error(), "surrounding whitespace") {
+			t.Fatalf("NewSession error = %v, want exact result-tool name rejection", err)
+		}
+	})
+
+	t.Run("restore", func(t *testing.T) {
+		meta := resumeIntegrityMeta("whitespace-result-tool-name")
+		meta.Config.ResultToolName = name
+		sess, err := restoreIntegritySession(t.TempDir(), meta)
+		if sess != nil {
+			sess.Close()
+			t.Fatal("RestoreSessionFromMetaWithConfig returned a session with a whitespace-padded result-tool name")
+		}
+		if err == nil || !strings.Contains(err.Error(), "surrounding whitespace") {
+			t.Fatalf("RestoreSessionFromMetaWithConfig error = %v, want exact result-tool name rejection", err)
+		}
+	})
+}
+
 // TestChildRegistryKeepsDelegateWithAllowance verifies seam 3 (spec §1): the
 // registry strip at child init is gated on delegationAllowance, not depth.
 //

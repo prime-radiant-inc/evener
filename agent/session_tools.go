@@ -796,7 +796,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
 		if prevalidated {
-			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime)
+			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
 		}

@@ -1217,8 +1217,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 }
 
 func validateResultToolName(name string) error {
+	if name == "" {
+		return nil
+	}
 	if tool.IsReservedToolName(name) {
 		return fmt.Errorf("result tool name %q is reserved for invalid history projection", name)
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("invalid result tool name %q: surrounding whitespace is not allowed", name)
+	}
+	if err := llm.ValidateToolName(name); err != nil {
+		return fmt.Errorf("result tool name: %w", err)
 	}
 	return nil
 }

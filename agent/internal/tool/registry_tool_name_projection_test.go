@@ -81,3 +81,25 @@ func TestRegistryRejectsReservedInvalidToolNameWire(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryRejectsWhitespacePaddedToolName(t *testing.T) {
+	for _, candidate := range []string{" ordinary_tool", "ordinary_tool ", "\tordinary_tool\n"} {
+		reg := NewRegistry()
+		err := reg.Register(RegisteredTool{
+			Definition: llm.ToolDefinition{
+				Name:        candidate,
+				Description: "must remain exact on the provider wire",
+				Parameters:  map[string]any{"type": "object"},
+			},
+			Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+				return "unexpected", nil
+			},
+		})
+		if err == nil {
+			t.Errorf("Register(%q) succeeded, want exact provider-name rejection", candidate)
+		}
+		if got := reg.Get(candidate); got != nil {
+			t.Errorf("whitespace-padded name %q was registered: %#v", candidate, got)
+		}
+	}
+}
