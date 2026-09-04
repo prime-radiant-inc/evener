@@ -199,7 +199,7 @@ func trackSyntheticChild(t *testing.T, sess *Session, id string, status Subagent
 // TestRetention_FailLoudAtCap fills the retention cap with UNCONSUMED terminal
 // records (none reclaimable), then asserts the next spawn fails loudly naming the
 // remedy and does NOT track a new child (no leak — the created session is Closed
-// before the error return).
+// before the error return, without touching the parent's shared environment).
 //
 // Load-bearing: if the cap were not enforced, spawn would succeed and the tracked
 // count would grow; if the error did not name the remedy, the message assertion
@@ -239,10 +239,15 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	if after := countTracked(sess.subagents); after != before {
 		t.Errorf("failed spawn must not track a child: tracked %d → %d", before, after)
 	}
-	// No leak: the already-created child Session was Closed before the error return,
-	// which invokes the (shared) env's Cleanup exactly once during the spawn call.
-	if got := env.count() - cleanupsBefore; got != 1 {
-		t.Errorf("failed spawn must Close the created child session (env Cleanup delta = %d, want 1)", got)
+	// The already-created child Session was Closed before the error return, but
+	// this child SHARES the live parent's environment (no working dir, no box of
+	// its own), and Cleanup on that environment would release the parent's live
+	// scratch leases and signal the processes the parent tracks. So the close has
+	// to skip it — the same skip the parent's own teardown makes for its children.
+	// That the close still happens is asserted directly, on a held reference, in
+	// TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns.
+	if got := env.count() - cleanupsBefore; got != 0 {
+		t.Errorf("failed spawn ran Cleanup %d time(s) on the live parent's environment, want 0", got)
 	}
 }
 
