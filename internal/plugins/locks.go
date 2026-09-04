@@ -29,23 +29,23 @@ type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
 // acquireStoreLock refuses a store root that cannot be used, then takes the
 // store lock at lockPath through acquire.
 //
-// Every mutation of the store passes through here, and creating the lock file
-// is the mutation's first write, so this is the one place that turns away a
-// root which resolves against whatever directory the process happens to be in
-// — an empty root (none could be resolved) or a relative one. Calling
-// storeRootError used to be each caller's own job: the nine writers that take
-// the lock and then write (install, upgrade, remove, the two flag setters, gc,
-// and the three marketplace mutations) skipped it and planted a store in
-// somebody's project, and Browse, which clones a marketplace lazily, skipped
-// it too. Seeding checked for itself and still does. Here a writer cannot
-// forget the check without also forgetting the lock.
+// storePath refuses the same roots wherever a store path is derived, which
+// covers everything a writer goes on to touch. It cannot cover the lock file:
+// the lock is taken before any of those paths is derived, and its own path is
+// the plain join m.lockPath(). So this is the second guard, on the first write
+// every mutation makes. Calling storeRootError used to be each caller's own
+// job: the nine writers that take the lock and then write (install, upgrade,
+// remove, the two flag setters, gc, and the three marketplace mutations)
+// skipped it and planted a store in somebody's project, and Browse, which
+// clones a marketplace lazily, skipped it too. Here a writer cannot forget the
+// check without also forgetting the lock.
 //
-// Locking is not the whole of it. A caller that reads or creates something
-// before it locks — resolveForLaunch, which never locks at all; the update
-// sweeps, which enumerate the registry first and on a broken root wrote
-// nothing but reported a clean sweep of a store that was not there; List and
-// ListMarketplaces, which only read — is refused by storePath instead, where
-// the path it would have used is derived.
+// Three checks are written out on top of storePath, and these are all of them.
+// This one, because the lock file is created before any store path is derived.
+// resolveForLaunch, because a launch continues without plugins rather than
+// failing, so it needs the unusable store as a diagnostic and not an error.
+// Doctor, because reporting the environment is what Doctor is for, so it needs
+// a FAIL finding and not an error. Everywhere else derives through storePath.
 func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
 	if err := m.storeRootError(); err != nil {
 		return nil, err
