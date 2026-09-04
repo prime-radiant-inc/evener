@@ -497,6 +497,7 @@ func TestWireCaptureAssertions(t *testing.T) {
 	check(bodyOf(t, vertexStream)["stream"] == true && bodyOf(t, vertexStream)["anthropic_version"] == "vertex-2023-10-16" && bodyOf(t, vertexStream)["model"] == nil, "vertex stream body: %s", vertexStream.Body)
 	vertexGemini := byName["vertex-gemini-stream"]
 	check(strings.HasPrefix(vertexGemini.URL, "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent") && vertexGemini.Headers["Authorization"] == "Bearer <credential>", "vertex gemini: %s %v", vertexGemini.URL, vertexGemini.Headers)
+	check(vertexGemini.Headers["X-Goog-User-Project"] == "my-project" && vertexStream.Headers["X-Goog-User-Project"] == "my-project", "vertex quota project: %v %v", vertexGemini.Headers, vertexStream.Headers)
 
 	gemini := byName["google-flash-lite-web-search"]
 	check(gemini.URL == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent" && gemini.Headers["X-Goog-Api-Key"] == "<credential>", "gemini: %s %v", gemini.URL, gemini.Headers)

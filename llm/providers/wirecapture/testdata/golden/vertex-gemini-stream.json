@@ -6,7 +6,8 @@
   "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
   "headers": {
     "Authorization": "Bearer \u003ccredential\u003e",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "X-Goog-User-Project": "my-project"
   },
   "body": {
     "contents": [

@@ -63,3 +63,31 @@ func TestDefaultsAreRegistered(t *testing.T) {
 		t.Fatal("oauth-openai-codex not registered as a streaming-complete preparer")
 	}
 }
+
+func staticADC() *GCPADC {
+	return &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
+	}}
+}
+
+func TestGCPADCSetsQuotaProjectFromTransportVars(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
+	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"},
+		Transport: registry.Transport{Vars: map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global"}}}
+	if err := staticADC().Apply(context.Background(), req, res); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("x-goog-user-project"); got != "my-project" {
+		t.Fatalf("x-goog-user-project = %q, want my-project (the listing 403s without it)", got)
+	}
+}
+
+func TestGCPADCOmitsQuotaProjectWithoutTheVariable(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
+	if err := staticADC().Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := req.Header["X-Goog-User-Project"]; set {
+		t.Fatalf("header set without a project: %v", req.Header)
+	}
+}

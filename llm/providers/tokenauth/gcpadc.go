@@ -37,6 +37,13 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 		return fmt.Errorf("instance %q: gcp-adc token: %w", res.Instance, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	// User credentials must name the project to bill and count quota
+	// against; the publisher-model listing has no project in its path and
+	// 403s without this. It is harmless where the path already carries the
+	// project (spec §2.2).
+	if project := res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]; project != "" {
+		req.Header.Set("x-goog-user-project", project)
+	}
 	return nil
 }
 
