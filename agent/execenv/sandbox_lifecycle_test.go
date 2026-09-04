@@ -544,3 +544,108 @@ func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.
 	close(stop)
 	<-readerDone
 }
+
+// writeBlockedEnvAt builds a file-tool-confined env with no kernel wrapper
+// (a write-blocked off policy) rooted at worktree, the one shape whose
+// effective scratch path comes from the fields AdoptSessionScratch moves.
+func writeBlockedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
+	t.Helper()
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	return env
+}
+
+// assertFileToolsShareTheShellScratch has a shell command write into the env's
+// $EVENER_SCRATCH_DIR and checks the file tools read that file back and can
+// write beside it: the two must name the same directory.
+func assertFileToolsShareTheShellScratch(t *testing.T, env *LocalExecutionEnvironment) {
+	t.Helper()
+	if _, err := env.ExecCommand(context.Background(), `printf shell > "$EVENER_SCRATCH_DIR/probe"`, 5000, "", nil); err != nil {
+		t.Fatalf("shell write into the scratch: %v", err)
+	}
+	scratch := env.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the env reports no scratch after a shell command")
+	}
+	if got, err := env.ReadFile(filepath.Join(scratch, "probe"), nil, nil); err != nil || !strings.Contains(got, "shell") {
+		t.Errorf("read_file of the shell's probe in %s: got %q err %v; the file tools do not reach the scratch the shell writes to", scratch, got, err)
+	}
+	if _, err := env.WriteFile(filepath.Join(scratch, "tool.txt"), "tool\n"); err != nil {
+		t.Errorf("write_file into %s: %v; the file tools do not reach the scratch the shell writes to", scratch, err)
+	}
+}
+
+// The file-tool enforcement layer folds the session scratch into its grants
+// when it is built. A session's environment swap moves the scratch between
+// environment objects after that: the clone the session lands on gains one it
+// had none of, and the environment it left mints a fresh one for whoever
+// still shares it. A layer built before the move keeps granting the old path
+// (or none), so the file tools and the shell would name different scratch
+// directories; the layer has to follow the effective path like the
+// unsandboxed scratch layer already does.
+func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
+	t.Run("environment that adopts", func(t *testing.T) {
+		from := writeBlockedEnvAt(t, t.TempDir())
+		// A confined env that owns no scratch (its own was disposed) builds its
+		// layer with no scratch at all.
+		to := writeBlockedEnvAt(t, t.TempDir())
+		to.DisposeSandboxScratch()
+		if _, err := to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil); err == nil {
+			t.Fatal("reading a missing file succeeded")
+		}
+
+		to.AdoptSessionScratch(from)
+
+		assertFileToolsShareTheShellScratch(t, to)
+	})
+	t.Run("environment that was left", func(t *testing.T) {
+		from := writeBlockedEnvAt(t, t.TempDir())
+		// A file tool builds the layer around the scratch the env owns now.
+		if _, err := from.WriteFile(filepath.Join(from.SessionScratchDir(), "before.txt"), "before\n"); err != nil {
+			t.Fatalf("write_file into the owned scratch: %v", err)
+		}
+		to := from.WithWorkingDirectory(t.TempDir())
+		t.Cleanup(to.DisposeUnadoptedScratch)
+
+		to.AdoptSessionScratch(from)
+
+		// The env that was left mints a fresh scratch for its next command.
+		assertFileToolsShareTheShellScratch(t, from)
+	})
+}
+
+// A swap moving the scratch while a file tool on the shared environment is
+// mid-operation must stay race-free: the layer the operation holds is never
+// closed under it, and every cache field is read and written under the lock.
+func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testing.T) {
+	from := writeBlockedEnvAt(t, t.TempDir())
+	to := from.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(to.DisposeUnadoptedScratch)
+
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// The scratch may be mid-move: a refusal is the expected outcome
+				// then, and only the absence of a race is under test.
+				_, _ = from.WriteFile(filepath.Join(from.SessionScratchDir(), "racing.txt"), "x\n")
+			}
+		}
+	}()
+	for range 200 {
+		to.AdoptSessionScratch(from)
+		from.AdoptSessionScratch(to)
+	}
+	close(stop)
+	<-writerDone
+
+	assertFileToolsShareTheShellScratch(t, from)
+}

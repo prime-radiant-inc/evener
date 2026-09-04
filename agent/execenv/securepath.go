@@ -46,8 +46,10 @@ var (
 //
 // The file-operation methods are safe for concurrent use with each other. close()
 // is NOT — it releases the cached root fds and must run only at environment
-// teardown (Cleanup), after all file tools for the environment have returned; the
-// session lifecycle guarantees this ordering.
+// teardown (Cleanup) or policy replacement, after all file tools for the
+// environment have returned; the session lifecycle guarantees this ordering. A
+// layer a mid-life rebuild replaces (the session scratch moved) is retired, not
+// closed, until then.
 type sandboxFS struct {
 	policy *sandbox.ResolvedPolicy
 
