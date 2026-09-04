@@ -174,31 +174,70 @@ func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
 	}
 }
 
-// disposeUnadoptedSubagentSession tears down a child that never became a
-// tracked/adopted delegate. It is the create-path twin of
-// discardRestoredCandidate and makes the same decisions it does. Normal teardown
-// RETAINS both of a session's scratch dirs for the human handoff — the leases go,
-// the directories stay — but an unadopted child has no owner left to hand
-// anything to, so both go: the sandbox-owned one and the one an unsandboxed
-// environment (the default shape) mints on its first command. Only for an
-// environment built FOR this child, though: a shared one belongs to the live
-// parent still working in it.
-func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+// childScratchDisposition says what becomes of the scratch a child's owned
+// environment provisioned when the child is torn down.
+type childScratchDisposition int
+
+const (
+	// retainChildScratch releases the leases and keeps the directories: the
+	// child finished something a human may still want to inspect, the handoff
+	// every normal session teardown makes.
+	retainChildScratch childScratchDisposition = iota
+	// disposeChildScratch drops the directories with their leases: the child
+	// was never adopted or is being discarded, so no one is left to hand
+	// anything to.
+	disposeChildScratch
+)
+
+// teardownChildSession closes a child session and settles what it owned. It is
+// the one teardown every child takes — the parent's own close, the eviction of
+// a retained terminal child, the disposal of a child that never became a
+// tracked delegate, and the disposal of an isolation lane — so every path
+// makes the same two decisions.
+//
+// Invariant: a session runs Cleanup only on an environment whose process table
+// it constructed, at its own close, and never on a child's. A child's
+// environment is either the parent's own (a delegate with neither a working
+// dir nor a box of its own) or a WithWorkingDirectory clone built for it, and a
+// clone shares the parent's process table by pointer, so Cleanup on either one
+// signals the parent's in-flight tools. A child's own processes end without it:
+// its job manager stops its shells and cancellation ends its tool commands at
+// close, and whatever survives is reaped when the table's owner closes. What a
+// child owns outright is its clone's scratch — the sandbox-provisioned dir and
+// the one an unsandboxed clone minted on its first command — and that is
+// released here, both kinds together, per scratch: retained on a handoff,
+// disposed when the child is dropped. A shared environment is left untouched
+// in every respect: the parent is still working in it.
+func teardownChildSession(ctx context.Context, sess *Session, ownsEnv bool, scratch childScratchDisposition) {
 	if sess == nil {
 		return
 	}
-	// The environment's Cleanup is never this child's to run, whichever
-	// environment it holds. A shared one is the live parent's outright; a FRESH
-	// clone still shares the parent's PROCESS TABLE, since WithWorkingDirectory
-	// copies runningPIDs by pointer, so cleaning up a clone signals the parent's
-	// in-flight tools too. The child's own processes live in that same map and
-	// end with the environment that owns it — the same skip the parent's own
-	// teardown makes for its children.
-	sess.close(context.Background(), false)
+	sess.close(ctx, false)
+	releaseOwnedChildEnvironment(sess.currentEnv(), ownsEnv, scratch)
+}
+
+// releaseOwnedChildEnvironment is teardownChildSession's environment step on
+// its own, for the one child close that is not a close(): a restore candidate
+// nothing adopted is discarded by discardRestoredCandidate, which settles the
+// candidate's own resources and then makes exactly this decision for its env.
+func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool, scratch childScratchDisposition) {
 	if !ownsEnv {
 		return
 	}
-	disposeUnadoptedScratch(sess.currentEnv())
+	if scratch == disposeChildScratch {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.RetainSessionScratch()
+	}
+}
+
+// disposeUnadoptedSubagentSession tears down a child that never became a
+// tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
+// No owner is left to hand anything to, so its owned scratch goes with it.
+func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+	teardownChildSession(context.Background(), sess, ownsEnv, disposeChildScratch)
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
@@ -1031,7 +1070,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		for _, ev := range evicted {
-			ev.sess.Close()
+			teardownChildSession(context.Background(), ev.sess, ev.ownsEnv, retainChildScratch)
 		}
 	}
 

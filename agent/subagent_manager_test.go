@@ -313,10 +313,13 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 	older := time.Now()
 	newer := older.Add(time.Minute)
 
-	// "consumed" is the only reclaimable record; it gets its own counting env so the
-	// test can prove GC eviction CLOSES its (still-live) child Session — a consumed
-	// completed child is not closed when its run finishes, so evicting it must close
-	// it to avoid a leak. "held" is unconsumed and must stay.
+	// "consumed" is the only reclaimable record; a consumed completed child is not
+	// closed when its run finishes, so evicting it must close it to avoid a leak.
+	// It gets its own counting env so the test can prove the eviction closes the
+	// child WITHOUT running its environment's Cleanup: a child's environment is
+	// the parent's own or a clone sharing the parent's process table, and Cleanup
+	// on either signals the parent's in-flight tools and releases its scratch
+	// leases. "held" is unconsumed and must stay.
 	consumedEnv := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
 	consumedChild, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), consumedEnv, SessionConfig{MaxSubagentDepth: 1})
 	if err != nil {
@@ -332,8 +335,11 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 	if got := sess.getSub("consumed"); got != nil {
 		t.Errorf("consumed terminal record must be reclaimed; still tracked: %+v", got)
 	}
-	if got := consumedEnv.count() - cleanupsBefore; got != 1 {
-		t.Errorf("GC eviction must Close the consumed child's session (env Cleanup delta = %d, want 1)", got)
+	if got := consumedChild.State(); got != SessionClosed {
+		t.Errorf("GC eviction must close the consumed child's session: state = %q, want %q", got, SessionClosed)
+	}
+	if got := consumedEnv.count() - cleanupsBefore; got != 0 {
+		t.Errorf("GC eviction ran Cleanup %d time(s) on the evicted child's environment, want 0", got)
 	}
 	if got := sess.getSub("held"); got == nil {
 		t.Errorf("unconsumed terminal record must be retained")

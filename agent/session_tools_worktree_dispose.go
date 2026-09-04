@@ -203,13 +203,8 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
 	id := state.delegateID
 	if sub != nil && sub.sess != nil {
-		sub.sess.close(ctx, false)
+		teardownChildSession(ctx, sub.sess, sub.ownsEnv, retainChildScratch)
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
-		if sub.ownsEnv {
-			if local, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-				local.Cleanup()
-			}
-		}
 	}
 	lane := isolationLane{delegateID: id, path: lanePath}
 	if !lanePresent {

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
-	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
@@ -261,21 +260,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
-		// parent owns cleanup of the shared env, so child closes skip env cleanup.
+		// parent owns cleanup of that env (step 4), so a child's teardown never
+		// runs it; what a child owns is its scratch, retained for the handoff.
 		for _, sub := range subs {
-			sub.sess.close(budgetCtx, false)
-			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
-			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
-			// deliberately skips (child env cleanup is the parent's job because children
-			// historically SHARED the parent env). Release that env's live scratch lease
-			// and cached file-tool fds here, but retain the directory for the human
-			// handoff. Guarded on ownsEnv: a child sharing the parent env is never
-			// retained — the parent owns that env below.
-			if sub.ownsEnv {
-				if le, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-					le.RetainSandboxScratch()
-				}
-			}
+			teardownChildSession(budgetCtx, sub.sess, sub.ownsEnv, retainChildScratch)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
@@ -406,16 +394,9 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 		_ = s.closeOwnedDelegateStore()
 		// A discarded candidate was never adopted by anything, so unlike a normal
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
-		// is no one left to retain them for. Both go: the sandbox-owned one AND
-		// the one an unsandboxed env — the default shape — mints on its first
-		// command, whose lease would otherwise be held for the life of the
-		// process. Only ever for an env built FOR this candidate: a shared one
-		// belongs to the live parent still working in it. Byte for byte the same
-		// two decisions disposeUnadoptedSubagentSession makes on the create-path
-		// twin of this abort.
-		if ownsEnv {
-			disposeUnadoptedScratch(s.currentEnv())
-		}
+		// is no one left to retain them for: both go, the same decision the
+		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
+		releaseOwnedChildEnvironment(s.currentEnv(), ownsEnv, disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
