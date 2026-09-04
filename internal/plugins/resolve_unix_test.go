@@ -698,29 +698,36 @@ func TestBundledStore_AnUnreadableDestinationIsSetAsideLikeAnyOtherConflict(t *t
 func TestMaterializeBundledPlugin_PublishesWhileTheStoreLockIsHeld(t *testing.T) {
 	m := NewManager(t.TempDir())
 	// Somebody else holds the store lock, the way an auto-upgrade does across
-	// its git fetches.
+	// its git fetches, and goes on holding it past everything below: the
+	// publish has to finish under that lock rather than after it, so the
+	// holder lets go in cleanup and nowhere else.
 	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
+	t.Cleanup(release)
 
 	digest, err := bundledPluginDigest("coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Well inside the wait a publish is entitled to on its own lock, so a
-	// publish that queued behind the store lock is bounded by this rather than
-	// by the 30 seconds it would otherwise spend before failing.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// A hang tripwire, nothing more. A publish that queued behind the store
+	// lock gives up on its own after the 30s budget and says which lock it was
+	// waiting for, which is the diagnosis worth having, so this sits well past
+	// that and decides nothing about whether the separation holds.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	start := time.Now()
 	published, _, err := m.materializeBundledPlugin(ctx, "coordinator-workflow")
 	if err != nil {
 		t.Fatalf("publishing while the store lock was held: %v", err)
 	}
-	if waited := time.Since(start); waited > 5*time.Second {
-		t.Errorf("publishing took %v, want it not to wait on the store lock at all", waited)
+	// The premise, checked rather than assumed: a publish that succeeded is
+	// only evidence if the store lock was still taken when it did. Nothing
+	// here turns on how long anything took — the lock is contended or the
+	// success above proves nothing.
+	if free, freeErr := acquireLock(context.Background(), m.lockPath(), 0); freeErr == nil {
+		free()
+		t.Error("the store lock was not held when the publish finished, so this proves nothing about the two locks")
 	}
 	if want := m.bundledPluginPath("coordinator-workflow", digest); published != want {
 		t.Fatalf("published %s, want %s", published, want)
@@ -760,8 +767,10 @@ func TestMaterializeBundledPlugin_LeavesTheStoreLockFreeWhilePublishing(t *testi
 	t.Cleanup(unblock)
 	<-publishing
 
-	// Mid-copy: whatever the publish is holding, the store lock is not it.
-	storeLock, err := acquireLock(context.Background(), m.lockPath(), 2*time.Second)
+	// Mid-copy: whatever the publish is holding, the store lock is not it. No
+	// wait budget at all, so nothing here turns on how loaded the machine is —
+	// the lock is free on the first try or the publish is holding it.
+	storeLock, err := acquireLock(context.Background(), m.lockPath(), 0)
 	if err != nil {
 		t.Fatalf("a bundled publish in flight blocked the store lock: %v", err)
 	}
