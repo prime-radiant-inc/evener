@@ -72,7 +72,9 @@ func TestAcquireLock_ObservesContextCancellation(t *testing.T) {
 // resolved) or relative resolves against whatever directory the process
 // happens to be in, so a writer that reached the lock without checking planted
 // a store in somebody's project. The check belongs at the acquisition rather
-// than in each writer, where it was forgotten by all but three of them.
+// than in each writer, where it was forgotten. Every caller that takes the
+// store lock is here, so dropping the check from any one acquisition turns
+// this red rather than leaving a single untested site behind.
 func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 	writers := []struct {
 		name  string
@@ -108,6 +110,12 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 		}},
 		{"RefreshMarketplace", func(ctx context.Context, m *Manager) error {
 			return m.RefreshMarketplace(ctx, "marketplace")
+		}},
+		// Browse mutates too: it clones a marketplace that was only seeded as
+		// a pointer, so on a broken root it cloned into the working directory.
+		{"Browse", func(ctx context.Context, m *Manager) error {
+			_, err := m.Browse(ctx, "marketplace")
+			return err
 		}},
 		// The two sweeps enumerate the registry before they lock anything, so
 		// an empty registry — which is what an ambient working directory
