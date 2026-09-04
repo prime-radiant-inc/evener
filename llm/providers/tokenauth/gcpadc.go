@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -30,29 +31,49 @@ type GCPADC struct {
 	CredentialsFromJSON func(ctx context.Context, data []byte, scopes ...string) (*google.Credentials, error)
 
 	mu      sync.Mutex
-	sources map[string]oauth2.TokenSource
+	sources map[string]tokenSource
+}
+
+// tokenSource pairs a cached token source with whether the credential it
+// came from is a user credential (authorized_user), decided once when the
+// credential is obtained.
+type tokenSource struct {
+	ts             oauth2.TokenSource
+	userCredential bool
+}
+
+// isUserCredential reports whether raw — a credential file's JSON — is an
+// authorized_user (user) credential rather than a service account or other
+// type. A nil/empty or unparsable raw is not a user credential.
+func isUserCredential(raw []byte) bool {
+	var f struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(raw, &f) == nil && f.Type == "authorized_user"
 }
 
 // Apply sets Authorization from the instance's cached token source and, for
-// an instance whose base URL named a project, x-goog-user-project.
+// a user credential whose base URL named a project, x-goog-user-project.
 func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Resolved) error {
-	ts, err := a.tokenSource(ctx, res)
+	src, err := a.tokenSource(ctx, res)
 	if err != nil {
 		if res.Credential.Source == "store" {
 			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: stored credential JSON: %v", res.Instance, err), Cause: err}
 		}
 		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)", res.Instance, err), Cause: err}
 	}
-	tok, err := ts.Token()
+	tok, err := src.ts.Token()
 	if err != nil {
 		return fmt.Errorf("instance %q: gcp-adc token: %w", res.Instance, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	// User credentials must name the project to bill and count quota
-	// against; the publisher-model listing has no project in its path and
-	// 403s without this. It is harmless where the path already carries the
-	// project (spec §2.2).
-	if project := res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]; project != "" {
+	// User credentials are not attributed to a project, and the publisher
+	// listing has no project in its path and 403s without this header
+	// naming one. Service accounts carry their own project and must not
+	// name one here: Google requires serviceusage.services.use on any
+	// project this header names, which a least-privilege service account
+	// may lack, turning a working request into a 403 (spec §2.2, ruling R6).
+	if project := res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]; src.userCredential && project != "" {
 		req.Header.Set("x-goog-user-project", project)
 	}
 	return nil
@@ -78,12 +99,12 @@ func sourceKey(res registry.Resolved) string {
 	return res.Instance + "\x00" + hex.EncodeToString(sum[:])
 }
 
-func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (oauth2.TokenSource, error) {
+func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenSource, error) {
 	key := sourceKey(res)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if ts, ok := a.sources[key]; ok {
-		return ts, nil
+	if src, ok := a.sources[key]; ok {
+		return src, nil
 	}
 	// The source outlives the request that created it, so it must not
 	// inherit that request's cancellation.
@@ -104,12 +125,12 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (oauth2
 		creds, err = find(bg, cloudPlatformScope)
 	}
 	if err != nil {
-		return nil, err
+		return tokenSource{}, err
 	}
-	ts := oauth2.ReuseTokenSource(nil, creds.TokenSource)
+	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(creds.JSON)}
 	if a.sources == nil {
-		a.sources = map[string]oauth2.TokenSource{}
+		a.sources = map[string]tokenSource{}
 	}
-	a.sources[key] = ts
-	return ts, nil
+	a.sources[key] = src
+	return src, nil
 }

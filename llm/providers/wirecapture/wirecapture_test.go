@@ -293,7 +293,13 @@ func newHarness(t *testing.T) *harness {
 		return authopenai.RuntimeCredentials{BearerToken: codexToken, Source: authopenai.AuthSourceOAuth}, nil
 	}
 	tokenauth.DefaultGCPADC.FindCredentials = func(context.Context, ...string) (*gauth.Credentials, error) {
-		return &gauth.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: adcToken})}, nil
+		// Models a developer's ADC login (an authorized_user credential),
+		// which is what makes the wirecapture goldens carry
+		// x-goog-user-project (spec §2.2, ruling R6).
+		return &gauth.Credentials{
+			JSON:        []byte(`{"type":"authorized_user"}`),
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: adcToken}),
+		}, nil
 	}
 	t.Cleanup(func() {
 		tokenauth.DefaultCodex.StateDir, tokenauth.DefaultCodex.Credentials, tokenauth.DefaultGCPADC.FindCredentials = prevDir, prevCreds, prevFind

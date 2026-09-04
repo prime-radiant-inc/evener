@@ -66,7 +66,10 @@ func TestDefaultsAreRegistered(t *testing.T) {
 
 func staticADC() *GCPADC {
 	return &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
-		return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
+		return &google.Credentials{
+			JSON:        []byte(`{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`),
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"}),
+		}, nil
 	}}
 }
 
@@ -92,10 +95,47 @@ func TestGCPADCOmitsQuotaProjectWithoutTheVariable(t *testing.T) {
 	}
 }
 
+func TestGCPADCOmitsQuotaProjectForServiceAccounts(t *testing.T) {
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{
+			JSON:        []byte(`{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com"}`),
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "sa-token"}),
+		}, nil
+	}}
+	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
+	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"},
+		Transport: registry.Transport{Vars: map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project"}}}
+	if err := a.Apply(context.Background(), req, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := req.Header["X-Goog-User-Project"]; set {
+		t.Fatalf("header set for a service account: %v", req.Header)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer sa-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+func TestGCPADCOmitsQuotaProjectWithoutCredentialJSON(t *testing.T) {
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "metadata-token"})}, nil
+	}}
+	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
+	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"},
+		Transport: registry.Transport{Vars: map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project"}}}
+	if err := a.Apply(context.Background(), req, res); err != nil {
+		t.Fatal(err)
+	}
+	if _, set := req.Header["X-Goog-User-Project"]; set {
+		t.Fatalf("header set without credential JSON: %v", req.Header)
+	}
+}
+
 const storedUserJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 
 func storedRes(instance, value string) registry.Resolved {
-	return registry.Resolved{Instance: instance, Credential: registry.Credential{Value: value, Source: "store"}}
+	return registry.Resolved{Instance: instance, Credential: registry.Credential{Value: value, Source: "store"},
+		Transport: registry.Transport{Vars: map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project"}}}
 }
 
 func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
@@ -111,7 +151,7 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 				t.Fatalf("scopes = %v", scopes)
 			}
 			fromJSON = append(fromJSON, data)
-			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
+			return &google.Credentials{JSON: data, TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
 		},
 	}
 	for range 2 {
@@ -121,6 +161,9 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer json-token" {
 			t.Fatalf("Authorization = %q", got)
+		}
+		if got := req.Header.Get("x-goog-user-project"); got != "my-project" {
+			t.Fatalf("x-goog-user-project = %q, want my-project for a stored authorized_user credential", got)
 		}
 	}
 	if finds != 0 || len(fromJSON) != 1 || string(fromJSON[0]) != storedUserJSON {
