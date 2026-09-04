@@ -1,0 +1,67 @@
+/* Hold-modifier hint chips (Phase 4a, Design decision 4). The root is a
+ * fixed, pointer-events-none layer portaled to document.body (the popover
+ * pattern): chips get their top/left inline from the anchor's
+ * getBoundingClientRect(), so showing never reflows page content and no
+ * clipping ancestor can cut a chip off. The layer itself is aria-hidden
+ * decoration - the same chords live in the cheatsheet overlay and the
+ * controls' own tooltips. */
+
+.root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu);
+  pointer-events: none;
+  animation: holdHintsIn var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes holdHintsIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.chip {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: var(--radius-pane);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-overlay);
+}
+
+/* Horizontal centering on the anchor is shared; placement differs only along
+ * the vertical axis - rail/palette/tab affordances sit at the top edge of the
+ * shell (chip BELOW), the composer at the bottom (chip ABOVE its card). */
+.below {
+  transform: translate(-50%, 6px);
+}
+
+.above {
+  transform: translate(-50%, calc(-100% - 6px));
+}
+
+.or {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* prefers-reduced-motion: the chips appear/disappear instantly - no fade.
+ * The @media rule is the first-paint source of truth (the house pattern -
+ * widgets/popover et al.); the [data-reduced-motion] mirror is the same
+ * preference read JS-side (usePrefersReducedMotion) so the instant path is
+ * observable where media queries are not evaluated (jsdom tests). */
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    animation: none;
+  }
+}
+
+.root[data-reduced-motion] {
+  animation: none;
+}
