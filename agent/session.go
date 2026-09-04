@@ -1812,7 +1812,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 		if part.ToolCall == nil {
 			continue
 		}
-		validArguments := len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments)
+		validArguments := validHistoryToolArguments(part.ToolCall.Arguments)
 		wireName := tool.WireToolName(part.ToolCall.Name)
 		if validArguments && wireName == part.ToolCall.Name {
 			continue
@@ -1833,16 +1833,22 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 	return message
 }
 
+func validHistoryToolArguments(arguments []byte) bool {
+	return len(arguments) == 0 || (tool.ValidateRawArguments(arguments) == nil && json.Valid(arguments))
+}
+
 // providerHistoryMessage returns a replay copy whose tool identities satisfy
-// provider name constraints. Stored turns remain unchanged so request assembly
-// never rewrites durable history or lifecycle state.
+// provider name and argument constraints. Stored turns remain unchanged so
+// request assembly never rewrites durable history or lifecycle state.
 func providerHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
 		callName := ""
+		validArguments := true
 		resultName := ""
 		if part.ToolCall != nil {
 			callName = tool.WireToolName(part.ToolCall.Name)
+			validArguments = validHistoryToolArguments(part.ToolCall.Arguments)
 		}
 		// An empty result name is an intentional adapter sentinel: Chat
 		// Completions recovers it from the correlated assistant tool call. Only
@@ -1850,16 +1856,19 @@ func providerHistoryMessage(message llm.Message) llm.Message {
 		if part.ToolResult != nil && part.ToolResult.Name != "" {
 			resultName = tool.WireToolName(part.ToolResult.Name)
 		}
-		if (part.ToolCall == nil || callName == part.ToolCall.Name) &&
+		if (part.ToolCall == nil || callName == part.ToolCall.Name && validArguments) &&
 			(part.ToolResult == nil || resultName == part.ToolResult.Name) {
 			continue
 		}
 		if content == nil {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
-		if part.ToolCall != nil && callName != part.ToolCall.Name {
+		if part.ToolCall != nil && (callName != part.ToolCall.Name || !validArguments) {
 			call := *part.ToolCall
 			call.Name = callName
+			if !validArguments {
+				call.Arguments = json.RawMessage(`{}`)
+			}
 			content[i].ToolCall = &call
 		}
 		if part.ToolResult != nil && resultName != part.ToolResult.Name {

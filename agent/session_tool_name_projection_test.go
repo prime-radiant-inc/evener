@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -429,6 +432,96 @@ func TestProviderHistoryMessagePreservesEmptyToolResultNameForAdapterRecovery(t 
 	}
 	if got := message.Content[0].ToolResult.Name; got != "" {
 		t.Errorf("projection mutated source tool-result name to %q", got)
+	}
+}
+
+func TestSessionToolCallHistoryProjectsUnsafeArgumentsWithoutMutatingSource(t *testing.T) {
+	invalidUTF8 := append([]byte(`{"value":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	if utf8.Valid(invalidUTF8) {
+		t.Fatal("invalid UTF-8 fixture is valid")
+	}
+	if !json.Valid(invalidUTF8) {
+		t.Fatal("invalid UTF-8 fixture does not exercise the former JSON-only guard")
+	}
+	oversized := []byte(`{"value":"` + strings.Repeat("x", tool.MaxToolArgumentBytes) + `"}`)
+	if len(oversized) <= tool.MaxToolArgumentBytes {
+		t.Fatalf("oversized fixture has %d bytes, want more than %d", len(oversized), tool.MaxToolArgumentBytes)
+	}
+	if !json.Valid(oversized) {
+		t.Fatal("oversized fixture is not valid JSON")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		arguments []byte
+	}{
+		{name: "invalid UTF-8", arguments: invalidUTF8},
+		{name: "oversized valid JSON", arguments: oversized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t, withoutGitSnapshot())
+			defer sess.Close()
+
+			responseCall := &llm.ToolCallData{
+				ID:        "unsafe-persistence",
+				Name:      "read_file",
+				Arguments: append([]byte(nil), tc.arguments...),
+			}
+			response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind:     llm.ContentToolCall,
+				ToolCall: responseCall,
+			}}}}
+			if err := sess.appendAssistantTurn(response, ModelAttemptMetadata{}); err != nil {
+				t.Fatalf("append assistant turn: %v", err)
+			}
+			if !bytes.Equal(responseCall.Arguments, tc.arguments) {
+				t.Error("assistant persistence mutated the provider response")
+			}
+			sess.mu.Lock()
+			persistedArguments := append([]byte(nil), sess.history[len(sess.history)-1].Message.Content[0].ToolCall.Arguments...)
+			sess.mu.Unlock()
+			if !bytes.Equal(persistedArguments, []byte(`{}`)) {
+				t.Errorf("persisted assistant arguments have %d bytes, want safe empty object", len(persistedArguments))
+			}
+
+			legacyCall := &llm.ToolCallData{
+				ID:        "unsafe-replay",
+				Name:      "read_file",
+				Arguments: append([]byte(nil), tc.arguments...),
+			}
+			sess.mu.Lock()
+			sess.history = []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("replay the legacy call")),
+				schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: legacyCall}}}),
+				schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+					ToolCallID: legacyCall.ID,
+					Name:       legacyCall.Name,
+					Content:    "rejected",
+				}}}}),
+			}
+			sess.mu.Unlock()
+
+			var timings events.RoundTimings
+			_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings)
+			if err != nil {
+				t.Fatalf("prepare provider request: %v", err)
+			}
+			var replayedArguments []byte
+			for _, message := range req.Messages {
+				for _, part := range message.Content {
+					if part.ToolCall != nil && part.ToolCall.ID == legacyCall.ID {
+						replayedArguments = part.ToolCall.Arguments
+					}
+				}
+			}
+			if !bytes.Equal(replayedArguments, []byte(`{}`)) {
+				t.Errorf("provider-bound arguments have %d bytes, want safe empty object", len(replayedArguments))
+			}
+			if !bytes.Equal(legacyCall.Arguments, tc.arguments) {
+				t.Error("provider replay mutated stored legacy arguments")
+			}
+		})
 	}
 }
 
