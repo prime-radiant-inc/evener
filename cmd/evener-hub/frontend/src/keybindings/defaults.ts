@@ -199,27 +199,42 @@ export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, 
   return registered;
 }
 
+export interface DefaultBindingShape {
+  scope: string;
+  sequence: KeySequence;
+}
+
+/** The (scope, parsed chord) pairs registerDefaultBindingsForAction would
+ * register for the action, WITHOUT registering them: the validation layer
+ * simulates dropped-override restorations against these. Throws on an
+ * unknown action id. */
+export function defaultBindingShapesForAction(actionId: string): DefaultBindingShape[] {
+  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
+  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
+  const shapes: DefaultBindingShape[] = [];
+  for (const input of inputs) {
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      shapes.push({
+        scope: entry.scope ?? GLOBAL_SCOPE,
+        sequence: typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord,
+      });
+    }
+  }
+  return shapes;
+}
+
 export interface DefaultChordInfo {
   scope: string;
   serialized: string;
 }
 
-/** The (scope, serialized chord) pairs registerDefaultBindingsForAction would
- * register for the action, WITHOUT registering them: the validation layer
- * simulates dropped-override restorations against these. Throws on an
- * unknown action id. */
+/** The display-oriented (scope, serialized chord) form of
+ * defaultBindingShapesForAction, for the read-only settings section's
+ * customized-marker comparison. */
 export function defaultBindingChordsForAction(actionId: string): DefaultChordInfo[] {
-  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
-  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
-  const chords: DefaultChordInfo[] = [];
-  for (const input of inputs) {
-    const pair = modPair(input);
-    for (const entry of pair ?? [input]) {
-      chords.push({
-        scope: entry.scope ?? GLOBAL_SCOPE,
-        serialized: serializeChord(typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord),
-      });
-    }
-  }
-  return chords;
+  return defaultBindingShapesForAction(actionId).map((shape) => ({
+    scope: shape.scope,
+    serialized: serializeChord(shape.sequence),
+  }));
 }

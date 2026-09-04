@@ -148,3 +148,21 @@ describe("restoreDefaultBinding", () => {
     expect(() => restoreDefaultBinding(registry, "no.such.action")).toThrow(/unknown/);
   });
 });
+
+describe("rebindAction overlap conflicts", () => {
+  test("throws when the chord only overlaps another action's OPTIONAL modifiers, atomically", () => {
+    // Control+K matches palette.open's Control+[Meta]+[Shift]+[Alt]+K at
+    // dispatch time; the earlier-registered default would shadow the override.
+    const registry = withDefaults();
+    const before = registry.getState().bindings;
+    expect(() => rebindAction(registry, ACTIONS.composerFocus, "Control+K")).toThrow(/conflict/);
+    expect(registry.getState().bindings).toEqual(before);
+  });
+
+  test("accepts a genuinely non-overlapping chord (extra required modifier nothing allows)", () => {
+    const registry = withDefaults();
+    expect(() => rebindAction(registry, ACTIONS.composerFocus, "Control+Alt+B")).not.toThrow();
+    const override = bindingsFor(registry, ACTIONS.composerFocus)[0];
+    expect(serializeChord(override?.chord ?? [])).toBe("Control+Alt+B");
+  });
+});

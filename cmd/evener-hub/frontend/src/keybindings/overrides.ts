@@ -15,7 +15,7 @@
 // bad rules with warnings, so these throws should never reach startup; they
 // exist so a direct caller cannot corrupt the registry either.
 
-import { parseChord, serializeChord } from "./chord";
+import { chordsOverlap, parseChord, serializeChord } from "./chord";
 import { DEFAULT_BINDINGS, registerDefaultBindingsForAction } from "./defaults";
 import { type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
@@ -50,7 +50,7 @@ export function rebindAction(registry: KeybindingsRegistry, actionId: string, ch
   const scope = defaultInput.scope ?? GLOBAL_SCOPE;
   for (const existing of registry.getState().bindings) {
     if (existing.actionId === actionId) continue;
-    if (existing.scope === scope && serializeChord(existing.chord) === serialized) {
+    if (existing.scope === scope && chordsOverlap(existing.chord, sequence)) {
       throw new Error(`keybinding conflict: "${serialized}" in scope "${scope}" is already bound by "${existing.id}"`);
     }
   }

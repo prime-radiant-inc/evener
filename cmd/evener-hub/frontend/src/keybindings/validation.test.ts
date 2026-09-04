@@ -253,3 +253,36 @@ describe("validateOverrideRules dropped-override restorations", () => {
     expect(result.warnings).toEqual([]);
   });
 });
+
+describe("validateOverrideRules overlap conflicts", () => {
+  test("flags an override whose exact chord overlaps a default's OPTIONAL modifiers (dispatch would shadow it)", () => {
+    // palette.open's default is Control+[Meta]+[Shift]+[Alt]+K: a plain
+    // Control+K matches it at dispatch time, and the earlier-registered
+    // default would win - so this is a conflict, not a valid remap.
+    const registry = withDefaults();
+    const result = validateOverrideRules([{ action: ACTIONS.composerFocus, chord: "Control+K" }], registry);
+    expect(result.rules).toHaveLength(0);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.reason).toBe("conflict");
+    expect(result.warnings[0]?.conflictWith).toBe(ACTIONS.paletteOpen);
+    expect(result.warnings[0]?.message).toContain('scope "global"');
+  });
+
+  test("a genuinely non-overlapping chord (extra required modifier nothing allows) still validates", () => {
+    const registry = withDefaults();
+    const result = validateOverrideRules([{ action: ACTIONS.composerFocus, chord: "Control+Alt+B" }], registry);
+    expect(result.warnings).toEqual([]);
+    expect(result.rules).toHaveLength(1);
+  });
+
+  test("the reserved-chord check runs before conflict detection: a reserved chord reports only reserved-chord", () => {
+    const registry = withDefaults();
+    // A foreign live binding holds Control+W, so the chord is BOTH reserved
+    // and conflicting; check order must surface only the reserved warning.
+    registry.getState().registerBinding({ id: "foreign", actionId: "foreign.action", chord: "Control+W" });
+    const result = validateOverrideRules([{ action: ACTIONS.composerFocus, chord: "Control+W" }], registry, "other");
+    expect(result.rules).toHaveLength(0);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]?.reason).toBe("reserved-chord");
+  });
+});

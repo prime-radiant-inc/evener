@@ -13,8 +13,8 @@
 // the offending rule is skipped, so persisted data can degrade to defaults
 // but can never crash the shell.
 
-import { type KeySequence, parseChord, serializeChord } from "./chord";
-import { DEFAULT_BINDINGS, defaultBindingChordsForAction } from "./defaults";
+import { chordsOverlap, type KeySequence, parseChord } from "./chord";
+import { DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
 import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export type KeybindingsPlatform = "apple" | "other";
@@ -128,22 +128,7 @@ export interface ValidatedOverrides {
 
 interface EffectiveBinding {
   scope: string;
-  serialized: string;
-}
-
-/** The actions currently carrying an override, derived from the live registry
- * when the caller (the store) doesn't pass its authoritative set: an action
- * with an `#override` binding, or with NO bindings at all (an unbind
- * override). Only actions present in the default map are considered. */
-function deriveOverriddenActions(registry: KeybindingsRegistry): Set<string> {
-  const overridden = new Set<string>();
-  for (const input of DEFAULT_BINDINGS) {
-    const bindings = registry.getState().bindings.filter((b) => b.actionId === input.actionId);
-    if (bindings.length === 0 || bindings.some((b) => b.id === `${input.id}#override`)) {
-      overridden.add(input.actionId);
-    }
-  }
-  return overridden;
+  sequence: KeySequence;
 }
 
 /** Validates a rules payload against the live registry. Conflict detection
@@ -152,6 +137,9 @@ function deriveOverriddenActions(registry: KeybindingsRegistry): Set<string> {
  * payload does not (validly) name gets its defaults restored, and each
  * candidate rule claims its new chord. A chord freed by an earlier rule
  * (rebind-away or unbind) can therefore be claimed by a later one.
+ * Conflicts are OVERLAPS (chordsOverlap), not serialization equality: an
+ * override whose exact chord overlaps a default's optional modifiers would
+ * be shadowed by the earlier-registered default at dispatch time.
  *
  * When a restored default and a rule claim collide, THE RESTORE WINS: the
  * rule is skipped with a conflict warning and its action falls back to its
@@ -164,7 +152,7 @@ export function validateOverrideRules(
   rules: readonly OverrideRule[],
   registry: KeybindingsRegistry,
   platform: KeybindingsPlatform = currentKeybindingsPlatform(),
-  appliedActionIds?: ReadonlySet<string>,
+  appliedActionIds: ReadonlySet<string> = new Set(),
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
   const reserved = RESERVED_BY_PLATFORM[platform];
@@ -222,12 +210,11 @@ export function validateOverrideRules(
   const live = new Map<string, EffectiveBinding[]>();
   for (const binding of registry.getState().bindings) {
     const list = live.get(binding.actionId) ?? [];
-    list.push({ scope: binding.scope, serialized: serializeChord(binding.chord) });
+    list.push({ scope: binding.scope, sequence: binding.chord });
     live.set(binding.actionId, list);
   }
-  const overridden = appliedActionIds ?? deriveOverriddenActions(registry);
   const dropped = new Set<string>();
-  for (const action of overridden) {
+  for (const action of appliedActionIds) {
     if (!candidates.some((c) => c.rule.action === action)) dropped.add(action);
   }
 
@@ -241,27 +228,34 @@ export function validateOverrideRules(
   for (;;) {
     const final = new Map<string, EffectiveBinding[]>();
     for (const [action, bindings] of live) final.set(action, [...bindings]);
-    for (const action of dropped) final.set(action, defaultBindingChordsForAction(action));
+    for (const action of dropped) {
+      final.set(
+        action,
+        defaultBindingShapesForAction(action).map((shape) => ({ scope: shape.scope, sequence: shape.sequence })),
+      );
+    }
     for (const candidate of candidates) {
       const defaultInput = DEFAULT_BINDINGS.find((b) => b.actionId === candidate.rule.action);
       if (defaultInput === undefined) continue;
       final.set(
         candidate.rule.action,
-        candidate.chord === null
-          ? []
-          : [{ scope: defaultInput.scope ?? GLOBAL_SCOPE, serialized: serializeChord(candidate.chord) }],
+        candidate.chord === null ? [] : [{ scope: defaultInput.scope ?? GLOBAL_SCOPE, sequence: candidate.chord }],
       );
     }
-    // Each (scope, chord) pair's first claimant; later claimants conflict
-    // with it, so conflict pairs always name the earliest claimant first.
-    const claimant = new Map<string, string>();
+    // Each binding's first overlapping claimant in final-map order, so
+    // conflict pairs always name the earliest claimant first.
+    const claimants: { action: string; binding: EffectiveBinding }[] = [];
     const conflicts: [string, string][] = [];
     for (const [action, bindings] of final) {
       for (const binding of bindings) {
-        const key = `${binding.scope}\0${binding.serialized}`;
-        const other = claimant.get(key);
-        if (other === undefined) claimant.set(key, action);
-        else if (other !== action) conflicts.push([other, action]);
+        const overlapping = claimants.find(
+          (c) =>
+            c.action !== action &&
+            c.binding.scope === binding.scope &&
+            chordsOverlap(c.binding.sequence, binding.sequence),
+        );
+        if (overlapping === undefined) claimants.push({ action, binding });
+        else conflicts.push([overlapping.action, action]);
       }
     }
     if (conflicts.length === 0 || guard-- <= 0) break;
@@ -285,13 +279,15 @@ export function validateOverrideRules(
       if (skip === -1) continue;
       const removed = candidates.splice(skip, 1)[0];
       if (removed === undefined) continue;
+      const removedDefault = DEFAULT_BINDINGS.find((b) => b.actionId === removed.rule.action);
+      const scope = removedDefault?.scope ?? GLOBAL_SCOPE;
       warnings.push({
         rule: removed.rule,
         reason: "conflict",
         conflictWith,
-        message: `chord "${removed.rule.chord ?? ""}" is already bound by "${conflictWith}"`,
+        message: `chord "${removed.rule.chord ?? ""}" in scope "${scope}" is already bound by "${conflictWith}"`,
       });
-      if (overridden.has(removed.rule.action)) dropped.add(removed.rule.action);
+      if (appliedActionIds.has(removed.rule.action)) dropped.add(removed.rule.action);
       skipped = true;
     }
     if (!skipped) break;

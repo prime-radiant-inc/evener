@@ -56,6 +56,35 @@ export function serializeChord(sequence: KeySequence): string {
   return sequence.map(serializePress).join(" ");
 }
 
+/** Do two chords share a matching key event? Two SINGLE-press chords overlap
+ * when their keys match case-insensitively AND each side's required-modifier
+ * set is a subset of the other side's required ∪ optional set - the exact
+ * condition for one KeyboardEvent's modifier state to satisfy both. This is
+ * the conflict predicate for validation and rebind: serialization equality
+ * alone misses e.g. Control+K vs a default's Control+[Meta]+[Shift]+[Alt]+K,
+ * which the same event matches (the earlier-registered binding shadows the
+ * later one at dispatch).
+ *
+ * Multi-press sequences keep the old serialization-equality check: a
+ * per-press overlap extension is out of scope (user multi-press overrides
+ * are rare, and a false non-conflict there has the same shadowing symptom,
+ * just far less likely). Regex keys (tinykeys' "(...)" syntax) compare by
+ * source text, so only identical regexes overlap. */
+export function chordsOverlap(a: KeySequence, b: KeySequence): boolean {
+  if (a.length !== 1 || b.length !== 1) return serializeChord(a) === serializeChord(b);
+  const pressA = a[0];
+  const pressB = b[0];
+  if (pressA === undefined || pressB === undefined) return false;
+  if (keyIdentity(pressA) !== keyIdentity(pressB)) return false;
+  const allowedA = [...pressA.modifiers, ...pressA.optionalModifiers];
+  const allowedB = [...pressB.modifiers, ...pressB.optionalModifiers];
+  return pressA.modifiers.every((m) => allowedB.includes(m)) && pressB.modifiers.every((m) => allowedA.includes(m));
+}
+
+function keyIdentity(chord: Chord): string {
+  return chord.key instanceof RegExp ? chord.key.source : chord.key.toLowerCase();
+}
+
 function serializePress(chord: Chord): string {
   const mods = [...chord.modifiers, ...chord.optionalModifiers.map((m) => `[${m}]`)];
   return [...mods, serializeKey(chord.key)].join("+");
