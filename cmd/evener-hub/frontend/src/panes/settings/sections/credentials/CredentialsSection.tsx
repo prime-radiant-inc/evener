@@ -31,7 +31,7 @@ import styles from "./CredentialsSection.module.css";
 import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
 import { InstanceDetailSheet } from "./InstanceDetailSheet";
 import { InstanceRow } from "./InstanceRow";
-import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog, EditInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 
 const CLASS = {
@@ -50,6 +50,7 @@ const CLASS = {
 type OpenEditor =
   | { kind: "add" }
   | { kind: "apiKey"; name: string }
+  | { kind: "credentialJson"; name: string }
   | { kind: "edit"; name: string }
   | { kind: "oauth-redirect"; name: string; flowId: string; authUrl: string }
   | { kind: "device"; name: string; flowId: string; userCode: string; verificationUrl: string; intervalSeconds: number }
@@ -260,6 +261,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         writesRefused={writesRefused}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
+        onSetCredentialJson={() => openEditorFromSheet((name) => setOpenEditor({ kind: "credentialJson", name }))}
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
         onEdit={() => openEditorFromSheet((name) => setOpenEditor({ kind: "edit", name }))}
         onClear={() => {
@@ -296,6 +298,13 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         (() => {
           const target = findInstance(openEditor.name);
           return target ? <ApiKeyDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} /> : null;
+        })()}
+      {openEditor?.kind === "credentialJson" &&
+        (() => {
+          const target = findInstance(openEditor.name);
+          return target ? (
+            <CredentialJsonDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} />
+          ) : null;
         })()}
       {openEditor?.kind === "edit" &&
         (() => {

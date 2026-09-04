@@ -6,7 +6,7 @@ import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/typ
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
-import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog, EditInstanceDialog } from "./instanceDialogs";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -428,5 +428,76 @@ describe("ApiKeyDialog", () => {
       />,
     );
     expect(screen.getByLabelText(/api key/i, { selector: "input" }).getAttribute("type")).toBe("password");
+  });
+});
+
+describe("CredentialJsonDialog", () => {
+  test("submitting an empty (trimmed) value silently cancels - no RPC", async () => {
+    const fake = connectFakeClient();
+    const setJson = vi.fn();
+    fake.on("evener/auth/credentialJson/set", setJson);
+    const onCancel = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <CredentialJsonDialog
+        instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+        onCancel={onCancel}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/credential json/i, { selector: "textarea" }), "   ");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(setJson).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  test("a pasted JSON calls credentialJson/set with the instance name, refreshes, toasts, and calls onSuccess", async () => {
+    const fake = connectFakeClient();
+    const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
+    fake.on("evener/auth/credentialJson/set", (params) => {
+      expect(params).toEqual({ provider: "vertex", value: json });
+      return { provider: "vertex", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <CredentialJsonDialog
+          instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByLabelText(/credential json/i, { selector: "textarea" }));
+    await user.paste(json);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(screen.getAllByText("Credential JSON saved for vertex").length).toBeGreaterThan(0);
+  });
+
+  test("a rejected paste shows the server's message inline", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/credentialJson/set", () => {
+      throw new Error("not a Google credential JSON: unexpected end of JSON input");
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <CredentialJsonDialog
+          instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          onCancel={() => {}}
+          onSuccess={() => {}}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByLabelText(/credential json/i, { selector: "textarea" }));
+    await user.paste("{");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("not a Google credential JSON");
   });
 });

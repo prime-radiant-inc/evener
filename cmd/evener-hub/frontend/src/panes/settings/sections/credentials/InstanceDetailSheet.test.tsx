@@ -24,6 +24,7 @@ function noopHandlers() {
   return {
     onTestCredentials: vi.fn(),
     onSetApiKey: vi.fn(),
+    onSetCredentialJson: vi.fn(),
     onOAuthStart: vi.fn(),
     onEdit: vi.fn(),
     onClear: vi.fn(),
@@ -334,6 +335,46 @@ describe("action labels follow stored state", () => {
       }),
     );
     expect(screen.queryByRole("button", { name: /sign in|refresh oauth/i })).toBeNull();
+  });
+
+  test("'Set credential JSON' for a gcp-adc instance with nothing stored", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        hasStoredFile: false,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Set credential JSON" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set key" })).toBeNull();
+  });
+
+  test("'Replace credential JSON' and the stored-credential label once one is stored", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        hasStoredFile: true,
+        activeSource: "store",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Replace credential JSON" })).toBeTruthy();
+    // A regex, not an exact string: the layer's "↳ " prefix and the label
+    // render as sibling text nodes in the same <span> (same reason the
+    // sibling assertions above, at :119-120 and :134, use a regex too).
+    expect(screen.getByText(/Configured via stored credential JSON/)).toBeTruthy();
+  });
+
+  test("the credential JSON action calls onSetCredentialJson", async () => {
+    const { handlers } = renderSheet(
+      instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc", authModes: ["adc", "credentialJson"] }),
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "Set credential JSON" }));
+    expect(handlers.onSetCredentialJson).toHaveBeenCalled();
   });
 });
 
