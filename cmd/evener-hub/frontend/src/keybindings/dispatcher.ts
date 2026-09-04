@@ -33,16 +33,30 @@ import { GLOBAL_SCOPE, type KeybindingsRegistry, type KeybindingsState, keybindi
 export type ModalOpenPredicate = (event: KeyboardEvent) => boolean;
 export type EditableTargetPredicate = (target: EventTarget | null) => boolean;
 
-/** shell/rail/RailHost.tsx's isEditableTarget, plus the [contenteditable]
- * attribute check: isContentEditable alone already covers descendants of an
- * editable ancestor in a real browser, but jsdom does not implement the
- * property at all (it is undefined there), and the attribute form is what
- * tinykeys' own default ignore uses. Everything else doesn't count. */
+/** Walks up from the target; the FIRST element bearing a contenteditable
+ * attribute decides - editable unless its value is "false" (empty string,
+ * "true" and "plaintext-only" are all editable), which is how the
+ * contentEditable IDL property inherits in a real browser. A
+ * contenteditable="false" island inside an editor (a toolbar, an embedded
+ * control) is therefore NOT editable. */
+function hasEditableContentEditableAncestor(target: HTMLElement): boolean {
+  for (let element: HTMLElement | null = target; element !== null; element = element.parentElement) {
+    const value = element.getAttribute("contenteditable");
+    if (value !== null) return value.toLowerCase() !== "false";
+  }
+  return false;
+}
+
+/** shell/rail/RailHost.tsx's isEditableTarget, plus the contenteditable
+ * attribute walk above: isContentEditable alone already covers descendants
+ * of an editable ancestor in a real browser, but jsdom does not implement
+ * the property at all (it is undefined there), so the attribute walk stands
+ * in for it. Everything else doesn't count. */
 export const isEditableTarget: EditableTargetPredicate = (target) => {
   if (!(target instanceof HTMLElement)) return false;
   return (
     target.isContentEditable ||
-    target.closest("[contenteditable]") !== null ||
+    hasEditableContentEditableAncestor(target) ||
     target.tagName === "INPUT" ||
     target.tagName === "TEXTAREA" ||
     target.tagName === "SELECT"

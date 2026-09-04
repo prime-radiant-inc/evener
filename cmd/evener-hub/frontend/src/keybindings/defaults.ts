@@ -58,9 +58,11 @@ interface DefaultBindingInput extends BindingInput {
    * survey's stale-HELP_ROWS lesson). */
   title: string;
   /** Legacy "either or both of Meta/Ctrl" permissiveness: the AppShell
-   * ⌘K/⌘I/⌘J listener checked metaKey||ctrlKey with no regard for the OTHER
-   * modifier's state, so Meta+Ctrl+K fired. The complement of $mod is added
-   * as an OPTIONAL modifier on both this entry and its twin. */
+   * ⌘K/⌘I/⌘J, RailHost ⌘B and SelectionQuote ⌘' listeners all checked
+   * metaKey||ctrlKey with no regard for the OTHER modifier's state (their
+   * guards rejected only Alt/Shift), so Meta+Ctrl+<key> fired. The
+   * complement of $mod is added as an OPTIONAL modifier on both this entry
+   * and its twin. Alt/Shift strictness is unaffected. */
   legacyEitherMod?: boolean;
 }
 
@@ -85,6 +87,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     allowInEditable: false,
     allowInModal: true,
     ignoreIfDefaultPrevented: false,
+    legacyEitherMod: true,
   },
   {
     id: ACTIONS.composerFocus,
@@ -112,6 +115,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     chord: "$mod+[Shift]+'",
     allowInEditable: true,
     allowInModal: true,
+    legacyEitherMod: true,
   },
   {
     id: ACTIONS.settingsClose,

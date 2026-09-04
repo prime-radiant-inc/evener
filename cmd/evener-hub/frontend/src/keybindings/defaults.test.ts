@@ -163,6 +163,18 @@ describe("default bindings through the dispatcher", () => {
     expect(calls).toEqual([ACTIONS.paletteOpen]);
   });
 
+  test("Meta+Ctrl+B fires rail.toggle (legacy accepted either or both; only Alt/Shift stay strict)", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "b", code: "KeyB", metaKey: true, ctrlKey: true }));
+    expect(calls).toEqual([ACTIONS.railToggle]);
+  });
+
+  test("Meta+Ctrl+' fires selection.quote (legacy accepted either or both; only Alt stays strict)", () => {
+    setup();
+    window.dispatchEvent(keydown({ key: "'", code: "Quote", metaKey: true, ctrlKey: true }));
+    expect(calls).toEqual([ACTIONS.selectionQuote]);
+  });
+
   test("⌘⇧I fires composer.focus", () => {
     setup();
     window.dispatchEvent(keydown({ key: "i", code: "KeyI", metaKey: true, shiftKey: true }));
