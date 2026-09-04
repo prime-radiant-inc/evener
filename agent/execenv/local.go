@@ -495,6 +495,19 @@ func (e *LocalExecutionEnvironment) retainUnsandboxedScratch() {
 	}
 }
 
+// RetainSessionScratch releases the lease of every per-session scratch
+// directory this env provisioned — the one it owns from EnableSandbox and the
+// one an unsandboxed env mints lazily on its first command — keeping both
+// directories for the human handoff. It is the retain-side twin of
+// DisposeUnadoptedScratch: a session's own teardown reaches it through Cleanup,
+// and a child whose environment must never be Cleanup'd (its process table
+// belongs to its parent) calls it directly, so neither lease is held for the
+// rest of the daemon's uptime.
+func (e *LocalExecutionEnvironment) RetainSessionScratch() {
+	e.RetainSandboxScratch()
+	e.retainUnsandboxedScratch()
+}
+
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
 	if e.lookPath != nil {
 		return e.lookPath(name)
@@ -808,22 +821,18 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	}
 	e.sbMu.Unlock()
 
-	// Retain the per-session/per-lane scratch dir this env owns (provisioned by
-	// EnableSandbox) only AFTER the SIGTERM/grace/SIGKILL sequence below: tracked
-	// children may still be writing artifacts into it. RetainSandboxScratch releases
-	// the live lease and closes any cached file-tool fds, but deliberately leaves the
-	// absolute path available for the human handoff. Re-rooted clones never own one,
-	// so a clone's Cleanup never retains or removes the owner's tmp.
-	defer e.RetainSandboxScratch()
-
-	// Release the unsandboxed per-session scratch dir's lease too (if this env
-	// lazily provisioned one via unsandboxedScratchDir) — same retain-not-delete
-	// convention as RetainSandboxScratch above, so it stays inspectable but
-	// becomes eligible for sweepCrashedSessionScratch's 24h reclaim instead of
-	// holding its lease open for the rest of the daemon's uptime. Off/unsandboxed
-	// is the DEFAULT mode, so without this every ordinary session close would
-	// leak one held lease indefinitely.
-	defer e.retainUnsandboxedScratch()
+	// Retain both per-session scratch dirs this env provisioned — the one it owns
+	// from EnableSandbox and the one an unsandboxed env lazily minted via
+	// unsandboxedScratchDir — only AFTER the SIGTERM/grace/SIGKILL sequence below:
+	// tracked children may still be writing artifacts into them. The retain
+	// releases each live lease and closes any cached file-tool fds, but
+	// deliberately leaves the absolute paths available for the human handoff (each
+	// dir becomes eligible for sweepCrashedSessionScratch's 24h reclaim instead of
+	// holding its lease open for the rest of the daemon's uptime). Off/unsandboxed
+	// is the DEFAULT mode, so without the unsandboxed half every ordinary session
+	// close would leak one held lease indefinitely. Re-rooted clones never own the
+	// sandbox one, so a clone's Cleanup never retains or removes the owner's tmp.
+	defer e.RetainSessionScratch()
 
 	// Collect running process handles and send SIGTERM. Command execution stores a
 	// commandRuntime so scripted runtimes own their teardown too; a legacy marker

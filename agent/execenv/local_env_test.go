@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -319,19 +318,9 @@ func TestCleanupReleasesUnsandboxedScratchLease(t *testing.T) {
 
 	env.Cleanup()
 
-	// ".evener-session.lock" mirrors sandbox.SessionScratch's lease filename
-	// convention (agent/sandbox/session_scratch.go); there is no exported way
-	// to introspect lease state, so this checks the real OS-level lock instead.
-	leasePath := filepath.Join(scratch, ".evener-session.lock")
-	f, err := os.OpenFile(leasePath, os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatalf("open lease file: %v", err)
+	if scratchLeaseHeld(t, scratch) {
+		t.Fatal("lease still held after Cleanup (leak)")
 	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatalf("lease still held after Cleanup (leak): %v", err)
-	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
 
 // TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock pins the one

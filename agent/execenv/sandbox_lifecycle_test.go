@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -506,5 +508,70 @@ func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 	}
 	if got := env.SessionScratchDir(); got != "" {
 		t.Errorf("SessionScratchDir = %q after disposal, want none", got)
+	}
+}
+
+// scratchLeaseHeld reports whether a live owner still holds dir's scratch lease
+// by trying the real OS-level lock: there is no exported way to introspect
+// lease state. ".evener-session.lock" mirrors sandbox.SessionScratch's lease
+// filename convention (agent/sandbox/session_scratch.go).
+func scratchLeaseHeld(t *testing.T, dir string) bool {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(dir, ".evener-session.lock"), os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open scratch lease in %s: %v", dir, err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return true
+		}
+		t.Fatalf("probe scratch lease in %s: %v", dir, err)
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
+}
+
+// A session's teardown hands its scratch to the human: the leases go, the
+// directories stay. An env can hold two — the one EnableSandbox provisioned and
+// the one an unsandboxed spawn minted — and a teardown that runs neither
+// Cleanup (a child whose process table belongs to its parent) nor a disposal
+// has to release both together, or the one it misses is held for the rest of
+// the daemon's uptime.
+func TestRetainSessionScratchReleasesBothLeasesAndKeepsBothDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flock-based lease verification is unix-only")
+	}
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+
+	_ = env.commandEnvironment(nil)
+	unsandboxed := env.SessionScratchDir()
+	if unsandboxed == "" {
+		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to retain")
+	}
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	owned := env.SessionScratchDir()
+	if owned == "" || owned == unsandboxed {
+		t.Fatalf("owned scratch = %q, want one of its own beside the unsandboxed %q", owned, unsandboxed)
+	}
+	dirs := map[string]string{"unsandboxed": unsandboxed, "owned": owned}
+	for name, dir := range dirs {
+		if !scratchLeaseHeld(t, dir) {
+			t.Fatalf("%s scratch %s lease is not held before the retain", name, dir)
+		}
+	}
+
+	env.RetainSessionScratch()
+
+	for name, dir := range dirs {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("%s scratch %s did not survive the retain: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("%s scratch %s lease is still held after the retain", name, dir)
+		}
 	}
 }
