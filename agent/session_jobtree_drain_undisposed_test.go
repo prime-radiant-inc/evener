@@ -588,3 +588,92 @@ func TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy(t *testing.T) {
 		t.Fatalf("sandbox announcement advertised detached mode or omitted stop-and-report: %q", sandbox)
 	}
 }
+
+// startControlledBackgroundShell launches a background shell whose exit the
+// test controls: the returned release finishes the process, and cleanup
+// finishes it if the test never did.
+func startControlledBackgroundShell(t *testing.T, sess *Session) (jobID string, release func()) {
+	t.Helper()
+	se := newDelayedExitStreamingExecutor()
+	started := runShell(context.Background(), sess.jobManager, se, shellArgs{
+		Command:    "controlled build",
+		Mode:       shellModeBackground,
+		Background: true,
+	})
+	if started.JobID == "" || !started.RunningInBackground {
+		t.Fatalf("controlled shell start = %+v, want a live background job", started)
+	}
+	release = func() {
+		select {
+		case <-se.release:
+		default:
+			close(se.release)
+		}
+	}
+	t.Cleanup(func() {
+		release()
+		waitForShellDone(t, sess.jobManager, started.JobID)
+	})
+	return started.JobID, release
+}
+
+// TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement: the job
+// finishes after the drain has committed to the undisposed-job announcement
+// (its steering is queued) and before that turn drains the notification queue,
+// so the completion rides the announcement request. The model answers the
+// completion — that reply is the run's answer, not housekeeping, and the drain
+// must return it.
+func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
+	t.Parallel()
+	const answer = "FINAL-ANSWER: the build passed"
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse(answer) },
+	}}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+	}))
+	jobID, releaseShell := startControlledBackgroundShell(t, sess)
+
+	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var completedOnAnnounce sync.Once
+	process := func(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+		// The drain has queued the announcement and not yet opened the turn.
+		// Finish the job here so its notification is queued before
+		// acceptNotificationInput drains the queue: the gap production leaves
+		// between the pass's queue gate and the turn's own drain.
+		completedOnAnnounce.Do(func() {
+			releaseShell()
+			waitForCondition(t, 30*time.Second, "completion queued on the rail", func() bool {
+				return sess.peekNotifications() > 0
+			})
+		})
+		return sess.ProcessInputKind(ctx, input, images, kind)
+	}
+	done := make(chan drainResult, 1)
+	go func() {
+		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, process)
+		done <- drainResult{res, err}
+	}()
+	var d drainResult
+	select {
+	case d = <-done:
+	case <-ctx.Done():
+		t.Fatal("drain did not return")
+	}
+	if d.err != nil {
+		t.Fatalf("drain error: %v", d.err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("model calls = %d, want exactly 1: the announcement carrying the completion", len(reqs))
+	}
+	if !requestsContain(reqs, jobID, "cannot finish") || !requestsContain(reqs, jobID, "<job-notification") {
+		t.Fatalf("the one request must carry both the announcement and the completion, got: %v", reqs[0].Messages[1:])
+	}
+	if d.res != answer {
+		t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
+	}
+}
