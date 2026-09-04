@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ACTIONS } from "../../../keybindings/actions";
+import { parseChord, serializeChord } from "../../../keybindings/chord";
 import {
   CHARACTER_KEY_TRIGGER_BINDING_ID,
   DEFAULT_BINDINGS,
@@ -506,6 +507,58 @@ test("a plain Enter with nothing captured neither saves nor cancels", async () =
 
   expect(screen.getByText("Press new shortcut…")).toBeTruthy();
   expect(patchCallsOf(client)).toHaveLength(0);
+});
+
+// The spacebar's event.key is a literal " " - the tinykeys grammar's press
+// SEPARATOR - so capture maps it to the canonical, matchable name "Space"
+// (tinykeys' matcher also compares event.code, which IS "Space"). A literal
+// " " would not survive parseChord at all.
+test("capturing Space records the canonical name and the chord round-trips through the grammar", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: " " });
+  expect(within(box).getByText("Space")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Space" }] },
+  });
+  // The saved chord parses back to the same press (it would throw on " ").
+  expect(serializeChord(parseChord("Space"))).toBe("Space");
+  // The confirmed payload reconciled onto the registry with the same chord.
+  await waitFor(() => expect(within(rowFor("Focus the composer")).getByText("Space")).toBeTruthy());
+});
+
+// IME composition keydowns (isComposing, key "Process"/"Unidentified") are
+// not presses: they record nothing and an IME commit Enter must not save.
+test("IME composition events neither record nor save; a non-composing press still works", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  // Mid-composition keydowns: no chord recorded.
+  fireEvent.keyDown(box, { key: "Process", isComposing: true });
+  fireEvent.keyDown(box, { key: "a", isComposing: true });
+  expect(box.textContent).toContain("Press new shortcut…");
+  // A composition-commit Enter does NOT save...
+  fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(box, { key: "Unidentified" });
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(captureBox()).toBeTruthy();
+
+  // ...and a real press afterwards still records and saves.
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  expect(within(box).getByText("M")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+  });
 });
 
 test("a conflicting chord is rejected pre-flight: inline message, no hub write, capture stays open", async () => {

@@ -66,6 +66,18 @@ const CLASS = {
 // preview but never records a chord.
 const MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta"]);
 
+// Browser key values that collide with the tinykeys GRAMMAR need the
+// grammar's canonical, matchable spelling. The spacebar is the one case:
+// its event.key is a literal " ", which is the grammar's press SEPARATOR -
+// parseChord(" ") throws on the empty string and "Control+ " parses to an
+// empty key, so a saved " " binding is dead on the next reconcile.
+// tinykeys' matcher (matchKeybindingPress) accepts event.code as well as
+// event.key, and the spacebar's code is "Space", so "Space" both survives
+// the grammar and matches the key. Every other whitespace-adjacent key
+// already arrives grammar-safe (Tab -> "Tab", Enter -> "Enter"). Kept at
+// the capture seam on purpose: chord.ts's parser stays grammar-pure.
+const CAPTURE_KEY_NAMES: Record<string, string> = { " ": "Space" };
+
 /** The held modifiers of a key event, in the chord module's canonical order
  * (chord.ts's MODIFIER_ORDER), so a recorded chord serializes canonically. */
 function eventModifiers(event: ReactKeyboardEvent): string[] {
@@ -151,6 +163,13 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   }, [onCancel]);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    // IME composition keydowns are not presses: during composition events
+    // arrive with isComposing set and key "Process"/"Unidentified", and an
+    // IME COMMIT Enter would otherwise hit the save branch below. The same
+    // guard the window dispatcher runs (keybindings/dispatcher.ts); here it
+    // precedes preventDefault/stopPropagation, and the dispatcher's own
+    // isComposing guard covers the propagation we let through.
+    if (event.nativeEvent.isComposing || event.key === "Process" || event.key === "Unidentified") return;
     event.preventDefault();
     event.stopPropagation();
     if (savingRef.current) return;
@@ -183,10 +202,11 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
     // existing rows without changing what matches. The test is ASCII-only on
     // purpose: String.toUpperCase can CHANGE LENGTH on non-ASCII input
     // ("ß".toUpperCase() === "SS"), which would corrupt the chord.
+    const key = /^[a-z]$/.test(event.key) ? event.key.toUpperCase() : event.key;
     setCaptured({
       modifiers,
       optionalModifiers: [],
-      key: /^[a-z]$/.test(event.key) ? event.key.toUpperCase() : event.key,
+      key: CAPTURE_KEY_NAMES[key] ?? key,
     });
   }
 
