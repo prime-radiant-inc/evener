@@ -350,8 +350,9 @@ func nothingForACallerThatLeft(err error) (LaunchPluginResolution, error) {
 // before a later publish reclaims it: orders of magnitude longer than the copy
 // it names, so a publish in flight is never disturbed. conflictSuffix names the
 // single sibling slot a destination is moved to when it holds content this
-// build did not publish; it is outside the staging namespace, so the sweep
-// never collects it.
+// build did not publish; it is outside the staging namespace, so the staging
+// sweep never collects it, but the same publish sweeps it too — see
+// reclaimableBundledConflicts.
 const (
 	stagingPrefix    = ".stage-"
 	stagingMarker    = ".evener-staging"
@@ -359,8 +360,14 @@ const (
 	conflictSuffix   = ".conflict"
 	// previousSuffix names where the slot's previous occupant waits while the
 	// destination is moved in: replaced only once there is something to
-	// replace it with.
+	// replace it with, or reclaimed by the sweep once it is old enough that no
+	// concurrent swap could still be using it.
 	previousSuffix = ".previous"
+	// bundledDigestLen is the fixed length of the hex digest digestFS
+	// produces. A store entry named <name>-<digest> can be split back into the
+	// plugin name and the digest it was published under because the digest is
+	// always this long.
+	bundledDigestLen = 16
 	// bundledPublishLockWait is how long readying the store waits for the
 	// bundled cache's lock, the same wait every other mutation takes on the
 	// lock it needs. Publishing is what the launch came for, so it waits like
@@ -600,7 +607,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 		// something to sweep, and the scan that answers that needs no lock.
 		// Taking one on every launch would park a routine one behind whatever
 		// publisher is filling its staging.
-		if publishing && len(m.abandonedStaging(store)) > 0 {
+		if publishing && (len(m.abandonedStaging(store)) > 0 || len(m.reclaimableBundledConflicts(store)) > 0) {
 			// Housekeeping for a launch that is otherwise done: it waits the
 			// housekeeping wait, not the wait a publish is entitled to — the
 			// wait acquireLock is given here is the whole of it. A lock it
@@ -608,7 +615,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 			// making this one queue behind whatever holds it. Whether the
 			// orphans are really abandoned is decided again under the lock.
 			if release, lockErr := m.acquireBundledLock(ctx, bundledSweepLockWait); lockErr == nil {
-				m.reclaimAbandonedStaging(store)
+				m.reclaimBundledStoreDebt(store)
 				release()
 			}
 			// A lock failure the sweep is entitled to ignore is also how the
@@ -636,7 +643,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// publisher that lost a rename and died only ever meets callers taking the
 	// published path.
 	if publishing {
-		m.reclaimAbandonedStaging(store)
+		m.reclaimBundledStoreDebt(store)
 	}
 	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
@@ -831,14 +838,86 @@ func (m *Manager) abandonedStaging(dir string) []string {
 	return abandoned
 }
 
-// reclaimAbandonedStaging removes them, reading the store again so the decision
+// reclaimableBundledConflicts names the conflict-slot entries in dir this
+// publish is safe to remove: any <name>-<digest>.conflict or
+// <name>-<digest>.conflict.previous entry whose digest no longer names a
+// bundled plugin this binary ships — a version bump changed or dropped it, so
+// no set-aside or restore this binary performs will ever touch that name
+// again, at any age — and a .conflict.previous entry for a digest this binary
+// still ships once it is old enough that no concurrent swap could still be
+// parking its previous occupant there, the same age abandonedStaging holds a
+// staging directory to and for the same reason. A .conflict for the digest
+// this binary currently ships is never included: it is the single preserved
+// copy setAsideBundledConflict promises to keep.
+func (m *Manager) reclaimableBundledConflicts(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var reclaimable []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		entryName := entry.Name()
+		previous := strings.HasSuffix(entryName, conflictSuffix+previousSuffix)
+		base := strings.TrimSuffix(entryName, previousSuffix)
+		if !strings.HasSuffix(base, conflictSuffix) {
+			continue
+		}
+		name, digest, ok := splitBundledDigestName(strings.TrimSuffix(base, conflictSuffix))
+		if !ok {
+			continue
+		}
+		current, err := bundledPluginDigest(name)
+		if err == nil && current == digest {
+			if !previous {
+				continue // the preserved copy for the digest this binary ships
+			}
+			info, err := entry.Info()
+			if err != nil || m.now().Sub(info.ModTime()) < abandonedStaging {
+				continue // may belong to a swap another process has in flight
+			}
+		}
+		reclaimable = append(reclaimable, filepath.Join(dir, entryName))
+	}
+	return reclaimable
+}
+
+// splitBundledDigestName splits a store entry's base name — with any
+// .conflict or .conflict.previous suffix already trimmed — into the bundled
+// plugin name and the digest it was published under, using the digest's fixed
+// length to find the boundary. It reports ok=false for a base too short to
+// hold a name, a separator and a digest, or whose trailing bundledDigestLen
+// bytes are not lowercase hex, since digestFS never produces anything else.
+func splitBundledDigestName(base string) (name, digest string, ok bool) {
+	if len(base) < bundledDigestLen+2 || base[len(base)-bundledDigestLen-1] != '-' {
+		return "", "", false
+	}
+	digest = base[len(base)-bundledDigestLen:]
+	for _, r := range digest {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return "", "", false
+		}
+	}
+	return base[:len(base)-bundledDigestLen-1], digest, true
+}
+
+// reclaimBundledStoreDebt removes the abandoned staging directories and
+// reclaimable conflict slots in dir, reading the store again so the decision
 // it acts on is the one it made under the lock its caller holds: that lock is
 // what tells staging nobody will come back for from staging a slow publisher
-// is still filling.
-func (m *Manager) reclaimAbandonedStaging(dir string) {
+// is still filling, and what tells a conflict.previous nobody is mid-swap on
+// it.
+func (m *Manager) reclaimBundledStoreDebt(dir string) {
 	for _, staging := range m.abandonedStaging(dir) {
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
 		_ = os.RemoveAll(staging)
+	}
+	for _, conflict := range m.reclaimableBundledConflicts(dir) {
+		// Best effort, for the same reason: a concurrent publisher may already
+		// be reclaiming the same stale or parked conflict slot.
+		_ = os.RemoveAll(conflict)
 	}
 }
 
@@ -949,7 +1028,7 @@ func digestFS(fsys fs.FS) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(sum.Sum(nil))[:16], nil
+	return hex.EncodeToString(sum.Sum(nil))[:bundledDigestLen], nil
 }
 
 func mustSubFS(fsys fs.FS, dir string) fs.FS {
