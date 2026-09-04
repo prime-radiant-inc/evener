@@ -489,6 +489,13 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
+	// envCleanupObserved observes every environment Close() runs Cleanup on,
+	// just before it does, so a test can assert the process-table cleanup ran
+	// exactly once and on the environment the session currently holds — never
+	// on one it parked (worktreeRestoreEnv), whose scratch is retained without
+	// it. Nil in production.
+	envCleanupObserved func(execenv.ExecutionEnvironment)
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta

@@ -299,7 +299,18 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
+			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
+				observe(s.currentEnv())
+			}
 			s.currentEnv().Cleanup()
+			// A session closing while entered in a worktree still holds the
+			// environment it parked at enter. A child spawned before the enter
+			// shares that object and may have minted a scratch there — one the
+			// child's teardown skips (not its own) and the current clone's
+			// Cleanup never reaches. The parked environment shares the current
+			// clone's process table, which was just reaped, so only its scratch
+			// is left: retained, never a second Cleanup.
+			s.retainParkedWorktreeEnvironmentScratch()
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -355,6 +366,21 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		close(s.events)
 		s.eventsMu.Unlock()
 	})
+}
+
+// retainParkedWorktreeEnvironmentScratch releases the leases of every scratch
+// the environment parked by a worktree enter (worktreeRestoreEnv) still owns,
+// keeping the directories for the handoff. Only close calls it, after the
+// current environment's Cleanup: the parked environment shares that process
+// table, so its processes are already reaped and running Cleanup on it would
+// reap the table a second time.
+func (s *Session) retainParkedWorktreeEnvironmentScratch() {
+	s.mu.Lock()
+	parked := s.worktreeRestoreEnv
+	s.mu.Unlock()
+	if parked != nil {
+		parked.RetainSessionScratch()
+	}
 }
 
 // discardRestoredCandidate tears down a restore candidate nothing ever adopted.

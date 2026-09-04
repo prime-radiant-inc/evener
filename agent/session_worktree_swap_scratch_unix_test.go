@@ -170,3 +170,74 @@ func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *t
 		}
 	}
 }
+
+// A child spawned before its parent enters a worktree shares the environment
+// the enter parks (worktreeRestoreEnv) and can mint a scratch there. If the
+// parent closes while still entered, the child's teardown skips that
+// environment (it is not the child's) and the parent's Cleanup runs on the
+// current clone only, so the parked environment's scratch has to be retained
+// at the parent's close — without a second process-table cleanup, since the
+// parked environment shares the table the current clone's Cleanup just reaped.
+func TestParentCloseWhileEnteredRetainsTheParkedEnvironmentScratch(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	parent := r.s
+	launch := currentLocalEnv(t, parent)
+	// A child with no working_dir shares the parent's environment object.
+	child, err := NewSession(parent.client, parent.currentProfile(), launch, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the parent's environment: %v", err)
+	}
+	parent.subagents.track(&subagent{id: child.id, sess: child, done: make(chan struct{})})
+	var cleaned []execenv.ExecutionEnvironment
+	parent.cfg.testOnly.envCleanupObserved = func(env execenv.ExecutionEnvironment) { cleaned = append(cleaned, env) }
+
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entered := currentLocalEnv(t, parent)
+	if entered == launch {
+		t.Fatal("the enter did not swap the parent onto a lane clone")
+	}
+	// The child's command mints a scratch on the parked environment; the
+	// parent's own command mints the current clone's.
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("child command on the parked environment: %v", err)
+	}
+	parked := launch.SessionScratchDir()
+	if parked == "" {
+		t.Fatal("the child's command minted no scratch on the parked environment")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parked) })
+	if _, err := entered.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("parent command on the lane clone: %v", err)
+	}
+	current := entered.SessionScratchDir()
+	if current == "" || current == parked {
+		t.Fatalf("lane clone scratch = %q, want one of its own beside the parked %q", current, parked)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(current) })
+	if !scratchLeaseHeld(t, parked) || !scratchLeaseHeld(t, current) {
+		t.Fatal("both scratch leases must be held before the parent closes")
+	}
+
+	parent.Close()
+
+	if got := child.State(); got != SessionClosed {
+		t.Errorf("shared-env child state after parent close = %q, want %q", got, SessionClosed)
+	}
+	for name, dir := range map[string]string{"parked": parked, "current": current} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("parent close removed the %s environment's scratch %s, want it retained for the handoff: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s environment's scratch %s lease is still held after the parent closed", name, dir)
+		}
+	}
+	if len(cleaned) != 1 || cleaned[0] != execenv.ExecutionEnvironment(entered) {
+		t.Errorf("Cleanup ran on %d environment(s) %v, want exactly once on the current clone %p", len(cleaned), cleaned, entered)
+	}
+}
