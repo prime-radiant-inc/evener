@@ -138,6 +138,24 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	incarnation := previous.Incarnation
 	next, extends := itemSnapshotStateAdvance(previous, candidates, response.OlderCursor == "")
 	rotated := !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends
+	if !rotated {
+		if previous.NativeCursor == "" || response.OlderCursor == "" {
+			rotated = previous.NativeCursor != response.OlderCursor
+		} else {
+			if len(candidates) == 0 {
+				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+			}
+			previousNativeCursor, err := appitempaging.RebaseCursor(previous.NativeCursor, candidates[0].Position)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+			responseNativeCursor, err := appitempaging.RebaseCursor(response.OlderCursor, candidates[0].Position)
+			if err != nil {
+				return ItemCandidateResult{}, err
+			}
+			rotated = previousNativeCursor != responseNativeCursor
+		}
+	}
 	if rotated {
 		incarnation = fmt.Sprintf("local-daemon-incarnation-%d", localDaemonItemIncarnationSequence.Add(1))
 		next = itemSnapshotStateForCandidates(resolved.pagingRef, incarnation, daemonIdentity, candidates, response.OlderCursor == "")

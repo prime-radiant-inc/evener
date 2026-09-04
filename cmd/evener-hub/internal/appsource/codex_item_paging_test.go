@@ -231,8 +231,17 @@ func TestCodexItemPagingGeneration(t *testing.T) {
 func TestLocalItemPagingPreservesCursorAcrossSlidingNewestWindow(t *testing.T) {
 	source := newLocalItemReadConversionSource(t, "sliding-window")
 	params := appwire.ThreadReadParams{Ref: "local:sliding-window", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: params.Ref, Incarnation: "native-sliding-window", ProjectionVersion: 1}
+	firstNativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 1})
+	if err != nil {
+		t.Fatalf("encode first native cursor: %v", err)
+	}
+	shiftedNativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 2})
+	if err != nil {
+		t.Fatalf("encode shifted native cursor: %v", err)
+	}
 
-	first, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 40, "native-older"))
+	first, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 40, firstNativeCursor))
 	if err != nil {
 		t.Fatalf("first item response: %v", err)
 	}
@@ -240,7 +249,7 @@ func TestLocalItemPagingPreservesCursorAcrossSlidingNewestWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode retained cursor: %v", err)
 	}
-	second, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(2, 41, "native-older"))
+	second, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(2, 41, shiftedNativeCursor))
 	if err != nil {
 		t.Fatalf("sliding item response: %v", err)
 	}
@@ -249,6 +258,10 @@ func TestLocalItemPagingPreservesCursorAcrossSlidingNewestWindow(t *testing.T) {
 	}
 	if _, err := appitempaging.DecodeCursor(oldCursor, second.Identity); err != nil {
 		t.Fatalf("cursor from overlapping retained window became stale after append: %v", err)
+	}
+	state, ok := source.itemSnapshots.get(params.Ref)
+	if !ok || state.NativeCursor != firstNativeCursor {
+		t.Fatalf("retained native cursor = %q, want original same-generation token", state.NativeCursor)
 	}
 }
 

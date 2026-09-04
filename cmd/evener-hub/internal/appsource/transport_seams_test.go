@@ -540,12 +540,19 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 			t.Fatalf("materialization request %d = %+v, want authenticated legacy turn request without browser cursor", i, request)
 		}
 	}
+	nativeIdentity := appitempaging.CursorIdentity{
+		ThreadRef: "local:thread", Incarnation: "daemon-native", ProjectionVersion: 1,
+	}
+	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: 1})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
 	partialResponse := appwire.ThreadReadResponse{
 		Thread: appwire.Thread{ID: "thread", Evener: appwire.EvenerThread{Ref: "local:thread"}, Turns: []appwire.Turn{{
 			ID: "turn-1", Items: items[1:], ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
 		}}},
 		PageUnit:    appwire.TranscriptPageUnitItem,
-		OlderCursor: "daemon-native-cursor",
+		OlderCursor: nativeCursor,
 	}
 	continuitySource := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{{Entry: entry}}
@@ -567,6 +574,10 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	suffixResponse.Thread.Turns = []appwire.Turn{{
 		ID: "turn-1", Items: items[21:], ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: true,
 	}}
+	suffixResponse.OlderCursor, err = appitempaging.EncodeCursor(nativeIdentity, *items[21].Position)
+	if err != nil {
+		t.Fatalf("encode shifted native cursor: %v", err)
+	}
 	suffix, err := continuitySource.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 20,
 	}, suffixResponse)
@@ -578,6 +589,20 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}
 	if suffix.Identity != bounded.Identity {
 		t.Fatalf("bounded suffix identity = %+v, want unchanged %+v", suffix.Identity, bounded.Identity)
+	}
+	fullResponse := partialResponse
+	fullResponse.Thread.Turns = []appwire.Turn{{
+		ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment,
+	}}
+	fullResponse.OlderCursor = ""
+	full, err := continuitySource.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
+		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+	}, fullResponse)
+	if err != nil {
+		t.Fatalf("observe full materialization: %v", err)
+	}
+	if full.Identity == bounded.Identity {
+		t.Fatalf("bounded-to-full identity = %+v, want rotation from %+v", full.Identity, bounded.Identity)
 	}
 	continued, err := continuitySource.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: oldCursor,
@@ -593,12 +618,6 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}
 	if partial.Exhausted || partial.Candidates.OlderCursor != "" || len(partial.Candidates.Candidates) != 40 {
 		t.Fatalf("converted partial atomic read = %+v, want 40 source-owned non-exhausted candidates", partial)
-	}
-	nativeCursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
-		ThreadRef: "local:thread", Incarnation: "daemon-native", ProjectionVersion: 1,
-	}, appwire.ThreadItemPosition{Entry: 0, Item: 0})
-	if err != nil {
-		t.Fatalf("encode native cursor: %v", err)
 	}
 	validPartialResponse := partialResponse
 	validPartialResponse.OlderCursor = nativeCursor
@@ -739,7 +758,7 @@ func TestLocalDaemonNativeItemCursorBridgeRebasesBoundary(t *testing.T) {
 	}
 }
 
-func TestLocalDaemonNativeCursorFenceStalesAfterDestructiveReset(t *testing.T) {
+func TestLocalDaemonNativeCursorFenceRotatesAndRecoversAfterDestructiveReset(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "native-daemon", SourceID: "local"})
 	nativeIdentityOne := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-one", ProjectionVersion: 1}
 	nativeIdentityTwo := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-two", ProjectionVersion: 1}
@@ -760,7 +779,7 @@ func TestLocalDaemonNativeCursorFenceStalesAfterDestructiveReset(t *testing.T) {
 		}
 		if _, err := appitempaging.DecodeCursor(params.Cursor, nativeIdentityTwo); err == nil {
 			sawSecond = true
-			response := positionedItemReadResponse(0, 0, "")
+			response := positionedItemReadResponse(0, 4, "")
 			response.Thread.Turns[0].ItemsView = appwire.TurnItemsViewFragment
 			return appwire.ThreadTurnsListResponse{Data: response.Thread.Turns, PageUnit: appwire.TranscriptPageUnitItem}, nil
 		}
@@ -781,8 +800,16 @@ func TestLocalDaemonNativeCursorFenceStalesAfterDestructiveReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode browser cursor: %v", err)
 	}
-	if _, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5}, positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14"}, []uint64{10, 11, 12, 13, 14}, nativeCursorTwo)); err != nil {
+	fresh, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5}, positionedItemReadResponseFor([]string{"item-10", "item-11", "item-12", "item-13", "item-14"}, []uint64{10, 11, 12, 13, 14}, nativeCursorTwo))
+	if err != nil {
 		t.Fatalf("observe destructive bounded response: %v", err)
+	}
+	if fresh.Identity == first.Identity {
+		t.Fatalf("destructive bounded response identity = %+v, want rotation from %+v", fresh.Identity, first.Identity)
+	}
+	freshCursor, err := appitempaging.EncodeCursor(fresh.Identity, fresh.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatalf("encode fresh browser cursor: %v", err)
 	}
 	_, err = source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5, Cursor: oldCursor})
 	var wireErr appwire.WireError
@@ -799,8 +826,18 @@ func TestLocalDaemonNativeCursorFenceStalesAfterDestructiveReset(t *testing.T) {
 	if !stale {
 		t.Fatalf("destructive native continuation error data = %#v, want stale cursor", wireErr.Data)
 	}
-	if !sawFirst || sawSecond {
-		t.Fatalf("native identity observations = first %v/second %v, want old native cursor only", sawFirst, sawSecond)
+	if sawFirst || sawSecond {
+		t.Fatalf("stale old hub cursor reached native daemon: first %v/second %v", sawFirst, sawSecond)
+	}
+	older, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 5, Cursor: freshCursor})
+	if err != nil {
+		t.Fatalf("fresh browser cursor recovery: %v", err)
+	}
+	if !sawSecond || sawFirst {
+		t.Fatalf("fresh native identity observations = first %v/second %v, want second only", sawFirst, sawSecond)
+	}
+	if len(older.Candidates.Candidates) != 5 || older.Candidates.Candidates[0].Position.Entry != 0 || older.Candidates.Candidates[4].Position.Entry != 4 {
+		t.Fatalf("fresh recovery candidates = %+v, want exact positions 0..4", older.Candidates.Candidates)
 	}
 }
 

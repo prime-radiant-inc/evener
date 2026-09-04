@@ -488,6 +488,99 @@ func TestHubRPCRealLocalBoundedItemReadContinuesNativeCursor(t *testing.T) {
 	}
 }
 
+func TestHubRPCRealLocalFreshReadRecoversHiddenNativeReset(t *testing.T) {
+	const sessionID = "hidden-native-reset"
+	const ref = "local:" + sessionID
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "paging-token"})
+	recordGeneration := func(prefix string) {
+		for i := range 45 {
+			text := fmt.Sprintf("shared-suffix-%02d", i)
+			if i < 5 {
+				text = fmt.Sprintf("%s-%02d", prefix, i)
+			}
+			daemon.RecordAppEvent(events.SessionEvent{
+				Kind:      events.EventUserInput,
+				SessionID: sessionID,
+				Data:      events.UserInputData{Text: text},
+			})
+		}
+	}
+	daemon.SetAppIdentity("local", sessionID)
+	recordGeneration("generation-one")
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		Protocol: appwire.ProtocolVersion, Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: ref, InstanceID: "instance-1", HubToken: "paging-token",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	read := func(replace bool) appwire.ThreadReadResponse {
+		response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{
+			Ref: ref, IncludeTurns: true, Subscribe: true, ReplaceSubscription: replace,
+			PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
+		})
+		if err != nil {
+			t.Fatalf("bounded read replace=%v: %v", replace, err)
+		}
+		items := flattenTestItems(response.Thread.Turns)
+		if len(items) != 40 || response.OlderCursor == "" {
+			t.Fatalf("bounded read replace=%v item count/cursor = %d/%q, want 40/nonempty", replace, len(items), response.OlderCursor)
+		}
+		return response
+	}
+	first := read(false)
+
+	// Resetting the real daemon rotates its native cursor identity, while the
+	// newest 40 visible items remain byte-identical to the first generation.
+	daemon.SetAppIdentity("local", sessionID)
+	recordGeneration("generation-two")
+	fresh := read(true)
+
+	_, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: first.OlderCursor,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("pre-reset cursor error = %T %v, want typed stale cursor", err, err)
+	}
+	stale := false
+	switch data := wireErr.Data.(type) {
+	case appwire.ErrorData:
+		stale = data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		stale = data["evenerErrorInfo"] == string(appwire.ErrorTranscriptItemCursorStale)
+	}
+	if !stale {
+		t.Fatalf("pre-reset cursor error data = %#v, want stale cursor", wireErr.Data)
+	}
+
+	older, err := client.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+		Ref: ref, PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: fresh.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("fresh replacement cursor unexpectedly stale; want generation-two prefix: %v", err)
+	}
+	items := flattenTestItems(older.Data)
+	if len(items) != 5 {
+		t.Fatalf("fresh continuation item count = %d, want 5", len(items))
+	}
+	for i, item := range items {
+		want := fmt.Sprintf("generation-two-%02d", i)
+		if item.Text != want {
+			t.Fatalf("fresh continuation item %d = %q, want %q", i, item.Text, want)
+		}
+	}
+}
+
 func TestHubRPCRealLocalBoundedItemReadRebasesByteFitBoundary(t *testing.T) {
 	const sessionID = "bounded-byte-fit-cursor"
 	const ref = "local:" + sessionID
