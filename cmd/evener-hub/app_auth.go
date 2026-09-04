@@ -410,7 +410,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	// reject as JSON at first request; point at the flow that stores what
 	// this scheme actually reads.
 	if c.instanceUsesGCPADC(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set", name))
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
 	}
 	if err := c.setCredential(name, params.Value); err != nil {
 		return appwire.AuthStatusResponse{}, err
@@ -651,7 +651,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
 	if !c.instanceUsesGCPADC(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s does not authenticate with Google application-default credentials; use evener/auth/apiKey/set", name))
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; use evener/auth/apiKey/set")
 	}
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
