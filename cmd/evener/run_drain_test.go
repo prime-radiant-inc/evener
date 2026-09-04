@@ -183,14 +183,15 @@ func installHeldRunShell(t *testing.T, executor *heldShellExecutor) {
 // A drain that starts inside that window sees a job that is merely running. It
 // parks, arms the undisposed-background-job ladder on the pass that found it,
 // and on the next recheck tick announces to the model instead of delivering the
-// completion — and an announcement turn's reply is housekeeping the drain
-// discards, so the drain returns "" and the run prints its pre-drain answer.
+// completion — a different turn from the one these scripts answer.
 //
-// The terminal record alone does not close that window: it is committed before
-// armFinalizedJob runs, and the job stays in the job manager's running map
-// through the whole of it, so the drain still sees a live background shell.
-// ManagedJobsFinalizedForTest is the other half — the running entry is deleted
-// only after the durable owner notification has been appended.
+// The terminal record alone would keep the drain from announcing — a job with
+// its terminal record written is no longer a background candidate even while
+// it remains in the running map — but the barrier still waits for the running
+// entry to go, so the drain starts with the completion on its way to the queue
+// rather than mid-finalization. ManagedJobsFinalizedForTest is that half: the
+// running entry is deleted only after the durable owner notification has been
+// appended.
 func awaitDurableJobCompletion(t *testing.T, sess *agent.Session) {
 	t.Helper()
 	// TRIPWIRE: finalization is one goroutine hop and one store append past a
