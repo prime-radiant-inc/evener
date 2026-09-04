@@ -26,15 +26,16 @@ import (
 // written with no OS-level lock, so an in-process mutex is the only thing
 // preventing a lost update between concurrent Create/Edit/Remove/SetDefault
 // calls. plugins.Manager is different: every mutating call (and Browse's
-// lazy-fetch) takes the manager's own flock on a single per-root lock file
-// (m.lockPath()) for the whole read-modify-atomic-write sequence, and flock
-// serializes by open-file-description rather than by process, so it
-// correctly serializes concurrent in-process goroutines too — Manager itself
-// holds no other mutable state a controller-level mutex could protect. A
-// controller mutex here would add nothing but contention: it would be held
-// across the manager's own blocking (up to 30s) lock acquisition, serializing
-// otherwise-independent mutations (e.g. two unrelated marketplaces) behind
-// whichever one is slowest.
+// lazy-fetch) takes one of the manager's own flocks for the whole
+// read-modify-atomic-write sequence — the store lock for the registry, the
+// marketplaces and the plugin cache, and the bundled cache's own lock for
+// readying <Root>/bundled — and flock serializes by open-file-description
+// rather than by process, so it correctly serializes concurrent in-process
+// goroutines too — Manager itself holds no other mutable state a
+// controller-level mutex could protect. A controller mutex here would add
+// nothing but contention: it would be held across the manager's own blocking
+// (up to 30s) lock acquisition, serializing otherwise-independent mutations
+// (e.g. two unrelated marketplaces) behind whichever one is slowest.
 type hubPluginsController struct {
 	mgr              *plugins.Manager
 	launchConfigRoot string

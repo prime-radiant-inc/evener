@@ -191,7 +191,7 @@ func TestPlugins_Marketplace_BrowseUnknown_Errors(t *testing.T) {
 
 // TestPlugins_ConcurrentAddMarketplace_NoLostUpdate exercises the claim
 // behind hubPluginsController holding no mutex of its own (see app_plugins.go's
-// doc comment): internal/plugins.Manager's single per-root flock — not an
+// doc comment): internal/plugins.Manager's own per-root store flock — not an
 // in-process mutex — is what serializes concurrent mutations, in-process or
 // not. Two goroutines register distinct marketplaces on the same controller
 // concurrently; both must succeed and both must land in the registry. A lost
