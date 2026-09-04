@@ -168,27 +168,8 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	se := newDelayedExitStreamingExecutor()
-	started := runShell(context.Background(), sess.jobManager, se, shellArgs{
-		Command:    "controlled stop",
-		Mode:       shellModeBackground,
-		Background: true,
-	})
-	if started.JobID == "" || !started.RunningInBackground {
-		t.Fatalf("controlled shell start = %+v, want a live background job", started)
-	}
-	jobID = started.JobID
-	releaseShell := func() {
-		select {
-		case <-se.release:
-		default:
-			close(se.release)
-		}
-	}
-	t.Cleanup(func() {
-		releaseShell()
-		waitForShellDone(t, sess.jobManager, jobID)
-	})
+	var releaseShell func()
+	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled stop")
 	if ids, sole, err := sess.undisposedBackgroundDrainJobs(); err != nil || !sole || len(ids) != 1 || ids[0] != jobID {
 		t.Fatalf("controlled shell drain candidate = (%v, %v, %v), want (%v, true, nil)", ids, sole, err, jobID)
 	}
@@ -242,8 +223,9 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	if finalWarningSeen.Load() {
 		t.Fatal("drain escalated to a final warning while stopStatus was pending")
 	}
-	// The stop's cancelled notification is the only post-stop model turn. What
-	// must NEVER happen is the announcement turn's reply becoming the answer.
+	// The stop's cancelled notification is the only post-stop model turn. A
+	// pure announcement reply is never the answer; only a reply to a request
+	// that also carried a notification is, and no announcement here carries one.
 	if d.res != "all wrapped up" && d.res != "" {
 		t.Fatalf("drain result = %q: an announcement-turn reply leaked into the run's answer", d.res)
 	}
@@ -592,11 +574,11 @@ func TestUndisposedBackgroundJobsFinalWarningUsesAvailableRemedy(t *testing.T) {
 // startControlledBackgroundShell launches a background shell whose exit the
 // test controls: the returned release finishes the process, and cleanup
 // finishes it if the test never did.
-func startControlledBackgroundShell(t *testing.T, sess *Session) (jobID string, release func()) {
+func startControlledBackgroundShell(t *testing.T, sess *Session, command string) (jobID string, release func()) {
 	t.Helper()
 	se := newDelayedExitStreamingExecutor()
 	started := runShell(context.Background(), sess.jobManager, se, shellArgs{
-		Command:    "controlled build",
+		Command:    command,
 		Mode:       shellModeBackground,
 		Background: true,
 	})
@@ -633,7 +615,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	jobID, releaseShell := startControlledBackgroundShell(t, sess)
+	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -646,11 +628,20 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 		// between the pass's queue gate and the turn's own drain.
 		completedOnAnnounce.Do(func() {
 			releaseShell()
+			// This runs on the drain goroutine, so a miss is reported with
+			// t.Error and a return, never t.Fatal; the result assertions on the
+			// test goroutine then fail the test.
+			//
 			// TRIPWIRE: the enqueue is one goroutine hop and a few store appends
 			// away; 30s only fires if finalization never lands.
-			waitForCondition(t, 30*time.Second, "completion queued on the rail", func() bool {
-				return sess.peekNotifications() > 0
-			})
+			deadline := time.Now().Add(30 * time.Second)
+			for sess.peekNotifications() == 0 {
+				if time.Now().After(deadline) {
+					t.Error("completion never queued on the rail before the announcement turn opened")
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
 		})
 		return sess.ProcessInputKind(ctx, input, images, kind)
 	}
@@ -695,7 +686,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 	}))
-	jobID, releaseShell := startControlledBackgroundShell(t, sess)
+	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
 	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
