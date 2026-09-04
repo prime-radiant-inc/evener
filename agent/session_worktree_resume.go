@@ -48,8 +48,10 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// provisioned (a launcher's own command may have minted it before the
 	// restore) has to follow the session onto whichever clone it lands on, or
 	// the session's own close reaches only the clone and local's lease is held
-	// for the rest of the daemon's uptime. worktreeRestoreEnv is not the
-	// session's environment, so it adopts nothing.
+	// for the rest of the daemon's uptime. This is the one swap that cannot go
+	// through swapEnvAndRefresh (see the doc comment above), which makes the
+	// same move for every later enter and exit. worktreeRestoreEnv is not the
+	// session's environment, so it adopts nothing until an exit swaps onto it.
 	reroot := func(dir string) *execenv.LocalExecutionEnvironment {
 		next := local.WithWorkingDirectory(dir)
 		next.AdoptSessionScratch(local)

@@ -12,8 +12,15 @@ import "primeradiant.com/evener/agent/execenv"
 // env (never execenv.NewLocalExecutionEnvironment), so PID tracking and the
 // afero filesystem backing survive the swap — see local.go's
 // WithWorkingDirectory doc comment. That invariant is the caller's
-// responsibility (enterWorktree/exitWorktree/switch/remove); this helper only
-// installs whatever it is given.
+// responsibility (enterWorktree/exitWorktree/switch/remove); this helper
+// installs whatever it is given, and moves the session's scratch onto it.
+//
+// The scratch follows the session across every swap: the environment the
+// session currently holds is the one its close releases, and a clone owns
+// nothing of its original, so without the move an enter parks the lease on
+// an environment a later exit discards, and it is held for the rest of the
+// daemon's uptime. (resumeWorktreeReentry makes the same move for the swap it
+// performs before this helper can run.)
 func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
 	// pre-warm next's git-root cache. The git snapshot forks several `git`
@@ -48,6 +55,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// hits the cache instead of forking.
 	s.mu.Lock()
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
+	if current, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		next.AdoptSessionScratch(current)
+	}
 	s.env = next
 	s.envInfo = ei
 	s.rebuildToolDefsCache()
