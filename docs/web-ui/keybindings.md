@@ -312,7 +312,14 @@ Triggers:
   prefs store and the overrides store: an applied override (or unbind)
   owns the action's whole chord set, so `?` never reappears on an
   overridden `cheatsheet.toggle` — the override is the user's own
-  replacement for both triggers.
+  replacement for both triggers. The register path is also
+  overlap-checked: a chord claimed while the pref was off (say
+  `composer.focus` on Shift+?) conflicts with nothing at bind time, so
+  when the pref flips back on the reconcile must NOT register `?` over it
+  — it skips the registration and surfaces a `character-key-conflict`
+  warning naming the holding action in the Settings section's warnings
+  list, and removing the overlap registers `?` on the next reconcile
+  pass.
 - **Close**: Escape (the OverlayPanel's own handler claims it first
   whenever focus is inside the dialog; the scope-gated `cheatsheet.close`
   binding is the window-level backstop) or ⌘/ again.
@@ -552,7 +559,11 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   hub round trip that can outlive the box: a click-away cancel mid-save
   bumps a per-capture generation token, and the stale save's resolution
   applies only while its generation is current — it cannot close or
-  repaint a capture the user reopened before it landed.
+  repaint a capture the user reopened before it landed. Editability loss
+  (a disconnect, support loss, hub replacement, or a hub error making the
+  section read-only) cancels an open capture the same way — generation
+  bumped, no focus return — so an interactive box never strands in the
+  read-only listing.
 - **Single-press only.** Capture records one press — no multi-press
   sequences — matching the all-single-press default map (multi-press
   conflict checking is deliberately coarser). Bare-character chords (a

@@ -694,19 +694,24 @@ test("a stale save's error does not surface into a reopened capture", async () =
 
   fireEvent.pointerDown(document.body);
   const reopened = await enterCapture("Open the command palette");
+  expect(reopened.textContent).toContain("Press new shortcut…");
 
   // The old save FAILS: its error belongs to the cancelled capture and must
-  // not surface on the ROW or inside the new capture. (The store still
-  // records the failed patch as hubError - the section-level alert is the
-  // store's contract for any failed patch, capture or not; what the
-  // generation token guards is the row/capture continuation.)
+  // not surface on the ROW. (The store still records the failed patch as
+  // hubError - the section-level alert is the store's contract for any
+  // failed patch, capture or not; what the generation token guards is the
+  // row/capture continuation.)
   rejectPatch?.(new Error("hub exploded"));
   await new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
   expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
-  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(reopened);
-  expect(reopened.textContent).toContain("Press new shortcut…");
+  // hubError also makes the whole section read-only (editable includes
+  // hubError === null), so the reopened capture CLOSES: an interactive box
+  // must not strand in a section whose controls have all gone read-only.
+  // The finding-13 guarantee this test pins is the error's containment, not
+  // the capture's survival across an editability loss.
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
 });
 
 // Writes serialize at the store: an edit made while ANOTHER row's write is
@@ -1020,4 +1025,69 @@ test("Escape cancels the capture and does NOT fire settings.close; outside captu
     unregister();
     popScope();
   }
+});
+
+// Editability is a per-render prop driven by hub support; a capture is row
+// state with a save in flight on the wire. Support loss mid-capture must
+// cancel the capture like a click-away (generation bumped, no refocus):
+// otherwise the interactive box strands in a read-only section and the
+// resolving save's continuation would repaint it.
+test("editable flipping false mid-capture closes the box and a resolving in-flight save does not touch the row", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Open a capture and start a save; the PATCH hangs.
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // Support drops while the save is in flight: the row goes read-only and
+  // the capture must close with it.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
+
+  // The stale save resolves: no capture reopens, no row-level error.
+  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
+});
+
+test("editable true → false → true leaves the row read-only then editable again, and a fresh capture opens", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+
+  await enterCapture("Open the command palette");
+
+  // Support drops: capture cancelled, editing affordance gone.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
+
+  // Support returns (the store re-refreshes the hub payload on its own):
+  // the chord button comes back and opens a NEW capture.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  const chordButton = await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
+  await userEvent.setup().click(chordButton);
+  expect(captureBox().textContent).toContain("Press new shortcut…");
 });

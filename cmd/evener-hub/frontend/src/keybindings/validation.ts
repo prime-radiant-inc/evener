@@ -105,7 +105,17 @@ export interface OverrideRule {
   chord: string | null;
 }
 
-export type ValidationWarningReason = "unknown-action" | "unparseable-chord" | "reserved-chord" | "conflict";
+export type ValidationWarningReason =
+  | "unknown-action"
+  | "unparseable-chord"
+  | "reserved-chord"
+  | "conflict"
+  /** Not a validation outcome: the cheatsheetController's conditional "?"
+   * entry skipped registration because a live binding of ANOTHER action
+   * overlaps it (the chord was claimed while the character-key pref kept
+   * the entry unregistered, so nothing conflicted at bind time). Surfaces
+   * through the same store warnings channel as skipped override rules. */
+  | "character-key-conflict";
 
 export interface ValidationWarning {
   rule: OverrideRule;

@@ -26,8 +26,10 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { ACTIONS } from "../../keybindings/actions";
+import { chordsOverlap, parseChord } from "../../keybindings/chord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS } from "../../keybindings/defaults";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { GLOBAL_SCOPE, keybindingsRegistry } from "../../keybindings/registry";
+import type { ValidationWarning } from "../../keybindings/validation";
 import { keybindingsStore } from "../../stores/keybindings";
 import { prefsStore } from "../../stores/prefs";
 
@@ -57,6 +59,31 @@ export function useCheatsheetStore<T>(selector: (state: CheatsheetState) => T): 
   return useStore(cheatsheetStore, selector);
 }
 
+/** The store's warnings channel doubles as the surface for the conditional
+ * entry's overlap skip (the same list skipped override rules render in).
+ * The controller's warning is identified by its reason so the reconcile can
+ * replace or clear exactly its own entry. setState fires only on a CHANGE:
+ * the reconcile is subscribed to the keybindings store, and a redundant
+ * write would re-enter it. */
+function setCharacterKeyWarning(conflictWith: string | null): void {
+  const state = keybindingsStore.getState();
+  const rest = state.warnings.filter((warning) => warning.reason !== "character-key-conflict");
+  if (conflictWith === null) {
+    if (rest.length !== state.warnings.length) keybindingsStore.setState({ warnings: rest });
+    return;
+  }
+  const message = `the "?" cheatsheet trigger was not registered: chord "[Shift]+?" in scope "global" is already bound by "${conflictWith}"`;
+  if (state.warnings.some((warning) => warning.reason === "character-key-conflict" && warning.message === message))
+    return;
+  const warning: ValidationWarning = {
+    rule: { action: ACTIONS.cheatsheetToggle, chord: "[Shift]+?" },
+    reason: "character-key-conflict",
+    conflictWith,
+    message,
+  };
+  keybindingsStore.setState({ warnings: [...rest, warning] });
+}
+
 /** Enforces "the ? binding is registered exactly while characterKeyTriggers
  * is on AND cheatsheet.toggle is on its default map". An applied override
  * (or unbind) owns the action's whole chord set, so "?" never comes back
@@ -67,16 +94,46 @@ export function reconcileCharacterKeyTrigger(): void {
   const present = registry.bindings.some((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
   if (!prefsStore.getState().characterKeyTriggers) {
     if (present) registry.unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+    setCharacterKeyWarning(null);
     return;
   }
-  if (present) return;
+  if (present) {
+    setCharacterKeyWarning(null);
+    return;
+  }
   const input = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
   if (input === undefined) return;
   const onDefaultMap =
     registry.bindings.some((b) => b.id === ACTIONS.cheatsheetToggle) &&
     !registry.bindings.some((b) => b.actionId === ACTIONS.cheatsheetToggle && b.id.endsWith("#override"));
-  if (!onDefaultMap) return;
+  if (!onDefaultMap) {
+    setCharacterKeyWarning(null);
+    return;
+  }
+  // The entry registers with NO validation layer: a chord claimed while the
+  // pref was off (the entry was not registered, so nothing conflicted at
+  // bind time) must not end up shadowing or shadowed by the built-in. The
+  // entry's Shift is OPTIONAL, and chordsOverlap's modifier check treats
+  // optionals as allowed on both sides, so this one predicate covers both
+  // the bare "?" and the Shift+"?" forms. Only bindings of OTHER actions
+  // count - cheatsheet.toggle's own base chord never overlaps "?".
+  const sequence = typeof input.chord === "string" ? parseChord(input.chord) : input.chord;
+  const scope = input.scope ?? GLOBAL_SCOPE;
+  const overlapping = registry.bindings.find(
+    (binding) =>
+      binding.actionId !== ACTIONS.cheatsheetToggle &&
+      binding.scope === scope &&
+      chordsOverlap(binding.chord, sequence),
+  );
+  if (overlapping !== undefined) {
+    // Do not register; surface the skip. The reconcile is total and
+    // subscribed to the overrides store, so removing the overlapping
+    // override registers "?" on the next pass and clears the warning.
+    setCharacterKeyWarning(overlapping.actionId);
+    return;
+  }
   registry.registerBinding(input);
+  setCharacterKeyWarning(null);
 }
 
 /** Installs the reconcile: runs it once against the current state, then on

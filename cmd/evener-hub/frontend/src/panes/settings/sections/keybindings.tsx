@@ -300,6 +300,20 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     }
   }, [capturing]);
 
+  // A capture must not outlive editability: a disconnect, support loss, or
+  // hub replacement mid-capture would strand an interactive box in a
+  // read-only section (the store side already rejects the save). Cancel
+  // like a click-away: bump the generation so an in-flight save's
+  // continuation no-ops, and do NOT refocus - the controls focus would
+  // return to are going away with editability.
+  useEffect(() => {
+    if (!editable && capturing) {
+      captureGenerationRef.current += 1;
+      refocusOnCloseRef.current = false;
+      setCapturing(false);
+    }
+  }, [editable, capturing]);
+
   const binding = displayBindingFor(bindings, actionId);
   const customized = isActionCustomized(bindings, actionId, characterKeyTriggers);
   // Extra default entries beyond the platform base entry - in practice
@@ -487,7 +501,11 @@ export function KeybindingsSection() {
       )}
       {warnings.length > 0 && (
         <div className={CLASS.status} role="status">
-          <p>Some saved overrides were skipped:</p>
+          <p>
+            {warnings.some((warning) => warning.reason === "character-key-conflict")
+              ? "Keybinding warnings:"
+              : "Some saved overrides were skipped:"}
+          </p>
           <ul className={CLASS.warningList}>
             {warnings.map((warning) => (
               <li key={warning.message}>{warning.message}</li>
