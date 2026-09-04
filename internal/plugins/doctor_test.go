@@ -625,15 +625,26 @@ func TestDoctor_ReportsARootThatIsNotResolvedWithoutWriting(t *testing.T) {
 				return origCreateTemp(dir, pattern)
 			}
 
+			// git does not live under the store root, so its availability is
+			// still worth reporting — and is still really checked, which a
+			// stub that disagrees with this machine is what proves.
+			origGitAvailable := doctorGitAvailable
+			t.Cleanup(func() { doctorGitAvailable = origGitAvailable })
+			doctorGitAvailable = func() bool { return false }
+
 			m := &Manager{Root: test.root, Stderr: io.Discard}
 			findings, err := m.Doctor()
 			if err != nil {
 				t.Fatalf("Doctor error = %v, want the root reported as a finding", err)
 			}
-			if len(findings) != 1 {
-				t.Fatalf("findings = %+v, want exactly the unusable-root finding", findings)
+			if len(findings) != 2 {
+				t.Fatalf("findings = %+v, want the git finding and the unusable-root finding", findings)
 			}
-			got := findings[0]
+			git := findings[0]
+			if git.Level != LevelWarn || git.Category != catEnvironment || !strings.Contains(git.Message, "git not found on PATH") {
+				t.Errorf("first finding = %+v, want git availability reported despite the root", git)
+			}
+			got := findings[1]
 			if got.Level != LevelFail || got.Category != catEnvironment {
 				t.Errorf("finding = %+v, want a FAIL under %q", got, catEnvironment)
 			}
