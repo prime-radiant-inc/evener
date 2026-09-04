@@ -422,10 +422,18 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
 	case AuthGCPADC:
+		// A credential JSON stored under the instance name (a service-account
+		// key or an authorized_user file the hub accepted) outranks the ADC
+		// file, so a hub host needs neither gcloud nor variables (spec §4.2).
+		if r.creds != nil {
+			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+				return Credential{Value: v, Source: "store"}, nil
+			}
+		}
 		if adcAvailable(r.env) {
 			return Credential{Source: "adc"}, nil
 		}
-		return none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)")
+		return none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
 	}
 	if h.APIKey != "" {
 		v, missing := expandEnv(h.APIKey, r.env)

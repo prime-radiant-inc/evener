@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -339,5 +340,63 @@ func TestCredential_ValueNeverSerializes(t *testing.T) {
 func TestEnvVarName(t *testing.T) {
 	if envVarName("kimi-for-coding") != "KIMI_FOR_CODING" || envVarName("zai-coding-plan") != "ZAI_CODING_PLAN" || envVarName("work") != "WORK" {
 		t.Fatal("envVarName wrong")
+	}
+}
+
+const vertexUserInstanceToml = `
+[providers.vertex]
+base = "google-vertex"
+[providers.vertex.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+`
+
+// noADCEnv is an environment where adcAvailable is false: an empty HOME and
+// no GOOGLE_APPLICATION_CREDENTIALS.
+func noADCEnv(t *testing.T) map[string]string {
+	t.Helper()
+	return map[string]string{"HOME": t.TempDir()}
+}
+
+func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
+	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "store" || len(inst.Warnings) != 0 {
+		t.Fatalf("instance = %+v ok=%v; want source store with no warnings", inst, ok)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "store" || res.Credential.Value != stored {
+		t.Fatalf("credential = %+v", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCWithoutStoreOrFileIsNoneAndNamesTheRemedies(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"gcloud auth application-default login", "GOOGLE_APPLICATION_CREDENTIALS", "credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
+func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
+	env := noADCEnv(t)
+	env["GOOGLE_VERTEX_PROJECT"], env["GOOGLE_VERTEX_LOCATION"] = "my-project", "global"
+	without := fixtureLoad(t, env, "")
+	if slices.Contains(instanceNames(without), "google-vertex") {
+		t.Fatal("google-vertex exists with neither an ADC file nor a store entry")
+	}
+	with := fixtureLoad(t, env, "", WithCredentials(fakeCreds{"google-vertex": `{"type":"authorized_user"}`}))
+	if !slices.Contains(instanceNames(with), "google-vertex") {
+		t.Fatalf("a store entry did not make google-vertex exist: %v", instanceNames(with))
 	}
 }
