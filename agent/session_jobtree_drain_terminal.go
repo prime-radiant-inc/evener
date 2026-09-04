@@ -16,17 +16,22 @@ func (s *Session) acceptTerminalCommunicate() {
 	s.mu.Unlock()
 }
 
-// discardTerminalWatchLeftovers drops the watch notifications queued when the
-// drain starts after the model ended the process-ending turn, and records
-// them in a warning. A job completion in that queue is news the model never
-// heard and is delivered (#865); a watch frame, timer tick or watch-send token
-// is work the model has already declined to wait for, and delivering it would
-// force a post-terminal turn or start new work on a run the model declared
-// over. It runs at drain ENTRY, never at acceptance: only the pre-drain final
-// answer precedes the drain, so a frame a drain turn arms later — the watch
-// the model creates in answer to the undisposed-job announcement, the notice
-// that its delivery budget cleared it — still reaches the model even though
-// that turn's reply is itself a terminal communicate.
+// discardTerminalWatchLeftovers drops the watch-kind notifications queued
+// when the drain starts after the model ended the process-ending turn, and
+// records them in a warning. A job completion in that queue is news the model
+// never heard and is delivered (#865); a watch frame or timer tick is work the
+// model has already declined to wait for, and delivering it would force a
+// post-terminal turn or start new work on a run the model declared over. What
+// the cut holds is exactly those queue entries. A watch-send token is dropped
+// with them but not held: its pending caller send is durable, and the loop's
+// first kick re-tokens every still-pending caller send onto this rail
+// (drainJobManagerWatchSends), so that send still renders on the next
+// notification turn if one runs. It runs at drain ENTRY, never at acceptance:
+// only the pre-drain final answer precedes the drain, so a frame a drain turn
+// arms later — the watch the model creates in answer to the undisposed-job
+// announcement, the notice that its delivery budget cleared it — still
+// reaches the model even though that turn's reply is itself a terminal
+// communicate.
 func (s *Session) discardTerminalWatchLeftovers() {
 	s.pendingJobNotifsMu.Lock()
 	kept := s.pendingJobNotifs[:0]

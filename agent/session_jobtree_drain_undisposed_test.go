@@ -627,21 +627,10 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 		// acceptNotificationInput drains the queue: the gap production leaves
 		// between the pass's queue gate and the turn's own drain.
 		completedOnAnnounce.Do(func() {
-			releaseShell()
-			// This runs on the drain goroutine, so a miss is reported with
-			// t.Error and a return, never t.Fatal; the result assertions on the
-			// test goroutine then fail the test.
-			//
-			// TRIPWIRE: the enqueue is one goroutine hop and a few store appends
-			// away; 30s only fires if finalization never lands.
-			deadline := time.Now().Add(30 * time.Second)
-			for sess.peekNotifications() == 0 {
-				if time.Now().After(deadline) {
-					t.Error("completion never queued on the rail before the announcement turn opened")
-					return
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
+			// This runs on the drain goroutine; finalizeShell reports a miss with
+			// t.Error, and the result assertions on the test goroutine then fail
+			// the test.
+			finalizeShell(t, sess.jobManager, jobID, releaseShell)
 		})
 		return sess.ProcessInputKind(ctx, input, images, kind)
 	}
