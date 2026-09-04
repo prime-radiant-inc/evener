@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -149,8 +151,17 @@ func (s *itemPackingRPCSource) ReadThreadWithItemCandidates(context.Context, app
 
 type legacyItemListRPCSource struct {
 	relayLifecycleSource
-	read appwire.ThreadReadResponse
-	list appwire.ThreadTurnsListResponse
+	id        string
+	read      appwire.ThreadReadResponse
+	list      appwire.ThreadTurnsListResponse
+	listCalls int
+}
+
+func (s *legacyItemListRPCSource) ID() string {
+	if s.id != "" {
+		return s.id
+	}
+	return "codex"
 }
 
 func (s *legacyItemListRPCSource) ReadThread(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -166,6 +177,7 @@ func (s *legacyItemListRPCSource) ListTurns(ctx context.Context, _ appwire.Threa
 	if err := ctx.Err(); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
+	s.listCalls++
 	return s.list, nil
 }
 
@@ -570,6 +582,79 @@ func TestHubRPCItemTurnsListLiveEmptyWithoutSavedReturnsLivePage(t *testing.T) {
 	}
 	if live.candidateListCalls != 1 {
 		t.Fatalf("live-empty turns/list candidate lists = %d, want 1", live.candidateListCalls)
+	}
+}
+
+func TestHubRPCItemTurnsListLegacyZeroItemTurnDoesNotUseSavedFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		corruptSaved bool
+	}{
+		{name: "saved page"},
+		{name: "saved error", corruptSaved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, readParams := seedBoundedPastThread(t)
+			readParams.PageUnit = appwire.TranscriptPageUnitItem
+			readParams.ItemLimit = 40
+			readParams.TurnLimit = 0
+			savedRead, found, err := pastThreadItemReadResponse(t.Context(), cfg, readParams)
+			if err != nil || !found || savedRead.OlderCursor == "" {
+				t.Fatalf("saved item cursor fixture = (found %v, cursor %q, err %v), want saved continuation", found, savedRead.OlderCursor, err)
+			}
+			params := appwire.ThreadTurnsListParams{
+				Ref: readParams.Ref, PageUnit: appwire.TranscriptPageUnitItem,
+				ItemLimit: 40, Cursor: savedRead.OlderCursor,
+			}
+			if tc.corruptSaved {
+				ref, parseErr := appwire.ParseRef(readParams.Ref)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				entry, ok := cfg.Past.Find(ref.ThreadID)
+				if !ok {
+					t.Fatal("saved entry fixture missing")
+				}
+				path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+				if writeErr := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); writeErr != nil {
+					t.Fatal(writeErr)
+				}
+				if _, ok, savedErr := pastThreadTurnsList(t.Context(), cfg, params); !ok || savedErr == nil {
+					t.Fatalf("corrupt saved fixture = (found %v, err %v), want saved error", ok, savedErr)
+				}
+			}
+
+			ref, err := appwire.ParseRef(readParams.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			live := &legacyItemListRPCSource{
+				id: "local",
+				read: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, SessionID: ref.ThreadID, Source: "local", Evener: appwire.EvenerThread{Ref: readParams.Ref},
+				}},
+				list: appwire.ThreadTurnsListResponse{Data: []appwire.Turn{{ID: "live-zero-items", ItemsView: appwire.TurnItemsViewFull}}},
+			}
+			sources := appsource.NewRegistry()
+			sources.Add(live)
+			server := newHubAppServer(cfg, sources)
+			value, err := server.Router().Dispatch(t.Context(), appwire.Request{
+				ID: appwire.NewIntID(1), Method: appwire.MethodThreadTurnsList, Params: mustJSON(t, params),
+			})
+			if err != nil {
+				t.Fatalf("legacy zero-item page: %v", err)
+			}
+			response, ok := value.(appwire.ThreadTurnsListResponse)
+			if !ok {
+				t.Fatalf("legacy zero-item page = %T, want ThreadTurnsListResponse", value)
+			}
+			if len(response.Data) != 0 || response.NextCursor != "" || response.PageUnit != appwire.TranscriptPageUnitItem {
+				t.Fatalf("legacy zero-item page = (turns %d, cursor %q, unit %q), want exhausted successful empty live page", len(response.Data), response.NextCursor, response.PageUnit)
+			}
+			if live.listCalls != 1 {
+				t.Fatalf("legacy ListTurns calls = %d, want 1", live.listCalls)
+			}
+		})
 	}
 }
 
