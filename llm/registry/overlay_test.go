@@ -107,6 +107,19 @@ func TestCuratedOverlay_Transports(t *testing.T) {
 	}
 }
 
+func TestCuratedOverlay_GeminiDefaultsAre38Flash(t *testing.T) {
+	l := loadOverlay(t)
+	for _, id := range []string{"google", "google-vertex"} {
+		p, ok := l.Providers[id]
+		if !ok {
+			t.Fatalf("%s: no overlay row", id)
+		}
+		if p.DefaultModel != "gemini-3.8-flash" {
+			t.Errorf("%s default_model = %q, want gemini-3.8-flash", id, p.DefaultModel)
+		}
+	}
+}
+
 func TestCuratedOverlay_AnthropicRows(t *testing.T) {
 	l := loadOverlay(t)
 	a := l.Providers["anthropic"]

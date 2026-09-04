@@ -276,7 +276,7 @@ api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 base_url = "{BASE_URL}"
 vars = { "BASE_URL" = "https://generativelanguage.googleapis.com/v1beta" }
 vars_env = { "BASE_URL" = "GOOGLE_BASE_URL" }
-default_model = "gemini-3.7-flash"
+default_model = "gemini-3.8-flash"
 cheap_model = "gemini-2.5-flash-lite"
 web_search = true
 
@@ -299,7 +299,7 @@ transport = "vertex-gemini"
 api_key_env = []
 base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
 host_rule = "vertex-location"
-default_model = "gemini-3.7-flash"
+default_model = "gemini-3.8-flash"
 cheap_model = "gemini-2.5-flash-lite"
 web_search = true
 
