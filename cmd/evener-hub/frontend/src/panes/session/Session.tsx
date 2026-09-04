@@ -35,6 +35,7 @@ import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
+import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -170,6 +171,16 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+  // While any question batch is pending, the answering surface is the
+  // transcript's trailing row below (a scrollable part of the content, not
+  // the footer-anchored composer replacement it used to be). Read
+  // unconditionally with the rest of this component's hooks, ahead of the
+  // !model early return, per the rules of hooks; the composer reads the same
+  // seam to hide its own input row meanwhile.
+  const askPending = useAskDockPending(ref);
+  // The pending set's activation counter: the pill edge keys on this (not
+  // the boolean) so an atomic pending-set replacement on resync re-fires it.
+  const askEpoch = useAskDockActivationEpoch(ref);
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -207,8 +218,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     loadOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    renderedRowCount: renderRows.length,
+    // The pending-questions dock is a real virtual row (trailingRow below),
+    // so every end-targeted scroll path - initial positioning, append-follow,
+    // jump-to-bottom - must count it or it lands one row short, leaving the
+    // answering surface below the viewport.
+    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
     sourceTurnRowIndexes,
+    // ...and its activation is new content: an ask_user item completing
+    // changes no turn/item shape, so without this signal a scrolled-away
+    // reader would get no pill while the composer's input hides itself. The
+    // edge keys on the epoch so an atomic pending-set replacement (a resync
+    // swapping an answered-elsewhere batch for a new one) re-fires it while
+    // the boolean never leaves true.
+    askDockPending: askPending,
+    askDockActivationEpoch: askEpoch,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
@@ -311,10 +334,23 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
+        // The pending-questions dock is the transcript's last row while any
+        // batch is pending: it scrolls with the content (a reader scrolling
+        // back for context scrolls it away), its answer state lives in
+        // askDockStore so the virtual list unmounting the row loses nothing,
+        // and the list's end-anchoring surfaces a new question for a reader
+        // at the bottom without yanking one who scrolled up. Passed only
+        // while pending so no empty zero-height row pads the list otherwise.
+        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
       />
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
       </div>
+      {/* The ask dock's ONE live region lives here, outside the virtual
+          list: the dock row is virtualized, so an in-row region would
+          re-announce on every scroll-away/scroll-back remount. This
+          component announces only real pending/count transitions. */}
+      <AskDockAnnouncements ref={ref} />
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;

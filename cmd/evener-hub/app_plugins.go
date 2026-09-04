@@ -51,10 +51,13 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 }
 
 // Preview resolves the same launch plugin inventory used by session startup.
-// It only reads manifests and registry state; plugin hooks, MCP commands, and
-// session state are never touched.
+// It reads manifests and registry state, and for a requested bundled plugin it
+// prepares the store the way a launch does: it creates <Root>/bundled when that
+// is missing, stages a marked copy there, reads it, and removes it before
+// returning. It publishes nothing and reclaims nothing. Plugin hooks, MCP
+// commands, and session state are never touched, and it fails the way a launch
+// would on a store neither can write.
 func (c *hubPluginsController) Preview(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
-	_ = ctx // retained in the controller API for parity with other RPC reads
 	var overrides launchconfig.Layer
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
@@ -82,7 +85,7 @@ func (c *hubPluginsController) Preview(ctx context.Context, params appwire.Plugi
 		}
 		resolved = fullResolved
 	}
-	resolution, err := c.mgr.ResolveForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
+	resolution, err := c.mgr.PreviewForLaunch(ctx, resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
 	if err != nil {
 		return appwire.PluginPreviewResponse{}, err
 	}

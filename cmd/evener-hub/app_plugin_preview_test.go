@@ -244,7 +244,7 @@ func TestPluginPreviewMissingChildUsesProjectLayerPluginDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve after creating cwd: %v", err)
 	}
-	realResolution, err := plugins.NewManager(pluginRoot).ResolveForLaunch(realResolved.Effective.PluginDirs, realResolved.Effective.EnabledPlugins)
+	realResolution, err := plugins.NewManager(pluginRoot).ResolveForLaunch(context.Background(), realResolved.Effective.PluginDirs, realResolved.Effective.EnabledPlugins)
 	if err != nil {
 		t.Fatalf("ResolveForLaunch after creating cwd: %v", err)
 	}
@@ -348,5 +348,29 @@ func TestPluginSelectionPreviewUsesOnlySelectedConcreteDirectories(t *testing.T)
 		default:
 			t.Fatalf("unexpected candidate: %+v", candidate)
 		}
+	}
+}
+
+// Previewing a bundled plugin by name only inspects it: nothing is published,
+// so an abandoned preview leaves nothing behind.
+func TestPluginPreviewBundledPluginPublishesNothing(t *testing.T) {
+	pluginRoot := t.TempDir()
+	ctl := newHubPluginsController(pluginRoot, t.TempDir())
+	names := []string{"coordinator-workflow"}
+	got, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{
+		CWD: t.TempDir(), LaunchOverrides: &appwire.LaunchConfigLayer{EnabledPlugins: &names},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.SelectionErrors) != 0 || len(got.Plugins) != 1 || got.Plugins[0].Source != "bundled" || !got.Plugins[0].Selected {
+		t.Fatalf("preview = %+v, want the bundled coordinator-workflow selected", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(pluginRoot, "bundled"))
+	if err != nil {
+		t.Fatalf("read the bundled store after a preview: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}
 }

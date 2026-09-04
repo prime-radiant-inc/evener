@@ -47,12 +47,12 @@ func FuzzRunCoverage(f *testing.F) {
 				t.Fatal("want ensure error")
 			}
 			runEnsureUserConfigDirs = func() error { return nil }
-			runSeedMarketplaces = func() error { return errors.New("seed") }
+			runSeedMarketplaces = func(context.Context) error { return errors.New("seed") }
 			if err := run(context.Background(), runConfig{stdout: io.Discard, stderr: io.Discard}); err == nil || !strings.Contains(err.Error(), "prompt") {
 				t.Fatalf("error = %v", err)
 			}
 			t.Setenv("HOME", t.TempDir())
-			if err := oldSeed(); err != nil {
+			if err := oldSeed(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 		})

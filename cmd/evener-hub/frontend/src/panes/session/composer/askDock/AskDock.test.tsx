@@ -4,18 +4,20 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, onTestFinished, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
+import { hydrateThread } from "../../../../protocol/reducer";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import {
+  putThreadModel,
   readMutationPersistence,
   resetThreadsStoreForTests,
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
-import { AskDock } from "./AskDock";
+import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
 afterEach(() => {
@@ -187,12 +189,23 @@ test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
-test("sizes the dock from its pane allocation and scrolls a tall batch internally", () => {
+// The dock is the transcript's trailing virtual row now (Session.tsx passes
+// it as TranscriptBody's trailingRow): it must size to its content so the
+// list's measureElement can measure it - a max-height or overflow of its own
+// would clip the batch behind an internal scrollbar and lie to the
+// measurement, and any flex-basis sizing belongs to a footer slot it no
+// longer occupies. It centers on the transcript's 76rem reading measure
+// (turnblock.module.css's --session-measure).
+test("the dock sizes to its content as a transcript row, with no internal scroll boundary", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 100%");
-  expect(css).toContain("overflow-y: auto");
+  const rule = css.match(/\.dock\s*\{([^}]*)\}/);
+  expect(rule, "askdock.module.css must declare a .dock rule").not.toBeNull();
+  const body = rule![1]!;
+  expect(body).toContain("max-width: 76rem");
+  expect(body).toContain("margin-inline: auto");
+  expect(body).not.toContain("max-height");
+  expect(body).not.toContain("overflow");
+  expect(body).not.toContain("flex:");
 });
 
 test("renders the pending question's header and question text once acked", async () => {
@@ -705,4 +718,287 @@ test("Mod+Enter is ignored while an IME composition is in progress", async () =>
 
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+// The dock is the transcript's trailing virtual row (Session.tsx), so
+// scrolling far away UNMOUNTs it and scrolling back remounts it. Activation
+// auto-focus must fire once per pending set, not once per mount: a remount
+// of an already-pending dock must leave focus wherever the reader put it
+// (roborev PR #854). The edge therefore lives in askDockStore, not in a
+// component ref that resets on every mount.
+test("a virtualized remount of an already-pending dock does not steal focus", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+
+  const first = render(<AskDock ref="ref_a" />);
+  // The initial activation contract is unchanged: first appearance focuses
+  // the first answer control.
+  const firstDock = document.querySelector("[data-ask-response-dock]");
+  expect(firstDock?.contains(document.activeElement)).toBe(true);
+  first.unmount();
+
+  // The reader has scrolled away and put focus elsewhere.
+  const elsewhere = render(
+    <button type="button" data-testid="elsewhere">
+      x
+    </button>,
+  );
+  elsewhere.getByTestId("elsewhere").focus();
+
+  render(<AskDock ref="ref_a" />);
+
+  expect(document.activeElement).toBe(elsewhere.getByTestId("elsewhere"));
+});
+
+test("a fresh pending set after a fully resolved one re-activates auto-focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  const first = render(<AskDock ref="ref_a" />);
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches ?? []).toEqual([]));
+  first.unmount();
+
+  // A second, genuinely new question arrives after everything resolved.
+  startTurn(fake, "ref_a", "turn_2");
+  ackAskUserCall(fake, "ref_a", "turn_2", "item_2", "call_2");
+  render(<AskDock ref="ref_a" />);
+
+  const dock = document.querySelector("[data-ask-response-dock]");
+  await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+});
+
+// The dock is a virtual row now: it can mount in the list's overscan while
+// the reader is scrolled away, and a focus() there would move the reader's
+// context to an off-screen control (roborev PR #854). Activation focus is
+// therefore gated on the dock intersecting the viewport at all - and once
+// it IS visible, plain focus() is intentional: the browser reveals the
+// focused control, which is exactly what a tall dock whose first control
+// sits above the fold needs (the pill's jump aligns the dock's END, so the
+// first control of a tall batch can still be off-screen without it).
+// jsdom performs no scrolling, so the scroll half is the browser's to own;
+// what this pins is the gate: NO focus call while off-screen, one once
+// visible (the round-5 test pins the same gate from the store side).
+test("activation focus waits for visibility, then lets the browser reveal the control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    observer.report(true);
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(focusSpy).toHaveBeenCalled();
+  } finally {
+    focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
+// --- visibility-gated activation focus + externalized live region ---------
+// (roborev PR #854 round 5)
+
+// Scriptable IntersectionObserver: instances collect observed elements and
+// report() drives the callback, so tests decide when the dock is "visible".
+class ControlledIntersectionObserver {
+  static instances: ControlledIntersectionObserver[] = [];
+  private observed = new Set<Element>();
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    ControlledIntersectionObserver.instances.push(this);
+  }
+  observe(target: Element): void {
+    this.observed.add(target);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+  report(isIntersecting: boolean): void {
+    this.callback(
+      [...this.observed].map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+// preventScroll stops the SCROLL, not the theft: a dock mounting in the
+// list's overscan while the reader is scrolled away would still pull focus
+// to an off-screen control. Activation focus is therefore gated on the dock
+// actually intersecting the viewport - which also composes with the
+// new-content pill: its jump brings the dock into view, and the
+// intersection is what lands focus in the first control.
+test("activation while off-screen steals no focus; becoming visible focuses the first control", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(<AskDock ref="ref_a" />);
+    const observer = ControlledIntersectionObserver.instances.at(-1);
+    if (!observer) throw new Error("the dock did not install an IntersectionObserver");
+
+    observer.report(false);
+    expect(document.activeElement).toBe(document.body);
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted ?? false).toBe(false);
+
+    observer.report(true);
+    const dock = document.querySelector("[data-ask-response-dock]");
+    await waitFor(() => expect(dock?.contains(document.activeElement)).toBe(true));
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
+// The dock's row is virtualized: any aria-live region inside it re-inserts
+// on every scroll-away/scroll-back remount and re-announces unchanged text.
+// The row's own text (the prompt caption, the answered count) is visual
+// only; the ONE live region is AskDockAnnouncements, mounted outside the
+// virtual list by Session.tsx.
+test("the dock row carries no live regions", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const dock = await screen.findByText("Ship now?");
+  const root = dock.closest("[data-ask-response-dock]");
+  expect(root?.querySelector("[aria-live]")).toBeNull();
+  expect(root?.querySelector('[role="status"]')).toBeNull();
+});
+
+describe("AskDockAnnouncements (the one live region, mounted outside the virtual list)", () => {
+  test("announces the prompt when a pending set arrives, and clears when it resolves", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/start", () => new Promise(() => {}));
+    await hydrateWithOneAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    await act(async () => {
+      const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
+      if (batchId === undefined) throw new Error("batch did not reconcile");
+      await askDockStore.getState().sendBatch("ref_a", batchId);
+    });
+    await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
+  });
+
+  test("announces answered-count transitions while pending", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithTwoAsk(fake);
+    render(<AskDockAnnouncements ref="ref_a" />);
+    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+
+    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
+    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    act(() => {
+      askDockStore.getState().setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("1 of 2 questions answered"),
+    );
+  });
+
+  test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
+    const fake = connectFakeClient();
+    await hydrateWithOneAsk(fake);
+    render(
+      <>
+        <AskDockAnnouncements ref="ref_a" />
+        <AskDock ref="ref_a" />
+      </>,
+    );
+    const region = screen.getByTestId("ask-dock-announcements");
+    expect(region.textContent).toBe("Answer the agent’s questions.");
+    // The region's content is stable across anything the row does - the row
+    // holds no live region at all (the sibling test above pins that), so a
+    // virtualized remount has nothing to re-announce with.
+    expect(region.getAttribute("aria-live")).toBe("polite");
+  });
+});
+
+test("a session ref change re-announces the new session's pending prompt", async () => {
+  // Session panes are reused across refs (a sidebar click swaps the ref on a
+  // persistent pane - useTranscriptScroll's refForInitRef comment), so the
+  // announcements component must treat a ref change as a fresh activation
+  // even when both sessions' pending counts are identical (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake, "ref_a");
+  await hydrateWithOneAsk(fake, "ref_b");
+
+  const { rerender } = render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  rerender(<AskDockAnnouncements ref="ref_b" />);
+
+  // Identical text, but a NEW announcement node: a live region announces
+  // content mutations, and unchanged text is no mutation - the transition
+  // must remount the content to be heard at all.
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expect(region.firstChild).not.toBe(firstNode);
+});
+
+test("an atomic pending-set replacement with an identical count re-announces the prompt", async () => {
+  // The answered count is the announcements component's only in-set signal;
+  // a replacement whose new set has the SAME count (e.g. both carry a
+  // recommended pre-seeded answer) changes neither pending nor count, so
+  // without the activation epoch no announcement would fire for the new
+  // question (roborev PR #854).
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake); // recommended option pre-seeds an answer
+  render(<AskDockAnnouncements ref="ref_a" />);
+  const region = screen.getByTestId("ask-dock-announcements");
+  const firstNode = region.firstChild;
+  expect(region.textContent).toBe("Answer the agent’s questions.");
+
+  // One snapshot resync: call_1 answered (user message after it), call_2
+  // pending after that message - one reconcile swaps the batch set.
+  const thread = {
+    ...readResponse("ref_a").thread,
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          { type: "userMessage", id: "u1", turnId: "turn_1", text: "hi", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_1",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_1",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+          { type: "userMessage", id: "u2", turnId: "turn_1", text: "[answers] yes", status: "completed" },
+          {
+            type: "commandExecution",
+            id: "item_2",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_2",
+            status: "completed",
+            argumentsJson: askArgs(ONE_QUESTION),
+          },
+        ],
+      },
+    ],
+  };
+  act(() => {
+    putThreadModel("ref_a", hydrateThread({ thread } as never, "ref_a", Date.now()));
+  });
+
+  await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
+  expect(region.firstChild).not.toBe(firstNode);
 });

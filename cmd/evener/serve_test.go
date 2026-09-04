@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
@@ -58,11 +60,15 @@ func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) err
 	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
 }
 
-func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+// A selection that cannot be honoured stops the startup before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
+func TestServePluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	root := t.TempDir()
 	var order []string
 	deps := defaultServeDeps()
-	deps.resolvePlugins = func(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.resolvePlugins = func(_ context.Context, dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
 		order = append(order, "resolve")
 		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
 			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
@@ -70,14 +76,14 @@ func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
 	}
 	deps.ensureConfigDirs = func() error { order = append(order, "ensure-config"); return nil }
-	deps.seedMarketplaces = func() error { order = append(order, "seed-marketplaces"); return nil }
+	deps.seedMarketplaces = func(context.Context) error { order = append(order, "seed-marketplaces"); return nil }
 
 	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
 	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
 		t.Fatalf("serve error = %v, want strict selection error", err)
 	}
-	if !reflect.DeepEqual(order, []string{"resolve"}) {
-		t.Fatalf("startup order = %v, want resolver only", order)
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
 	}
 }
 
@@ -86,8 +92,8 @@ func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	selectedDir := t.TempDir()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
-	deps.resolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.resolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
 	}
 	var got []string
@@ -124,7 +130,7 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 		t.Fatalf("SaveRegistry(enabled): %v", err)
 	}
 	selected := []string{"alpha"}
-	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(nil, &selected); err != nil {
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(context.Background(), nil, &selected); err != nil {
 		t.Fatalf("hub validation ResolveForLaunch: %v", err)
 	}
 	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
@@ -160,7 +166,7 @@ func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.
 
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 
 	err := runServeWithDeps([]string{
 		"--model", "openai/gpt-test",
@@ -1064,7 +1070,7 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 			restoreCalled := false
 			deps := defaultServeDeps()
 			deps.ensureConfigDirs = func() error { return nil }
-			deps.seedMarketplaces = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
 			deps.restoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
 				restoreCalled = true
 				return nil, errors.New("restore reached")
@@ -1089,5 +1095,261 @@ func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
 				t.Fatalf("resume lock conflict mutated session artifacts:\n before=%q\n  after=%q", before, after)
 			}
 		})
+	}
+}
+
+// Resolving plugins can wait on the plugin store lock, so the wait has to be
+// one an interrupt ends. That means the signal-derived context exists before
+// plugin resolution rather than after it, when the daemon starts listening.
+func TestServeResolvesPluginsOnTheSignalContext(t *testing.T) {
+	deps := defaultServeDeps()
+	var stopSignals context.CancelFunc
+	deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		next, stop := context.WithCancel(ctx)
+		stopSignals = stop
+		return next, stop
+	}
+	var resolveCtx context.Context
+	deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+		resolveCtx = ctx
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+
+	err := runServeWithDeps([]string{"--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want the selection error that stops this startup", err)
+	}
+	if resolveCtx == nil {
+		t.Fatal("plugin resolution never ran")
+	}
+	if stopSignals == nil {
+		t.Fatal("the interrupt handler was not installed before plugin resolution")
+	}
+	stopSignals()
+	if resolveCtx.Err() == nil {
+		t.Error("plugin resolution ran on a context an interrupt cannot reach")
+	}
+}
+
+// An interrupt that arrives during startup ends the startup. The steps between
+// resolving plugins and binding the listener are the slow ones — seeding
+// marketplaces takes the same store lock a plugin install holds, probing the
+// login shell PATH and provisioning the sandbox run subprocesses — and
+// net.ListenConfig.Listen on a literal address binds happily with a cancelled
+// context, so without an explicit read of the context the daemon finishes
+// startup, binds, shuts down again and exits 0 with nothing said.
+func TestServeStopsStartupOnAnInterrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
+		arm  func(t *testing.T, deps *serveDeps, interrupt func())
+	}{
+		{
+			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var seedCtx context.Context
+				deps.seedMarketplaces = func(ctx context.Context) error {
+					interrupt()
+					seedCtx = ctx
+					return nil
+				}
+				t.Cleanup(func() {
+					if seedCtx == nil || seedCtx.Err() == nil {
+						t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+					}
+				})
+			},
+		},
+		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, deps *serveDeps, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the profile work just before it) is only noticed by
+				// the gate that follows it.
+				applyCheap := deps.applyCheap
+				deps.applyCheap = func(profile *provider.Profile, cheap string, client *llm.Client) (*provider.Profile, error) {
+					interrupt()
+					return applyCheap(profile, cheap, client)
+				}
+			},
+		},
+		{
+			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				provisionServeScratchThatMustBeDisposed(t, deps, interrupt)
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, deps *serveDeps, interrupt func()) {
+				var sess *agent.Session
+				newSession := deps.newSession
+				deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the startup has to take it down: a returned-from
+				// startup that leaves a session running leaks its environment
+				// and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the startup ended", state, agent.SessionClosed)
+					}
+				})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+			deps := defaultServeDeps()
+			var stopSignals context.CancelFunc
+			deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+				next, stop := context.WithCancel(ctx)
+				stopSignals = stop
+				return next, stop
+			}
+			deps.ensureConfigDirs = func() error { return nil }
+			deps.seedMarketplaces = func(context.Context) error { return nil }
+			listened := false
+			deps.listen = func(context.Context, string, string) (net.Listener, error) {
+				listened = true
+				return nil, errors.New("a listener was bound after the interrupt")
+			}
+			tt.arm(t, &deps, func() { stopSignals() })
+
+			err := runServeWithDeps([]string{
+				"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+			}, deps)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("serve error = %v, want the interrupt that ended startup", err)
+			}
+			if want := "interrupted while " + tt.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("serve error = %q, want it to say %q", err, want)
+			}
+			if listened {
+				t.Error("bound a listener for a startup an interrupt had already ended")
+			}
+		})
+	}
+}
+
+// launchScratchThatMustBeDisposed gives env the owned session scratch a
+// sandboxed startup provisions — a write-blocked off policy takes that path
+// without needing a kernel backend this host may not have — and holds the
+// startup to disposing of it. Nothing releases the directory or the flock
+// lease under it until a session owns the environment and its Close does, so
+// every way out before that hand-off owes them.
+func launchScratchThatMustBeDisposed(t *testing.T, env *execenv.LocalExecutionEnvironment) error {
+	t.Helper()
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		return err
+	}
+	scratch := env.SessionScratchDir()
+	// Registered before the assertion so it runs after it: a failing test must
+	// not leave the scratch behind either.
+	t.Cleanup(env.DisposeSandboxScratch)
+	t.Cleanup(func() {
+		if scratch == "" {
+			t.Error("provisioning left no session scratch to dispose")
+			return
+		}
+		if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("session scratch %s survived the abandoned startup: stat err = %v", scratch, err)
+		}
+	})
+	return nil
+}
+
+// provisionServeScratchThatMustBeDisposed is launchScratchThatMustBeDisposed as
+// a startup's sandbox-provisioning step, running then once the scratch is in
+// place.
+func provisionServeScratchThatMustBeDisposed(t *testing.T, deps *serveDeps, then func()) {
+	t.Helper()
+	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+		if err := launchScratchThatMustBeDisposed(t, env); err != nil {
+			return err
+		}
+		then()
+		return nil
+	}
+}
+
+// A session that was never built never takes the environment over, so the
+// startup that provisioned its scratch is the one that owes its disposal.
+func TestServeDisposesTheSandboxScratchWhenNoSessionIsCreated(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	provisionServeScratchThatMustBeDisposed(t, &deps, func() {})
+	deps.newSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		return nil, errors.New("no session today")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a startup that has no session")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+}
+
+// A resume provisions the environment's sandbox from the session's PERSISTED
+// mode inside the restore (provisionRestoredSandbox), and the restore can
+// still fail after that — env.Initialize, the transcript, the artifact store —
+// with no session built to own what was provisioned.
+func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("restore got a %T, want the local environment serve built", env)
+		}
+		if err := launchScratchThatMustBeDisposed(t, local); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("restore failed after the sandbox was provisioned")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a resume that never restored")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }

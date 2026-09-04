@@ -39,7 +39,7 @@ func exactServeDeps(t *testing.T) serveDeps {
 	t.Helper()
 	d := defaultServeDeps()
 	d.ensureConfigDirs = func() error { return nil }
-	d.seedMarketplaces = func() error { return nil }
+	d.seedMarketplaces = func(context.Context) error { return nil }
 	d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		c := llm.NewClient()
 		c.Register(serveLoggingAdapter{})

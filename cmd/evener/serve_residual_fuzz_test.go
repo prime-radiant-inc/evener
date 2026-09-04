@@ -209,7 +209,7 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			*a = []string{"-h"}
 		}},
 		{"seed warning", func(_ *testing.T, d *serveDeps, _ *[]string) {
-			d.seedMarketplaces = func() error { return boom }
+			d.seedMarketplaces = func(context.Context) error { return boom }
 			d.listen = func(context.Context, string, string) (net.Listener, error) { return nil, boom }
 		}},
 		{"computed state dir", func(t *testing.T, d *serveDeps, a *[]string) {

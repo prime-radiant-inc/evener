@@ -163,15 +163,16 @@ test("the body rule scrolls independently of the header and footer", () => {
   expect(css).toContain("overflow-y: auto");
 });
 
-test("the question footer fits short content and caps tall content", () => {
+// The footer used to carry a .footer:has([data-ask-response-dock]) special
+// case while AskDock lived in it; the dock is the transcript's trailing row
+// now (Session.tsx -> TranscriptBody's trailingRow), so the footer is back
+// to the one fixed-slot contract every pane shares.
+test("the header and footer are fixed slots around the scrolling body", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   expect(css).toContain("flex: none");
   expect(css).toContain("flex: 1 1 0");
-  expect(css).toContain(".footer:has([data-ask-response-dock])");
-  expect(css).toContain("flex: 0 1 auto");
-  expect(css).toContain("min-height: 0");
-  expect(css).toContain("max-height: 70%");
+  expect(css).not.toContain("data-ask-response-dock");
 });
 
 // The composer's bottom safe-area accommodation lives where it docks - this

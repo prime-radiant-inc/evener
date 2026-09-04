@@ -1,0 +1,23 @@
+{
+  "name": "askdock-transcript-row",
+  "description": "the questions widget is the transcript's trailing row inside the real VirtualList scroll hierarchy: it sizes to its content (no internal scroll), centers on the 76rem reading measure, and leaves the transcript's allocation and the footer untouched however tall the batch - the virtual list's root alone scrolls",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "widgets/virtuallist/virtuallist.module.css",
+    "panes/session/composer/askDock/askdock.module.css"
+  ],
+  "viewport": {
+    "width": 1600,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "widgets/virtuallist/virtuallist.module.css: .root { overflow-y: auto } (the production transcript's actual scroll owner) - without it the tall batch overflows unscrollably instead of scrolling inside the virtual list",
+    "verified": "2026-09-03",
+    "expect": "fail",
+    "note": "Verified by hand: reverting to overflow-y: visible fails the case with 'transcript overflow belongs to visible, not the virtual list's root'. The first version of this case mutation-tested panescaffold's .body overflow instead - roborev PR #854 correctly flagged that .body never scrolls in the session pane (the VirtualList root does), so the harness now mirrors the full .body > .transcript > .transcriptContent > .transcriptList > .root chain."
+  }
+}

@@ -12,6 +12,7 @@ import {
   resetTranscriptViewRegistryForTests,
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
+import * as flowModule from "./flow/useTranscriptScroll";
 import { TranscriptBody } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
 
@@ -974,5 +975,88 @@ describe("TranscriptBody", () => {
     expect(bodyText.indexOf("Local intent")).toBeLessThan(bodyText.indexOf("critical boundary"));
     expect(bodyText.indexOf("critical boundary")).toBeLessThan(bodyText.indexOf("Cross A"));
     expect(screen.queryAllByTestId("intent-group")).toHaveLength(2);
+  });
+});
+
+describe("trailingRow", () => {
+  test("renders the trailing row as the last virtual transcript row on the live surface", () => {
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(2);
+    const last = rows.at(-1);
+    expect(last?.getAttribute("data-row-id")).toBe("ask-dock");
+    const sentinel = screen.getByTestId("trailing-sentinel");
+    expect(last?.contains(sentinel)).toBe(true);
+  });
+
+  test("a rerender keeps the trailing row's identity stable and after every transcript row", () => {
+    const { rerender } = render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
+    rerender(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="live"
+        disclosureScope="live:trailing-row-stable"
+        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+      />,
+    );
+    expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
+  });
+
+  test("omitting trailingRow renders exactly the transcript rows", () => {
+    render(
+      <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:no-trailing" />,
+    );
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.getAttribute("data-row-id")).toBe("turn_1");
+  });
+});
+
+describe("trailingRow scroll coordination", () => {
+  test("the view registration's rendered row count includes the trailing row", () => {
+    const realRegistration = flowModule.useTranscriptViewRegistration;
+    const capturedCounts: Array<number | undefined> = [];
+    const spy = vi
+      .spyOn(flowModule, "useTranscriptViewRegistration")
+      .mockImplementation((options: Parameters<typeof realRegistration>[0]) => {
+        capturedCounts.push(options.renderedRowCount);
+        return realRegistration(options);
+      });
+    try {
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-count"
+          trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel" /> }}
+        />,
+      );
+      // One turn row + the synthetic trailing row: following-bottom view
+      // restores scroll to renderedRowCount - 1, so the count must cover the
+      // trailing row or a pending ask's dock restores one row short.
+      expect(capturedCounts.at(-1)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

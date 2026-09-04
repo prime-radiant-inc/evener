@@ -25,7 +25,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+// A selection that cannot be honoured stops the launch before it seeds
+// marketplaces. Ensuring the config dirs runs first and is not that work: it
+// carries the legacy-data guard, which has to see the config root before
+// anything — plugin resolution included — creates it.
+func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	selected := []string{"missing-plugin"}
 	var order []string
 	oldResolve := runResolvePlugins
@@ -36,7 +40,7 @@ func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 		runEnsureUserConfigDirs = oldEnsure
 		runSeedMarketplaces = oldSeed
 	})
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		order = append(order, "resolve")
 		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
 	}
@@ -44,7 +48,7 @@ func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 		order = append(order, "ensure-config")
 		return nil
 	}
-	runSeedMarketplaces = func() error {
+	runSeedMarketplaces = func(context.Context) error {
 		order = append(order, "seed-marketplaces")
 		return nil
 	}
@@ -55,8 +59,8 @@ func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
 		t.Fatalf("run error = %v, want strict selection error", err)
 	}
-	if !reflect.DeepEqual(order, []string{"resolve"}) {
-		t.Fatalf("startup order = %v, want resolver only", order)
+	if !reflect.DeepEqual(order, []string{"ensure-config", "resolve"}) {
+		t.Fatalf("startup order = %v, want the config-dir guard and then the resolver", order)
 	}
 }
 
@@ -67,7 +71,7 @@ func TestRunPassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	oldResolve := runResolvePlugins
 	oldProvision := runProvisionSandbox
 	t.Cleanup(func() { runResolvePlugins = oldResolve; runProvisionSandbox = oldProvision })
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
 	}
 	var got []string
@@ -101,7 +105,7 @@ func TestRunResumeRestoresRecordedPluginDirs(t *testing.T) {
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
 	fresh := []string{"/plugins/fresh"}
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
 	}
 	var got []string
@@ -177,7 +181,7 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
 	fresh := []string{"/plugins/fresh-alpha", "/plugins/fresh-beta"}
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
 	}
 	var restored schema.SessionMeta
@@ -266,7 +270,7 @@ func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
 		runRestoreSession = oldRestore
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
-	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{}, nil
 	}
 	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
@@ -1146,5 +1150,365 @@ func TestRunWithContextStrategy_DoesNotError(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToUpper(stdout.String()), "PONG") {
 		t.Fatalf("expected stdout to contain PONG, got: %q", stdout.String())
+	}
+}
+
+// Nothing may create the user config root before the legacy-data guard has
+// looked at it. The guard reads an existing <config>/evener as "already
+// migrated", so a bundled plugin materialized into <config>/evener/plugins
+// would silently strand a user's <config>/serf — configuration and
+// credentials included. EnsureUserConfigDirs carries that guard, so it runs
+// before any plugin resolution.
+func TestLaunchChecksForLegacyDataBeforeResolvingPlugins(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T) error
+	}{
+		{
+			name: "run",
+			start: func(t *testing.T) error {
+				return run(context.Background(), runConfig{
+					prompt: "hello", workDir: t.TempDir(), stateDir: t.TempDir(),
+					enabledPlugins: &[]string{"coordinator-workflow"}, noDefaultMarketplaces: true,
+					stdout: io.Discard, stderr: io.Discard,
+				})
+			},
+		},
+		{
+			name: "serve",
+			start: func(t *testing.T) error {
+				return runServeWithDeps([]string{
+					"--enabled-plugins=coordinator-workflow", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+				}, defaultServeDeps())
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			config := filepath.Join(home, ".config")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", config)
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			if err := os.MkdirAll(filepath.Join(config, "serf"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			err := tt.start(t)
+			if err == nil || !strings.Contains(err.Error(), "legacy Serf data") {
+				t.Fatalf("error = %v, want the legacy-data guard to stop the startup", err)
+			}
+			if _, err := os.Stat(filepath.Join(config, "evener")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the config root was created before the guard ran: stat err = %v", err)
+			}
+		})
+	}
+}
+
+// Provisioning takes the session scratch and the flock lease under it, and
+// nothing releases either until a session owns the environment and its Close
+// does. A launch that ends before that hand-off owes them itself: a fresh
+// session that could not be built, or a resume whose restore fails after
+// re-provisioning the environment from the persisted mode.
+func TestRunDisposesTheSandboxScratchWhenNoSessionTakesTheEnvironment(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, cfg *runConfig)
+		wantErr string
+	}{
+		{
+			name: "a fresh session that cannot be created",
+			arrange: func(t *testing.T, _ *runConfig) {
+				oldProvision, oldNew := runProvisionSandbox, runNewSession
+				t.Cleanup(func() { runProvisionSandbox = oldProvision; runNewSession = oldNew })
+				runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+					return launchScratchThatMustBeDisposed(t, env)
+				}
+				runNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+					return nil, errors.New("no session today")
+				}
+			},
+			wantErr: "session creation",
+		},
+		{
+			name: "a resume whose restore fails",
+			arrange: func(t *testing.T, cfg *runConfig) {
+				const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+				if err := schema.SaveSessionMeta(cfg.stateDir, schema.SessionMeta{
+					ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+				}); err != nil {
+					t.Fatalf("SaveSessionMeta: %v", err)
+				}
+				cfg.resume = sessionID
+				oldRestore := runRestoreSession
+				t.Cleanup(func() { runRestoreSession = oldRestore })
+				runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+					// What RestoreSessionFromMetaWithConfig does before the
+					// steps that can still fail: it re-provisions this env's
+					// sandbox from the session's persisted mode.
+					local, ok := env.(*execenv.LocalExecutionEnvironment)
+					if !ok {
+						t.Fatalf("restore got a %T, want the local environment run built", env)
+					}
+					if err := launchScratchThatMustBeDisposed(t, local); err != nil {
+						return nil, err
+					}
+					return nil, errors.New("restore failed after the sandbox was provisioned")
+				}
+			},
+			wantErr: "restore session",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			oldEnsure := runEnsureUserConfigDirs
+			t.Cleanup(func() { runEnsureUserConfigDirs = oldEnsure })
+			runEnsureUserConfigDirs = func() error { return nil }
+			dir := t.TempDir()
+			cfg := runConfig{
+				prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+				noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+			}
+			tt.arrange(t, &cfg)
+
+			err := run(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("run error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A launch the caller has already given up on stops at the resolver, whatever
+// it selected. The inventory failing is fail-soft when nothing had to be
+// honoured — a launch still runs with whatever could be listed — but a
+// cancellation is not that kind of failure: everything after it, seeding
+// marketplaces first of all, takes the plugin store lock and writes config for
+// nobody.
+func TestLaunchRefusesACancelledLaunchWithNoPluginSelection(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(t *testing.T, seeded *bool) error
+	}{
+		{
+			name: "run",
+			start: func(t *testing.T, seeded *bool) error {
+				oldResolve, oldSeed, oldEnsure := runResolvePlugins, runSeedMarketplaces, runEnsureUserConfigDirs
+				t.Cleanup(func() {
+					runResolvePlugins, runSeedMarketplaces, runEnsureUserConfigDirs = oldResolve, oldSeed, oldEnsure
+				})
+				runEnsureUserConfigDirs = func() error { return nil }
+				runResolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+					return plugins.LaunchPluginResolution{}, ctx.Err()
+				}
+				runSeedMarketplaces = func(context.Context) error { *seeded = true; return nil }
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return run(ctx, runConfig{
+					prompt: "hello", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(),
+					stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+				})
+			},
+		},
+		{
+			name: "serve",
+			start: func(t *testing.T, seeded *bool) error {
+				deps := defaultServeDeps()
+				deps.ensureConfigDirs = func() error { return nil }
+				deps.notifyContext = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+					next, stop := context.WithCancel(ctx)
+					stop()
+					return next, stop
+				}
+				deps.resolvePlugins = func(ctx context.Context, _ []string, _ *[]string) (plugins.LaunchPluginResolution, error) {
+					return plugins.LaunchPluginResolution{}, ctx.Err()
+				}
+				deps.seedMarketplaces = func(context.Context) error { *seeded = true; return nil }
+				return runServeWithDeps([]string{
+					"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+				}, deps)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			seeded := false
+			err := test.start(t, &seeded)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want the cancellation that ended the launch", err)
+			}
+			if seeded {
+				t.Error("seeded marketplaces for a launch that had already been given up on")
+			}
+		})
+	}
+}
+
+// An unsandboxed session gets its scratch directory lazily, on the first
+// command the environment runs — session init's git snapshot is usually what
+// mints it — and only a session's Cleanup releases it. A launch that fails
+// before any session takes the environment over owes that directory and the
+// lease inside it the same disposal a sandboxed one gets.
+func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldEnsure, oldNew := runEnsureUserConfigDirs, runNewSession
+	t.Cleanup(func() { runEnsureUserConfigDirs, runNewSession = oldEnsure, oldNew })
+	runEnsureUserConfigDirs = func() error { return nil }
+	var scratch string
+	runNewSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		// What session initialization does before the steps that can fail: it
+		// runs commands through the environment, and an unsandboxed one mints
+		// its scratch for the first of them.
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("ExecCommand: %v", err)
+		}
+		local, ok := env.(*execenv.LocalExecutionEnvironment)
+		if !ok {
+			t.Fatalf("session creation got a %T, want the local environment run built", env)
+		}
+		scratch = local.SessionScratchDir()
+		return nil, errors.New("no session today")
+	}
+
+	dir := t.TempDir()
+	err := run(context.Background(), runConfig{
+		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("run error = %v, want the session-creation failure", err)
+	}
+	if scratch == "" {
+		t.Fatal("the environment minted no scratch, so this is not the leak under test")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	// The lease lives inside the directory, so it goes with it.
+	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("unsandboxed scratch %s survived the failed launch: stat err = %v", scratch, err)
+	}
+}
+
+// An interrupt that arrives during startup ends the startup. The steps between
+// resolving plugins and the first turn are the slow ones — seeding waits on
+// the plugin store lock, probing the login shell PATH and provisioning the
+// sandbox run subprocesses, and building a session reads a transcript off disk
+// — and none of them reads the context for itself. Seeding even reports what
+// it could not do as a warning, which is right for a marketplace it failed to
+// fetch and wrong for a caller that has left.
+func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		// step names the gate the interrupt has to trip, so each arm proves
+		// its own gate rather than being caught by a later one.
+		step string
+		arm  func(t *testing.T, interrupt func())
+	}{
+		{
+			name: "seeding marketplaces",
+			step: "seeding default marketplaces",
+			arm: func(t *testing.T, interrupt func()) {
+				var seedCtx context.Context
+				runSeedMarketplaces = func(ctx context.Context) error {
+					interrupt()
+					seedCtx = ctx
+					return nil
+				}
+				t.Cleanup(func() {
+					if seedCtx == nil || seedCtx.Err() == nil {
+						t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+					}
+				})
+			},
+		},
+		{
+			name: "probing the login shell PATH",
+			step: "probing the login shell PATH",
+			arm: func(_ *testing.T, interrupt func()) {
+				// The probe takes no context, so an interrupt during it (or
+				// during the client work just before it) is only noticed by
+				// the gate that follows it.
+				attach := runAttachAPILogger
+				runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func(string) error, func() error, error) {
+					interrupt()
+					return attach(client, stateDir, warnings)
+				}
+			},
+		},
+		{
+			name: "provisioning the sandbox",
+			step: "provisioning the sandbox",
+			arm: func(t *testing.T, interrupt func()) {
+				runProvisionSandbox = func(env *execenv.LocalExecutionEnvironment, _ *agent.SessionConfig, _ string) error {
+					if err := launchScratchThatMustBeDisposed(t, env); err != nil {
+						return err
+					}
+					interrupt()
+					return nil
+				}
+			},
+		},
+		{
+			name: "creating the session",
+			step: "creating the session",
+			arm: func(t *testing.T, interrupt func()) {
+				newSession := runNewSession
+				var sess *agent.Session
+				runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+					created, err := newSession(client, profile, env, cfg)
+					sess = created
+					interrupt()
+					return created, err
+				}
+				// The session is live by the time this gate reads the context,
+				// so ending the run has to take it down: a session left
+				// running holds its environment and its child processes.
+				t.Cleanup(func() {
+					if sess == nil {
+						t.Error("the session was never created")
+						return
+					}
+					if state := sess.State(); state != agent.SessionClosed {
+						t.Errorf("session state = %v, want %v after the run ended", state, agent.SessionClosed)
+					}
+				})
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+			oldEnsure, oldSeed, oldNew := runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession
+			oldProvision, oldAttach, oldProcess := runProvisionSandbox, runAttachAPILogger, runProcessInput
+			t.Cleanup(func() {
+				runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession = oldEnsure, oldSeed, oldNew
+				runProvisionSandbox, runAttachAPILogger, runProcessInput = oldProvision, oldAttach, oldProcess
+			})
+			runEnsureUserConfigDirs = func() error { return nil }
+			runSeedMarketplaces = func(context.Context) error { return nil }
+			processed := false
+			runProcessInput = func(*agent.Session, context.Context, string) (string, error) {
+				processed = true
+				return "", errors.New("input was processed after the interrupt")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			test.arm(t, func() { cancel() })
+
+			dir := t.TempDir()
+			err := run(ctx, runConfig{
+				prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+				stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("run error = %v, want the interrupt that ended the run", err)
+			}
+			if want := "interrupted while " + test.step; !strings.Contains(err.Error(), want) {
+				t.Errorf("run error = %q, want it to say %q", err, want)
+			}
+			if processed {
+				t.Error("processed input for a run an interrupt had already ended")
+			}
+		})
 	}
 }

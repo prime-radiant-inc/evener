@@ -190,7 +190,7 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})
@@ -406,7 +406,7 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(adapter)
@@ -652,7 +652,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	state := &clearTestState{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
-	deps.seedMarketplaces = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
 		client.Register(&closedStreamAdapter{})

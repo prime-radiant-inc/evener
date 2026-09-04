@@ -76,8 +76,8 @@ var runLoadClient = cmdutil.LoadClient
 var (
 	runGetwd                = os.Getwd
 	runEnsureUserConfigDirs = cmdutil.EnsureUserConfigDirs
-	runSeedMarketplaces     = func() error {
-		_, err := plugins.NewManager("").SeedDefaultMarketplaces(context.Background())
+	runSeedMarketplaces     = func(ctx context.Context) error {
+		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
 		return err
 	}
 	runAttachAPILogger  = cmdutil.AttachSessionAPILogger
@@ -91,8 +91,8 @@ var (
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		return sess.DrainJobTree(ctx)
 	}
-	runResolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
+	runResolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager("").ResolveForLaunch(ctx, explicit, enabled)
 	}
 )
 
@@ -119,9 +119,17 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
-	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
-	if err != nil && cfg.enabledPlugins != nil {
-		return fmt.Errorf("resolve plugins: %w", err)
+	// Before anything that can create the user config root: the legacy-data
+	// guard inside EnsureUserConfigDirs reads an existing root as already
+	// migrated, and resolving a requested bundled plugin materializes it under
+	// exactly that root. Running the guard second would strand a user's legacy
+	// configuration and credentials silently.
+	if err := runEnsureUserConfigDirs(); err != nil {
+		return err
+	}
+	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
+	if fatal := fatalLaunchPluginError(err, cfg.enabledPlugins); fatal != nil {
+		return fatal
 	}
 	if err != nil {
 		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
@@ -130,15 +138,19 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	if err := runEnsureUserConfigDirs(); err != nil {
-		return err
-	}
 	// --no-default-marketplaces opts out of seeding on this bare-evener path only;
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
-		if err := runSeedMarketplaces(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+		if err := runSeedMarketplaces(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err) //nolint:errcheck
 		}
+	}
+	// Seeding waits on the plugin store lock, and reports what it could not do
+	// as a warning — right for a marketplace it failed to fetch, wrong for a
+	// caller that has left. Everything after this builds a client and a
+	// session, so the interrupt is read here rather than carried into them.
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
@@ -277,6 +289,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	// and never blocks launch — it falls back to "" (inherited PATH unchanged)
 	// on any failure.
 	env.LoginPATH = execenv.LoginShellPATH()
+	if err := startupInterrupted(ctx, "probing the login shell PATH"); err != nil {
+		return err
+	}
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
@@ -328,6 +343,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		if err := runProvisionSandbox(env, &baseSessionCfg, env.WorkingDirectory()); err != nil {
 			return err
 		}
+		// Provisioning allocates the session scratch and the lease under it,
+		// which nothing releases until a session owns this environment.
+		if err := startupInterrupted(ctx, "provisioning the sandbox"); err != nil {
+			env.DisposeUnadoptedScratch()
+			return err
+		}
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
@@ -341,6 +362,11 @@ func run(ctx context.Context, cfg runConfig) error {
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
+			// A resume provisions this environment's sandbox from the
+			// session's persisted mode inside the restore, and the restore can
+			// fail after that with no session built to own the scratch and the
+			// flock lease it took.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if resumeWithChildID != "" {
@@ -357,10 +383,19 @@ func run(ctx context.Context, cfg runConfig) error {
 	} else {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
+			// The session that would have owned whatever this environment
+			// provisioned was never built.
+			env.DisposeUnadoptedScratch()
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
 	defer sess.Close()
+	// The session is live, and everything past here is the turn itself. An
+	// interrupt that arrived while it was being built ends the run instead,
+	// and the deferred Close takes the session down on the way out.
+	if err := startupInterrupted(ctx, "creating the session"); err != nil {
+		return err
+	}
 
 	// One startup line, loudly, states exactly what this host enforces (read from
 	// the env's resolved policy so it never overstates). Empty for an unsandboxed
