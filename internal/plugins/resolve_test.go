@@ -815,7 +815,65 @@ func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing
 // the one .conflict the design promises to keep: the preserved copy for the
 // digest this binary still ships.
 func TestMaterializeBundledPlugin_ReclaimsConflictSlots(t *testing.T) {
-	t.Run("an aged conflict.previous beside a published copy is reclaimed", func(t *testing.T) {
+	t.Run("an aged conflict.previous beside an existing conflict is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		previous := conflict + previousSuffix
+		// The sibling .conflict is what tells the sweep this .previous is the
+		// occupant a completed swap replaced and failed to remove, not one
+		// still waiting on the recovery rename.
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); !os.IsNotExist(err) {
+			t.Fatalf("aged conflict.previous survived a later publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("a fresh conflict.previous beside an existing conflict survives", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		previous := conflict + previousSuffix
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); err != nil {
+			t.Fatalf("fresh conflict.previous was reclaimed: %v", err)
+		}
+	})
+
+	// A crash between the two renames in setAsideBundledConflict — the old
+	// .conflict moved to .previous, dest not yet moved into the now-vacant
+	// .conflict — leaves a .previous with no sibling .conflict. Its mtime is
+	// inherited from whenever that content was first set aside, which can
+	// already be older than the reclaim threshold the moment the crash
+	// happens. setAsideBundledConflict's own recovery (renaming .previous back
+	// to .conflict) runs the next time this dest is classified as a conflict,
+	// so the sweep must never delete it first: doing so would destroy the one
+	// copy that recovery is waiting to restore.
+	t.Run("an aged conflict.previous with no sibling conflict is never reclaimed", func(t *testing.T) {
 		m := NewManager(t.TempDir())
 		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 		if err != nil {
@@ -830,26 +888,8 @@ func TestMaterializeBundledPlugin_ReclaimsConflictSlots(t *testing.T) {
 		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(previous); !os.IsNotExist(err) {
-			t.Fatalf("aged conflict.previous survived a later publish (stat err = %v)", err)
-		}
-	})
-
-	t.Run("a fresh conflict.previous survives", func(t *testing.T) {
-		m := NewManager(t.TempDir())
-		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
-		if err != nil {
-			t.Fatal(err)
-		}
-		previous := dest + conflictSuffix + previousSuffix
-		if err := os.MkdirAll(previous, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
-			t.Fatal(err)
-		}
 		if _, err := os.Stat(previous); err != nil {
-			t.Fatalf("fresh conflict.previous was reclaimed: %v", err)
+			t.Fatalf("interrupted set-aside's preserved copy was reclaimed before recovery could restore it: %v", err)
 		}
 	})
 

@@ -849,6 +849,18 @@ func (m *Manager) abandonedStaging(dir string) []string {
 // staging directory to and for the same reason. A .conflict for the digest
 // this binary currently ships is never included: it is the single preserved
 // copy setAsideBundledConflict promises to keep.
+//
+// A .conflict.previous whose sibling .conflict is absent is never included
+// either, at any age or digest: setAsideBundledConflict renames its old
+// .conflict to .previous before renaming dest into the now-vacant .conflict,
+// so a crash between those two renames leaves exactly this shape, with the
+// .previous directory's mtime inherited from whenever that content was first
+// set aside — already older than the reclaim threshold the moment the crash
+// happens, for no other reason than time having passed since. That .previous
+// is not a replaced occupant a completed swap failed to clean up; it is the
+// one copy of what was preserved, still waiting on the recovery rename
+// setAsideBundledConflict performs the next time this dest is classified as a
+// conflict. Reclaiming it here would destroy that copy before recovery runs.
 func (m *Manager) reclaimableBundledConflicts(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -861,13 +873,18 @@ func (m *Manager) reclaimableBundledConflicts(dir string) []string {
 		}
 		entryName := entry.Name()
 		previous := strings.HasSuffix(entryName, conflictSuffix+previousSuffix)
-		base := strings.TrimSuffix(entryName, previousSuffix)
-		if !strings.HasSuffix(base, conflictSuffix) {
+		conflictName := strings.TrimSuffix(entryName, previousSuffix)
+		if !strings.HasSuffix(conflictName, conflictSuffix) {
 			continue
 		}
-		name, digest, ok := splitBundledDigestName(strings.TrimSuffix(base, conflictSuffix))
+		name, digest, ok := splitBundledDigestName(strings.TrimSuffix(conflictName, conflictSuffix))
 		if !ok {
 			continue
+		}
+		if previous {
+			if _, err := os.Lstat(filepath.Join(dir, conflictName)); errors.Is(err, fs.ErrNotExist) {
+				continue // interrupted set-aside: the sibling .conflict is what it renamed away from
+			}
 		}
 		current, err := bundledPluginDigest(name)
 		if err == nil && current == digest {
