@@ -159,9 +159,14 @@ type preparedSubagentRun struct {
 }
 
 // disposeUnadoptedSubagentSession tears down a child that never became a
-// tracked/adopted delegate. Normal session cleanup retains sandbox scratch for
-// the human handoff, but an unadopted fresh environment has no owner left to
-// perform that handoff, so its scratch is rolled back here.
+// tracked/adopted delegate. It is the create-path twin of
+// discardRestoredCandidate and makes the same two decisions it does. Normal
+// cleanup RETAINS both of a session's scratch dirs for the human handoff — Close
+// releases the leases and keeps the directories — but an unadopted child has no
+// owner left to hand anything to, so both go: the sandbox-owned one and the one
+// an unsandboxed environment (the default shape) mints on its first command.
+// Only for an environment built FOR this child, though: a shared one belongs to
+// the live parent still working in it.
 func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 	if sess == nil {
 		return
@@ -171,7 +176,7 @@ func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
 		return
 	}
 	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		le.DisposeSandboxScratch()
+		le.DisposeUnadoptedScratch()
 	}
 }
 

@@ -385,3 +385,55 @@ func TestSpawnedSubagentSessionFailureDisposesTheChildScratch(t *testing.T) {
 		t.Errorf("failed subagent spawn left scratch %v, which nothing will ever release", leaked)
 	}
 }
+
+// disposeUnadoptedSubagentSession is the create-path twin of
+// discardRestoredCandidate, and the two have to make the same two decisions:
+// drop BOTH scratch dirs of an environment built for the child (Close only
+// releases the unsandboxed one's lease and keeps the directory), and leave a
+// shared environment alone, since it belongs to the live parent.
+func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+
+	owned := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	ownedEnv, ok := owned.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("child env = %T, want a local environment", owned.currentEnv())
+	}
+	if _, err := ownedEnv.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	ownedScratch := ownedEnv.SessionScratchDir()
+	if ownedScratch == "" {
+		t.Fatal("the child env minted no session scratch, so there is nothing to dispose")
+	}
+
+	disposeUnadoptedSubagentSession(owned, true)
+
+	if _, err := os.Stat(ownedScratch); !os.IsNotExist(err) {
+		t.Errorf("unadopted child retained its scratch %s: stat err = %v", ownedScratch, err)
+	}
+
+	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
+	}
+	if _, err := shared.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	sharedScratch := shared.SessionScratchDir()
+	sharing, err := NewSession(client, parent.currentProfile(), shared, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the parent's environment: %v", err)
+	}
+
+	disposeUnadoptedSubagentSession(sharing, false)
+
+	if _, err := os.Stat(sharedScratch); err != nil {
+		t.Errorf("disposing a child on the parent's shared environment removed its scratch %s: %v", sharedScratch, err)
+	}
+}

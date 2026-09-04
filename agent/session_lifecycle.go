@@ -404,15 +404,15 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// A discarded candidate was never adopted by anything, so unlike close()'s
-		// RetainSandboxScratch (which hands a normally torn-down delegate's
-		// scratch to a human), there is no one left to retain it for; dispose it
-		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
-		// discipline on the create-path twin of this abort. Both scratch dirs go:
-		// the sandbox-owned one AND the one an unsandboxed env — the default
-		// shape — mints on its first command, whose lease would otherwise be held
-		// for the life of the process. Only ever for an env built FOR this
-		// candidate: a shared one belongs to the live parent still working in it.
+		// A discarded candidate was never adopted by anything, so unlike a normal
+		// teardown (which RETAINS both scratch dirs for the human handoff), there
+		// is no one left to retain them for. Both go: the sandbox-owned one AND
+		// the one an unsandboxed env — the default shape — mints on its first
+		// command, whose lease would otherwise be held for the life of the
+		// process. Only ever for an env built FOR this candidate: a shared one
+		// belongs to the live parent still working in it. Byte for byte the same
+		// two decisions disposeUnadoptedSubagentSession makes on the create-path
+		// twin of this abort.
 		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && ownsEnv {
 			le.DisposeUnadoptedScratch()
 		}
