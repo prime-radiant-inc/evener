@@ -1,13 +1,41 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { ACTIONS } from "../keybindings/actions";
 import { serializeChord } from "../keybindings/chord";
-import { registerDefaultBindings } from "../keybindings/defaults";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "../keybindings/defaults";
 import { type Binding, keybindingsRegistry } from "../keybindings/registry";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { KeybindingsOverrides, KeybindingsRule } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "./keybindings";
+import { prefsStore, resetPrefsStoreForTests } from "./prefs";
+
+// Node 26 shadows jsdom's real window.localStorage with its own
+// (non-functional under vitest) global, so every test file that touches
+// localStorage (the prefs store does, and keybindings.ts now reads the
+// character-key pref through it) needs this same small in-memory stand-in -
+// see stores/prefs.test.ts's own comment.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
 
 function resetRegistryToDefaults(): void {
   for (const binding of keybindingsRegistry.getState().bindings) {
@@ -42,12 +70,16 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetKeybindingsStoreForTests();
   resetRegistryToDefaults();
+  localStorage.clear();
+  resetPrefsStoreForTests();
 });
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetKeybindingsStoreForTests();
   resetRegistryToDefaults();
+  localStorage.clear();
+  resetPrefsStoreForTests();
   vi.restoreAllMocks();
 });
 
@@ -722,5 +754,189 @@ describe("keybindings store: hubError/conflict clear symmetry", () => {
 
     expect(keybindingsStore.getState().conflict).toBe("revision conflict");
     expect(keybindingsStore.getState().hubError).toBe("revision conflict");
+  });
+});
+
+describe("keybindings store: atomic un-apply", () => {
+  /** Replaces the wired client with one whose get never resolves: the
+   * refresh starts (hubLoading) but never lands. Same shape as the
+   * stale-window describe's helper. */
+  async function rewireToHangingClient(): Promise<FakeClient> {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => new Promise<KeybindingsOverrides>(() => {}));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    return client;
+  }
+
+  test("client replacement un-applies a reclaimed-chord pair atomically", async () => {
+    // Payload 1 is legal via freed-chord reclaim: palette.open moves away,
+    // rail.toggle claims palette.open's default chord. Restoring BOTH on
+    // un-apply needs the two-phase unwind: restoring palette.open while
+    // rail.toggle's override still squats its default chord throws.
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const clientA = new FakeClient("ready");
+    clientA.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [
+        { action: ACTIONS.paletteOpen, chord: "Control+Y" },
+        { action: ACTIONS.railToggle, chord: paletteDefault },
+      ]),
+    );
+    await wireClient(clientA, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+
+    await rewireToHangingClient();
+
+    // BOTH actions are back at their defaults: no orphaned override binding.
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([
+      ACTIONS.railToggle,
+      `${ACTIONS.railToggle}#mod-twin`,
+    ]);
+  });
+
+  test("a wedged unwind rolls the registry back, keeps the applied map, and never throws", async () => {
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const clientA = new FakeClient("ready");
+    clientA.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
+    );
+    await wireClient(clientA, true);
+
+    // Out-of-band wedge: free the override binding and squat palette.open's
+    // default chord with a foreign binding, so restoring the default throws.
+    keybindingsRegistry.getState().unregisterBinding(`${ACTIONS.paletteOpen}#override`);
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: paletteDefault,
+    });
+
+    // Client replacement's un-apply must NOT throw and must roll back: the
+    // registry keeps the wedged shape exactly.
+    const clientB = new FakeClient("ready");
+    let resolveGet: ((payload: KeybindingsOverrides) => void) | undefined;
+    clientB.on(
+      "evener/settings/keybindings/get",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolveGet = resolve;
+        }),
+    );
+    connectionStore.getState().connect(clientB);
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
+
+    expect(bindingsFor(ACTIONS.paletteOpen)).toEqual([]);
+    expect(keybindingsRegistry.getState().bindings.some((b) => b.id === "foreign.squatter")).toBe(true);
+
+    // Hub B's refresh lands an EMPTY payload. Because the applied map
+    // survived the rolled-back unwind, the reconcile RETRIES the restore of
+    // palette.open, hits the same wedge, rolls back, and surfaces hubError -
+    // the revision does not advance and the state never presents as loaded.
+    // (Had the unwind cleared the map, the empty payload would apply clean
+    // against the wedged registry and confirm revision 1.)
+    await waitFor(() => expect(resolveGet).toBeDefined());
+    resolveGet?.(overridesPayload(1, []));
+    await waitFor(() => expect(keybindingsStore.getState().hubError).not.toBeNull());
+
+    expect(keybindingsStore.getState().revision).toBe(0);
+    expect(keybindingsStore.getState().loaded).toBe(false);
+    expect(bindingsFor(ACTIONS.paletteOpen)).toEqual([]);
+    expect(keybindingsRegistry.getState().bindings.some((b) => b.id === "foreign.squatter")).toBe(true);
+  });
+});
+
+describe("keybindings store: patch gating", () => {
+  test("a patch attempted while a refresh is in flight throws before any wire request", async () => {
+    let pending: Promise<KeybindingsOverrides> | undefined;
+    let resolvePending: ((payload: KeybindingsOverrides) => void) | undefined;
+    const client = new FakeClient("ready");
+    client.on(
+      "evener/settings/keybindings/get",
+      () => pending ?? overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    client.on("evener/settings/keybindings/patch", (params) => overridesPayload(2, params.config.rules));
+    await wireClient(client, true);
+    expect(keybindingsStore.getState().loaded).toBe(true);
+
+    // A refresh is in flight (hubLoading): its payload can land at ANY
+    // revision, so a concurrent PATCH's expectedRevision would race it.
+    pending = new Promise<KeybindingsOverrides>((resolve) => {
+      resolvePending = resolve;
+    });
+    const refresh = keybindingsStore.getState().refreshOverrides();
+    await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
+    ).rejects.toThrow(/unavailable/);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+
+    resolvePending?.(overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await refresh;
+    expect(keybindingsStore.getState().hubLoading).toBe(false);
+  });
+});
+
+describe("keybindings store: character-key pref in the restore simulation", () => {
+  /** What the cheatsheetController does while the pref is off. */
+  function turnCharacterKeyPrefOff(): void {
+    prefsStore.setState({ characterKeyTriggers: false });
+    keybindingsRegistry.getState().unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+  }
+
+  function wireCharacterKeyPayload(): Promise<FakeClient> {
+    // composer.focus takes "Shift+?" (the character-key chord with a
+    // REQUIRED shift); cheatsheet.toggle moves to Control+Slash. With the
+    // pref OFF there is no "?" binding to conflict with, so this payload
+    // must apply clean.
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [
+        { action: ACTIONS.composerFocus, chord: "Shift+?" },
+        { action: ACTIONS.cheatsheetToggle, chord: "Control+Slash" },
+      ]),
+    );
+    client.on("evener/settings/keybindings/patch", (params) => overridesPayload(2, params.config.rules));
+    return wireClient(client, true).then(() => client);
+  }
+
+  test("with the pref off, resetting cheatsheet.toggle past a composer Shift+? override is accepted", async () => {
+    turnCharacterKeyPrefOff();
+    const client = await wireCharacterKeyPayload();
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().revision).toBe(1);
+
+    // The Reset: the PATCH payload drops cheatsheet.toggle's override, so
+    // its defaults restore. The restore simulation must mirror the pref -
+    // with the "?" trigger absent from the live registry, the restored set
+    // must not claim it either, so it cannot phantom-conflict with the
+    // composer override that survives the patch.
+    const result = await keybindingsStore
+      .getState()
+      .patchOverrides([{ action: ACTIONS.composerFocus, chord: "Shift+?" }]);
+    expect(result.revision).toBe(2);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+    expect(serializeChord(bindingsFor(ACTIONS.cheatsheetToggle)[0]?.chord ?? [])).toBe("Control+/");
+  });
+
+  test("with the pref on, the same reset still rejects: the restored ? binding would conflict", async () => {
+    const client = await wireCharacterKeyPayload();
+    expect(keybindingsStore.getState().hubError).toBeNull();
+
+    // Pref ON: the restore legitimately reclaims "?", which overlaps the
+    // surviving composer Shift+? - the preflight must still reject.
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Shift+?" }]),
+    ).rejects.toThrow(/already bound by/);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
   });
 });

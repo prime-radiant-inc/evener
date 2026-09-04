@@ -454,7 +454,10 @@ default.
   wins** — the rule is skipped with a `conflict` warning and its action
   falls back to its own defaults, so every action stays bound. A chord freed
   earlier in the same payload (rebind-away or unbind) can be claimed by a
-  later rule.
+  later rule. The restored set mirrors the character-key pref: while the
+  pref is off the live registry has no `?` binding, so the simulated restore
+  does not claim one either — resetting `cheatsheet.toggle` cannot
+  phantom-conflict with a user chord that overlaps `?`.
 
 ### Apply flow
 
@@ -481,7 +484,9 @@ not the store; the store carries `hubSupport`, `revision`, the validated
 - **Patch** (the editor's write path): sends `expectedRevision` +
   `{version: 1, rules}`; on success the canonical response is applied; on a
   conflict rejection the store refreshes to `data.current`, sets `conflict`
-  and `hubError`, and rethrows.
+  and `hubError`, and rethrows. The store rejects a patch while any refresh
+  is in flight (`hubLoading`): the in-flight payload can land at any
+  revision, and a concurrent PATCH's `expectedRevision` would race it.
 
 ### Failure posture
 

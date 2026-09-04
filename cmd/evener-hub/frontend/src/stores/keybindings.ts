@@ -23,6 +23,7 @@ import { WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification, KeybindingsOverrides } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
+import { prefsStore } from "./prefs";
 
 export interface KeybindingsStoreState {
   hubSupport: "unknown" | "supported" | "unsupported";
@@ -86,11 +87,17 @@ const appliedOverrides = new Map<string, string | null>();
 /** Restores defaults for every applied override and clears the applied map:
  * the registry must stop presenting a hub's overrides the moment that hub's
  * state stops being current (client replacement, test reset) - that
- * staleness one layer down is the same defect as a stale store payload. A
- * wedged registry (a foreign binding squatting a default chord) must not
- * make the reset itself throw; a failed restore leaves the override binding
- * in place and the next reconcile (or the next test's registry rebuild)
- * removes it.
+ * staleness one layer down is the same defect as a stale store payload.
+ * Atomic, mirroring applyOverrideRules: two-phase (strip every applied
+ * action's bindings first, THEN restore each default) so a chord that moved
+ * between two overridden actions never trips a transient conflict mid-unwind,
+ * and any throw rolls the registry back to its pre-unwind snapshot. On
+ * rollback the applied map stays INTACT - clearing it while the registry
+ * still holds overrides would detach the unwind bookkeeping from the
+ * registry, and the next reconcile's delta math would misread the wedged
+ * bindings. The reset itself never propagates (a wedged registry - a foreign
+ * binding squatting a default chord - must not make reset throw); the next
+ * reconcile or the next test's registry rebuild retries from the intact map.
  *
  * ORDERING (the cheatsheetController contract): this mutates the registry
  * ONLY. Callers must fire any store setState - which is what the
@@ -99,12 +106,15 @@ const appliedOverrides = new Map<string, string | null>();
  * entry with no knowledge of the pref; the reconcile then removes it if the
  * pref is off). */
 function unapplyAllOverrides(): void {
-  for (const action of appliedOverrides.keys()) {
-    try {
-      restoreDefaultBinding(keybindingsRegistry, action);
-    } catch {
-      // See the doc comment: a wedged registry must not make reset throw.
-    }
+  if (appliedOverrides.size === 0) return;
+  const snapshot = keybindingsRegistry.getState().bindings;
+  try {
+    for (const action of appliedOverrides.keys()) removeActionBindings(keybindingsRegistry, action);
+    for (const action of appliedOverrides.keys()) restoreDefaultBinding(keybindingsRegistry, action);
+  } catch {
+    // See the doc comment: roll back, keep the applied map, never propagate.
+    rollbackBindings(snapshot);
+    return;
   }
   appliedOverrides.clear();
 }
@@ -158,7 +168,16 @@ function rollbackBindings(snapshot: readonly Binding[]): void {
  * state before propagating, so callers surface the failure with the last
  * good bindings intact. */
 function applyOverrideRules(rules: readonly OverrideRule[]): void {
-  const validated = validateOverrideRules(rules, keybindingsRegistry, undefined, new Set(appliedOverrides.keys()));
+  // The pref gates the restore simulation: with character-key triggers off
+  // the live registry has no "?" cheatsheet binding, so a simulated restore
+  // must not claim one either.
+  const validated = validateOverrideRules(
+    rules,
+    keybindingsRegistry,
+    undefined,
+    new Set(appliedOverrides.keys()),
+    prefsStore.getState().characterKeyTriggers,
+  );
   const next = new Map<string, string | null>();
   for (const rule of validated.rules) {
     next.set(rule.action, rule.chord === null ? null : serializeChord(rule.chord));
@@ -408,6 +427,7 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     if (
       state.hubSupport !== "supported" ||
       state.loaded !== true ||
+      state.hubLoading ||
       currentSupport() !== "supported" ||
       client === null ||
       client !== wiredClient ||
@@ -418,6 +438,9 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       // is not the store's contract, and a patch composed from a STALE
       // generation's raw set (client replaced, refresh not yet landed) would
       // send the old hub's expectedRevision and rules to the new hub.
+      // `hubLoading` is the same race WITHIN one generation: an in-flight
+      // refresh is about to land a payload whose revision may differ from
+      // the one a concurrent PATCH would send as expectedRevision.
       const error = "Hub keybindings settings are unavailable.";
       keybindingsStore.setState({ hubError: error });
       throw new Error(error);
@@ -438,9 +461,10 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
     // against the same live registry and applied set, so a preserved rule
     // reproduces its apply-time warning verbatim).
     const applied = new Set(appliedOverrides.keys());
-    const baseline = validateOverrideRules(state.rawOverrides, keybindingsRegistry, undefined, applied);
+    const pref = prefsStore.getState().characterKeyTriggers;
+    const baseline = validateOverrideRules(state.rawOverrides, keybindingsRegistry, undefined, applied, pref);
     const baselineKeys = new Set(baseline.warnings.map((warning) => `${warning.rule.action} ${warning.message}`));
-    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, applied);
+    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, applied, pref);
     const introduced = preflight.warnings.filter(
       (warning) => !baselineKeys.has(`${warning.rule.action} ${warning.message}`),
     );

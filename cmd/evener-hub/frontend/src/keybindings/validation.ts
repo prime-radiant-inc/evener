@@ -147,12 +147,17 @@ interface EffectiveBinding {
  * alternative (deferring the restore) would strand the dropped action on an
  * override the hub payload no longer contains, diverging the registry from
  * the payload indefinitely. Defaults never conflict with each other, so a
- * conflict always has a rule claim to blame. */
+ * conflict always has a rule claim to blame.
+ *
+ * `characterKeyTriggers: false` mirrors the cheatsheet character-key pref:
+ * the live registry has no "?" cheatsheet binding while the pref is off, so
+ * the dropped-restore simulation must not claim one either. */
 export function validateOverrideRules(
   rules: readonly OverrideRule[],
   registry: KeybindingsRegistry,
   platform: KeybindingsPlatform = currentKeybindingsPlatform(),
   appliedActionIds: ReadonlySet<string> = new Set(),
+  characterKeyTriggers = true,
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
   const reserved = RESERVED_BY_PLATFORM[platform];
@@ -231,7 +236,10 @@ export function validateOverrideRules(
     for (const action of dropped) {
       final.set(
         action,
-        defaultBindingShapesForAction(action).map((shape) => ({ scope: shape.scope, sequence: shape.sequence })),
+        defaultBindingShapesForAction(action, { characterKeyTriggers }).map((shape) => ({
+          scope: shape.scope,
+          sequence: shape.sequence,
+        })),
       );
     }
     for (const candidate of candidates) {

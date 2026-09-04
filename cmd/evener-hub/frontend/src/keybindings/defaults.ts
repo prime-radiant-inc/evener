@@ -348,14 +348,24 @@ export interface DefaultBindingShape {
 /** The (scope, parsed chord) pairs registerDefaultBindingsForAction would
  * register for the action, WITHOUT registering them: the validation layer
  * simulates dropped-override restorations against these. Throws on an
- * unknown action id. */
-export function defaultBindingShapesForAction(actionId: string): DefaultBindingShape[] {
+ * unknown action id.
+ *
+ * `characterKeyTriggers: false` mirrors the live registry when the
+ * cheatsheet character-key pref is off (the cheatsheetController
+ * unregisters the "?" entry while the pref is off): the restored set then
+ * excludes the character-key trigger binding, so the simulation cannot
+ * report a conflict against a binding that will not exist. */
+export function defaultBindingShapesForAction(
+  actionId: string,
+  options?: { characterKeyTriggers?: boolean },
+): DefaultBindingShape[] {
   const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
   if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
   const shapes: DefaultBindingShape[] = [];
   for (const input of inputs) {
     const pair = modPair(input);
     for (const entry of pair ?? [input]) {
+      if (options?.characterKeyTriggers === false && entry.id === CHARACTER_KEY_TRIGGER_BINDING_ID) continue;
       shapes.push({
         id: entry.id,
         scope: entry.scope ?? GLOBAL_SCOPE,
