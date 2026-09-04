@@ -43,6 +43,24 @@ func (m *Manager) marketplacesDir() string { return filepath.Join(m.Root, "marke
 func (m *Manager) cacheDir() string        { return filepath.Join(m.Root, "cache") }
 func (m *Manager) lockPath() string        { return filepath.Join(m.Root, ".lock") }
 
+// bundledDir is evener's content-addressed cache of the plugins the running
+// binary ships.
+func (m *Manager) bundledDir() string { return filepath.Join(m.Root, "bundled") }
+
+// bundledLockName is the lock file the bundled cache keeps beside the copies
+// it holds. Named here because the sweep and every store listing has to know
+// it is not a plugin.
+const bundledLockName = ".lock"
+
+// bundledLockPath excludes bundled publishers from each other and from nobody
+// else. Publishing a bundled copy is a classify, set-aside, stage and rename
+// sequence that touches only bundledDir, so it has no business waiting on the
+// store lock, which install, upgrade, gc, catalog and marketplace refresh hold
+// across git fetches.
+func (m *Manager) bundledLockPath() string {
+	return filepath.Join(m.bundledDir(), bundledLockName)
+}
+
 func (m *Manager) marketplaceDir(name string) string {
 	return filepath.Join(m.marketplacesDir(), name)
 }
