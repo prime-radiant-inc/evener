@@ -142,8 +142,15 @@ func run(ctx context.Context, cfg runConfig) error {
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
 		if err := runSeedMarketplaces(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err) //nolint:errcheck
 		}
+	}
+	// Seeding waits on the plugin store lock, and reports what it could not do
+	// as a warning — right for a marketplace it failed to fetch, wrong for a
+	// caller that has left. Everything after this builds a client and a
+	// session, so the interrupt is read here rather than carried into them.
+	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
 	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 

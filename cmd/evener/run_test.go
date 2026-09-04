@@ -1388,3 +1388,48 @@ func TestRunDisposesTheUnsandboxedScratchWhenNoSessionTakesTheEnvironment(t *tes
 		t.Errorf("unsandboxed scratch %s survived the failed launch: stat err = %v", scratch, err)
 	}
 }
+
+// Seeding marketplaces waits on the plugin store lock, so an interrupt can
+// land there — and seeding reports its own failures as warnings, which is
+// right for a marketplace it could not fetch and wrong for a caller that has
+// gone. A run that walks past it builds a client and a session on a context
+// that is already dead.
+func TestRunStopsWhenTheInterruptLandsDuringSeeding(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldEnsure, oldSeed, oldNew := runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession
+	t.Cleanup(func() {
+		runEnsureUserConfigDirs, runSeedMarketplaces, runNewSession = oldEnsure, oldSeed, oldNew
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var seedCtx context.Context
+	runSeedMarketplaces = func(ctx context.Context) error {
+		cancel()
+		seedCtx = ctx
+		return nil
+	}
+	created := false
+	runNewSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error) {
+		created = true
+		return nil, errors.New("a session was created after the interrupt")
+	}
+
+	dir := t.TempDir()
+	err := run(ctx, runConfig{
+		prompt: "hello", model: "openai/gpt-test", workDir: dir, stateDir: dir,
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v, want the interrupt that ended the run", err)
+	}
+	if want := "interrupted while seeding default marketplaces"; !strings.Contains(err.Error(), want) {
+		t.Errorf("run error = %q, want it to say %q", err, want)
+	}
+	if created {
+		t.Error("created a session for a run an interrupt had already ended")
+	}
+	if seedCtx == nil || seedCtx.Err() == nil {
+		t.Errorf("seeding ran on %v, want the context an interrupt cancels", seedCtx)
+	}
+}
