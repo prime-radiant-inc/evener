@@ -1,16 +1,19 @@
 # Web UI keybindings
 
-Status: **current** (Phase 3). The web hub's global keyboard chords are
+Status: **current** (Phase 4a). The web hub's global keyboard chords are
 owned by one module, `cmd/evener-hub/frontend/src/keybindings/`, and one
 window-level dispatcher, instead of each component installing its own
 `keydown` listener. User overrides persist on the hub and sync to every
-paired browser. Phase 3 added the first navigation bindings (session-pane
+paired browser. Phase 3 added the navigation bindings (session-pane
 cycling, transcript scroll) on that infrastructure, plus full keyboard
-operation of the AskDock ask-user surface.
+operation of the AskDock ask-user surface. Phase 4a finalized the default
+map (strict Mod chords for ⌘K/⌘I/⌘J, new `settings` and transcript
+end-jump bindings) and shipped the two discoverability surfaces: the
+cheatsheet overlay (⌘/ or `?`) and hold-modifier hint chips.
 
 ## Architecture
 
-Four pieces, all in `src/keybindings/` and all React-free:
+Seven pieces, all in `src/keybindings/` and all React-free:
 
 - **chord.ts** — the chord AST (`Chord` = required modifiers + optional
   modifiers + key; `KeySequence` = a list of presses). `parseChord` wraps
@@ -26,16 +29,21 @@ Four pieces, all in `src/keybindings/` and all React-free:
 - **dispatcher.ts** — the single window-level `keydown` listener. On every
   registry change it rebuilds a tinykeys `createKeybindingsHandler` over the
   active scope set: the scope stack top-down, then the `global` scope.
-- **defaults.ts** — the built-in binding map (the six legacy shell chords
-  plus the six Phase 3 navigation chords) and
-  `registerDefaultBindings`, which also registers each `$mod` chord's
-  cross-platform Meta/Control twin (the pre-dispatcher listeners accepted
-  `metaKey || ctrlKey` on every platform, so both work everywhere).
-  `DEFAULT_BINDINGS` is also the canonical action universe: each entry
-  carries the action's user-facing `title`, and the Settings keybindings
-  section enumerates it live. `registerDefaultBindingsForAction` and
-  `defaultBindingChordsForAction` are the per-action variants the overrides
-  layer uses to restore and to simulate restorations.
+- **defaults.ts** — the built-in binding map (the six legacy shell chords,
+  the six Phase 3 navigation chords, and the Phase 4a additions:
+  `settings`, `transcript.scrollTop`/`scrollBottom`, and the cheatsheet
+  triggers) and `registerDefaultBindings`, which also registers each
+  `$mod` chord's cross-platform Meta/Control twin (the pre-dispatcher
+  listeners accepted `metaKey || ctrlKey` on every platform, so both work
+  everywhere). `DEFAULT_BINDINGS` is also the canonical action universe:
+  each entry carries the action's user-facing `title`, and both the
+  Settings keybindings section and the cheatsheet overlay enumerate it
+  live. One entry is CONDITIONAL: the `?` cheatsheet trigger
+  (`CHARACTER_KEY_TRIGGER_BINDING_ID`), registered only while the
+  character-key-triggers pref is on (see the cheatsheet section below).
+  `registerDefaultBindingsForAction` and `defaultBindingChordsForAction`
+  are the per-action variants the overrides layer uses to restore and to
+  simulate restorations.
 - **overrides.ts** — `rebindAction(registry, actionId, chord | null)`
   replaces an action's current bindings (default + `#mod-twin` + any earlier
   `#override`) with a single `#override` binding that keeps the default's
@@ -46,15 +54,23 @@ Four pieces, all in `src/keybindings/` and all React-free:
   never throws: unknown actions, unparseable chords, reserved
   (browser/OS-claimed) chords, and conflicts each become a typed
   `ValidationWarning` and the rule is skipped.
+- **display.ts** — the shared read model for the two binding-list UIs
+  (Settings → Keybindings and the cheatsheet overlay):
+  `ACTION_DISPLAY_ROWS` (one row per action, in default-map order) and
+  `displayBindingsFor`, which picks an action's effective display bindings
+  from the live registry (the override alone when one is applied, else
+  every non-twin default entry). Both UIs read this module so no
+  hand-maintained copy can go stale.
 
 The one wiring point that touches React and the app's stores is
 `src/shell/installKeybindings.ts`: an idempotent per-window installer that
-registers the default bindings and attaches the dispatcher with the real
+registers the default bindings, installs the character-key-trigger
+reconcile (the `?` pref gating), and attaches the dispatcher with the real
 predicates injected. AppShell calls it at mount; every component that
-registers a chord action (RailHost, Settings, SelectionQuote, and every
-Session pane via its transcript-scroll hook) calls it too, so those
-components' chords also work when they are mounted without the shell —
-their unit tests render them standalone.
+registers a chord action (RailHost, Settings, SelectionQuote,
+CheatsheetOverlay, and every Session pane via its transcript-scroll hook)
+calls it too, so those components' chords also work when they are mounted
+without the shell — their unit tests render them standalone.
 
 ## Precedence
 
@@ -98,14 +114,16 @@ equivalent of the per-component listeners the dispatcher replaced.
 Phase 3's transcript scroll uses the same contract, keyed on the focused
 pane instead of a captured selection (see below).
 
-## Default binding map (as shipped after Phase 3)
+## Default binding map (final since Phase 4a)
 
 Every entry of `DEFAULT_BINDINGS` (`src/keybindings/defaults.ts`), in map
 order. Chords are rendered the way `KeyHint`/`formatChord` render them:
 `$mod` reads as ⌘ on Apple platforms and Ctrl elsewhere, every other key
 name is verbatim. "Policy" lists only the flags that differ from the
 defaults (`allowInEditable: false`, `allowInModal: false`,
-`ignoreIfDefaultPrevented: true`).
+`ignoreIfDefaultPrevented: true`). The `?` row is the map's one
+conditional entry: it is live only while the character-key-triggers pref
+is on (see the cheatsheet section below).
 
 | Chord | Action | Scope | Non-default policy | What it does |
 |---|---|---|---|---|
@@ -114,60 +132,63 @@ defaults (`allowInEditable: false`, `allowInModal: false`,
 | ⌘I / Ctrl+I | `composer.focus` | global | `allowInEditable` | Focus the composer |
 | ⌘J / Ctrl+J | `next-needs-you` | global | `allowInEditable` | Go to the next session needing you |
 | ⌘' / Ctrl+' | `selection.quote` | global | `allowInEditable`, `allowInModal` | Quote the selection into the composer |
+| ⌘, / Ctrl+, | `settings` | global | `allowInEditable` | Open settings (the action id IS the palette's `settings` command id) |
 | Alt+ArrowRight | `session.next` | global | — | Focus the next session pane |
 | Alt+ArrowLeft | `session.previous` | global | — | Focus the previous session pane |
 | Alt+ArrowUp | `transcript.lineUp` | global | — | Scroll the focused pane's transcript up one line |
 | Alt+ArrowDown | `transcript.lineDown` | global | — | Scroll the focused pane's transcript down one line |
 | Alt+Shift+ArrowUp | `transcript.pageUp` | global | — | Scroll the focused pane's transcript up one page |
 | Alt+Shift+ArrowDown | `transcript.pageDown` | global | — | Scroll the focused pane's transcript down one page |
+| Alt+Home | `transcript.scrollTop` | global | — | Jump the focused pane's transcript to the top |
+| Alt+End | `transcript.scrollBottom` | global | — | Jump the focused pane's transcript to the bottom |
 | Escape | `settings.close` | settings | `allowInEditable` | Close settings |
+| ⌘/ / Ctrl+/ | `cheatsheet.toggle` | global | `allowInEditable`, `allowInModal` | Open/close the keyboard shortcuts overlay |
+| ? | `cheatsheet.toggle` | global | conditional on the character-key-triggers pref | Open/close the keyboard shortcuts overlay |
+| Escape | `cheatsheet.close` | cheatsheet | `allowInEditable` | Close the keyboard shortcuts overlay |
 
-Match permissiveness, per chord (all of it exact preservation of the
-pre-dispatcher listeners — Phase 2a's ruling was no behavior change):
+Match permissiveness, per chord. The legacy chords preserve the
+pre-dispatcher listeners exactly except where Phase 4a deliberately
+tightened them — called out first:
 
+- **Phase 4a behavior change: ⌘K / ⌘I / ⌘J are now STRICT.** The 2a map
+  had carried the legacy AppShell listener's missing shift/alt guard as
+  `[Shift]+[Alt]` optionality, so ⌘⌥I fired `composer.focus` and
+  Ctrl+Shift+J fired `next-needs-you` — hijacking the browser's DevTools
+  chords. Phase 4a dropped that optionality
+  (`docs/superpowers/plans/2026-09-04-webui-keybindings-p4-plan.md`,
+  Design decision 1): ⌘⌥I, Ctrl+Shift+J, and ⌘⇧J now revert to the
+  browser. The `legacyEitherMod` either/both-Meta-Ctrl permissiveness
+  stays.
 - Every `$mod` chord also registers its cross-platform Meta/Control twin,
   so e.g. Ctrl+K fires on macOS exactly like ⌘K. On top of that, the five
   legacy `$mod` chords carry `legacyEitherMod`: the other of Meta/Ctrl is
   an *optional* modifier on both the entry and its twin, so Meta+Ctrl+K
   fires too.
-- ⌘K / ⌘I / ⌘J list `[Shift]+[Alt]` as optional modifiers (the legacy
-  AppShell listener had no shift/alt guard), so ⌘⇧K, ⌘⌥I, Ctrl+Shift+J
-  etc. all fire. This means `composer.focus` and `next-needs-you` keep
-  hijacking the browser's DevTools chords (⌘⌥I, Ctrl+Shift+J) exactly as
-  the legacy listeners did — see the provisional-status note below.
 - ⌘' allows an extra Shift but never Alt (the legacy `!event.altKey`
   AltGr guard); ⌘B is strict — no extra modifiers at all.
+- ⌘, (`settings`) and ⌘/ (`cheatsheet.toggle`) are new chords with no
+  legacy listener to match: strict `$mod` with the cross-platform twin
+  only, no `legacyEitherMod`.
+- `?` lists Shift as optional because tinykeys rejects an event carrying
+  any modifier the binding does not name, and every common layout types
+  `?` WITH Shift held — a bare `?` binding would never fire. Display
+  drops optional modifiers, so the row still reads `?`.
 - `settings.close`'s Escape lists every modifier optional (the legacy
-  listener checked only `event.key === "Escape"`).
-- The six Phase 3 Alt chords are strict single-family chords with no
+  listener checked only `event.key === "Escape"`); `cheatsheet.close`'s
+  Escape is the same.
+- The eight Alt chords are strict single-family chords with no
   optional modifiers — Alt+ArrowUp and Alt+Shift+ArrowUp must stay
   distinct bindings (line vs page scroll), which forbids a `[Shift]` on
   the plain chord — and no `$mod` twin. All keep the default
-  `allowInEditable: false`, so plain Alt+Arrow keeps its native
-  word-move/selection meaning inside inputs and the composer.
+  `allowInEditable: false`, so plain Alt+Arrow and Alt+Home/End keep
+  their native word-move/selection/caret meaning inside inputs and the
+  composer.
 
-Two registered actions have **no default chord**: `transcript.scrollTop`
-and `transcript.scrollBottom`. Their handlers exist (each Session pane
-registers them), but the Phase 4 keymap decides whether they get a chord
-at all. Because `DEFAULT_BINDINGS` is the Settings section's row source
-and the override validator's action universe, chord-less actions appear in
-neither — an override payload naming one is skipped with an unknown-action
-warning.
-
-### Provisional status
-
-The six Phase 3 chords are provisional: Phase 4 owns the comprehensive
-keymap and may re-cut any of them (they are registry defaults, remappable
-via the Phase 2b overrides store from day one). The ledger records two
-known Phase 4 candidates:
-
-1. **Removing the legacy DevTools-chord hijack permissiveness.** ⌘⌥I and
-   Ctrl+Shift+J fire `composer.focus` and `next-needs-you` today because
-   Phase 2a preserved the legacy listeners' missing shift/alt guards
-   exactly. Revisiting that was deferred policy then and is still open.
-2. **Deciding chords for `transcript.scrollTop`/`scrollBottom`** — and, if
-   they stay chord-less, giving the validator/Settings story for actions
-   that exist outside `DEFAULT_BINDINGS`.
+The map is final as of Phase 4a: the provisional ledger Phase 3 carried
+is closed — the DevTools-chord hijack permissiveness is gone (above) and
+`transcript.scrollTop`/`scrollBottom` have their chords. Every binding
+stays remappable through the hub-synced overrides store (Persistence
+below); the Settings listing is read-only until the Phase 4b editor.
 
 ## Phase 3: session-pane cycling
 
@@ -195,8 +216,8 @@ each:
 
 `transcript.lineUp/lineDown` (Alt+ArrowUp/Down) and
 `transcript.pageUp/pageDown` (Alt+Shift+ArrowUp/Down) scroll the focused
-session pane's transcript; `transcript.scrollTop`/`scrollBottom` jump to
-the ends (chord-less for now). The seam is
+session pane's transcript; `transcript.scrollTop`/`scrollBottom` (Alt+Home
+/ Alt+End since Phase 4a) jump to the ends. The seam is
 `src/panes/session/transcript/flow/useTranscriptScrollKeys.ts`, mounted
 once per Session pane:
 
@@ -257,6 +278,70 @@ overrides store:
   row is still hidden/inert, so focus moves to the first remaining batch's
   entry control instead. A failed send keeps focus in the intact dock; a
   stale outcome is a no-op.
+
+## Phase 4a: cheatsheet overlay
+
+`cheatsheet.toggle` opens a modal "Keyboard shortcuts" overlay
+(`src/shell/cheatsheet/CheatsheetOverlay.tsx`) listing every action with
+its EFFECTIVE chord, grouped Sessions / Transcript / Composer / General
+(anything the grouping doesn't name — including a future action — lands
+in General, so a new action can never silently vanish). Both the row list
+and the chords are live reads (`keybindings/display.ts` over the
+registry), so hub-synced overrides and unbound actions render truthfully
+— an action with no effective binding shows "Unbound".
+
+Triggers:
+
+- **⌘/ (Ctrl+/ elsewhere)** — the primary trigger, an ordinary default-map
+  binding for `cheatsheet.toggle`. `allowInEditable` (not a printable
+  character) and `allowInModal`, so the same chord also toggles the
+  overlay CLOSED while it is open.
+- **?** — the secondary trigger, and the default map's one CONDITIONAL
+  entry (`CHARACTER_KEY_TRIGGER_BINDING_ID`). It is registered exactly
+  while the **Character-key shortcuts** pref
+  (`prefsStore.characterKeyTriggers`, browser-local localStorage, default
+  ON) is on — the WCAG 2.1.4 turn-off for single-character shortcuts. The
+  pref surfaces as a Switch row at the top of Settings → Keybindings;
+  turning it off leaves every shortcut on a modifier chord. Because `?` is
+  a printable character it never fires from an editable target or over a
+  modal. The reconcile (`cheatsheetController.ts`) subscribes to both the
+  prefs store and the overrides store: an applied override (or unbind)
+  owns the action's whole chord set, so `?` never reappears on an
+  overridden `cheatsheet.toggle` — the override is the user's own
+  replacement for both triggers.
+- **Close**: Escape (the OverlayPanel's own handler claims it first
+  whenever focus is inside the dialog; the scope-gated `cheatsheet.close`
+  binding is the window-level backstop) or ⌘/ again.
+
+Desktop-only: AppShell mounts the overlay only off mobile, so no action
+is registered on a touch viewport and the trigger chords stay inert there
+(RailHost's `rail.toggle` no-registration pattern). The `?` reconcile
+installs with the dispatcher, not the overlay, so the pref invariant — and
+the Settings section's customized-marker comparison — holds on mobile too.
+
+## Phase 4a: hold-modifier hints
+
+Holding the primary modifier ALONE — ⌘ on Apple platforms, Ctrl elsewhere
+— for ~400ms fades hint chips in over the bound affordances
+(`src/shell/holdhints/`): the palette trigger, the rail toggle, the
+session tabs (one chip carrying both cycling chords), and the composer.
+Each chip shows the action's effective chord from the live registry (the
+same `display.ts` read the overlay and Settings make), so overrides show
+truthfully and an unbound action renders no chip. Chips anchor to the real
+elements at show time via their data attributes — never
+absolutely-positioned guesses — so an affordance that is not mounted (the
+rail's toggle exists in exactly one of its two states) renders no chip.
+
+Release hides the chips, and so does every other cleanup path: window
+blur, `visibilitychange`, any keydown that is not the tracked modifier (on
+macOS a chord's keyup may never arrive, so the keydown itself is the
+hide), and a 10s hard-timeout backstop. A stuck visible state must be
+impossible. The listeners are observers only — they never preventDefault
+or stopPropagation, so the dispatcher and every other keydown consumer see
+exactly the events they would see without this module. Under
+`prefers-reduced-motion` the chips appear instantly (no fade).
+Desktop-only by AppShell's mount gate: a touch viewport installs no
+listeners and renders no chips.
 
 ## Registering an action and a binding
 
@@ -405,24 +490,22 @@ never escapes the client's notification dispatch.
 ### Settings section
 
 Settings → Keybindings is a **read-only** listing of the effective
-bindings: one row per action from `DEFAULT_BINDINGS` (never a
-hand-maintained copy), the chord rendered with the `KeyHint` widget from
-the live registry, and a "Customized" marker on actions whose effective
-bindings differ from the default map (including unbound actions). The
-store's `hubSupport`/`hubError`/validation warnings surface as quiet status
-or alert text. Editing arrives with the Phase 4 editor.
+bindings: one row per action from `DEFAULT_BINDINGS` via
+`keybindings/display.ts` (never a hand-maintained copy), the chord
+rendered with the `KeyHint` widget from the live registry, and a
+"Customized" marker on actions whose effective bindings differ from the
+default map (including unbound actions; the `?` entry's pref-conditional
+registration is not itself a customization). A **Character-key shortcuts**
+Switch row at the top owns the WCAG 2.1.4 pref. The store's
+`hubSupport`/`hubError`/validation warnings surface as quiet status or
+alert text. Editing arrives with the Phase 4b editor.
 
 ## Deliberately not here yet
 
 Later phases of the webui-keybindings plan add, and this module already
 leaves room for:
 
-- **A keybinding editor** (Phase 4) — the store's `patchOverrides` is the
+- **A keybinding editor** (Phase 4b) — the store's `patchOverrides` is the
   write path it will use; the Settings section stays read-only until then.
-- **A shortcuts overlay / cheatsheet UI** — planned for Phase 3, not landed;
-  Phase 3 as executed shipped the navigation bindings, the AskDock keyboard
-  contract, and this map instead.
-- **Hold-modifier chord hints** (Phase 4) — `formatChord`/`formatSequence`
-  exist for exactly this consumer.
 - `Binding.when` is still stored verbatim and never evaluated; scope-stack
   membership is the only gating the dispatcher applies.
