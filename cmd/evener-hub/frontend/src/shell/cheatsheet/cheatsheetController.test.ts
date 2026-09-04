@@ -7,7 +7,7 @@ import type { KeybindingsOverrides, KeybindingsRule } from "../../protocol/types
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { installCharacterKeyTriggerReconcile } from "./cheatsheetController";
+import { installCharacterKeyTriggerReconcile, reconcileCharacterKeyTrigger } from "./cheatsheetController";
 
 // Node 26 shadows jsdom's real window.localStorage with its own
 // (non-functional under vitest) global - the same in-memory stand-in
@@ -98,7 +98,13 @@ describe("cheatsheet controller: character-key trigger reconcile", () => {
     expect(characterKeyWarnings()).toEqual([]);
   });
 
-  test("pref flip with a conflicting Shift+? override does NOT register ?, surfaces a warning, and recovers when the conflict clears", async () => {
+  // The pref-flip flow is owned by the STORE's re-apply (finding 20): the
+  // simulation treats "?" as pref-authoritative, so a flip ON un-applies an
+  // overlapping override through the validation layer's restore-wins rule -
+  // the reconcile's own overlap skip (the next test) is the guard for
+  // overlaps validation does not manage (a foreign binding squatting the
+  // chord).
+  test("pref flip ON un-applies a conflicting Shift+? override (restore wins), registers ?, and clearing the rule clears the warning", async () => {
     disposers.push(installCharacterKeyTriggerReconcile());
 
     // Pref off: "?" unregisters, so a Shift+? claim by another action
@@ -117,27 +123,63 @@ describe("cheatsheet controller: character-key trigger reconcile", () => {
       true,
     );
 
-    // Pref back on: "?" cannot come back - it would overlap the live
-    // composer Shift+?. The reconcile must SKIP the registration and say
-    // why on the warnings channel, not shadow or be shadowed.
+    // Pref back on: the store's re-apply simulates "?" as present (the
+    // pref is authoritative over the flip-instant registry), so the
+    // composer claim conflicts, the restore wins, and the override is
+    // UN-APPLIED with a validation conflict warning - then the reconcile
+    // registers "?" against a clean map.
     prefsStore.getState().setCharacterKeyTriggers(true);
-    expect(questionTriggerRegistered()).toBe(false);
-    const warnings = characterKeyWarnings();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.rule).toEqual({ action: ACTIONS.cheatsheetToggle, chord: "[Shift]+?" });
-    expect(warnings[0]?.conflictWith).toBe(ACTIONS.composerFocus);
-    expect(warnings[0]?.message).toBe(
-      `the "?" cheatsheet trigger was not registered: chord "[Shift]+?" in scope "global" is already bound by "${ACTIONS.composerFocus}"`,
+    expect(keybindingsRegistry.getState().bindings.some((b) => b.id === `${ACTIONS.composerFocus}#override`)).toBe(
+      false,
     );
+    expect(questionTriggerRegistered()).toBe(true);
+    const warnings = keybindingsStore.getState().warnings;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.reason).toBe("conflict");
+    expect(warnings[0]?.rule).toEqual({ action: ACTIONS.composerFocus, chord: "Shift+?" });
+    expect(warnings[0]?.conflictWith).toBe(ACTIONS.cheatsheetToggle);
 
-    // The overlap clearing (here: the hub drops the composer override)
-    // re-runs the reconcile through the overrides-store subscription: "?"
-    // registers and exactly the character-key warning clears.
+    // The hub dropping the rule re-validates clean: the warning clears and
+    // nothing else moves.
     client.emitNotification({
       method: "evener/settings/keybindings/changed",
       params: overridesPayload(2, []),
     });
     expect(keybindingsStore.getState().revision).toBe(2);
+    expect(questionTriggerRegistered()).toBe(true);
+    expect(keybindingsStore.getState().warnings).toEqual([]);
+  });
+
+  // The reconcile's own overlap guard (finding 17): an overlap validation
+  // does not manage - a FOREIGN binding squatting the "?" chord - skips the
+  // registration with a character-key-conflict warning, and clearing the
+  // squatter lets the next reconcile register "?" and clear the warning.
+  test("a foreign binding overlapping ? skips the registration with a character-key-conflict warning until it clears", () => {
+    disposers.push(installCharacterKeyTriggerReconcile());
+
+    prefsStore.getState().setCharacterKeyTriggers(false);
+    expect(questionTriggerRegistered()).toBe(false);
+    // A bare "?" squatter: chordsOverlap treats the entry's Shift as
+    // OPTIONAL, so the bare form overlaps - but its serialization differs
+    // from "[Shift]+?", so the registry's exact-match registration allows it.
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "?",
+    });
+
+    prefsStore.getState().setCharacterKeyTriggers(true);
+    expect(questionTriggerRegistered()).toBe(false);
+    const warnings = characterKeyWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.rule).toEqual({ action: ACTIONS.cheatsheetToggle, chord: "[Shift]+?" });
+    expect(warnings[0]?.conflictWith).toBe("foreign.action");
+    expect(warnings[0]?.message).toBe(
+      'the "?" cheatsheet trigger was not registered: chord "[Shift]+?" in scope "global" is already bound by "foreign.action"',
+    );
+
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    reconcileCharacterKeyTrigger();
     expect(questionTriggerRegistered()).toBe(true);
     expect(characterKeyWarnings()).toEqual([]);
   });

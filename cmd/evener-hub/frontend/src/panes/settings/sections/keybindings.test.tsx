@@ -1091,3 +1091,31 @@ test("editable true → false → true leaves the row read-only then editable ag
   await userEvent.setup().click(chordButton);
   expect(captureBox().textContent).toContain("Press new shortcut…");
 });
+
+// Reset availability derives from the hub's RAW rules: a persisted rule
+// validation skips (reserved here) never reaches the validated set, but
+// dropping it is exactly the meaningful action - so the row must offer
+// Reset even though the effective bindings never changed.
+test("a persisted rule skipped by validation shows Reset, and clicking it drops the rule from the hub payload", async () => {
+  // Control+W is reserved on every platform: the rule is skipped with a
+  // warning and never applies.
+  const client = await wireEditableClient([{ action: ACTIONS.railToggle, chord: "Control+W" }]);
+  render(<KeybindingsSection />);
+
+  const row = rowFor("Toggle the sidebar");
+  const reset = within(row).getByRole("button", { name: "Reset" });
+  // An action with no raw rule shows no Reset (regression).
+  expect(within(rowFor("Open the command palette")).queryByRole("button", { name: "Reset" })).toBeNull();
+  // The Customized marker stays on the effective bindings: the skipped rule
+  // changed nothing, so no marker.
+  expect(within(row).queryByText("Customized")).toBeNull();
+
+  await userEvent.setup().click(reset);
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  // The PATCH drops the rule: the full replacement rule set without it.
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [] },
+  });
+  await waitFor(() => expect(within(rowFor("Toggle the sidebar")).queryByRole("button", { name: "Reset" })).toBeNull());
+});

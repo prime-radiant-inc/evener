@@ -312,14 +312,20 @@ Triggers:
   prefs store and the overrides store: an applied override (or unbind)
   owns the action's whole chord set, so `?` never reappears on an
   overridden `cheatsheet.toggle` — the override is the user's own
-  replacement for both triggers. The register path is also
-  overlap-checked: a chord claimed while the pref was off (say
-  `composer.focus` on Shift+?) conflicts with nothing at bind time, so
-  when the pref flips back on the reconcile must NOT register `?` over it
-  — it skips the registration and surfaces a `character-key-conflict`
-  warning naming the holding action in the Settings section's warnings
-  list, and removing the overlap registers `?` on the next reconcile
-  pass.
+  replacement for both triggers. A pref flip also RE-VALIDATES the
+  persisted rules (the overrides store's prefs subscription re-applies
+  the raw set): the simulation treats `?` as pref-authoritative — the
+  re-apply runs in the flip instant, before the reconcile has
+  unregistered/re-registered the entry, and must simulate the map the
+  reconcile is about to establish — so a chord claimed while the pref
+  was off (say `composer.focus` on Shift+?) is un-applied by the
+  restore-wins rule with a conflict warning when the pref flips back
+  on, and a rule skipped while the pref was on applies when it flips
+  off. The reconcile's register path is separately overlap-checked as
+  the guard for overlaps validation does not manage (a foreign binding
+  squatting the chord): it skips the registration and surfaces a
+  `character-key-conflict` warning naming the holder in the Settings
+  section's warnings list until the overlap clears.
 - **Close**: Escape (the OverlayPanel's own handler claims it first
   whenever focus is inside the dialog; the scope-gated `cheatsheet.close`
   binding is the window-level backstop) or ⌘/ again.
@@ -587,9 +593,11 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   with `expectedRevision` optimistic concurrency (the apply flow above); a
   revision conflict refreshes to the server's current payload.
 - **Unbind / Reset.** "Unbind" (bound actions) writes a `chord: null`
-  rule; "Reset" (actions carrying an override) drops the action from the
-  payload, restoring its defaults through the reconcile's
-  `restoreDefaultBinding`. Failures surface inline under the row.
+  rule; "Reset" (actions carrying a RAW override rule — including a
+  persisted rule validation skips, where dropping it is exactly the
+  meaningful action) drops the action from the payload, restoring its
+  defaults through the reconcile's `restoreDefaultBinding`. Failures
+  surface inline under the row.
 - **cheatsheet.toggle.** The ⌘/ base chord edits like any other. The `?`
   character-key entry renders read-only with a note while it is
   registered: it follows the character-key pref and the

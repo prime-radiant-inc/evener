@@ -13,8 +13,9 @@
 // the offending rule is skipped, so persisted data can degrade to defaults
 // but can never crash the shell.
 
-import { chordsOverlap, type KeySequence, parseChord } from "./chord";
-import { DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
+import { ACTIONS } from "./actions";
+import { chordsOverlap, type KeySequence, parseChord, serializeChord } from "./chord";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
 import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export type KeybindingsPlatform = "apple" | "other";
@@ -227,6 +228,37 @@ export function validateOverrideRules(
     const list = live.get(binding.actionId) ?? [];
     list.push({ scope: binding.scope, sequence: binding.chord });
     live.set(binding.actionId, list);
+  }
+  // The pref is authoritative over the live registry for the conditional
+  // "?" entry: a pref-flip re-apply (stores/keybindings.ts's prefs
+  // subscription) runs in the flip instant, BEFORE the cheatsheetController's
+  // reconcile has unregistered or re-registered "?", and must simulate the
+  // map the reconcile is about to establish - otherwise a pref-off re-apply
+  // would keep skipping a claim that is now valid, and a pref-on re-apply
+  // would leave a now-conflicting claim applied. Steady state (registry
+  // already mirrors the pref) is untouched. Only the default-map shape is
+  // adjusted: a cheatsheet.toggle override candidate or a dropped restore
+  // overwrites the action's whole final entry below anyway.
+  const questionShape = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+    characterKeyTriggers: true,
+  }).find((shape) => shape.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
+  if (questionShape !== undefined) {
+    const questionSerialized = serializeChord(questionShape.sequence);
+    const isQuestion = (binding: EffectiveBinding) =>
+      binding.scope === questionShape.scope && serializeChord(binding.sequence) === questionSerialized;
+    const toggleLive = live.get(ACTIONS.cheatsheetToggle) ?? [];
+    const liveHasQuestion = toggleLive.some(isQuestion);
+    if (characterKeyTriggers && !liveHasQuestion) {
+      live.set(ACTIONS.cheatsheetToggle, [
+        ...toggleLive,
+        { scope: questionShape.scope, sequence: questionShape.sequence },
+      ]);
+    } else if (!characterKeyTriggers && liveHasQuestion) {
+      live.set(
+        ACTIONS.cheatsheetToggle,
+        toggleLive.filter((binding) => !isQuestion(binding)),
+      );
+    }
   }
   const dropped = new Set<string>();
   for (const action of appliedActionIds) {

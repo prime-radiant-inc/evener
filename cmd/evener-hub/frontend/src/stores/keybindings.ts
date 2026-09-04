@@ -16,6 +16,7 @@
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { serializeChord } from "../keybindings/chord";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../keybindings/defaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "../keybindings/overrides";
 import { type Binding, keybindingsRegistry } from "../keybindings/registry";
 import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "../keybindings/validation";
@@ -582,6 +583,40 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
 connectionStore.subscribe(onConnectionChange);
 const initialClient = connectionStore.getState().client;
 if (initialClient !== null) rewireClient(initialClient);
+
+// A characterKeyTriggers flip changes what the persisted rules MEAN: a rule
+// skipped while the pref was on (a Shift+? claim conflicting with the
+// built-in "?" trigger) validates clean once the pref is off, and an applied
+// rule that overlaps "?" stops validating when the pref flips back on.
+// Re-apply the hub's raw set through the same pref-aware simulation so the
+// effective map and the warnings list always reflect the CURRENT pref -
+// without the flip the skip (and its warning) would go stale in both
+// directions. Idempotent like every apply: an unchanged effective map
+// mutates nothing. The setState re-fires this store's subscribers - the
+// cheatsheetController's reconcile among them - which is total and
+// idempotent, so the two compose in either subscription order.
+prefsStore.subscribe((state, previous) => {
+  if (state.characterKeyTriggers === previous.characterKeyTriggers) return;
+  // The registry must mirror the pref BEFORE the re-apply mutates: tinykeys
+  // canonicalizes the shifted character, so the conditional entry and a
+  // Shift+? claim serialize identically - a pref-off re-apply registering
+  // that claim while the entry is still live would hit registerBinding's
+  // exact-match conflict and roll back. Unregistering is idempotent and
+  // mirrors what the cheatsheetController's reconcile is about to do (it
+  // re-derives the same end state and no-ops). The pref-ON direction needs
+  // no mirror: the re-apply's pref-authoritative simulation un-applies a
+  // conflicting claim first, and the reconcile - fired by the setState
+  // below - registers "?" against the clean map.
+  if (!state.characterKeyTriggers) keybindingsRegistry.getState().unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+  try {
+    applyOverrideRules(keybindingsStore.getState().rawOverrides);
+  } catch (error) {
+    // Same posture as the changed-notification path: a reconcile failure
+    // surfaces as hubError (the registry has already rolled back to its last
+    // good state), never as an exception escaping the prefs dispatch.
+    keybindingsStore.setState({ hubError: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 export function resetKeybindingsStoreForTests(): void {
   invalidateReadyGeneration();

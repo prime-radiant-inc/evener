@@ -276,7 +276,12 @@ interface KeybindingRowProps {
 function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers }: KeybindingRowProps) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const hasOverride = useKeybindingsStore((s) => s.overrides.some((rule) => rule.action === actionId));
+  // Reset availability derives from the hub's RAW rules, not the validated
+  // set: a persisted rule validation skips (reserved/malformed/conflicting)
+  // never reaches `overrides`, but dropping it is exactly the meaningful
+  // action - replacementRules composes from rawOverrides for the same
+  // reason. The Customized marker stays on the effective bindings.
+  const hasOverride = useKeybindingsStore((s) => s.rawOverrides.some((rule) => rule.action === actionId));
   const chordButtonRef = useRef<HTMLButtonElement>(null);
   // Set when a capture ends from the keyboard (Escape cancel, Enter save):
   // focus returns to the chord button so the keyboard flow continues where

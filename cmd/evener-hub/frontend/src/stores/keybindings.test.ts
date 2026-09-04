@@ -1258,3 +1258,72 @@ describe("keybindings store: write generation fence", () => {
   // (write serialization describe): two writes created in one tick under one
   // generation both land in order - the fence must not reject them.
 });
+
+// A characterKeyTriggers flip re-validates the persisted rules against the
+// new pref: the simulation treats the "?" entry as pref-authoritative (the
+// re-apply runs in the flip instant, before the controller's reconcile has
+// re-registered/unregistered it), so a rule skipped under one pref applies
+// under the other - and vice versa - with the warnings list following.
+describe("keybindings store: pref flips re-validate persisted overrides", () => {
+  test("a Shift+? override skipped while the pref is on applies when the pref flips off, and is skipped again when it flips back on", async () => {
+    // Pref ON (default), "?" live: the claim conflicts with the built-in
+    // trigger and is skipped with a conflict warning.
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.composerFocus, chord: "Shift+?" }]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([
+      ACTIONS.composerFocus,
+      `${ACTIONS.composerFocus}#mod-twin`,
+    ]);
+    const skipped = keybindingsStore.getState().warnings;
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.reason).toBe("conflict");
+    expect(skipped[0]?.conflictWith).toBe(ACTIONS.cheatsheetToggle);
+    // The RAW set retains the skipped rule - it is still the hub's state.
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Shift+?" }]);
+
+    // Pref OFF: the re-apply simulates "?" as absent (it is still live in
+    // the registry for this instant - the controller's reconcile has not
+    // unregistered it yet, and in this test file no reconcile is installed
+    // at all), so the claim validates clean and APPLIES; the warning clears.
+    prefsStore.getState().setCharacterKeyTriggers(false);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([`${ACTIONS.composerFocus}#override`]);
+    expect(keybindingsStore.getState().warnings).toEqual([]);
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Shift+?" }]);
+
+    // Pref ON again: symmetric - the claim stops validating (the simulated
+    // map claims "?" again), the restore wins, and the warning returns.
+    prefsStore.getState().setCharacterKeyTriggers(true);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([
+      ACTIONS.composerFocus,
+      `${ACTIONS.composerFocus}#mod-twin`,
+    ]);
+    const reskipped = keybindingsStore.getState().warnings;
+    expect(reskipped).toHaveLength(1);
+    expect(reskipped[0]?.reason).toBe("conflict");
+    expect(reskipped[0]?.conflictWith).toBe(ACTIONS.cheatsheetToggle);
+  });
+
+  test("a pref flip with no ?-related overrides changes nothing", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    const before = bindingsFor(ACTIONS.paletteOpen);
+    expect(before.map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    prefsStore.getState().setCharacterKeyTriggers(false);
+    prefsStore.getState().setCharacterKeyTriggers(true);
+
+    // Same effective map - same binding OBJECTS, nothing torn down - and no
+    // warnings appeared.
+    expect(bindingsFor(ACTIONS.paletteOpen)).toEqual(before);
+    expect(bindingsFor(ACTIONS.paletteOpen)[0]).toBe(before[0]);
+    expect(keybindingsStore.getState().warnings).toEqual([]);
+    expect(keybindingsStore.getState().overrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    expect(keybindingsStore.getState().revision).toBe(1);
+  });
+});
