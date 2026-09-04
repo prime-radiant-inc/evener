@@ -126,7 +126,10 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		if isOwnedDrainJob(run.rec, jm.sessionID) {
 			counted[id] = true
 			ids = append(ids, id)
-			if run.rec.Background && run.stopStatus == "" {
+			// A job whose terminal record exists is finalizing (armFinalizedJob
+			// is between its EventJobFinished and its running-map delete): one
+			// wake from delivery, never an undisposed job to announce.
+			if run.rec.Background && run.stopStatus == "" && run.terminal == nil {
 				background = append(background, id)
 			}
 		}
@@ -172,15 +175,17 @@ func (jm *jobManager) hasRunningDrainJob() bool {
 // notification.
 //
 // Test-only seam. cmd/evener's drain tests hold the drain until the shell they
-// launched has completed, and a completion that is merely RECORDED terminal is
-// not that state: until armFinalizedJob deletes the running entry, the job is
-// still in the running map, backgroundDrainState reads the background set off
-// that map alone, and so a drain starting in the window counts a finished shell
-// as a live undisposed background job — arming the announcement ladder on work
-// that was already committed. The residue after the delete needs no barrier:
-// the NotifyPending record written before it is what both the sole-reason test
-// and subtreeHasLiveTerminalDrainWork count, so a drain that starts there waits
-// for the notification instead of announcing.
+// launched has left the running map, so their scripted provider steps start
+// from the state a real run reaches after the completion wake: the owner
+// notification durable and on its way to the queue. A drain that starts
+// earlier does not announce a finished shell — a job still in the running map
+// with its terminal record written is excluded from the background set
+// (outstandingDrainJobIDsByBackground), and after the delete the NotifyPending
+// record is deliverable work both the sole-reason test and
+// subtreeHasLiveTerminalDrainWork count. What the barrier buys the scripts is
+// a fixed step order, the completion as the next turn, instead of a race
+// between the drain's first pass and an executor exit the manager cannot see
+// until Wait returns.
 func (s *Session) ManagedJobsFinalizedForTest() bool {
 	if s == nil || s.jobManager == nil {
 		return false
@@ -1111,6 +1116,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			} else {
 				switch bgAnnounced[setKey] {
 				case 0, 1:
+					// The verdict above was assembled across sequential reads. A
+					// wake raised since this pass took its edge means a completion
+					// finalized meanwhile and is deliverable now: re-run the pass
+					// so it is delivered instead of announced.
+					if takeDrainWake(wake) {
+						continue
+					}
 					canDetach := s.detachedShellAvailable()
 					var text string
 					if bgAnnounced[setKey] == 0 {

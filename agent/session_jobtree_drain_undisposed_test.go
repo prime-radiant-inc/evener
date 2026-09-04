@@ -646,6 +646,8 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 		// between the pass's queue gate and the turn's own drain.
 		completedOnAnnounce.Do(func() {
 			releaseShell()
+			// TRIPWIRE: the enqueue is one goroutine hop and a few store appends
+			// away; 30s only fires if finalization never lands.
 			waitForCondition(t, 30*time.Second, "completion queued on the rail", func() bool {
 				return sess.peekNotifications() > 0
 			})
@@ -675,5 +677,72 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	}
 	if d.res != answer {
 		t.Fatalf("drain result = %q, want %q: the reply to a request that delivered the completion is the run's answer", d.res, answer)
+	}
+}
+
+// TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob: a job whose
+// terminal record is durable but which is still in the running map (armFinalizedJob
+// has appended NotifyPending and not yet deleted the entry) is finishing, not
+// undisposed. A recheck that meets it there must wait for its notification
+// instead of announcing a job that has already finished.
+func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
+	t.Parallel()
+	const answer = "FINAL-ANSWER: the build passed"
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse(answer) },
+	}}
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		NoProjectPrompts: true,
+		TurnEndsProcess:  true,
+	}))
+	jobID, releaseShell := startControlledBackgroundShell(t, sess)
+
+	// TRIPWIRE: every step is scripted or fed; 30s only fires on a hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	recheck := make(chan time.Time)
+	sess.jobManager.testOnlyAfterNotifyPendingAppend = func(string) {
+		// The terminal record and NotifyPending are durable; the running entry
+		// is still present. Hand the parked drain its recheck tick, then hold
+		// the delete and enqueue until the drain parks again — until that pass
+		// has decided what a finalizing job is. An unbuffered send completes
+		// only while the drain is in waitDrainWake, so no timing is assumed.
+		for range 2 {
+			select {
+			case recheck <- time.Time{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	done := make(chan drainResult, 1)
+	go func() {
+		res, err := sess.drainJobTreeWith(ctx, recheck, sess.kickDriveTree, sess.ProcessInputKind)
+		done <- drainResult{res, err}
+	}()
+	// The drain's first pass arms on the running job and parks; the release
+	// starts finalization, whose hook above then drives the passes.
+	releaseShell()
+	var d drainResult
+	select {
+	case d = <-done:
+	case <-ctx.Done():
+		t.Fatal("drain did not return")
+	}
+	if d.err != nil {
+		t.Fatalf("drain error: %v", d.err)
+	}
+	reqs := adapter.Requests()
+	if requestsContain(reqs, "cannot finish") {
+		t.Fatalf("a finalizing job was announced as undisposed (result %q, %d model calls)", d.res, len(reqs))
+	}
+	if !requestsContain(reqs, jobID, "<job-notification") {
+		t.Fatalf("the completion was never delivered: %d model calls", len(reqs))
+	}
+	if d.res != answer {
+		t.Fatalf("drain result = %q, want %q", d.res, answer)
+	}
+	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
+		t.Fatalf("no job was killed, want no warning, got %+v", warnings)
 	}
 }
