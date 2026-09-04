@@ -378,26 +378,30 @@ func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 // delivered priors of the CURRENT identity, never the predecessor's.
 func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 	t.Parallel()
-	args := watchArgs{
-		Target: "caller",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v1"},
+	// Built fresh per call: configureWatch writes through args.Send, and the
+	// subtests run in parallel.
+	newArgs := func() watchArgs {
+		return watchArgs{
+			Target: "caller",
+			Events: []string{"job.notification"},
+			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v1"},
+		}
 	}
 	recreates := map[string]func(t *testing.T, jm *jobManager){
 		"replaced": func(t *testing.T, jm *jobManager) {
-			replaced := args
-			replaced.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v2 changed"}
+			replaced := newArgs()
+			replaced.Send.Message = "v2 changed"
 			if _, err := jm.configureWatch(replaced); err != nil {
 				t.Fatalf("configure v2 (replace): %v", err)
 			}
 		},
 		"cleared and recreated": func(t *testing.T, jm *jobManager) {
-			clearArgs := args
+			clearArgs := newArgs()
 			clearArgs.Clear = true
 			if _, err := jm.configureWatch(clearArgs); err != nil {
 				t.Fatalf("clear: %v", err)
 			}
-			if _, err := jm.configureWatch(args); err != nil {
+			if _, err := jm.configureWatch(newArgs()); err != nil {
 				t.Fatalf("recreate: %v", err)
 			}
 		},
@@ -406,7 +410,7 @@ func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			jm := newTestJM(t)
-			if _, err := jm.configureWatch(args); err != nil {
+			if _, err := jm.configureWatch(newArgs()); err != nil {
 				t.Fatalf("configure v1: %v", err)
 			}
 			oldCfg := onlyWatchConfigForTest(t, jm)
