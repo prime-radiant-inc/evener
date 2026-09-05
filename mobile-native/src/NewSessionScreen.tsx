@@ -245,8 +245,9 @@ export function NewSessionScreen({
               ))}
             </View>
           ) : null}
-          <ErrorMessage message={form.catalogError} />
-          {form.catalogError ? (
+          <ErrorMessage message={form.metadataError} />
+          <ErrorMessage message={form.modelError} />
+          {form.metadataError || form.modelError ? (
             <Action
               disabled={disabled}
               onPress={() => {

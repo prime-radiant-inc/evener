@@ -118,3 +118,53 @@ it("suppresses completion and metadata after disconnect", async () => {
     models: [],
   });
 });
+
+it("keeps explicit choices when blurring an unchanged project directory", async () => {
+  const { store, calls } = setup();
+  const initial = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await initial;
+  store.getState().selectModel(model);
+  store.getState().setReasoning("high");
+  const blur = store.getState().loadModels();
+  calls[1]?.response.resolve({ data: [model] });
+  await blur;
+  expect(store.getState().model).toEqual(model);
+  expect(store.getState().reasoning).toBe("high");
+});
+
+it("retains metadata failure across model success and clears it only after metadata succeeds", async () => {
+  const { store, calls } = setup();
+  const metadata = store.getState().loadMetadata();
+  calls[0]?.response.reject(new Error("projects unavailable"));
+  calls[1]?.response.resolve({ data: [] });
+  await metadata;
+  expect(store.getState().metadataError).toBeTruthy();
+  const models = store.getState().loadModels();
+  calls[2]?.response.resolve({ data: [model] });
+  await models;
+  expect(store.getState().metadataError).toBeTruthy();
+  const retry = store.getState().loadMetadata();
+  calls[3]?.response.resolve({ data: ["/project"] });
+  calls[4]?.response.resolve({ data: [] });
+  await retry;
+  expect(store.getState().metadataError).toBeNull();
+  expect(store.getState().projects).toEqual(["/project"]);
+});
+
+it("retains model failure across metadata success until model recovery", async () => {
+  const { store, calls } = setup();
+  const models = store.getState().loadModels();
+  calls[0]?.response.reject(new Error("models unavailable"));
+  await models;
+  expect(store.getState().modelError).toBeTruthy();
+  const metadata = store.getState().loadMetadata();
+  calls[1]?.response.resolve({ data: [] });
+  calls[2]?.response.resolve({ data: [] });
+  await metadata;
+  expect(store.getState().modelError).toBeTruthy();
+  const retry = store.getState().loadModels();
+  calls[3]?.response.resolve({ data: [model] });
+  await retry;
+  expect(store.getState().modelError).toBeNull();
+});

@@ -21,7 +21,8 @@ interface Form {
   loadingModels: boolean;
   submitting: boolean;
   error: string | null;
-  catalogError: string | null;
+  metadataError: string | null;
+  modelError: string | null;
   bind(service: NewSessionService | null): void;
   setCwd(value: string, refresh?: boolean): Promise<void>;
   setHarness(value: string): Promise<void>;
@@ -36,6 +37,7 @@ export function createNewSessionStore(hubId: string) {
   let service: NewSessionService | null = null;
   let connection = 0;
   let catalog = 0;
+  let loadedContext: string | null = null;
   return createStore<Form>((set, get) => ({
     cwd: "",
     prompt: "",
@@ -48,11 +50,13 @@ export function createNewSessionStore(hubId: string) {
     loadingModels: false,
     submitting: false,
     error: null,
-    catalogError: null,
+    metadataError: null,
+    modelError: null,
     bind(next) {
       if (service === next) return;
       service = next;
       connection++;
+      loadedContext = null;
       catalog++;
       set({
         projects: [],
@@ -71,6 +75,12 @@ export function createNewSessionStore(hubId: string) {
       });
     },
     async setCwd(cwd, refresh = true) {
+      if (cwd.trim() === get().cwd.trim()) {
+        set({ cwd });
+        if (refresh) await get().loadModels();
+        return;
+      }
+      loadedContext = null;
       catalog++;
       set({
         cwd,
@@ -116,37 +126,43 @@ export function createNewSessionStore(hubId: string) {
           current.recentProjects(),
           current.harnesses(),
         ]);
-        if (generation === connection) set({ projects, harnesses });
+        if (generation === connection)
+          set({ projects, harnesses, metadataError: null });
       } catch {
         if (generation === connection)
           set({
-            catalogError:
+            metadataError:
               "Could not load projects and harnesses. Retry options or use hub defaults.",
           });
       }
     },
     async loadModels() {
       const current = service;
+      const { cwd, harness } = get();
+      const context = JSON.stringify([cwd.trim(), harness]);
+      if (current && loadedContext === context) return;
+      loadedContext = null;
       const generation = ++catalog;
       set({
         models: [],
         model: null,
         reasoning: "",
         loadingModels: !!current,
-        catalogError: null,
       });
       if (!current) return;
-      const { cwd, harness } = get();
       try {
         const result = await current.models({
           ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
           ...(harness ? { harness } : {}),
         });
-        if (generation === catalog) set({ models: result.data });
+        if (generation === catalog) {
+          loadedContext = context;
+          set({ models: result.data, modelError: null });
+        }
       } catch {
         if (generation === catalog)
           set({
-            catalogError:
+            modelError:
               "Could not load models. Retry options or use the hub default.",
           });
       } finally {
