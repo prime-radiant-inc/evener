@@ -161,9 +161,10 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 // environment and must therefore finish before Close reaps that environment's
 // process table: a whole manage_worktree call at its dispatch, and the rollback
 // a refused or failed operation owes after its swap has already released the
-// swap's own admission. It is the beginDispose idiom again — the closing check AND the
-// envWorkWG Add happen under one s.mu hold, so a successful Add happens-before
-// Close()'s join. A true return MUST be paired with a (deferred) endEnvWork().
+// swap's own admission. It is the beginDispose idiom again — the closing check
+// AND the envWorkWG Add happen under one s.mu hold, so a successful Add
+// happens-before Close()'s join. A true return MUST be paired with a (deferred)
+// endEnvWork().
 //
 // label says what the work is, in the terms a human reading a shutdown warning
 // would want: it is what the close names if its bounded join gives up on this
