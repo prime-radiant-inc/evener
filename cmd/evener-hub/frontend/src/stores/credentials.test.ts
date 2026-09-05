@@ -130,39 +130,82 @@ describe("fetch", () => {
 });
 
 describe("mutations returning the updated instance list", () => {
-  test.each(["replacement", "reconnect"])("a delayed mutation cannot overwrite a %s refresh", async (change) => {
-    const old = connectFakeClient();
-    let finishMutation!: (value: InstanceListResponse) => void;
-    old.on(
+  test.each(["replacement", "reconnect", "same connection"])(
+    "a delayed mutation cannot overwrite a %s refresh",
+    async (change) => {
+      const old = connectFakeClient();
+      let finishMutation!: (value: InstanceListResponse) => void;
+      old.on(
+        "evener/instance/remove",
+        () =>
+          new Promise<InstanceListResponse>((resolve) => {
+            finishMutation = resolve;
+          }),
+      );
+      const mutation = credentialsStore.getState().remove("work");
+      await Promise.resolve();
+      const current = change === "replacement" ? connectFakeClient() : old;
+      if (change === "reconnect") {
+        old.emitStateChange("reconnecting");
+        old.emitReady();
+      }
+      let finishRead!: (value: InstanceListResponse) => void;
+      current.on(
+        "evener/instance/list",
+        () =>
+          new Promise<InstanceListResponse>((resolve) => {
+            finishRead = resolve;
+          }),
+      );
+      const refresh = credentialsStore.getState().fetch();
+      await Promise.resolve();
+      finishMutation({ instances: [], availableProviders: [] });
+      await mutation;
+      expect(credentialsStore.getState().loading).toBe(true);
+      finishRead(LIST_RESPONSE);
+      await refresh;
+      expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    },
+  );
+
+  test("a newer mutation wins when mutation responses arrive out of order", async () => {
+    const fake = connectFakeClient();
+    let finishOld!: (value: InstanceListResponse) => void;
+    fake.on(
       "evener/instance/remove",
       () =>
         new Promise<InstanceListResponse>((resolve) => {
-          finishMutation = resolve;
+          finishOld = resolve;
         }),
     );
-    const mutation = credentialsStore.getState().remove("work");
+    const older = credentialsStore.getState().remove("work");
     await Promise.resolve();
-    const current = change === "replacement" ? connectFakeClient() : old;
-    if (change === "reconnect") {
-      old.emitStateChange("reconnecting");
-      old.emitReady();
-    }
+    fake.on("evener/instance/create", () => LIST_RESPONSE);
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
+    finishOld({ instances: [], availableProviders: [] });
+    await older;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("a failed mutation releases loading from a superseded read", async () => {
+    const fake = connectFakeClient();
     let finishRead!: (value: InstanceListResponse) => void;
-    current.on(
+    fake.on(
       "evener/instance/list",
       () =>
         new Promise<InstanceListResponse>((resolve) => {
           finishRead = resolve;
         }),
     );
-    const refresh = credentialsStore.getState().fetch();
+    const read = credentialsStore.getState().fetch();
     await Promise.resolve();
-    finishMutation({ instances: [], availableProviders: [] });
-    await mutation;
-    expect(credentialsStore.getState().loading).toBe(true);
+    fake.on("evener/instance/remove", () => {
+      throw new Error("write refused");
+    });
+    await expect(credentialsStore.getState().remove("work")).rejects.toThrow("write refused");
     finishRead(LIST_RESPONSE);
-    await refresh;
-    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    await read;
+    expect(credentialsStore.getState().loading).toBe(false);
   });
 
   test("an authoritative mutation completes loading and supersedes an older read", async () => {

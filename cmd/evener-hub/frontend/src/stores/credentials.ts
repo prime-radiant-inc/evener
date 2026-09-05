@@ -107,13 +107,20 @@ function emptyListState(): ListState {
   return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
 }
 
-let fetchVersion = 0;
-let connectionVersion = 0;
+let requestVersion = 0;
 
-function applyList(resp: InstanceListResponse, version: number): void {
-  if (version !== connectionVersion) return;
-  fetchVersion += 1;
-  credentialsStore.setState({ ...listState(resp), loading: false, error: null });
+// Reads and writes share ordering: only the most recently started request
+// can replace the listing, even when responses arrive out of order.
+async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<void> {
+  const version = ++requestVersion;
+  try {
+    const response = await request();
+    if (version === requestVersion) {
+      credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    }
+  } finally {
+    if (version === requestVersion) credentialsStore.setState({ loading: false });
+  }
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
@@ -123,40 +130,36 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async fetch() {
     const client = requireClient();
-    const version = ++fetchVersion;
+    const version = ++requestVersion;
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
-      if (version !== fetchVersion || connectionStore.getState().client !== client) return;
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ ...listState(resp), loading: false });
     } catch (err) {
-      if (version !== fetchVersion || connectionStore.getState().client !== client) return;
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });
     }
   },
 
   async create(params) {
     const client = requireClient();
-    const version = connectionVersion;
-    applyList(await client.request("evener/instance/create", params), version);
+    await applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
     const client = requireClient();
-    const version = connectionVersion;
-    applyList(await client.request("evener/instance/edit", params), version);
+    await applyMutation(() => client.request("evener/instance/edit", params));
   },
 
   async remove(name) {
     const client = requireClient();
-    const version = connectionVersion;
-    applyList(await client.request("evener/instance/remove", { name }), version);
+    await applyMutation(() => client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
     const client = requireClient();
-    const version = connectionVersion;
-    applyList(await client.request("evener/instance/setDefault", { name }), version);
+    await applyMutation(() => client.request("evener/instance/setDefault", { name }));
   },
 
   async setApiKey(provider, value) {
@@ -266,8 +269,7 @@ function attachNotifications(client: AppwireClientLike | null): void {
 // own connect() effect).
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
-    connectionVersion += 1;
-    fetchVersion += 1;
+    requestVersion += 1;
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
   }
@@ -281,8 +283,7 @@ if (initialClient) attachNotifications(initialClient);
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
-  fetchVersion += 1;
-  connectionVersion += 1;
+  requestVersion += 1;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
