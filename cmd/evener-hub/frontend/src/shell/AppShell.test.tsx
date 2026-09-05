@@ -19,6 +19,7 @@ import type {
 import { connectionStore } from "../stores/connection";
 import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
+import { resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
@@ -426,6 +427,11 @@ beforeEach(() => {
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
   globalThis.localStorage = new MemoryStorage();
   localStorage.clear();
+  // The settings pane's last-visited-section memory (prefs.ts's
+  // lastSettingsSection) is a module-singleton field backed by this same
+  // storage: rehydrate against the cleared storage, or one test's settings
+  // visit picks the next test's bare-/settings landing section.
+  resetPrefsStoreForTests();
 });
 
 afterEach(() => {
