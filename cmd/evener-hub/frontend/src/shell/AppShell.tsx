@@ -2,7 +2,7 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
@@ -86,6 +86,10 @@ export interface AppShellProps {
   // built-in 10s reveal delay. Tests pass 0 to drive the banner synchronously
   // without fake-clock plumbing (see ConnectionBannerProps.delayMs).
   bannerDelayMs?: number;
+  // Test seam: production omits this, so the banner builds a real client on
+  // retry. Tests inject a FakeClient factory to exercise the retry swap
+  // without opening a socket.
+  bannerCreateClient?: () => AppwireClientLike;
 }
 
 interface ClientSlot {
@@ -103,6 +107,13 @@ function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
   if (injected) return { client: injected, owned: null };
   const real = new AppwireClient({ url: rpcURLFromLocation(window.location) });
   return { client: real, owned: real };
+}
+
+// Adopting a banner-retry client into the provider slot. Same ownership
+// rule as construction: the shell closes real clients it provides on
+// unmount, while injected (test) clients stay their owner's responsibility.
+function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
+  return { client: fresh, owned: fresh instanceof AppwireClient ? fresh : null };
 }
 
 // Hand-rolled rather than react-router (see Task 1's report for the
@@ -145,6 +156,7 @@ function routePlacementIsApplied(
   pathname: string,
   location: NavigationSessionLocation | null,
   locationTerminal = false,
+  locationGone = false,
   allowFocusedPanel = false,
 ): boolean {
   const route = urlToPane(pathname);
@@ -168,8 +180,8 @@ function routePlacementIsApplied(
     return typeof paneRef === "string" ? paneRef : null;
   };
   if (location === null) {
-    const main = workspace.mainPane();
-    return locationTerminal && main?.type === "session" && sessionRefOf(main) === ref;
+    if (locationGone) return main.type === "welcome";
+    return locationTerminal && main.type === "session" && sessionRefOf(main) === ref;
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
@@ -210,6 +222,7 @@ function openRouteAsPane(
   pathname: string,
   location: NavigationSessionLocation | null,
   locationTerminal: boolean,
+  locationGone: boolean,
   pendingSessionRef: { current: string | null },
 ): void {
   const route = urlToPane(pathname);
@@ -221,6 +234,12 @@ function openRouteAsPane(
   if (route.type === "session") {
     const ref = sessionRefFromRouteParams(route.params);
     if (ref === null) return;
+
+    if (locationGone) {
+      pendingSessionRef.current = null;
+      workspaceStore.getState().replacePrimary("welcome", {});
+      return;
+    }
 
     if (location === null && !locationTerminal) {
       pendingSessionRef.current = ref;
@@ -263,8 +282,15 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
   openNestedSessionWithOwner(childRef, location.top_level_ref);
 }
 
-export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProps) {
-  const [{ client, owned }] = useState(() => createClientSlot(injectedClient));
+export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
+  const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
+  const { client, owned } = slot;
+  // A banner retry wires a fresh client into connectionStore; adopting it
+  // here keeps ClientProvider (shell-owned, fixed at mount otherwise)
+  // pointed at the live client instead of a closed orphan. connect() is
+  // idempotent on an already-connected client, so the mount effect below
+  // safely re-runs for the adopted instance.
+  const handleClientReplaced = useCallback((fresh: AppwireClientLike) => setSlot(adoptClientSlot(fresh)), []);
 
   useEffect(() => {
     connectionStore.getState().connect(client);
@@ -416,7 +442,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         const refs = needsYouRefs(rows);
         const current = focusedSessionRef();
         if (
-          state.mode === "v1" &&
+          state.mode === "v2" &&
           (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
         ) {
           const page = nextPageFor(state);
@@ -475,21 +501,25 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   const restoredSessionRef =
     route?.type === "welcome" ? sessionRefFromRouteParams(workspaceStore.getState().mainPane()?.params) : null;
   const locationRef = sessionRouteRef ?? restoredSessionRef;
+  const navigationMode = useNavigationStore((state) => state.mode);
   const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
   const locationFailed = locationResource?.error != null;
+  const locationGone = locationResource?.normalized?.presence === "gone";
   const locationNotFound = isNavigationUnavailable(locationResource?.error);
   const locationTerminal = locationFailed && (locationResource?.data === null || locationNotFound);
-  const location = locationNotFound
-    ? null
-    : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
+  const location =
+    locationNotFound || locationGone
+      ? null
+      : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
-    if (locationRef === null || navigationStore.getState().mode !== "v1") return;
-    if (locationFailed || (locationResource && !locationResource.stale)) return;
+    if (locationRef === null || navigationMode !== "v2") return;
+    if (locationFailed || locationGone || locationResource?.loading || (locationResource && !locationResource.stale))
+      return;
     void navigationStore
       .getState()
       .lookupLocation(locationRef)
       .catch(() => undefined);
-  }, [locationFailed, locationRef, locationResource]);
+  }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
   const isMobile = useIsMobile();
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
@@ -580,7 +610,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   const placedPathnameRef = useRef<string | null>(null);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
+    openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
@@ -612,16 +642,16 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, location, locationTerminal, allowFocusedPanel)) {
+      if (routePlacementIsApplied(pathname, location, locationTerminal, locationGone, allowFocusedPanel)) {
         placedPathnameRef.current = pathname;
         return;
       }
       openedForPathnameRef.current = pathname;
-      const expectWorkspaceTransition = route.type !== "session" || location !== null;
+      const expectWorkspaceTransition = route.type !== "session" || location !== null || locationGone;
       routePlacementInProgressRef.current = expectWorkspaceTransition;
       routePlacementPathnameRef.current = expectWorkspaceTransition ? pathname : null;
       try {
-        openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
+        openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
       } finally {
         if (!expectWorkspaceTransition) {
           routePlacementInProgressRef.current = false;
@@ -633,13 +663,18 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     if (route?.type === "welcome") reconcileWelcomeRouteWithLocation(location);
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
-  }, [pathname, route?.type, location, locationTerminal, workspacePanesVersion]);
+    openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+  }, [pathname, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
 
   return (
     <ClientProvider client={client}>
       <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
-        <ConnectionBanner state={connectionState} delayMs={bannerDelayMs} />
+        <ConnectionBanner
+          state={connectionState}
+          delayMs={bannerDelayMs}
+          createClient={bannerCreateClient}
+          onClientReplaced={handleClientReplaced}
+        />
         <ToastRegion />
         <CommandPalette />
         <div className={styles.content}>

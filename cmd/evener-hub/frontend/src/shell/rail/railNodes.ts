@@ -6,6 +6,7 @@
 // project detail map) and wires the results into <Tree>.
 
 import type { NavigationJobSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import { projectNodeExpansionKey } from "./railExpansion";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -172,6 +173,22 @@ export type RailNode =
   | CompletedJobsFoldRailNode
   | OverflowRailNode;
 
+type SessionNodeCacheEntry = Readonly<{
+  children: SessionRailNode["children"];
+  expanded: boolean;
+  value: SessionRailNode;
+}>;
+type ProjectNodeCacheEntry = Readonly<{
+  children: RailNode[];
+  displayName: string | undefined;
+  expanded: boolean;
+  value: ProjectRailNode;
+}>;
+const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
+const sessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
+const projectChildrenCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, RailNode[]>>>();
+const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, ProjectNodeCacheEntry>>>();
+
 // The rows a given list has hidden. Each caller passes the tiers it actually
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
@@ -239,7 +256,7 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
 // surfaces again.
 const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "warning", "notLoaded"]);
 
-// Namespaced the same way projectNodeId is, and off the PARENT's row_id, so
+// Namespaced the same way projectNodeExpansionKey is, and off the PARENT's row_id, so
 // every parent's fold is its own key at every nesting depth - expanding one
 // never opens another's.
 function inactiveFoldId(parentRowID: string): string {
@@ -286,9 +303,15 @@ function splitChildren(
   parent: RailSession,
   isExpanded: IsExpanded,
 ): (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] {
+  const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
+  if (cached) return cached;
   const current: SessionRailNode[] = [];
   const inactive: SessionRailNode[] = [];
-  if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
+  if (parent.kind === "cluster") {
+    const children = parent.children.map((c) => toSessionNode(c, isExpanded));
+    cacheSessionChildren(parent, isExpanded, children);
+    return children;
+  }
   for (const child of parent.children) {
     (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
@@ -319,17 +342,42 @@ function splitChildren(
       children: completedJobs.map((job) => toJobNode(parent, job)),
     });
   }
+  cacheSessionChildren(parent, isExpanded, children);
   return children;
 }
 
+function cacheSessionChildren(
+  parent: RailSession,
+  isExpanded: IsExpanded,
+  children: SessionRailNode["children"],
+): void {
+  let entries = sessionChildrenCache.get(parent as object);
+  if (!entries) {
+    entries = new WeakMap();
+    sessionChildrenCache.set(parent as object, entries);
+  }
+  entries.set(isExpanded, children);
+}
+
 function toSessionNode(n: RailSession, isExpanded: IsExpanded): SessionRailNode {
-  return {
+  const expanded = isExpanded(n.row_id, false);
+  const children = splitChildren(n, isExpanded);
+  const cached = sessionNodeCache.get(n as object)?.get(isExpanded);
+  if (cached && cached.expanded === expanded && cached.children === children) return cached.value;
+  const result: SessionRailNode = {
     id: n.row_id,
     kind: "session",
     session: n,
-    expanded: isExpanded(n.row_id, false),
-    children: splitChildren(n, isExpanded),
+    expanded,
+    children,
   };
+  let entries = sessionNodeCache.get(n as object);
+  if (!entries) {
+    entries = new WeakMap();
+    sessionNodeCache.set(n as object, entries);
+  }
+  entries.set(isExpanded, { children, expanded, value: result });
+  return result;
 }
 
 /** Builds rail nodes for a flat, childless-at-this-level session list - the
@@ -417,10 +465,6 @@ function sessionWantsYou(n: RailSession): boolean {
 // Namespaced so a project branch's own id can never collide with a
 // session's row_id (row_ids are always "<scope>:...", but never start with
 // "projectnode:") within the same Tree instance.
-function projectNodeId(key: string): string {
-  return `projectnode:${key}`;
-}
-
 // The bit of a project's own working_dir that tells it apart from a
 // same-named sibling - the parent directory's basename (two checkouts named
 // "frontend" usually differ in which repo holds them, not in the leaf
@@ -498,7 +542,7 @@ export function topLevelAncestorRef(projects: readonly RailProject[], ref: strin
  * expand the right project section, matching the id projectNodes assigns. */
 export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref: string): string | null {
   for (const project of projects) {
-    if (sessionListHasRef(project.sessions, ref)) return projectNodeId(project.key);
+    if (sessionListHasRef(project.sessions, ref)) return projectNodeExpansionKey(project.key);
   }
   return null;
 }
@@ -513,26 +557,83 @@ export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref
 export function projectNodes(projects: readonly RailProject[], isExpanded: IsExpanded): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
-    const id = projectNodeId(p.key);
-    return {
+    const id = projectNodeExpansionKey(p.key);
+    const expanded = isExpanded(id, p.default_expanded ?? false);
+    const displayName = labels.get(p.key);
+    const children = projectChildren(p, isExpanded, "active", () =>
+      p.sessions.length === 0 && p.loaded !== true && (p.session_count ?? 0) > 0
+        ? [{ id: `${id}:loading`, kind: "loading" as const }]
+        : [
+            ...p.sessions
+              .filter((n) => !isArchivedTier(n))
+              .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
+              .map((n) => toSessionNode(n, isExpanded)),
+            ...projectOverflowNode(id, p, ["current", "recent"]),
+          ],
+    );
+    const cached = projectNodeCache
+      .get(p as object)
+      ?.get(isExpanded)
+      ?.get("active");
+    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
+      return cached.value;
+    const result: ProjectRailNode = {
       id,
       kind: "project",
       project: p,
       resourceError: p.resourceError,
-      displayName: labels.get(p.key),
-      expanded: isExpanded(id, p.default_expanded ?? false),
-      children:
-        p.sessions.length === 0 && p.loaded !== true && (p.session_count ?? 0) > 0
-          ? [{ id: `${id}:loading`, kind: "loading" as const }]
-          : [
-              ...p.sessions
-                .filter((n) => !isArchivedTier(n))
-                .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
-                .map((n) => toSessionNode(n, isExpanded)),
-              ...projectOverflowNode(id, p, ["current", "recent"]),
-            ],
+      displayName,
+      expanded,
+      children,
     };
+    cacheProjectNode(p, isExpanded, "active", { children, displayName, expanded, value: result });
+    return result;
   });
+}
+
+function projectChildren(
+  project: RailProject,
+  isExpanded: IsExpanded,
+  variant: string,
+  build: () => RailNode[],
+): RailNode[] {
+  const cached = projectChildrenCache
+    .get(project as object)
+    ?.get(isExpanded)
+    ?.get(variant);
+  if (cached) return cached;
+  const children = build();
+  let byLookup = projectChildrenCache.get(project as object);
+  if (!byLookup) {
+    byLookup = new WeakMap();
+    projectChildrenCache.set(project as object, byLookup);
+  }
+  let byVariant = byLookup.get(isExpanded);
+  if (!byVariant) {
+    byVariant = new Map();
+    byLookup.set(isExpanded, byVariant);
+  }
+  byVariant.set(variant, children);
+  return children;
+}
+
+function cacheProjectNode(
+  project: RailProject,
+  isExpanded: IsExpanded,
+  variant: string,
+  entry: ProjectNodeCacheEntry,
+): void {
+  let byLookup = projectNodeCache.get(project as object);
+  if (!byLookup) {
+    byLookup = new WeakMap();
+    projectNodeCache.set(project as object, byLookup);
+  }
+  let byVariant = byLookup.get(isExpanded);
+  if (!byVariant) {
+    byVariant = new Map();
+    byLookup.set(isExpanded, byVariant);
+  }
+  byVariant.set(variant, entry);
 }
 
 // A session the server put in the archived tier. `tier` is the only archived
@@ -543,7 +644,7 @@ function isArchivedTier(n: RailSession): boolean {
   return n.tier === "archived";
 }
 
-// Namespaced apart from projectNodeId on purpose: the SAME project renders
+// Namespaced apart from projectNodeExpansionKey on purpose: the SAME project renders
 // twice when it has both live and archived sessions - once in Projects, once
 // as a sub-branch here - and two Tree branches sharing an id would share
 // expand state.
@@ -565,15 +666,31 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
     const archived = p.sessions.filter(isArchivedTier);
     if (archived.length === 0) continue;
     const id = archivedGroupId(p.key);
-    groups.push({
+    const displayName = labels.get(p.key);
+    const expanded = isExpanded(id, false);
+    const children = projectChildren(p, isExpanded, "archived-group", () => [
+      ...archived.map((n) => toSessionNode(n, isExpanded)),
+      ...projectOverflowNode(id, p, ["archived"]),
+    ]);
+    const cached = projectNodeCache
+      .get(p as object)
+      ?.get(isExpanded)
+      ?.get("archived-group");
+    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded) {
+      groups.push(cached.value);
+      continue;
+    }
+    const result: ProjectRailNode = {
       id,
       kind: "project",
       project: p,
       resourceError: p.resourceError,
-      displayName: labels.get(p.key),
-      expanded: isExpanded(id, false),
-      children: [...archived.map((n) => toSessionNode(n, isExpanded)), ...projectOverflowNode(id, p, ["archived"])],
-    });
+      displayName,
+      expanded,
+      children,
+    };
+    cacheProjectNode(p, isExpanded, "archived-group", { children, displayName, expanded, value: result });
+    groups.push(result);
   }
   return groups;
 }
@@ -615,28 +732,38 @@ export function archivedProjectNodes(
 ): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
-    const id = projectNodeId(p.key);
+    const id = projectNodeExpansionKey(p.key);
     const detail = projectDetails.get(p.key);
     let children: RailNode[];
     if (detail) {
       // The hydrated detail is the authority on both the rows and what was
       // capped away from them - the stub carried neither.
-      children = [
+      children = projectChildren(detail, isExpanded, "archived-detail", () => [
         ...detail.sessions.map((n) => toSessionNode(n, isExpanded)),
         ...projectOverflowNode(id, detail, ["current", "recent", "archived"]),
-      ];
+      ]);
     } else if ((p.session_count ?? 0) > 0) {
-      children = [{ id: `${id}:loading`, kind: "loading" }];
+      children = projectChildren(p, isExpanded, "archived-loading", () => [{ id: `${id}:loading`, kind: "loading" }]);
     } else {
-      children = [];
+      children = projectChildren(p, isExpanded, "archived-empty", () => []);
     }
-    return {
+    const displayName = labels.get(p.key);
+    const expanded = isExpanded(id, false);
+    const cached = projectNodeCache
+      .get(p as object)
+      ?.get(isExpanded)
+      ?.get("archived-project");
+    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
+      return cached.value;
+    const result: ProjectRailNode = {
       id,
       kind: "project",
       project: p,
-      displayName: labels.get(p.key),
-      expanded: isExpanded(id, false),
+      displayName,
+      expanded,
       children,
     };
+    cacheProjectNode(p, isExpanded, "archived-project", { children, displayName, expanded, value: result });
+    return result;
   });
 }

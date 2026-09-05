@@ -210,7 +210,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
@@ -682,7 +682,7 @@ test("next-needs-you is a global command", () => {
 test("next-needs-you opens the first needs-you session when nothing is focused", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),
@@ -739,7 +739,7 @@ test("next-needs-you opens the first needs-you session when nothing is focused",
 test("v1 next-needs-you ignores stale legacy tree rows", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),
@@ -783,7 +783,7 @@ test("v1 next-needs-you ignores stale legacy tree rows", () => {
 test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(key),

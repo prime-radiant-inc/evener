@@ -807,7 +807,7 @@ function setNavigationTitle(ref: string, title: string): void {
     },
   };
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources: new Map([
       [

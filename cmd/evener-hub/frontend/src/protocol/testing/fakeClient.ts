@@ -96,7 +96,7 @@ export class FakeClient implements AppwireClientLike {
   // generic methods below restore full per-method typing at the boundary.
   private readonly handlers = new Map<MethodName, RequestHandler<MethodName>>();
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
-  private readonly readyHandlers = new Set<() => void>();
+  private readonly readyHandlers = new Set<(initialize: InitializeResponse) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
 
   // Deliberately independent of `state`/emitStateChange/emitReady below:
@@ -106,6 +106,7 @@ export class FakeClient implements AppwireClientLike {
   // that wants a state transition alongside a scripted connect() still
   // drives that explicitly, exactly as before.
   private connectHandler: ConnectHandler = () => DEFAULT_INITIALIZE_RESPONSE;
+  private latestInitialize: InitializeResponse = DEFAULT_INITIALIZE_RESPONSE;
 
   // Defaults to "ready": tests overwhelmingly want a client stores can
   // request() against immediately, without separately staging the
@@ -135,7 +136,12 @@ export class FakeClient implements AppwireClientLike {
   // synchronously-thrown handler become a normal rejection - same idiom as
   // request() below.
   connect(): Promise<InitializeResponse> {
-    return Promise.resolve().then(() => this.connectHandler());
+    return Promise.resolve()
+      .then(() => this.connectHandler())
+      .then((initialize) => {
+        this.latestInitialize = initialize;
+        return initialize;
+      });
   }
 
   request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
@@ -171,7 +177,7 @@ export class FakeClient implements AppwireClientLike {
     return () => this.notificationHandlers.delete(cb);
   }
 
-  onReady(cb: () => void): () => void {
+  onReady(cb: (initialize: InitializeResponse) => void): () => void {
     this.readyHandlers.add(cb);
     return () => this.readyHandlers.delete(cb);
   }
@@ -234,18 +240,19 @@ export class FakeClient implements AppwireClientLike {
   // call, since that is the only path AppwireClient ever reaches ready
   // through (dialAndHandshake, on both the first connect and every
   // reconnect).
-  emitStateChange(next: ConnectionState): void {
+  emitStateChange(next: ConnectionState, initialize: InitializeResponse = this.latestInitialize): void {
     if (this.state === next) return;
     this.state = next;
     for (const cb of Array.from(this.stateChangeHandlers)) cb(next);
     if (next === "ready") {
-      for (const cb of Array.from(this.readyHandlers)) cb();
+      this.latestInitialize = initialize;
+      for (const cb of Array.from(this.readyHandlers)) cb(initialize);
     }
   }
 
   // emitReady simulates a (re)connect succeeding — the common case tests
   // reach for — as a shorthand for emitStateChange("ready").
-  emitReady(): void {
-    this.emitStateChange("ready");
+  emitReady(initialize: InitializeResponse = this.latestInitialize): void {
+    this.emitStateChange("ready", initialize);
   }
 }

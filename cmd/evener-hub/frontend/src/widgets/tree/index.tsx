@@ -84,6 +84,21 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   const flat = flattenVisible(nodes);
   const indexById = new Map(flat.map((entry, i) => [entry.node.id, i]));
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const nodesRef = useRef(new Map<string, T>());
+  const handlersRef = useRef({ onToggle, onActivate });
+  const infoCache = useRef(
+    new Map<string, { depth: number; expanded: boolean; hasChildren: boolean; info: TreeRowInfo }>(),
+  );
+  nodesRef.current = new Map(flat.map((entry) => [entry.node.id, entry.node]));
+  handlersRef.current = { onToggle, onActivate };
+  // infoCache only serves visible rows: drop entries for rows that left the
+  // flattened tree so removed navigation/job rows (and their retained node
+  // closures) don't accumulate for the tree's lifetime. Equal-cardinality
+  // replacement must prune too, so this runs every render rather than only
+  // when the cache outgrows the row count.
+  for (const id of infoCache.current.keys()) {
+    if (!indexById.has(id)) infoCache.current.delete(id);
+  }
   const treeRef = useRef<HTMLDivElement>(null);
   const pendingRefocusRef = useRef<string | null>(null);
 
@@ -208,13 +223,34 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
           onKeyDown={(event) => handleKeyDown(event, node, parent)}
           onFocus={() => setCurrentId(node.id)}
         >
-          {renderRow(node, {
-            depth,
-            expanded,
-            hasChildren: branchHasChildren,
-            toggle: () => onToggle(node),
-            activate: () => onActivate(node),
-          })}
+          {renderRow(
+            node,
+            (() => {
+              const cached = infoCache.current.get(node.id);
+              if (
+                cached &&
+                cached.depth === depth &&
+                cached.expanded === expanded &&
+                cached.hasChildren === branchHasChildren
+              )
+                return cached.info;
+              const info: TreeRowInfo = {
+                depth,
+                expanded,
+                hasChildren: branchHasChildren,
+                toggle: () => {
+                  const current = nodesRef.current.get(node.id);
+                  if (current) handlersRef.current.onToggle(current);
+                },
+                activate: () => {
+                  const current = nodesRef.current.get(node.id);
+                  if (current) handlersRef.current.onActivate(current);
+                },
+              };
+              infoCache.current.set(node.id, { depth, expanded, hasChildren: branchHasChildren, info });
+              return info;
+            })(),
+          )}
         </div>,
       );
       if (branchHasChildren && expanded) {

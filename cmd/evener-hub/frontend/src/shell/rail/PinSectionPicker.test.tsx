@@ -67,7 +67,7 @@ function pinCatalogResource(sections: PinSectionSummary[], remaining = 0): Resou
 function seedPinCatalog(sections: PinSectionSummary[], remaining = 0): ResourceState {
   const resource = pinCatalogResource(sections, remaining);
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([[keyID(resource.key), resource]]),
   });
   return resource;
