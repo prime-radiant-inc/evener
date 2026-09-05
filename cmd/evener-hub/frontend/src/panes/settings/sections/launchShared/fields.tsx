@@ -119,6 +119,7 @@ function PathFieldRow({
   return (
     <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
       <PathField
+        ariaLabel={label}
         directory={directoryActions}
         id={fieldId}
         value={value}

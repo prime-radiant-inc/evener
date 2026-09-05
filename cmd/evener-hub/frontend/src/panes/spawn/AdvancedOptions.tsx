@@ -353,6 +353,7 @@ function Control({
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
           <PathField
+            ariaLabel={option.label}
             directory={{ validatePath, createDirectory }}
             id={controlId}
             value={current}

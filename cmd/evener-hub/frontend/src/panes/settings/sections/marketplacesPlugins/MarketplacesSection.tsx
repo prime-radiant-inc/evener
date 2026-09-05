@@ -199,6 +199,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           {kind === "directory" && (
             <FormRow label="Local path" htmlFor={pathId}>
               <PathField
+                ariaLabel="Local path"
                 directory={directoryActions}
                 id={pathId}
                 value={pathValue}

@@ -98,6 +98,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       </p>
       <FormRow label="Working dir" htmlFor="inrepo-cwd">
         <PathField
+          ariaLabel="Working dir"
           id="inrepo-cwd"
           value={cwd}
           onChange={handleCommit}

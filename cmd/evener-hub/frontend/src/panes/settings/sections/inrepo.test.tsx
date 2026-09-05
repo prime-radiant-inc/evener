@@ -71,7 +71,7 @@ describe("initial load", () => {
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByLabelText(/working dir/i).textContent).toContain("/repo");
+    expect(screen.getByRole("button", { name: "Working dir: /repo — browse" })).toBeTruthy();
     await screen.findByText(findsNoFileMessage("/repo"));
   });
 

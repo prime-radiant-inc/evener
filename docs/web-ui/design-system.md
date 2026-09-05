@@ -241,6 +241,9 @@ Directory mode requires injected `directory.validatePath` and
 The TypeScript `PathFieldProps` contract requires these actions for directory mode.
 Use the settings store's `directoryActions` or the caller's existing client closures.
 Recent directories are optional and appear only where that history is meaningful.
+Pass the field label through `ariaLabel` on labeled `PathField` controls so the
+accessible name includes both the field name and selected path; a native label
+alone overrides the button contents.
 
 The behavioral contract is:
 

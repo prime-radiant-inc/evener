@@ -403,7 +403,7 @@ test("a failing path validation flags the field invalid so it is dropped from th
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await typePath(user, pathTrigger("System prompt file"), "/etc");
+  await typePath(user, pathTrigger(/^System prompt file:/), "/etc");
 
   expect(await screen.findByText("path is a directory")).toBeTruthy();
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/etc", "file"));
@@ -426,7 +426,7 @@ test.each([
   ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await typePath(user, pathTrigger("Trace file"), "/opt/new.log");
+  await typePath(user, pathTrigger(/^Trace file:/), "/opt/new.log");
 
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/new.log", wireKind));
 });
@@ -551,7 +551,7 @@ test("a path field renders the browse widget and collects the picked path", asyn
 
   // The field is the browse trigger, not a text box to type a path into blind.
   expect(screen.queryByRole("textbox")).toBeNull();
-  await user.click(pathTrigger("System prompt file"));
+  await user.click(pathTrigger(/^System prompt file:/));
   await user.click(await screen.findByText("prompt.md"));
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ systemPromptFile: "/opt/prompt.md" }));
@@ -570,7 +570,7 @@ test.each([
   const { complete } = renderPanel([option({ wireField: "somePath", kind: "path", label: "Some path", pathKind })]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await user.click(pathTrigger("Some path"));
+  await user.click(pathTrigger(/^Some path:/));
 
   await waitFor(() => expect(complete).toHaveBeenCalledWith(expect.any(String), includeFiles));
 });
