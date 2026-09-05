@@ -4775,9 +4775,11 @@ describe("useThreadsStore.listModels", () => {
     pending[0]?.(stale);
     await first;
 
-    // The third caller must share the second request, not start a third.
+    // The third caller must share the second request, not start a third: a
+    // task yield (not a turn count) lets any request it would have issued
+    // reach the fake before the negative assertion.
     const third = threadsStore.getState().listModels();
-    await flushUntil(() => pending.length === 3, 5);
+    await settleCallerContinuations();
     expect(pending).toHaveLength(2);
 
     pending[1]?.(fresh);
