@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -354,6 +355,10 @@ type scriptedWorktreeEntry struct {
 // argv fail loudly so adding a new production command cannot silently turn the
 // harness into a permissive mock.
 type scriptedWorktreeGit struct {
+	// mu serializes run, as the real binary's repository locks serialize
+	// concurrent git processes: a session's close can sweep lane residue while
+	// an op it refused is still rolling its own git changes back.
+	mu          sync.Mutex
 	root        string
 	branches    map[string]string
 	entries     map[string]*scriptedWorktreeEntry
@@ -374,6 +379,8 @@ func (g *scriptedWorktreeGit) entry(path string) *scriptedWorktreeEntry {
 }
 
 func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.calls = append(g.calls, append([]string(nil), args...))
 
 	switch {
