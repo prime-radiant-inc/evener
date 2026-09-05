@@ -502,6 +502,11 @@ func pfsMkdir(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixture, 
 	if sfs == nil {
 		t.Fatal("enforced fixture did not create a sandbox filesystem")
 	}
+	// sandbox() hands back a HELD layer (it acquires before returning), and a
+	// layer is only closed by the release that drains it. Without this the
+	// layer's root descriptor stays open for the rest of the process, once per
+	// fuzz case.
+	defer sfs.release()
 	var target string
 	writable := false
 	nonReadOnlyKind := sandbox.DenialOutsideWriteRoots
