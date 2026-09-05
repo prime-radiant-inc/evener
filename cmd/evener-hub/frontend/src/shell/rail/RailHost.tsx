@@ -14,11 +14,14 @@
 // (railController) hands it a session ref; if the rail is hidden, revealing
 // docks it first so there's a mounted Rail to expand + scroll.
 import { type JSX, useCallback, useEffect, useState } from "react";
+import { ACTIONS } from "../../keybindings/actions";
+import { keybindingsRegistry } from "../../keybindings/registry";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
 import { Badge } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { installKeybindings } from "../installKeybindings";
 import { useIsMobile } from "../useIsMobile";
 import { Rail } from "./Rail";
 import styles from "./RailHost.module.css";
@@ -28,20 +31,6 @@ const CLASS = {
   chipBar: requireClass(styles.chipBar, "RailHost.module.css", "chipBar"),
   chip: requireClass(styles.chip, "RailHost.module.css", "chip"),
 };
-
-// Ctrl+B is the macOS emacs-style "move cursor back one character" binding
-// native text fields honor while focused; without this guard, the ⌘B
-// listener below would hijack it mid-typing (it accepts ctrl as well as
-// meta for the cross-platform chord).
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return (
-    target.isContentEditable ||
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.tagName === "SELECT"
-  );
-}
 
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const isMobile = useIsMobile();
@@ -53,19 +42,20 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const clearReveal = useCallback(() => setRevealTarget(null), []);
 
   // ⌘B toggles the sidebar (desktop only — mobile's drawer is its own
-  // show/hide). PIN-D: ⌘B is the rail's; ⌘K (palette) is AppShell's.
+  // show/hide, and with no action registered the binding is inert there).
+  // PIN-D: ⌘B is the rail's; ⌘K (palette) is AppShell's. The chord itself is
+  // the keybindings dispatcher's (keybindings/defaults.ts's rail.toggle
+  // binding carries this listener's old policy verbatim: suppressed from
+  // editable targets so Ctrl+B keeps its emacs "cursor back" meaning in
+  // native text fields, and NO defaultPrevented check -
+  // ignoreIfDefaultPrevented: false).
   useEffect(() => {
     if (isMobile) return undefined;
-    function onKeyDown(event: KeyboardEvent): void {
-      if (isEditableTarget(event.target)) return;
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        const prefs = prefsStore.getState();
-        prefs.setSidebarHidden(!prefs.sidebarHidden);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    installKeybindings();
+    return keybindingsRegistry.getState().registerAction(ACTIONS.railToggle, () => {
+      const prefs = prefsStore.getState();
+      prefs.setSidebarHidden(!prefs.sidebarHidden);
+    });
   }, [isMobile]);
 
   // Reveal seam (railController /project, PIN-A). Reveal-first when hidden:
@@ -87,6 +77,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
         <button
           type="button"
           className={CLASS.chip}
+          data-rail-toggle=""
           aria-label={label}
           onClick={() => prefsStore.getState().setSidebarHidden(false)}
         >

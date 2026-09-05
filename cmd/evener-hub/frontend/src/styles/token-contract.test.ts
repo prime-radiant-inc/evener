@@ -520,6 +520,15 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // .dangerText — failure text for a delegate's not-resumable reason and last
 // failed outcome reason. Error text is the danger hue's canonical, ungateable
 // job, the same as railDialog.module.css's .pickerError above.
+//
+// webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
+// earns the same exception for the same structural reason - it lives under
+// panes/settings/sections/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its one semantic reach is --danger-ink on
+// .rowError and .captureError, the keybindings editor's inline validation and
+// hub-error text. Error text is the danger hue's canonical, ungateable job,
+// the same as railDialog.module.css's .pickerError and
+// delegateStatus.module.css's .dangerText above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
@@ -531,6 +540,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/tools/sandboxescalation.module.css",
   "panes/session/transcript/tools/delegateStatus.module.css",
+  "panes/settings/sections/keybindings.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {

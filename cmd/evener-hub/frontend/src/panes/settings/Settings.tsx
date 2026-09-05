@@ -1,16 +1,21 @@
 import type { ComponentType } from "react";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
+import { ACTIONS } from "../../keybindings/actions";
+import { SETTINGS_SCOPE } from "../../keybindings/defaults";
+import { keybindingsRegistry } from "../../keybindings/registry";
 import { chromeStore } from "../../shell/chromeStore";
+import { installKeybindings } from "../../shell/installKeybindings";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
+import { prefsStore, usePrefsStore } from "../../stores/prefs";
 import { useSettingsOverviewStore } from "../../stores/settingsOverview";
 import { IconButton, PaneScaffold } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
-import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
+import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
@@ -18,6 +23,7 @@ import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
+import { KeybindingsSection } from "./sections/keybindings";
 import { CodexLaunchSection } from "./sections/launchCodex";
 import { LaunchServerSection } from "./sections/launchServer";
 import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
@@ -77,6 +83,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   transcript: TranscriptSection,
   display: DisplaySection,
   notifications: NotificationsSection,
+  keybindings: KeybindingsSection,
   hub: HubSection,
   mobile: MobileSection,
   storage: StorageSection,
@@ -105,8 +112,12 @@ function showSettingsList(): void {
  * each level is addressable (routing.ts already resolves both forms;
  * AppShell's replacePrimary glue updates this singleton pane's params in
  * place on every popstate). Desktop is unchanged: nav and content sit side
- * by side, and a bare /settings still resolves its content to
- * DEFAULT_SECTION_ID.
+ * by side, and a bare /settings resolves its content to the section the
+ * user last visited (prefs.ts's lastSettingsSection), falling back to
+ * DEFAULT_SECTION_ID when there is no remembered section or the remembered
+ * id is no longer a known section. Mobile keeps the bare URL as the section
+ * LIST (the drill-down root) - the remembered section only picks the
+ * desktop content, never the mobile view.
  *
  * Back on mobile lives in the shell's top bar, not in the content: a
  * focused section publishes showSettingsList to the chrome store's paneBack
@@ -124,7 +135,10 @@ function showSettingsList(): void {
  * text and scroll position survive the drill-down round trip.
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
-  const activeId = params.section ?? DEFAULT_SECTION_ID;
+  const rememberedSection = usePrefsStore((s) => s.lastSettingsSection);
+  const activeId =
+    params.section ??
+    (rememberedSection !== null && isKnownSettingsSection(rememberedSection) ? rememberedSection : DEFAULT_SECTION_ID);
   const isMobile = useIsMobile();
   const SectionComponent = SECTION_COMPONENTS[activeId] ?? PlaceholderSection;
   // Mobile list view: bare /settings on a phone. No row is "active" - there
@@ -136,6 +150,16 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
     const url = paneToURL("settings", { section: sectionId });
     if (url !== null) navigate(url);
   }
+
+  // Record the visited section so the next bare /settings reopens here.
+  // Only KNOWN nav sections are remembered: "project" is a valid dispatch
+  // target (SECTION_COMPONENTS) but no nav row and needs its ?cwd= context,
+  // so restoring it would land on a meaningless page.
+  useEffect(() => {
+    if (params.section !== undefined && isKnownSettingsSection(params.section)) {
+      prefsStore.getState().setLastSettingsSection(params.section);
+    }
+  }, [params.section]);
 
   // paneBack is published whenever a section is focused, in EITHER host -
   // host-agnostic like the title channel. The effect (not render) owns the
@@ -168,29 +192,34 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // in a real browser: Escape/close did nothing). Routing through
   // paneToURL/navigate keeps the URL and the workspace in agreement, so
   // there is nothing left for reconciliation to "fix".
-  function handleClose() {
+  const handleClose = useCallback(() => {
     const url = paneToURL("welcome", {});
     if (url !== null) navigate(url);
     workspaceStore.getState().closePane(paneId);
-  }
+  }, [paneId]);
 
-  // Escape closes the pane. A React onKeyDown on the pane's own div only
-  // fires when focus is INSIDE it — and the common open path (clicking the
-  // rail's gear) leaves focus on the gear button, so in a real browser the
-  // pane-scoped handler never saw the key (live-verified regression). A
-  // document-level bubble-phase listener sees Escape regardless of where
-  // focus sits, and still yields to anything inside settings that claimed
-  // the key first: a Dialog/Menu preventDefaults its own Escape (see
-  // OverlayPanel/Menu), which this checks before closing.
+  // Escape closes the pane, via the keybindings dispatcher: the pane pushes
+  // the settings scope while it is open and registers the settings.close
+  // action (Escape, scope-gated - keybindings/defaults.ts), so the chord is
+  // live exactly while this pane exists. A React onKeyDown on the pane's own
+  // div only fires when focus is INSIDE it — and the common open path
+  // (clicking the rail's gear) leaves focus on the gear button, so in a real
+  // browser the pane-scoped handler never saw the key (live-verified
+  // regression). The dispatcher's window-level listener sees Escape
+  // regardless of where focus sits, and still yields to anything inside
+  // settings that claimed the key first: a Dialog/Menu preventDefaults its
+  // own Escape (see OverlayPanel/Menu), which the binding's
+  // ignoreIfDefaultPrevented gate (default true) checks before closing.
   useEffect(() => {
-    function onDocumentKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      if (event.defaultPrevented) return;
-      handleClose();
-    }
-    document.addEventListener("keydown", onDocumentKeyDown);
-    return () => document.removeEventListener("keydown", onDocumentKeyDown);
-  });
+    installKeybindings();
+    const registry = keybindingsRegistry.getState();
+    const popScope = registry.pushScope(SETTINGS_SCOPE);
+    const unregister = registry.registerAction(ACTIONS.settingsClose, () => handleClose());
+    return () => {
+      unregister();
+      popScope();
+    };
+  }, [handleClose]);
 
   return (
     <PaneScaffold

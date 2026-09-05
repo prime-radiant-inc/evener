@@ -118,6 +118,11 @@ describe("defaults (empty localStorage)", () => {
   test("notificationsLoudScope defaults to asks", () => {
     expect(prefsStore.getState().notificationsLoudScope).toBe("asks");
   });
+  // The WCAG 2.1.4 character-key turn-off (the p4 plan's Design decision 3):
+  // the turn-off exists, and the default is ON.
+  test("characterKeyTriggers defaults to true", () => {
+    expect(prefsStore.getState().characterKeyTriggers).toBe(true);
+  });
 });
 
 describe("hydration from existing localStorage", () => {
@@ -513,6 +518,35 @@ describe("setNotificationsLoudScope", () => {
     prefsStore.getState().setNotificationsLoudScope("all");
     expect(localStorage.getItem(KEY("notificationsLoudScope"))).toBe("all");
     expect(prefsStore.getState().notificationsLoudScope).toBe("all");
+  });
+});
+
+describe("setCharacterKeyTriggers", () => {
+  test("persists under its own evener.prefs.characterKeyTriggers key and updates state", () => {
+    prefsStore.getState().setCharacterKeyTriggers(false);
+    expect(localStorage.getItem(KEY("characterKeyTriggers"))).toBe("0");
+    expect(prefsStore.getState().characterKeyTriggers).toBe(false);
+    // A fresh hydration (what the next page load does) reads it back.
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().characterKeyTriggers).toBe(false);
+    prefsStore.getState().setCharacterKeyTriggers(true);
+    expect(localStorage.getItem(KEY("characterKeyTriggers"))).toBe("1");
+  });
+});
+
+describe("setLastSettingsSection", () => {
+  test("persists under its own evener.prefs.lastSettingsSection key and updates state", () => {
+    expect(prefsStore.getState().lastSettingsSection).toBeNull();
+    prefsStore.getState().setLastSettingsSection("keybindings");
+    expect(localStorage.getItem(KEY("lastSettingsSection"))).toBe("keybindings");
+    expect(prefsStore.getState().lastSettingsSection).toBe("keybindings");
+    // A fresh hydration (what the next page load does) reads it back.
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().lastSettingsSection).toBe("keybindings");
+    // null is absence: the key is removed, never a literal "null" string.
+    prefsStore.getState().setLastSettingsSection(null);
+    expect(localStorage.getItem(KEY("lastSettingsSection"))).toBeNull();
+    expect(prefsStore.getState().lastSettingsSection).toBeNull();
   });
 });
 

@@ -101,6 +101,20 @@ export interface PrefsStoreState {
   // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
   enterToSend: boolean;
   showCost: boolean;
+  // Keybindings (Settings -> Keybindings): whether character-key triggers -
+  // today exactly the "?" cheatsheet-overlay trigger - are live. WCAG 2.1.4
+  // requires a way to turn single-character shortcuts off; default ON (the
+  // turn-off exists, per the p4 plan's Design decision 3). Browser-local by
+  // controller ruling: NOT a hub settings key.
+  characterKeyTriggers: boolean;
+  // The settings section the user last visited (a sections.ts id), so
+  // reopening Settings returns there instead of always landing on General.
+  // null = never visited (or cleared). Persisted as the RAW section-id
+  // string with no validation here - this store must not import the
+  // settings section inventory (layering), so an unrecognized stored value
+  // round-trips and the CONSUMER (Settings.tsx) falls back to the default
+  // section via isKnownSettingsSection.
+  lastSettingsSection: string | null;
   notifications: Record<NotificationKey, boolean>;
   notificationsLoudScope: NotificationsLoudScopePref;
 
@@ -112,6 +126,8 @@ export interface PrefsStoreState {
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
   setShowCost(value: boolean): void;
+  setCharacterKeyTriggers(value: boolean): void;
+  setLastSettingsSection(value: string | null): void;
   setNotification(key: NotificationKey, value: boolean): void;
   setNotificationsLoudScope(value: NotificationsLoudScopePref): void;
 }
@@ -453,6 +469,8 @@ function loadInitialState(): Omit<
   | "setTranscriptStatus"
   | "setEnterToSend"
   | "setShowCost"
+  | "setCharacterKeyTriggers"
+  | "setLastSettingsSection"
   | "setNotification"
   | "setNotificationsLoudScope"
 > {
@@ -471,6 +489,8 @@ function loadInitialState(): Omit<
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
     showCost: readBool("showCost", false),
+    characterKeyTriggers: readBool("characterKeyTriggers", true),
+    lastSettingsSection: readRaw("lastSettingsSection"),
     notifications: loadNotifications(),
     notificationsLoudScope: readEnum("notificationsLoudScope", LOUD_SCOPE_VALUES, "asks"),
   };
@@ -529,6 +549,22 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
   setShowCost(value) {
     writeBool("showCost", value);
     set({ showCost: value });
+  },
+
+  setCharacterKeyTriggers(value) {
+    writeBool("characterKeyTriggers", value);
+    set({ characterKeyTriggers: value });
+  },
+
+  setLastSettingsSection(value) {
+    // null is absence (never written as a literal), same contract as
+    // theme's "system".
+    if (value === null) {
+      removeRaw("lastSettingsSection");
+    } else {
+      writeRaw("lastSettingsSection", value);
+    }
+    set({ lastSettingsSection: value });
   },
 
   setNotification(key, value) {

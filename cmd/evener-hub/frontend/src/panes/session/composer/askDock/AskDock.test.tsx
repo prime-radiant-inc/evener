@@ -17,6 +17,7 @@ import {
   subscribeMutationPersistence,
   threadsStore,
 } from "../../../../stores/threads";
+import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 
@@ -149,6 +150,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
+  resetComposerFocusStoreForTests();
 });
 
 test("renders nothing when there is no pending ask for this ref", async () => {
@@ -281,6 +283,12 @@ test("clicking Send composes and submits through the plain send() path, then the
   expect(screen.queryByText("Deploy?")).toBeNull();
 });
 
+// Escape is a documented NO-OP on the ask dock, not a missing feature:
+// parity-m5-composer.md:120 ("the dock is the one canonical response surface
+// and there is no alternate 'collapse' state to escape to") and
+// contracts-composer-queue-pending.md's test-ask-card.js row both record it
+// as deliberate. AskDock installs no Escape handler at all - this test and
+// the one at the end of this file pin the no-op so it stays deliberate.
 test("Escape does not dismiss the dock or clear any in-progress selection", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -678,6 +686,100 @@ test("Mod+Enter advances rather than sends when another question is still unansw
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
 });
 
+test("Mod+Enter on the last question with the walk unfinished does not bypass the disabled Send button", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Answer q1, advance to q2. q2 is the LAST question and still unanswered:
+  // the footer Send button is disabled in this state, so the keyboard chord
+  // must be too (roborev PR #884) - submitting here would send the batch
+  // with q2 implicitly skipped.
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter", metaKey: true });
+  expect(screen.getByText("q2")).toBeTruthy();
+
+  const sendButton = screen.getByRole("button", { name: /send/i });
+  expect(sendButton).toHaveProperty("disabled", true);
+  fireEvent.keyDown(sendButton, { key: "Enter", metaKey: true });
+
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("Alt+Enter in the free-text answer input does not invoke the primary action", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // Bare Enter in this input is a submit chord; Alt+Enter is NOT - the
+  // bare-Enter path requires every modifier clear (roborev PR #884 round 2).
+  await user.click(screen.getByRole("radio", { name: /something else/i }));
+  await user.type(screen.getByPlaceholderText(/type your answer/i), "custom answer");
+  fireEvent.keyDown(screen.getByPlaceholderText(/type your answer/i), { key: "Enter", altKey: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("modified arrows in the tab strip keep their global meaning - no tab move, no preventDefault", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithTwoAsk(fake);
+  render(<AskDock ref="ref_a" />);
+
+  // Alt+Arrow* and Alt+Home/End are the global transcript scroll/jump chords;
+  // from a tab BUTTON the dispatcher's editable test does not shield them, so
+  // the walk must leave modified events alone entirely (roborev PR #884).
+  const firstTab = screen.getByRole("tab", { name: /1\. First/ });
+  firstTab.focus();
+  const notPrevented = fireEvent.keyDown(firstTab, { key: "ArrowRight", altKey: true });
+
+  expect(notPrevented).toBe(true);
+  expect(firstTab.getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByText("q1")).toBeTruthy();
+  expect(screen.queryByText("q2")).toBeNull();
+});
+
+test("a consumed Mod+Enter does not propagate to window-level listeners", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  // The dock consumes the chord; a window-level binding that ignores
+  // defaultPrevented (rail.toggle) remapped onto Mod+Enter must not also
+  // fire. stopPropagation, not just preventDefault (roborev PR #884).
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Yes" }), { key: "Enter", metaKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
+});
+
+test("a consumed batch-jump chord does not propagate to window-level listeners", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+  render(<AskDock ref="ref_a" />);
+
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getAllByRole("radio", { name: "Yes" })[0]!, { key: "PageDown", altKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
+});
+
 test("plain Enter in the free-text answer input invokes the primary action", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -1001,4 +1103,186 @@ test("an atomic pending-set replacement with an identical count re-announces the
 
   await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
   expect(region.firstChild).not.toBe(firstNode);
+});
+
+// --- Phase 3 keyboard operation -------------------------------------------
+//
+// Three pins on top of the walk/submit keys above:
+//
+// - Escape STAYS a no-op (parity-m5-composer.md:120 documents the no-dismiss
+//   behavior as deliberate) - and pressing it inside the dock must not leak
+//   into anything else either (no send, no cleared answer/note). The only
+//   window-level Escape consumers are SelectionQuote's selection clear (which
+//   reads no dock state) and the settings scope's close (pushed only while
+//   Settings is open); the composer has no Escape-to-clear at all.
+// - Alt+PageDown/Alt+PageUp jump focus between question BATCHES directly
+//   (the tab strip's ArrowLeft/Right walk only moves within one batch).
+//   Alt+Page* is chosen over Alt+Arrow* because the Phase 3 transcript
+//   scroll bindings own Alt+ArrowUp/Down with allowInEditable: false - and
+//   the dispatcher's editable test only covers INPUT/TEXTAREA/SELECT, so
+//   from the dock's tab/send BUTTONS those chords would scroll the
+//   transcript. Bare PageUp/PageDown keep their native meaning (the dock is
+//   its own overflow-y scroller). No registered chord or native text-editing
+//   meaning uses Alt+PageUp/Down.
+// - A send that empties the dock requests composer focus through
+//   composerFocus.ts's requestComposerFocus seam (the same one ⌘I drives);
+//   a send with batches still pending moves focus to the next batch's entry
+//   control instead, because the composer input row is still hidden/inert.
+
+const SECOND_ASK = [{ header: "Later", question: "q_later", options: [{ label: "later-opt", detail: "d" }] }];
+
+// renderTwoBatches drives the REAL two-batch route (reconcileBatches.ts: a
+// batch mid-send is frozen, so the late ask_user call mints a sibling batch
+// instead of joining the open one). Determinism lives in the ordering, not
+// in any timing: the click and the ack run in ONE synchronous block (act's
+// callback executes synchronously), and send() can only resolve after its
+// durable outbox write - an IndexedDB round trip that cannot complete inside
+// a synchronous block - so the ack is guaranteed to land while batch 1 is
+// still sending. turn/start stays parked so nothing else settles the batch.
+async function renderTwoBatches(
+  fake: FakeClient,
+  secondQuestions: Array<Record<string, unknown>> = SECOND_ASK,
+): Promise<void> {
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", secondQuestions);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(2);
+}
+
+test("Escape inside the dock sends nothing and preserves both the answer and a typed note", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(<AskDock ref="ref_a" />);
+
+  await user.click(screen.getByRole("radio", { name: "Yes" }));
+  const note = screen.getByPlaceholderText(/note \(optional\)/i);
+  await user.type(note, "keep me");
+  await user.keyboard("{Escape}");
+
+  expect(screen.getByText("Deploy?")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Yes" })).toHaveProperty("checked", true);
+  expect((note as HTMLInputElement).value).toBe("keep me");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+});
+
+test("Alt+PageDown/Alt+PageUp jump focus between batches, wrapping at both ends", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+
+  const batch1Radio = screen.getByRole("radio", { name: "Yes" });
+  batch1Radio.focus();
+  fireEvent.keyDown(batch1Radio, { key: "PageDown", altKey: true });
+  const batch2Radio = screen.getByRole("radio", { name: "later-opt" });
+  expect(document.activeElement).toBe(batch2Radio);
+
+  // Past the last batch: wrap to the first.
+  fireEvent.keyDown(batch2Radio, { key: "PageDown", altKey: true });
+  expect(document.activeElement).toBe(batch1Radio);
+
+  // Before the first batch: wrap to the last.
+  fireEvent.keyDown(batch1Radio, { key: "PageUp", altKey: true });
+  expect(document.activeElement).toBe(batch2Radio);
+});
+
+test("batch jump lands on the target batch's selected tab when it has a tab strip", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake, [
+    { header: "Alpha", question: "q_alpha", options: [{ label: "alpha-opt", detail: "" }] },
+    { header: "Beta", question: "q_beta", options: [{ label: "beta-opt", detail: "" }] },
+  ]);
+
+  const batch1Radio = screen.getByRole("radio", { name: "Yes" });
+  batch1Radio.focus();
+  fireEvent.keyDown(batch1Radio, { key: "PageDown", altKey: true });
+
+  const selectedTab = screen.getByRole("tab", { name: /1\. Alpha/ });
+  expect(selectedTab.getAttribute("aria-selected")).toBe("true");
+  expect(document.activeElement).toBe(selectedTab);
+});
+
+test("plain PageUp/PageDown keep their native meaning - no batch jump without Alt", async () => {
+  const fake = connectFakeClient();
+  await renderTwoBatches(fake);
+
+  const batch1Radio = screen.getByRole("radio", { name: "Yes" });
+  batch1Radio.focus();
+  fireEvent.keyDown(batch1Radio, { key: "PageDown" });
+  expect(document.activeElement).toBe(batch1Radio);
+  fireEvent.keyDown(batch1Radio, { key: "PageUp" });
+  expect(document.activeElement).toBe(batch1Radio);
+});
+
+test("a send that empties the dock requests composer focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  // The composerFocus store's only read seam is its hook (composerFocus.ts),
+  // so the assertion renders a probe over it rather than reaching into the
+  // module's private store.
+  function Probe() {
+    return <span>{useComposerFocusRequest("ref_a") ? "requested" : "none"}</span>;
+  }
+  render(
+    <>
+      <AskDock ref="ref_a" />
+      <Probe />
+    </>,
+  );
+
+  const persisted = nextMutationPersistence("ref_a");
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
+
+  await waitFor(() => expect(screen.getByText("requested")).toBeTruthy());
+});
+
+test("a send with another batch still pending moves focus to the remaining batch, not the composer", async () => {
+  const fake = connectFakeClient();
+  function Probe() {
+    return <span>{useComposerFocusRequest("ref_a") ? "requested" : "none"}</span>;
+  }
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", () => new Promise(() => {}));
+  render(
+    <>
+      <AskDock ref="ref_a" />
+      <Probe />
+    </>,
+  );
+  // Focus lives in batch 1; its send starts (parked turn/start) and the
+  // late ask mints batch 2 while batch 1 is genuinely mid-send - one
+  // synchronous block, so the send cannot settle first (renderTwoBatches's
+  // own comment has the determinism argument).
+  screen.getByRole("radio", { name: "Yes" }).focus();
+  const persisted = nextMutationPersistence("ref_a");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
+    ackAskUserCall(fake, "ref_a", "turn_1", "item_2", "call_2", SECOND_ASK);
+  });
+  expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(2);
+
+  await persisted;
+  await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length).toBe(1));
+
+  // Batch 1 unmounted with the focus in it; focus lands on the remaining
+  // batch's first answer control, and the still-hidden composer is NOT
+  // asked for focus.
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "later-opt" })));
+  expect(screen.getByText("none")).toBeTruthy();
 });
