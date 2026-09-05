@@ -9,9 +9,9 @@
 // becomes Base provider over availableProviders, the openai-only API-style
 // radio is gone (Protocol is no longer openai-specific data the form
 // special-cases), and the Add form gains a dynamic Input per the selected
-// provider's VarsEnv entry plus api-key-env/credential-header fields
+// provider's Vars entry plus api-key-env/credential-header fields
 // mirroring the CLI's --api-key-env/--credential-header flags (§11.2).
-// VarsEnv maps template placeholder name -> environment variable name
+// Vars maps template placeholder name -> environment variable name
 // (roborev round 1, F3): the input is labeled by the env name (what the
 // docs tell users to set) but keyed by the template name, since that is
 // what the registry actually substitutes.
@@ -63,7 +63,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     { value: "", label: "" },
     ...availableProviders.map((p) => ({ value: p.id, label: p.name || p.id })),
   ];
-  const varsEnv = availableProviders.find((p) => p.id === base)?.varsEnv ?? {};
+  const templateVars = availableProviders.find((p) => p.id === base)?.vars ?? {};
 
   function handleBaseChange(nextBase: string): void {
     setBase(nextBase);
@@ -141,7 +141,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
             disabled={busy}
           />
         </FormRow>
-        {Object.entries(varsEnv)
+        {Object.entries(templateVars)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([template, envName]) => (
             <FormRow key={template} label={envName} htmlFor={`add-instance-var-${template}`}>

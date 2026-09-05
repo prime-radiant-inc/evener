@@ -414,8 +414,11 @@ recorded per `docs/developing-evener/agentic-testing.md`.
   providers (`google-vertex`) work; a provider whose names differ (`google`:
   `BASE_URL` ↔ `GOOGLE_BASE_URL`) cannot take a typed override. Not touched
   here; recorded for a separate fix.~~ **Resolved 2026-09-05, roborev round
-  1:** `ProviderDescriptor.VarsEnv` is now a template-name → env-var-name
-  map, and the dialog keys `vars` (and its rendered inputs' ids) by the
-  template name while still labeling by the env name.
+  1:** `ProviderDescriptor.Vars` (additive, roborev round 5) is a template-name →
+  env-var-name map and the dialog keys `vars` (and its rendered inputs' ids)
+  by the template name while still labeling by the env name; `VarsEnv` stays
+  the sorted env-var-name list because the TUI decodes
+  `evener/instance/list` through the shared types and `ProtocolVersion` is
+  compared exactly, so no v3 wire shape may change.
 - User OAuth ("Sign in with Google") is the natural next spec if per-user
   credentials or remote hubs without pasteable JSON become a requirement.

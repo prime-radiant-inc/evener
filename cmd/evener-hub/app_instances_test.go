@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -198,8 +199,14 @@ func TestInstances_ListReportsAvailableProvidersAndUserLayer(t *testing.T) {
 	if len(openai.APIKeyEnv) == 0 {
 		t.Fatalf("openai descriptor names no api_key_env: %+v", *openai)
 	}
-	if openai.VarsEnv["BASE_URL"] != "OPENAI_BASE_URL" {
-		t.Fatalf("openai descriptor VarsEnv = %+v, want the template name BASE_URL keyed to OPENAI_BASE_URL", openai.VarsEnv)
+	if openai.Vars["BASE_URL"] != "OPENAI_BASE_URL" {
+		t.Fatalf("openai descriptor Vars = %+v, want the template name BASE_URL keyed to OPENAI_BASE_URL", openai.Vars)
+	}
+	if !slices.Contains(openai.VarsEnv, "OPENAI_BASE_URL") {
+		t.Fatalf("openai descriptor VarsEnv = %v, want the env-var names as a sorted list", openai.VarsEnv)
+	}
+	if !slices.IsSorted(openai.VarsEnv) {
+		t.Fatalf("VarsEnv not sorted: %v", openai.VarsEnv)
 	}
 	if !strings.Contains(resp.UserLayer, f.tomlPath) && !strings.Contains(resp.UserLayer, "user layer: none") {
 		t.Fatalf("UserLayer = %q, want the note the registry produced", resp.UserLayer)

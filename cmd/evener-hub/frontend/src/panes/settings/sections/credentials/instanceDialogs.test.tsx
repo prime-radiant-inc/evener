@@ -41,20 +41,23 @@ const VERTEX = provider({
   id: "google-vertex-anthropic",
   protocol: "anthropic",
   auth: "gcp-adc",
-  varsEnv: { GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT", GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION" },
+  varsEnv: ["GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"],
+  vars: { GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT", GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION" },
 });
 const BEDROCK = provider({
   id: "amazon-bedrock",
   protocol: "anthropic",
   auth: "gcp-adc",
-  varsEnv: { AWS_REGION: "AWS_REGION" },
+  varsEnv: ["AWS_REGION"],
+  vars: { AWS_REGION: "AWS_REGION" },
 });
 const VERTEX_EXPRESS = provider({
   id: "google-vertex-express",
   protocol: "google",
   auth: "header",
   apiKeyEnv: ["GOOGLE_VERTEX_API_KEY"],
-  varsEnv: { BASE_URL: "GOOGLE_VERTEX_EXPRESS_BASE_URL" },
+  varsEnv: ["GOOGLE_VERTEX_EXPRESS_BASE_URL"],
+  vars: { BASE_URL: "GOOGLE_VERTEX_EXPRESS_BASE_URL" },
 });
 
 beforeEach(() => {
@@ -87,18 +90,29 @@ describe("AddInstanceDialog", () => {
     expect(screen.getByRole("option", { name: "Anthropic" })).toBeTruthy();
   });
 
-  test("no variable inputs until a base with varsEnv is selected", () => {
+  test("no variable inputs until a base with vars is selected", () => {
     connectFakeClient();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
   });
 
-  test("selecting a base renders one input per varsEnv entry, labeled by name", async () => {
+  test("selecting a base renders one input per vars entry, labeled by name", async () => {
     connectFakeClient();
-    render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
-    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
+    const varsEnvOnly = provider({ id: "vars-env-only", varsEnv: ["LEGACY_ENV"] });
+    render(
+      <AddInstanceDialog
+        availableProviders={[ANTHROPIC, VERTEX, varsEnvOnly]}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
     expect(screen.getByLabelText("GOOGLE_VERTEX_PROJECT")).toBeTruthy();
     expect(screen.getByLabelText("GOOGLE_VERTEX_LOCATION")).toBeTruthy();
+    // varsEnv is the v3 name list, not a fallback: only vars drives the form.
+    await user.selectOptions(screen.getByLabelText("Base provider"), "vars-env-only");
+    expect(screen.queryByLabelText("LEGACY_ENV")).toBeNull();
   });
 
   test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
