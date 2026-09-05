@@ -10,6 +10,7 @@
     "expo-build-properties": "~57.0.17",
     "expo-crypto": "~57.0.2",
     "expo-secure-store": "~57.0.3",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.3",
     "react": "19.2.3",

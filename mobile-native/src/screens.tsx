@@ -1,20 +1,27 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
   Keyboard,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   Text,
   TextInput,
-  View,
   useWindowDimensions,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -25,10 +32,7 @@ import {
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { useConnection } from "./ConnectionProvider";
-import {
-  captureUnconfirmedInput,
-  restoreUnconfirmedDraft,
-} from "./draftRecovery";
+import { drafts } from "./nativeDrafts";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -101,15 +105,19 @@ export function HubsScreen({
   function remove(id: string, label: string) {
     Alert.alert(
       `Remove ${label}?`,
-      "The saved hub and its credentials will be removed from this device.",
+      "The saved hub, its credentials, and its local drafts will be removed from this device.",
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            void removeHub(id).catch(() =>
-              setError("Could not remove this hub. Try again."),
+            void removeHub(id).catch((error: unknown) =>
+              setError(
+                error instanceof Error
+                  ? error.message
+                  : "Could not remove this hub. Try again.",
+              ),
             );
           },
         },
@@ -253,6 +261,7 @@ export function SessionsScreen({
       if (generation === request.current) setRefreshing(false);
     }
   }, [service, state]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Changing hubs must discard the previous hub roster.
   useEffect(() => {
     setRows([]);
     setHasMore(false);
@@ -377,10 +386,12 @@ export function ConversationScreen({
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const headerHeight = useHeaderHeight();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
   const store = useMemo(
     () => createConversationStore(),
     [route.params.hubId, route.params.ref],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
   const activity = useMemo(() => createActivityStore(), [store]);
   // The conversation store validates the exact bound sink object on refresh.
   const activitySink = useMemo(() => activity.getState(), [activity]);
@@ -392,26 +403,22 @@ export function ConversationScreen({
   const timeline = useRef<FlatList>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [unconfirmedSend, setUnconfirmedSend] = useState<string | null>(null);
-  useEffect(() => {
-    setUnconfirmedSend(null);
-  }, [store]);
+  const document = useMemo(
+    () =>
+      drafts.open({ hubId: route.params.hubId, sessionRef: route.params.ref }),
+    [route.params.hubId, route.params.ref],
+  );
+  const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+  const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
   const connected =
     connectionState === "ready" && activeProfile?.id === route.params.hubId;
   useEffect(() => {
     if (!service || !connected) return;
-    const draft = store.getState().draft;
     void store
       .getState()
       .openProjected(service, activitySink, route.params.ref);
-    store.getState().setDraft(draft);
     return () => {
-      const closing = store.getState();
-      const submitted = captureUnconfirmedInput(closing.pendingMutation);
-      if (submitted !== null) setUnconfirmedSend(submitted);
-      const savedDraft = closing.draft;
       store.getState().close();
-      store.getState().setDraft(savedDraft);
       service.close();
     };
   }, [service, store, activitySink, connected, route.params.ref]);
@@ -422,12 +429,9 @@ export function ConversationScreen({
       if (store.getState().status === "open")
         await store.getState().rehydrate(service, activitySink);
       else {
-        const draft = store.getState().draft;
-        const opening = store
+        await store
           .getState()
           .openProjected(service, activitySink, route.params.ref);
-        store.getState().setDraft(draft);
-        await opening;
       }
     } finally {
       setRefreshing(false);
@@ -452,9 +456,15 @@ export function ConversationScreen({
     setActionError(null);
     try {
       if (kind !== "interrupt")
-        await store
-          .getState()
-          [kind](service, [{ type: "text", text: store.getState().draft }]);
+        await document.submit(async (text) => {
+          store.getState().setDraft(text);
+          const previous = store.getState().lastAcceptedMutation;
+          await store.getState()[kind](service, [{ type: "text", text }]);
+          const accepted = store.getState().lastAcceptedMutation;
+          return (
+            accepted != null && accepted !== previous && accepted.kind === kind
+          );
+        });
       else await store.getState().interrupt(service);
     } catch {
       setActionError(
@@ -488,6 +498,7 @@ export function ConversationScreen({
             <View style={{ gap: 12, paddingBottom: 16 }}>
               <ConnectionStatus />
               <ErrorMessage message={snapshot.error || actionError} />
+              <ErrorMessage message={draft.error} />
               {unconfirmedSend !== null ? (
                 <View
                   style={[
@@ -505,24 +516,14 @@ export function ConversationScreen({
                   </ScrollView>
                   <View style={styles.row}>
                     <Action
-                      disabled={snapshot.draft !== ""}
-                      onPress={() => {
-                        const restored = restoreUnconfirmedDraft(
-                          store.getState().draft,
-                          unconfirmedSend,
-                        );
-                        if (restored === null) return;
-                        store.getState().setDraft(restored);
-                        setUnconfirmedSend(null);
-                      }}
+                      disabled={draft.record.draft !== ""}
+                      onPress={() => document.restore()}
                     >
                       Restore to draft
                     </Action>
-                    <Action onPress={() => setUnconfirmedSend(null)}>
-                      Dismiss
-                    </Action>
+                    <Action onPress={() => document.dismiss()}>Dismiss</Action>
                   </View>
-                  {snapshot.draft !== "" ? (
+                  {draft.record.draft !== "" ? (
                     <Copy muted>
                       Your current draft is kept. Clear it to restore this
                       message.
@@ -584,8 +585,9 @@ export function ConversationScreen({
           <TextInput
             accessibilityLabel="Message"
             multiline
-            value={snapshot.draft}
-            onChangeText={snapshot.setDraft}
+            value={draft.record.draft}
+            onChangeText={(text) => document.edit(text)}
+            editable={draft.loaded}
             placeholder="Message"
             placeholderTextColor={colors.secondary}
             style={[
@@ -607,6 +609,11 @@ export function ConversationScreen({
               { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
             ]}
           >
+            {draft.error ? (
+              <Action tone="accent" onPress={document.retry}>
+                {draft.loaded ? "Retry saving" : "Retry loading draft"}
+              </Action>
+            ) : null}
             {!connected ||
             snapshot.error ||
             actionError ||
@@ -659,7 +666,12 @@ export function ConversationScreen({
                       : "quiet"
                   }
                   disabled={
-                    !ready || unconfirmedSend !== null || !snapshot.draft.trim()
+                    !ready ||
+                    !draft.loaded ||
+                    !!draft.error ||
+                    draft.submitting ||
+                    unconfirmedSend !== null ||
+                    !draft.record.draft.trim()
                   }
                   onPress={() => {
                     void mutate(kind);
