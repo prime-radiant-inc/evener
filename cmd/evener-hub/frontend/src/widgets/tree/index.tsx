@@ -91,6 +91,15 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   );
   nodesRef.current = new Map(flat.map((entry) => [entry.node.id, entry.node]));
   handlersRef.current = { onToggle, onActivate };
+  // infoCache only serves visible rows: drop entries for rows that left the
+  // flattened tree so removed navigation/job rows (and their retained node
+  // closures) don't accumulate for the tree's lifetime. The size guard skips
+  // the scan in the common steady state where nothing was removed.
+  if (infoCache.current.size > indexById.size) {
+    for (const id of infoCache.current.keys()) {
+      if (!indexById.has(id)) infoCache.current.delete(id);
+    }
+  }
   const treeRef = useRef<HTMLDivElement>(null);
   const pendingRefocusRef = useRef<string | null>(null);
 
