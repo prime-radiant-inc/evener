@@ -821,3 +821,41 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 		})
 	}
 }
+
+// scratchSandboxFor reads the effective scratch root before it takes sbMu. A
+// scratch move landing in between retires the layer for that root and takes
+// the root away; the call must not then install a fresh layer for the stale
+// root, which nothing would retire and whose descriptors would stay open.
+func TestScratchSandboxForDoesNotInstallALayerForARootMovedAway(t *testing.T) {
+	if runtimeGOOS != "linux" && runtimeGOOS != "darwin" {
+		t.Skip("the unsandboxed scratch layer is linux/darwin only")
+	}
+	owner := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { owner.Cleanup(); owner.DisposeUnadoptedScratch() })
+	if _, err := owner.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	scratch := owner.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the owner minted no session scratch")
+	}
+	clone := owner.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+	// The move lands between the unlocked root read and the lock.
+	scratchSandboxForAfterRootRead = func() { clone.AdoptSessionScratch(owner) }
+	t.Cleanup(func() { scratchSandboxForAfterRootRead = nil })
+
+	layer := owner.scratchSandboxFor(filepath.Join(scratch, "probe"))
+	scratchSandboxForAfterRootRead = nil
+	layer.release()
+
+	owner.sbMu.Lock()
+	installed, installedRoot := owner.scratchFS, owner.scratchFSRoot
+	owner.sbMu.Unlock()
+	if installed != nil {
+		t.Errorf("a layer for root %q was installed on an environment whose scratch had moved away (effective root %q)", installedRoot, owner.allocatedSessionScratchPath())
+	}
+	if fds := openRootFdsOf(owner); fds != 0 {
+		t.Errorf("the environment still holds %d root fds after the move, want none", fds)
+	}
+}

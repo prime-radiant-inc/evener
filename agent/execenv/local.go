@@ -294,6 +294,11 @@ func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
 	return e.sessionScratchPath()
 }
 
+// scratchSandboxForAfterRootRead is a test-only seam observing the point in
+// scratchSandboxFor between its unlocked read of the scratch root and taking
+// sbMu, where a concurrent scratch move can land. Nil in production.
+var scratchSandboxForAfterRootRead func()
+
 // scratchSandboxFor returns the cached fd-anchored layer for an already allocated
 // unsandboxed scratch root when abs is beneath that root. The normal enforced path
 // uses e.sandbox() instead, preserving its full policy (including secret masking
@@ -311,8 +316,25 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 	if _, _, ok := containingRoot([]string{root}, filepath.Clean(abs)); !ok {
 		return nil
 	}
+	if scratchSandboxForAfterRootRead != nil {
+		scratchSandboxForAfterRootRead()
+	}
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
+	// Re-read the root under the lock (sbMu then scratchMu, the standing
+	// order): a scratch move can land between the read above and here, retiring
+	// the layer for that root and taking the root away. A layer is installed
+	// only for the root current under the lock — never for the one read
+	// outside it, which nothing would ever retire.
+	if current := e.allocatedSessionScratchPath(); current != root {
+		root = current
+		if root == "" {
+			return nil
+		}
+		if _, _, ok := containingRoot([]string{root}, filepath.Clean(abs)); !ok {
+			return nil
+		}
+	}
 	if e.scratchFS != nil && e.scratchFSRoot == root {
 		e.scratchFS.acquire()
 		return e.scratchFS
