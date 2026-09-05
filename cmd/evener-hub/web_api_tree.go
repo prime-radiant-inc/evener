@@ -1042,7 +1042,7 @@ func favoriteProjectSourceClaim(id string, snapshot navigationSnapshot) string {
 
 // rowRenameable reports whether a tree row exposes the rename menu item. Local
 // rows are always renameable (ended via the hub meta-edit path, live via the
-// daemon method); Codex-bridged rows are not. Derived from the ref's host, not
+// daemon method); non-local rows are not. Derived from the ref's host, not
 // a per-thread probe.
 func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
 

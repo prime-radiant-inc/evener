@@ -390,9 +390,8 @@ func registerThreadHandlers(
 			// /doc/image descriptors of its own.
 			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
-			// Window any turns the source itself didn't (Codex thread/read and the
-			// past-merge return the full transcript); a daemon read already set
-			// OlderCursor, so this is a no-op there.
+			// Window any full transcript returned by the source or past-merge.
+			// A bounded daemon read already set OlderCursor, so this is a no-op there.
 			if params.TurnLimit > 0 && resp.OlderCursor == "" {
 				resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
 			}
@@ -421,7 +420,7 @@ func registerThreadHandlers(
 	// from. The relay key is derived by the same helper thread/read's relay
 	// uses (threadRelayTarget), so the removal lands on the exact registry
 	// entry Subscribe created. Resolution deliberately uses the plain registry
-	// lookup — never the managed-launch path — because an unsubscribe must not
+	// lookup without session activation because an unsubscribe must not
 	// start a session just to stop delivering to it. When no source resolves,
 	// the ref's own namespace (parsed from the ref itself) is the best key
 	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
