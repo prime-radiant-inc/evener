@@ -300,6 +300,77 @@ describe("keybindings store: patch", () => {
     ).rejects.toThrow(/unavailable/);
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
   });
+
+  // Pre-flight semantic validation (the parked 2b minor, made live by the
+  // settings editor): a rule the reconcile would skip is rejected BEFORE the
+  // hub write, with the validation layer's message.
+  test("a chord conflicting with a live binding is rejected pre-flight, without any hub request", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    // palette.open's default (Control+[Meta]+K with its twin) overlaps a
+    // strict Control+K claim by another action.
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+K" }]),
+    ).rejects.toThrow(`chord "Control+K" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`);
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    // A client-side authoring error is not hub-sourced: neither hubError nor
+    // conflict moves, and the registry is untouched.
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().conflict).toBeNull();
+    expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
+  });
+
+  test("a platform-reserved chord is rejected pre-flight, without any hub request", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    // Control+W is on the every-platform reserved list (the browser never
+    // delivers it to the page).
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+W" }]),
+    ).rejects.toThrow('chord "Control+W" is reserved');
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+  });
+
+  test("an unknown action is rejected pre-flight, without any hub request", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: "no.such.action", chord: "Control+M" }]),
+    ).rejects.toThrow('unknown keybinding action "no.such.action"');
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+  });
+
+  test("a conflicting rule inside a larger payload rejects the whole patch pre-flight", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    client.on("evener/settings/keybindings/patch", () => overridesPayload(4, []));
+    await wireClient(client, true);
+
+    // The editor submits the FULL desired rule set; two rules claiming the
+    // same chord must not reach the hub at all.
+    await expect(
+      keybindingsStore.getState().patchOverrides([
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+        { action: ACTIONS.nextNeedsYou, chord: "Control+M" },
+      ]),
+    ).rejects.toThrow("already bound by");
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
+    expect(bindingsFor(ACTIONS.nextNeedsYou)).toHaveLength(2);
+  });
 });
 
 describe("keybindings store: reconcile resilience", () => {
@@ -407,5 +478,76 @@ describe("keybindings store: reconcile resilience", () => {
     expect(() => resetKeybindingsStoreForTests()).not.toThrow();
     expect(keybindingsStore.getState().revision).toBe(0);
     expect(keybindingsStore.getState().overrides).toEqual([]);
+  });
+});
+
+describe("keybindings store: hubError/conflict clear symmetry", () => {
+  // The parked 2b asymmetry: conflict was cleared ONLY by a successful patch
+  // while hubError cleared on any successful apply, so a revision-race notice
+  // outlived the state it described. Both now clear together.
+  async function stageConflict(client: FakeClient): Promise<void> {
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    client.on("evener/settings/keybindings/patch", () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: overridesPayload(6, []),
+      });
+    });
+    await wireClient(client, true);
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+M" }]),
+    ).rejects.toThrow("revision conflict");
+    expect(keybindingsStore.getState().conflict).toBe("revision conflict");
+    expect(keybindingsStore.getState().hubError).toBe("revision conflict");
+  }
+
+  test("a successful changed notification after a conflict clears BOTH conflict and hubError", async () => {
+    const client = new FakeClient("ready");
+    await stageConflict(client);
+
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(7, []),
+    });
+
+    expect(keybindingsStore.getState().conflict).toBeNull();
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().revision).toBe(7);
+  });
+
+  test("a successful refresh after a conflict clears BOTH conflict and hubError", async () => {
+    const client = new FakeClient("ready");
+    await stageConflict(client);
+    client.on("evener/settings/keybindings/get", () => overridesPayload(7, []));
+
+    await keybindingsStore.getState().refreshOverrides();
+
+    expect(keybindingsStore.getState().conflict).toBeNull();
+    expect(keybindingsStore.getState().hubError).toBeNull();
+  });
+
+  test("a support drop after a conflict clears BOTH conflict and hubError", async () => {
+    const client = new FakeClient("ready");
+    await stageConflict(client);
+
+    // The connection losing its feature set (disconnect/reconnect without
+    // the feature) makes the conflict notice as stale as hubError.
+    connectionStore.setState({ features: undefined });
+
+    expect(keybindingsStore.getState().conflict).toBeNull();
+    expect(keybindingsStore.getState().hubError).toBeNull();
+  });
+
+  test("a stale changed notification (older revision) clears NEITHER conflict nor hubError", async () => {
+    const client = new FakeClient("ready");
+    await stageConflict(client);
+
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(4, []),
+    });
+
+    expect(keybindingsStore.getState().conflict).toBe("revision conflict");
+    expect(keybindingsStore.getState().hubError).toBe("revision conflict");
   });
 });

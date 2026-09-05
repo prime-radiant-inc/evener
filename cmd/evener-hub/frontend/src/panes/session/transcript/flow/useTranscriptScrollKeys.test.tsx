@@ -146,34 +146,37 @@ test("unmounting a pane unregisters only that pane's handlers", () => {
   expect(a.el.scrollTop).toBe(TRANSCRIPT_LINE_SCROLL_PX);
 });
 
-test("transcript.scrollTop/scrollBottom ship with NO default chord (Phase 4's map decides)", () => {
-  expect(DEFAULT_BINDINGS.some((b) => b.actionId === ACTIONS.transcriptScrollTop)).toBe(false);
-  expect(DEFAULT_BINDINGS.some((b) => b.actionId === ACTIONS.transcriptScrollBottom)).toBe(false);
+// Phase 4a assigned the default chords (the p4 plan's Design decision 2):
+// Alt+Home/Alt+End complete the Alt-arrow scroll family, same plain policy.
+test("transcript.scrollTop/scrollBottom default to Alt+Home/Alt+End", () => {
+  expect(DEFAULT_BINDINGS.find((b) => b.actionId === ACTIONS.transcriptScrollTop)?.chord).toBe("Alt+Home");
+  expect(DEFAULT_BINDINGS.find((b) => b.actionId === ACTIONS.transcriptScrollBottom)?.chord).toBe("Alt+End");
 });
 
-test("scrollTop/scrollBottom drive the focused pane's virtualizer (bound to test chords here)", () => {
+test("Alt+Home/Alt+End drive the focused pane's virtualizer (the real default chords)", () => {
   const a = renderPaneKeys("pane_a");
   const b = renderPaneKeys("pane_b");
   workspaceStore.setState({ focusedPaneId: "pane_a" });
-  const registry = keybindingsRegistry.getState();
-  registry.registerBinding({ id: "test.transcript.scrollTop", actionId: ACTIONS.transcriptScrollTop, chord: "F8" });
-  registry.registerBinding({
-    id: "test.transcript.scrollBottom",
-    actionId: ACTIONS.transcriptScrollBottom,
-    chord: "F9",
-  });
-  try {
-    window.dispatchEvent(keydown({ key: "F8", code: "F8" }));
-    expect(a.scrollToIndex).toHaveBeenCalledWith(0, { align: "start" });
-    expect(b.scrollToIndex).not.toHaveBeenCalled();
 
-    window.dispatchEvent(keydown({ key: "F9", code: "F9" }));
-    expect(a.jumpToBottom).toHaveBeenCalledOnce();
-    expect(b.jumpToBottom).not.toHaveBeenCalled();
-  } finally {
-    registry.unregisterBinding("test.transcript.scrollTop");
-    registry.unregisterBinding("test.transcript.scrollBottom");
-  }
+  window.dispatchEvent(keydown({ key: "Home", code: "Home", altKey: true }));
+  expect(a.scrollToIndex).toHaveBeenCalledWith(0, { align: "start" });
+  expect(b.scrollToIndex).not.toHaveBeenCalled();
+
+  window.dispatchEvent(keydown({ key: "End", code: "End", altKey: true }));
+  expect(a.jumpToBottom).toHaveBeenCalledOnce();
+  expect(b.jumpToBottom).not.toHaveBeenCalled();
+});
+
+test("Alt+Home/Alt+End are suppressed from editable targets (Home/End keep their caret meaning)", () => {
+  const a = renderPaneKeys("pane_a");
+  workspaceStore.setState({ focusedPaneId: "pane_a" });
+  const input = document.createElement("input");
+  document.body.appendChild(input);
+
+  input.dispatchEvent(keydown({ key: "Home", code: "Home", altKey: true }));
+  input.dispatchEvent(keydown({ key: "End", code: "End", altKey: true }));
+  expect(a.scrollToIndex).not.toHaveBeenCalled();
+  expect(a.jumpToBottom).not.toHaveBeenCalled();
 });
 
 // jsdom has no matchMedia at all (useIsMobile.test.ts's header documents the

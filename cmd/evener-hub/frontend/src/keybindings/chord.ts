@@ -61,9 +61,9 @@ export function serializeChord(sequence: KeySequence): string {
  * set is a subset of the other side's required ∪ optional set - the exact
  * condition for one KeyboardEvent's modifier state to satisfy both. This is
  * the conflict predicate for validation and rebind: serialization equality
- * alone misses e.g. Control+K vs a default's Control+[Meta]+[Shift]+[Alt]+K,
- * which the same event matches (the earlier-registered binding shadows the
- * later one at dispatch).
+ * alone misses e.g. Control+K vs a default's Control+[Meta]+K, which the
+ * same event matches (the earlier-registered binding shadows the later one
+ * at dispatch).
  *
  * Multi-press sequences keep the old serialization-equality check: a
  * per-press overlap extension is out of scope (user multi-press overrides
@@ -115,6 +115,13 @@ const MODIFIER_DISPLAY: Record<string, string> = {
 export function chordDisplayKeys(chord: Chord): string[] {
   const key = chord.key instanceof RegExp ? chord.key.source : chord.key;
   return [...chord.modifiers.map((m) => MODIFIER_DISPLAY[m] ?? m), key];
+}
+
+/** One modifier's display label (Ctrl / ⌘ / verbatim) - the chordDisplayKeys
+ * mapping for the capture editor's modifier-only live preview, which has no
+ * key yet. */
+export function modifierDisplayKey(modifier: string): string {
+  return MODIFIER_DISPLAY[modifier] ?? modifier;
 }
 
 /** One press as speakable words: "⌘+K" on Apple platforms, "Ctrl+K" elsewhere. */

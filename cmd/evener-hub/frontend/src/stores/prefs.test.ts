@@ -118,6 +118,11 @@ describe("defaults (empty localStorage)", () => {
   test("notificationsLoudScope defaults to asks", () => {
     expect(prefsStore.getState().notificationsLoudScope).toBe("asks");
   });
+  // The WCAG 2.1.4 character-key turn-off (the p4 plan's Design decision 3):
+  // the turn-off exists, and the default is ON.
+  test("characterKeyTriggers defaults to true", () => {
+    expect(prefsStore.getState().characterKeyTriggers).toBe(true);
+  });
 });
 
 describe("hydration from existing localStorage", () => {
@@ -513,6 +518,19 @@ describe("setNotificationsLoudScope", () => {
     prefsStore.getState().setNotificationsLoudScope("all");
     expect(localStorage.getItem(KEY("notificationsLoudScope"))).toBe("all");
     expect(prefsStore.getState().notificationsLoudScope).toBe("all");
+  });
+});
+
+describe("setCharacterKeyTriggers", () => {
+  test("persists under its own evener.prefs.characterKeyTriggers key and updates state", () => {
+    prefsStore.getState().setCharacterKeyTriggers(false);
+    expect(localStorage.getItem(KEY("characterKeyTriggers"))).toBe("0");
+    expect(prefsStore.getState().characterKeyTriggers).toBe(false);
+    // A fresh hydration (what the next page load does) reads it back.
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().characterKeyTriggers).toBe(false);
+    prefsStore.getState().setCharacterKeyTriggers(true);
+    expect(localStorage.getItem(KEY("characterKeyTriggers"))).toBe("1");
   });
 });
 
