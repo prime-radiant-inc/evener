@@ -925,6 +925,47 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   expect(within(row).getByText("K")).toBeTruthy();
 });
 
+test("a confirmed hub payload clears a stale row error - and leaves an unrelated capture alone", async () => {
+  // The hub rejects writes while it recovers; the failed PATCH never
+  // confirmed, so the GET stays at revision 1 and the refresh re-confirms
+  // the SAME payload (the stale guard is `<`: an equal-revision refresh
+  // still applies and clears hubError).
+  let failPatch = true;
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (failPatch) throw new Error("state unavailable");
+    return overridesPayload(2, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  const row = rowFor("Open the command palette");
+  await waitFor(() => expect(within(row).getByRole("alert").textContent).toContain("state unavailable"));
+  expect(keybindingsStore.getState().hubError).not.toBeNull();
+
+  // The hub answers a refresh again: hubError clears, and the row's stale
+  // inline error clears WITH it - the bindings it described are no longer
+  // the truth (the palette was never unbound).
+  failPatch = false;
+  await keybindingsStore.getState().refreshOverrides();
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
+
+  // The clearing is scoped to the stale error: a capture open on another
+  // row rides through a later confirmed payload untouched. A NOTIFICATION,
+  // not a refresh: a refresh flips hubLoading, which makes the section
+  // read-only for the flight and cancels captures by design (finding 18) -
+  // the notification path confirms a payload without the loading gate.
+  const box = await enterCapture("Focus the composer");
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(1, []),
+  });
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(box);
+});
+
 // The cheatsheet.toggle row is the one multi-entry action: the editor edits
 // the base ($mod+/) chord only; the conditional "?" trigger is the
 // character-key setting's own entry, shown read-only with a note.

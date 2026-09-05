@@ -128,7 +128,14 @@ function unapplyAllOverrides(): void {
   const snapshot = keybindingsRegistry.getState().bindings;
   try {
     for (const action of appliedOverrides.keys()) removeActionBindings(keybindingsRegistry, action);
-    for (const action of appliedOverrides.keys()) restoreDefaultBinding(keybindingsRegistry, action);
+    // Pref-aware like the reconcile's restore: while the character-key
+    // pref is off the conditional "?" entry is not re-registered (the
+    // cheatsheetController owns it), so the restore cannot collide with a
+    // user rule holding exactly [Shift]+? (finding 27).
+    for (const action of appliedOverrides.keys())
+      restoreDefaultBinding(keybindingsRegistry, action, {
+        characterKeyTriggers: prefsStore.getState().characterKeyTriggers,
+      });
   } catch {
     // See the doc comment: roll back, keep the applied map, never propagate.
     rollbackBindings(snapshot);
@@ -186,15 +193,18 @@ function rollbackBindings(snapshot: readonly Binding[]): void {
  * state before propagating, so callers surface the failure with the last
  * good bindings intact. */
 function applyOverrideRules(rules: readonly OverrideRule[]): void {
-  // The pref gates the restore simulation: with character-key triggers off
-  // the live registry has no "?" cheatsheet binding, so a simulated restore
-  // must not claim one either.
+  // The pref gates BOTH the restore simulation and the actual restore
+  // below (finding 27): with character-key triggers off the live registry
+  // has no "?" cheatsheet binding, so neither a simulated nor a real
+  // restore may claim one - a real restore registering it would collide
+  // with a user rule holding exactly [Shift]+? and throw mid-reconcile.
+  const characterKeyTriggers = prefsStore.getState().characterKeyTriggers;
   const validated = validateOverrideRules(
     rules,
     keybindingsRegistry,
     undefined,
     new Set(appliedOverrides.keys()),
-    prefsStore.getState().characterKeyTriggers,
+    characterKeyTriggers,
   );
   const next = new Map<string, string | null>();
   for (const rule of validated.rules) {
@@ -215,7 +225,7 @@ function applyOverrideRules(rules: readonly OverrideRule[]): void {
         if (next.has(action)) {
           rebindAction(keybindingsRegistry, action, next.get(action) ?? null);
         } else {
-          restoreDefaultBinding(keybindingsRegistry, action);
+          restoreDefaultBinding(keybindingsRegistry, action, { characterKeyTriggers });
         }
       }
     } catch (error) {

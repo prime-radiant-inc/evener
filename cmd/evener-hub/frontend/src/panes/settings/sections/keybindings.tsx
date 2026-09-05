@@ -276,6 +276,15 @@ interface KeybindingRowProps {
 function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers }: KeybindingRowProps) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A failed save leaves this row's inline error AND the store's hubError
+  // set. When a later confirmed hub payload (refresh or notification) clears
+  // hubError, the row's stale error clears with it - the bindings it
+  // described are no longer the truth, and the store's isEditable gate
+  // already reopens. Local state only: an unrelated capture is untouched.
+  const hubError = useKeybindingsStore((s) => s.hubError);
+  useEffect(() => {
+    if (hubError === null) setError(null);
+  }, [hubError]);
   // Reset availability derives from the hub's RAW rules, not the validated
   // set: a persisted rule validation skips (reserved/malformed/conflicting)
   // never reaches `overrides`, but dropping it is exactly the meaningful

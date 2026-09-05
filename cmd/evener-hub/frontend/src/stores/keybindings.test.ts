@@ -943,6 +943,41 @@ describe("keybindings store: character-key pref in the restore simulation", () =
     ).rejects.toThrow(/already bound by/);
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
   });
+
+  test("with the pref off, a hub notification that drops an override restores defaults WITHOUT reclaiming the ? trigger", async () => {
+    // Pref off BEFORE the initial load: railToggle holds "Shift+?" (the
+    // character-key chord with a required shift), cheatsheet.toggle is
+    // overridden away. Both validate clean because the "?" entry is absent.
+    turnCharacterKeyPrefOff();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(1, [
+        { action: ACTIONS.cheatsheetToggle, chord: "Control+Shift+/" },
+        { action: ACTIONS.railToggle, chord: "Shift+?" },
+      ]),
+    );
+    await wireClient(client, true);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+
+    // The notification drops cheatsheet.toggle's override, so its defaults
+    // restore. The restore MUTATION must mirror the pref just like the
+    // preflight does: re-registering "?" would exact-match railToggle's
+    // surviving "Shift+?" override ("[Shift]+?" and "Shift+?" both serialize
+    // "Shift+?") and registerBinding would throw, surfacing a hubError from
+    // a payload the preflight already accepted.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(2, [{ action: ACTIONS.railToggle, chord: "Shift+?" }]),
+    });
+
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().revision).toBe(2);
+    expect(bindingsFor(ACTIONS.cheatsheetToggle).map((b) => b.id)).toEqual([
+      ACTIONS.cheatsheetToggle,
+      `${ACTIONS.cheatsheetToggle}#mod-twin`,
+    ]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+  });
 });
 
 describe("keybindings store: support loss", () => {
