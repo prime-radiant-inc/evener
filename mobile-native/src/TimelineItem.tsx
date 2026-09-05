@@ -1,13 +1,29 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { View } from "react-native";
-import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
+import type { TimelineRow } from "./timeline";
 import { Action, Copy, styles, useColors } from "./ui";
 
-export function TimelineItem({ item }: { item: MobileTimelineItem }) {
+export function TimelineItem({ item }: { item: TimelineRow }) {
   const [expanded, setExpanded] = useState(false);
   const colors = useColors();
-  let content;
+  let content: ReactNode;
   switch (item.kind) {
+    case "details":
+      content = (
+        <>
+          <Action
+            label={`Session details, ${item.entries.length} ${item.entries.length === 1 ? "entry" : "entries"}`}
+            expanded={expanded}
+            onPress={() => setExpanded(!expanded)}
+          >{`${expanded ? "▾" : "▸"} Session details · ${item.entries.length}`}</Action>
+          {expanded
+            ? item.entries.map((entry) => (
+                <TimelineItem key={entry.id} item={entry} />
+              ))
+            : null}
+        </>
+      );
+      break;
     case "user":
       content = (
         <>
@@ -61,8 +77,8 @@ export function TimelineItem({ item }: { item: MobileTimelineItem }) {
             <View key={question.key} style={{ gap: 8 }}>
               <Copy>{question.header}</Copy>
               <Copy>{question.question}</Copy>
-              {question.options.map((option, index) => (
-                <Copy key={`${question.key}:${index}`}>
+              {question.options.map((option) => (
+                <Copy key={`${question.key}:${option.label}`}>
                   {option.label}
                   {option.recommended ? " (recommended)" : ""}
                   {option.detail ? ` — ${option.detail}` : ""}
@@ -80,6 +96,7 @@ export function TimelineItem({ item }: { item: MobileTimelineItem }) {
         <>
           <Action
             label={`${expanded ? "Collapse" : "Expand"} ${item.label}`}
+            expanded={expanded}
             onPress={() => setExpanded(!expanded)}
           >{`${expanded ? "▾" : "▸"} ${item.label} · ${item.state}`}</Action>
           {expanded ? (
@@ -119,6 +136,14 @@ export function TimelineItem({ item }: { item: MobileTimelineItem }) {
       style={[
         styles.card,
         { backgroundColor: colors.surface, borderColor: colors.border },
+        item.kind === "details" || item.kind === "activity"
+          ? {
+              backgroundColor: colors.background,
+              borderWidth: 0,
+              paddingVertical: 0,
+              paddingHorizontal: 8,
+            }
+          : null,
       ]}
     >
       {content}
