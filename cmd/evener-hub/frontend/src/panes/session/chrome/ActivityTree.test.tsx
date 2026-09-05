@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -610,6 +610,30 @@ describe("ActivityTree", () => {
     await user.keyboard("{Enter}");
     expect(onToggleFold).toHaveBeenCalledWith(FOLD_ID);
     expect(openTranscript).not.toHaveBeenCalled();
+  });
+
+  test("keyboard: Alt/Ctrl/Meta arrows fall through to the global chords - no move, no preventDefault", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    setupUser();
+    render(<ActivityTree tree={TREE} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    // Alt+ArrowUp/Down and Alt+Home/End are the global transcript scroll/jump
+    // chords; a tree row is not an editable, so the dispatcher would honor
+    // them - unless the row's own handler swallowed the key first (roborev PR
+    // #884 round 3). Modified arrows must neither move row focus nor be
+    // preventDefaulted here.
+    const shellRow = screen.getByRole("treeitem", { name: "run tests" });
+    shellRow.focus();
+    for (const event of [
+      { key: "ArrowDown", altKey: true },
+      { key: "ArrowUp", ctrlKey: true },
+      { key: "ArrowRight", altKey: true },
+      { key: "ArrowLeft", metaKey: true },
+    ]) {
+      expect(fireEvent.keyDown(shellRow, event)).toBe(true);
+      expect(document.activeElement).toBe(shellRow);
+    }
   });
 
   test("keyboard: arrows still navigate rows when focus sits on a row chevron button", async () => {

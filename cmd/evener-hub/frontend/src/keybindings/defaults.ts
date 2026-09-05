@@ -1,6 +1,8 @@
-// The default binding map: exactly the six shell chords that today live in six
+// The default binding map: the six legacy shell chords that lived in six
 // independent keydown listeners (AppShell, RailHost, SelectionQuote,
-// Settings). Per-binding policy per chord matches today's behavior:
+// Settings), plus the Phase 3 navigation chords (session-pane cycling and
+// transcript scroll). For the legacy six, per-binding policy per chord
+// matches the pre-dispatcher behavior:
 //
 //   - ⌘K / ⌘I / ⌘J / ⌘' fire from editable targets (allowInEditable: true):
 //     none of today's listeners for these chords guards on the target.
@@ -116,6 +118,56 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     allowInEditable: true,
     allowInModal: true,
     legacyEitherMod: true,
+  },
+  // Phase 3 navigation chords (the webui-keybindings-p3 approved map). All
+  // six are strict single-modifier-family Alt chords with NO optional
+  // modifiers: Alt+ArrowUp and Alt+Shift+ArrowUp must stay distinct bindings
+  // (line vs page scroll), which forbids a [Shift] on the plain chord. All
+  // keep the default allowInEditable: false - plain Alt+Arrow keeps its
+  // native text-editing meaning inside inputs and the composer - and the
+  // default allowInModal/ignoreIfDefaultPrevented policy. None is a $mod
+  // chord, so modPair registers no cross-platform twin.
+  //
+  // The session-cycling pair acts even when the focused pane is NOT a
+  // session (focusing the first/last open session then); the transcript
+  // scroll actions are per-pane multi-instance registrations whose handlers
+  // decline unless their pane is the focused one - see
+  // panes/session/transcript/flow/useTranscriptScrollKeys.ts.
+  {
+    id: ACTIONS.sessionNext,
+    actionId: ACTIONS.sessionNext,
+    title: "Focus the next session pane",
+    chord: "Alt+ArrowRight",
+  },
+  {
+    id: ACTIONS.sessionPrevious,
+    actionId: ACTIONS.sessionPrevious,
+    title: "Focus the previous session pane",
+    chord: "Alt+ArrowLeft",
+  },
+  {
+    id: ACTIONS.transcriptLineUp,
+    actionId: ACTIONS.transcriptLineUp,
+    title: "Scroll the transcript up one line",
+    chord: "Alt+ArrowUp",
+  },
+  {
+    id: ACTIONS.transcriptLineDown,
+    actionId: ACTIONS.transcriptLineDown,
+    title: "Scroll the transcript down one line",
+    chord: "Alt+ArrowDown",
+  },
+  {
+    id: ACTIONS.transcriptPageUp,
+    actionId: ACTIONS.transcriptPageUp,
+    title: "Scroll the transcript up one page",
+    chord: "Alt+Shift+ArrowUp",
+  },
+  {
+    id: ACTIONS.transcriptPageDown,
+    actionId: ACTIONS.transcriptPageDown,
+    title: "Scroll the transcript down one page",
+    chord: "Alt+Shift+ArrowDown",
   },
   {
     id: ACTIONS.settingsClose,

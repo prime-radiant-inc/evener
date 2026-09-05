@@ -2297,3 +2297,96 @@ test("Escape in Settings exits to welcome and the URL stays there, not reinstate
   });
   expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
 });
+
+// --- Alt+ArrowLeft/Right session-pane cycling (webui-keybindings-p3 Task 1)
+//
+// AppShell registers session.next/session.previous against the keybindings
+// registry (desktop only - the rail.toggle inertness pattern); the actions
+// drive workspaceStore.focusPane through shell/sessionCycle.ts. These tests
+// pin the WIRING (real dispatcher, real defaults, real shell); the cycling
+// order/wrap/no-op semantics themselves are sessionCycle.test.ts's.
+
+test("Alt+ArrowRight/Left cycle the open session panes through the shell, wrapping", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  let b = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    b = workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+
+  // Wrap: the last session pane's next is the first.
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+
+  await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(b);
+});
+
+test("Alt+Arrow cycling is a no-op with a single session pane open", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let only = "";
+  act(() => {
+    only = workspaceStore.getState().openPane("session", { ref: "local:cycle-only" });
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(1));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(only);
+  await user.keyboard("{Alt>}{ArrowLeft}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(only);
+});
+
+test("Alt+Arrow cycling is suppressed from an editable target", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  const input = document.createElement("input");
+  document.body.appendChild(input);
+  input.focus();
+  try {
+    await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+    expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  } finally {
+    input.remove();
+  }
+});
+
+test("mobile: Alt+Arrow cycling registers nothing and is inert", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  let a = "";
+  act(() => {
+    a = workspaceStore.getState().openPane("session", { ref: "local:cycle-a" });
+    workspaceStore.getState().openPane("session", { ref: "local:cycle-b" });
+    workspaceStore.getState().focusPane(a);
+  });
+  await waitFor(() => expect(workspaceStore.getState().panes).toHaveLength(2));
+
+  await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  vi.unstubAllGlobals();
+});

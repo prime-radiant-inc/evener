@@ -10,15 +10,29 @@ function keydown(init: KeyboardEventInit): KeyboardEvent {
 }
 
 describe("default binding map", () => {
-  test("is exactly the six shell chords", () => {
+  test("is exactly the shell chords", () => {
     expect(DEFAULT_BINDINGS.map((b) => b.actionId)).toEqual([
       ACTIONS.paletteOpen,
       ACTIONS.railToggle,
       ACTIONS.composerFocus,
       ACTIONS.nextNeedsYou,
       ACTIONS.selectionQuote,
+      ACTIONS.sessionNext,
+      ACTIONS.sessionPrevious,
+      ACTIONS.transcriptLineUp,
+      ACTIONS.transcriptLineDown,
+      ACTIONS.transcriptPageUp,
+      ACTIONS.transcriptPageDown,
       ACTIONS.settingsClose,
     ]);
+  });
+
+  // Phase 3 registers the scrollTop/scrollBottom ACTIONS (their handlers are
+  // the session transcript's) but deliberately ships no default chord for
+  // them - the Phase 4 keymap decides whether they get one.
+  test("transcript.scrollTop/scrollBottom ship with no default chord", () => {
+    expect(DEFAULT_BINDINGS.some((b) => b.actionId === ACTIONS.transcriptScrollTop)).toBe(false);
+    expect(DEFAULT_BINDINGS.some((b) => b.actionId === ACTIONS.transcriptScrollBottom)).toBe(false);
   });
 
   // Chords are compared through parse+serialize so the assertion is
@@ -34,6 +48,12 @@ describe("default binding map", () => {
     [ACTIONS.nextNeedsYou, "$mod+[Shift]+[Alt]+J"],
     [ACTIONS.selectionQuote, "$mod+[Shift]+'"],
     [ACTIONS.settingsClose, "[Control]+[Alt]+[Shift]+[Meta]+Escape"],
+    [ACTIONS.sessionNext, "Alt+ArrowRight"],
+    [ACTIONS.sessionPrevious, "Alt+ArrowLeft"],
+    [ACTIONS.transcriptLineUp, "Alt+ArrowUp"],
+    [ACTIONS.transcriptLineDown, "Alt+ArrowDown"],
+    [ACTIONS.transcriptPageUp, "Alt+Shift+ArrowUp"],
+    [ACTIONS.transcriptPageDown, "Alt+Shift+ArrowDown"],
   ])("%s is bound to %s", (actionId, chord) => {
     const binding = DEFAULT_BINDINGS.find((b) => b.actionId === actionId);
     expect(binding).toBeDefined();
@@ -47,6 +67,15 @@ describe("default binding map", () => {
     expect(policy.get(ACTIONS.nextNeedsYou)).toBe(true);
     expect(policy.get(ACTIONS.selectionQuote)).toBe(true);
     expect(policy.get(ACTIONS.railToggle)).toBe(false);
+    // The Phase 3 navigation chords all suppress in editable targets: plain
+    // Alt+Arrow and Alt+Shift+Arrow keep their native text-editing meanings
+    // (word/selection movement) inside inputs and the composer.
+    expect(policy.get(ACTIONS.sessionNext)).toBe(false);
+    expect(policy.get(ACTIONS.sessionPrevious)).toBe(false);
+    expect(policy.get(ACTIONS.transcriptLineUp)).toBe(false);
+    expect(policy.get(ACTIONS.transcriptLineDown)).toBe(false);
+    expect(policy.get(ACTIONS.transcriptPageUp)).toBe(false);
+    expect(policy.get(ACTIONS.transcriptPageDown)).toBe(false);
   });
 
   test("settings.close is scope-gated, not global", () => {
@@ -118,13 +147,35 @@ describe("default bindings through the dispatcher", () => {
     window.dispatchEvent(keydown({ key: "i", code: "KeyI", ctrlKey: true }));
     window.dispatchEvent(keydown({ key: "j", code: "KeyJ", ctrlKey: true }));
     window.dispatchEvent(keydown({ key: "'", code: "Quote", ctrlKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowRight", code: "ArrowRight", altKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowLeft", code: "ArrowLeft", altKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowUp", code: "ArrowUp", altKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowDown", code: "ArrowDown", altKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowUp", code: "ArrowUp", altKey: true, shiftKey: true }));
+    window.dispatchEvent(keydown({ key: "ArrowDown", code: "ArrowDown", altKey: true, shiftKey: true }));
     expect(calls).toEqual([
       ACTIONS.paletteOpen,
       ACTIONS.railToggle,
       ACTIONS.composerFocus,
       ACTIONS.nextNeedsYou,
       ACTIONS.selectionQuote,
+      ACTIONS.sessionNext,
+      ACTIONS.sessionPrevious,
+      ACTIONS.transcriptLineUp,
+      ACTIONS.transcriptLineDown,
+      ACTIONS.transcriptPageUp,
+      ACTIONS.transcriptPageDown,
     ]);
+  });
+
+  test("the Alt+Arrow chords are suppressed in an editable target", () => {
+    setup();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.dispatchEvent(keydown({ key: "ArrowRight", code: "ArrowRight", altKey: true }));
+    input.dispatchEvent(keydown({ key: "ArrowDown", code: "ArrowDown", altKey: true }));
+    input.dispatchEvent(keydown({ key: "ArrowDown", code: "ArrowDown", altKey: true, shiftKey: true }));
+    expect(calls).toEqual([]);
   });
 
   test("Escape only closes settings while the settings scope is pushed", () => {
