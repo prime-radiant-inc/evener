@@ -48,10 +48,11 @@ func TestWorktreeControlRunUsesConfiguredGitRunner(t *testing.T) {
 		},
 	}))
 
-	run, err := s.worktreeControlRun(context.Background(), t.TempDir())
+	run, done, err := s.worktreeControlRun(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("worktreeControlRun: %v", err)
 	}
+	defer done()
 	got, err := run("sentinel")
 	if err != nil {
 		t.Fatalf("run: %v", err)

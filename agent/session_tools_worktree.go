@@ -615,6 +615,11 @@ func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.Executio
 // env can target the main root without disturbing the confined tool env. Errors
 // when the session env is not a LocalExecutionEnvironment (spec §2: env
 // swapping and local git worktree management are unsupported otherwise).
+//
+// The control env is a clone built for one op, and its first git command
+// mints a scratch dir and takes its lease; nothing references the clone once
+// the op returns, so the op disposes it (worktreeControlRun's done, the create
+// core's Done) or each op leaves a directory with a held lease behind.
 func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvironment, error) {
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -1004,6 +1009,9 @@ type worktreeCreateCoreResult struct {
 	MetaDir string
 	Project identifier.Project
 	Run     worktree.GitRunner
+	// Done disposes the control environment Run is bound to (its scratch and
+	// lease); the caller runs it once it is finished with Run.
+	Done func()
 }
 
 // worktreeCreateCore is the shared git-level portion of managed-worktree
@@ -1045,6 +1053,14 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		return worktreeCreateCoreResult{}, cerr
 	}
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
+	// The control env's lifetime is the caller's on success (Done) and this
+	// function's on every failure below.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			disposeUnadoptedScratch(controlEnv)
+		}
+	}()
 
 	// Step 3: worktree path under <worktreeRoot>/<Project.ID>/<name>.
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
@@ -1138,6 +1154,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: git worktree add failed: %w", errPrefix, addErr)
 	}
 
+	handedOff = true
 	return worktreeCreateCoreResult{
 		Path:     worktreePath,
 		Branch:   name,
@@ -1146,6 +1163,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		MetaDir:  metaDir,
 		Project:  project,
 		Run:      run,
+		Done:     func() { disposeUnadoptedScratch(controlEnv) },
 	}, nil
 }
 
@@ -1165,6 +1183,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	if err != nil {
 		return WorktreeResult{}, err
 	}
+	defer res.Done()
 	// Steps 1-6 added and locked the lane and wrote its sidecar for a session
 	// that, past any failure below, will never enter it; every such failure
 	// takes them back. The rollback runs on its own bounded control context,
@@ -1176,12 +1195,12 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 		if entered {
 			return
 		}
-		run, cancel, err := s.worktreeCleanupRun(res.MainRoot)
+		run, done, err := s.worktreeCleanupRun(res.MainRoot)
 		if err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, err)})
 			return
 		}
-		defer cancel()
+		defer done()
 		s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name)
 	}()
 
@@ -1229,6 +1248,7 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 	if err != nil {
 		return "", "", "", "", identifier.Project{}, err
 	}
+	res.Done()
 	return res.Path, res.Branch, res.BaseSHA, res.MainRoot, res.Project, nil
 }
 
@@ -1251,11 +1271,11 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 	}
 	// Best-effort: a control env the host cannot confine or a control policy it
 	// cannot satisfy skips the rollback rather than running it unscoped.
-	run, cancel, err := s.worktreeCleanupRun(project.CanonicalPath)
+	run, done, err := s.worktreeCleanupRun(project.CanonicalPath)
 	if err != nil {
 		return
 	}
-	defer cancel()
+	defer done()
 	s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
 }
 
@@ -1379,12 +1399,12 @@ func lockStateFromPorcelain(porcelain []worktree.PorcelainEntry, path string) (l
 // worktreeControlRun builds a GitRunner over the control env rooted at
 // mainRepoRoot (spec §2 "Git control environment"), for lifecycle git calls
 // that must run outside the (possibly worktree-rooted) user-facing env.
-func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (worktree.GitRunner, error) {
+func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (worktree.GitRunner, func(), error) {
 	controlEnv, err := s.worktreeControlEnv(mainRepoRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.newWorktreeGitRunner(ctx, controlEnv), nil
+	return s.newWorktreeGitRunner(ctx, controlEnv), func() { disposeUnadoptedScratch(controlEnv) }, nil
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
@@ -1392,15 +1412,16 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 // (session_worktree_close.go); the close-time cleanup runners themselves are
 // deliberately unbudgeted. A rollback of a refused or failed op must not
 // inherit the request context, which the close that refused the swap has
-// already cancelled. The caller cancels when done.
-func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, context.CancelFunc, error) {
+// already cancelled. The returned done cancels the context and disposes the
+// control environment; the caller runs it when the rollback is over.
+func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
-	run, err := s.worktreeControlRun(ctx, mainRepoRoot)
+	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
 		return nil, nil, err
 	}
-	return run, cancel, nil
+	return run, func() { cancel(); dispose() }, nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize
@@ -1574,12 +1595,12 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 			if entered {
 				return
 			}
-			unlock, cancel, err := s.worktreeCleanupRun(st.mainRepoRoot)
+			unlock, done, err := s.worktreeCleanupRun(st.mainRepoRoot)
 			if err != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, err)})
 				return
 			}
-			defer cancel()
+			defer done()
 			_, _ = unlock("worktree", "unlock", target)
 		}()
 	case worktree.ActAdopt:
@@ -1627,10 +1648,11 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 	if st.mainRepoRoot == "" {
 		return WorktreeSwitchResult{}, errors.New("manage_worktree switch: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	defer done()
 	path := filepath.Join(st.worktreeRoot, st.project.ID, filepath.FromSlash(name))
 	return s.worktreeEnterManaged(st, run, path)
 }
@@ -1660,10 +1682,11 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	}
 	canonicalArg = filepath.Clean(canonicalArg)
 
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	defer done()
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: listing worktrees: %w", err)
@@ -1752,10 +1775,11 @@ func (s *Session) worktreeAdopt(ctx context.Context, rawPath string) (WorktreeAd
 	}
 	canonicalArg = filepath.Clean(canonicalArg)
 
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeAdoptResult{}, err
 	}
+	defer done()
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
 		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: listing worktrees: %w", err)
@@ -1918,10 +1942,11 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	var run worktree.GitRunner
 	var porcelain []worktree.PorcelainEntry
 	if st.mainRepoRoot != "" {
-		r, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+		r, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 		if err != nil {
 			return WorktreeExitResult{}, err
 		}
+		defer done()
 		run = r
 		porcelain, err = readWorktreePorcelain(run)
 		if err != nil {
@@ -2023,10 +2048,11 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if !isUnderManagedDir(canonicalTarget, projectDir) {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is not a managed worktree", name)
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeRemoveResult{}, err
 	}
+	defer done()
 
 	// "Currently inside" is judged against the session's ACTIVE root, not the
 	// create/switch-tracked worktreeCurrentPath, so that a session launched
@@ -2520,10 +2546,11 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 	if st.mainRepoRoot == "" {
 		return nil, errors.New("manage_worktree list: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return nil, err
 	}
+	defer done()
 
 	// Step 1: `git worktree list --porcelain` — never `git worktree prune`.
 	out, err := run("worktree", "list", "--porcelain")
@@ -2631,10 +2658,11 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	if st.mainRepoRoot == "" {
 		return WorktreePruneResult{}, errors.New("manage_worktree prune: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
+	defer done()
 
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)

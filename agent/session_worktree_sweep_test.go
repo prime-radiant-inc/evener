@@ -382,10 +382,11 @@ func TestP3CollectLane_ConcurrentWinnerCompletesRemoval(t *testing.T) {
 		return next(args...)
 	})
 
-	run, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	run, done, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
 	if err != nil {
 		t.Fatalf("worktreeControlRun: %v", err)
 	}
+	defer done()
 	metaDir := metaDirForLane(path)
 	if err := r.s.collectLane(run, metaDir, id, path, true, r.s.residueSweepPolicy()); err != nil {
 		t.Fatalf("collectLane after concurrent removal: %v", err)

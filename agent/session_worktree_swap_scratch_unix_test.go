@@ -268,6 +268,10 @@ func retainedScratchDirsIn(t *testing.T, base string) []string {
 // the enter silently changes $EVENER_SCRATCH_DIR while leaving an extra
 // retained directory behind.
 func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.T) {
+	// The shared base repo is built once per package run under the temp dir
+	// current at that moment; build it before this test redirects TMPDIR to a
+	// directory it will delete.
+	worktreeBaseRepo(t)
 	isolated := t.TempDir()
 	t.Setenv("TMPDIR", isolated)
 	cfg := worktreeTestSessionConfig()
@@ -403,4 +407,112 @@ func TestWorktreeSwap_CloseBetweenInstallAndRecordRetainsTheOldEnvironmentScratc
 			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
 		}
 	}
+}
+
+// heldScratchDirsIn lists the session scratch dirs under base whose lease is
+// still held by a live owner.
+func heldScratchDirsIn(t *testing.T, base string) []string {
+	t.Helper()
+	found, err := filepath.Glob(filepath.Join(base, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatalf("glob session scratch dirs: %v", err)
+	}
+	var held []string
+	for _, dir := range found {
+		if scratchLeaseHeld(t, dir) {
+			held = append(held, dir)
+		}
+	}
+	return held
+}
+
+// sessionOwnedScratchDirs is the set of scratch dirs the session's own
+// environments (current and parked) report: the only leases a live session
+// may hold.
+func sessionOwnedScratchDirs(t *testing.T, s *Session) map[string]bool {
+	t.Helper()
+	own := map[string]bool{}
+	if dir := currentLocalEnv(t, s).SessionScratchDir(); dir != "" {
+		own[dir] = true
+	}
+	s.mu.Lock()
+	parked := s.worktreeRestoreEnv
+	s.mu.Unlock()
+	if parked != nil {
+		if dir := parked.SessionScratchDir(); dir != "" {
+			own[dir] = true
+		}
+	}
+	return own
+}
+
+// A worktree lifecycle op runs its git through a control environment cloned
+// for the op, and that clone's first command mints a scratch and takes its
+// lease. Nothing references the clone after the op, so the op has to dispose
+// it — every op, including one refused mid-swap and its rollback — or each op
+// leaves a directory with a held lease for the daemon's uptime.
+func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
+	// See TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch: pin
+	// the shared base repo before any subtest redirects TMPDIR.
+	worktreeBaseRepo(t)
+	t.Run("create, exit, remove", func(t *testing.T) {
+		isolated := t.TempDir()
+		t.Setenv("TMPDIR", isolated)
+		r := newWorktreeRepo(t)
+		assertOnlyOwnHeld := func(step string) {
+			t.Helper()
+			own := sessionOwnedScratchDirs(t, r.s)
+			for _, dir := range heldScratchDirsIn(t, isolated) {
+				if !own[dir] {
+					t.Errorf("%s left a held lease on %s that no session environment owns", step, dir)
+				}
+			}
+		}
+		if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		assertOnlyOwnHeld("create")
+		if _, err := r.exitOp(t); err != nil {
+			t.Fatalf("exit: %v", err)
+		}
+		assertOnlyOwnHeld("exit")
+		if _, err := r.removeOp(t, map[string]any{"name": "lane"}); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		assertOnlyOwnHeld("remove")
+	})
+	t.Run("refused create", func(t *testing.T) {
+		isolated := t.TempDir()
+		t.Setenv("TMPDIR", isolated)
+		r := newWorktreeRepo(t)
+		closeDone := armCloseDuringSwap(r, nil)
+		_, err := r.create(t, map[string]any{"name": "lane"})
+		<-closeDone
+		if err == nil {
+			t.Fatal("create succeeded while the session closed under its swap, want a refusal")
+		}
+		if held := heldScratchDirsIn(t, isolated); len(held) != 0 {
+			t.Errorf("the refused create and the closed session left held leases on %v, want none", held)
+		}
+	})
+	t.Run("refused switch", func(t *testing.T) {
+		isolated := t.TempDir()
+		t.Setenv("TMPDIR", isolated)
+		r := newWorktreeRepo(t)
+		if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+			t.Fatalf("create a: %v", err)
+		}
+		if _, err := r.create(t, map[string]any{"name": "b"}); err != nil {
+			t.Fatalf("create b: %v", err)
+		}
+		closeDone := armCloseDuringSwap(r, nil)
+		_, err := r.switchOp(t, map[string]any{"name": "a"})
+		<-closeDone
+		if err == nil {
+			t.Fatal("switch succeeded while the session closed under its swap, want a refusal")
+		}
+		if held := heldScratchDirsIn(t, isolated); len(held) != 0 {
+			t.Errorf("the refused switch and the closed session left held leases on %v, want none", held)
+		}
+	})
 }

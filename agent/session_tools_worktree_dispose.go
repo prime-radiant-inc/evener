@@ -110,6 +110,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	if envErr != nil {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s: %w", id, envErr)
 	}
+	defer disposeUnadoptedScratch(controlEnv)
 	budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 	defer cancelBudget()
 	run := s.newWorktreeGitRunner(budgetCtx, controlEnv)

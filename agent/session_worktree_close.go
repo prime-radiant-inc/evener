@@ -112,11 +112,15 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 		return "", false
 	}
 	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	// Both clones are this call's alone; a command on either mints a scratch
+	// and takes its lease, so both are disposed on the way out.
+	defer rootedAtLane.DisposeUnadoptedScratch()
 	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
 	if mainRoot == "" {
 		return "", false
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
@@ -223,11 +227,13 @@ func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, 
 		return ""
 	}
 	rootedAtLane := local.WithWorkingDirectory(lanePath)
+	defer rootedAtLane.DisposeUnadoptedScratch()
 	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
 	if mainRoot == "" {
 		return ""
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	metaDir := metaDirForLane(lanePath)
 
@@ -443,11 +449,13 @@ func (s *Session) unlockOwnManagedWorktreeAtClose() {
 		return
 	}
 	rootedAtPath := local.WithWorkingDirectory(path)
+	defer rootedAtPath.DisposeUnadoptedScratch()
 	mainRoot := execenv.ResolveMainRepoRoot(rootedAtPath, path)
 	if mainRoot == "" {
 		return
 	}
 	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})

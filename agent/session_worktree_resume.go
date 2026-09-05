@@ -280,6 +280,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 
 	controlEnv := local.WithWorkingDirectory(project.CanonicalPath)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {

@@ -1230,7 +1230,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreeControlEnv(h.root); err == nil {
 			t.Fatal("control environment accepted a non-local environment")
 		}
-		if _, err := h.s.worktreeControlRun(context.Background(), h.root); err == nil {
+		if _, _, err := h.s.worktreeControlRun(context.Background(), h.root); err == nil {
 			t.Fatal("control runner accepted a non-local environment")
 		}
 		if err := h.s.enterWorktree(filepath.Join(h.root, "never-entered"), true); err != nil {
