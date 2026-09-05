@@ -204,7 +204,7 @@ export function InstanceDetailSheet({
                 {showClearStoredKey && (
                   <div className={CLASS.fullRow}>
                     <Button variant="dangerQuiet" onClick={onClearStoredKey}>
-                      Clear stored key
+                      {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
                     </Button>
                   </div>
                 )}

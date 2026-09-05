@@ -179,9 +179,10 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         await credentialsStore.getState().fetch();
         toast.push("success", `Credentials cleared for ${name}`);
       } else if (kind === "clearStoredKey") {
+        const label = clearsCredentialJson(name) ? "Stored credential JSON" : "Stored key";
         await credentialsStore.getState().clearStoredKey(name);
         await credentialsStore.getState().fetch();
-        toast.push("success", `Stored key cleared for ${name}`);
+        toast.push("success", `${label} cleared for ${name}`);
       } else {
         await credentialsStore.getState().remove(name);
         toast.push("success", `Removed instance ${name}`);
@@ -197,6 +198,14 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
 
   function findInstance(name: string): InstanceEntry | undefined {
     return instances.find((i) => i.name === name);
+  }
+
+  // clearStoredKey's dialog/toast name what it clears: a gcp-adc instance's
+  // stored credential is a JSON document (spec 2026-09-04
+  // google-vertex-express §4), not an API key, so "stored key" reads wrong
+  // for it - same scheme test InstanceDetailSheet's own button uses.
+  function clearsCredentialJson(name: string): boolean {
+    return findInstance(name)?.authModes?.includes("credentialJson") ?? false;
   }
 
   // Editor-opening sheet actions REPLACE the inspector with the flow's
@@ -342,7 +351,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           pendingConfirm?.kind === "clear"
             ? "Clear credentials"
             : pendingConfirm?.kind === "clearStoredKey"
-              ? "Clear stored key"
+              ? clearsCredentialJson(pendingConfirm.name)
+                ? "Clear stored credential JSON"
+                : "Clear stored key"
               : "Remove instance"
         }
         confirmLabel={pendingConfirm?.kind === "remove" ? "Remove" : "Clear"}
@@ -353,7 +364,9 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         {pendingConfirm?.kind === "clear"
           ? `Clear stored credentials for "${pendingConfirm.name}"?`
           : pendingConfirm?.kind === "clearStoredKey"
-            ? `Clear the stored API key for "${pendingConfirm.name}"? Its active sign-in is not affected.`
+            ? clearsCredentialJson(pendingConfirm.name)
+              ? `Clear the stored credential JSON for "${pendingConfirm.name}"? Its active sign-in is not affected.`
+              : `Clear the stored API key for "${pendingConfirm.name}"? Its active sign-in is not affected.`
             : `Remove instance "${pendingConfirm?.name}"? This will also clear its stored credentials.`}
       </ConfirmDialog>
     </div>

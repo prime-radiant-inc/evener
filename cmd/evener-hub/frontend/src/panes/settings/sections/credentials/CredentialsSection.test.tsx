@@ -649,6 +649,48 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Stored key cleared for shadowed");
   });
 
+  // roborev round 3, F3: a gcp-adc instance's stored credential is a JSON
+  // document, not an API key - the confirm dialog and success toast must
+  // call it that, mirroring the flow above.
+  test("Clear stored credential JSON for a gcp-adc instance opens a ConfirmDialog naming the credential JSON; confirming calls clearStoredKey then refreshes", async () => {
+    const fake = connectFakeClient();
+    const VERTEX = instance({
+      name: "vertex",
+      providerId: "google-vertex",
+      auth: "gcp-adc",
+      authModes: ["adc", "credentialJson"],
+      activeSource: "adc",
+      hasStoredFile: true,
+    });
+    fake.on("evener/instance/list", () => ({ instances: [VERTEX], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "vertex" });
+      return {
+        provider: "vertex",
+        supported: true,
+        signedIn: true,
+        activeSource: "adc",
+        hasStoredOAuth: false,
+        hasStoredFile: false,
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("vertex");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "vertex");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored credential JSON" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored credential JSON" });
+    expect(dialog).toBeTruthy();
+    expect(within(dialog).getByText(/credential JSON for "vertex"/)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Stored credential JSON cleared for vertex");
+  });
+
   test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);

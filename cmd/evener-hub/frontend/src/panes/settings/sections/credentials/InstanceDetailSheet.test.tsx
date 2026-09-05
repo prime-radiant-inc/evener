@@ -211,6 +211,24 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
   });
 
+  // A gcp-adc instance's stored credential is a JSON document, not an API
+  // key - the danger-zone button must call it that, same as the sheet's own
+  // Set/Replace credential JSON action above (roborev round 3, F3).
+  test("Clear stored credential JSON for a gcp-adc instance with a stored file shadowed behind ADC", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        activeSource: "adc",
+        hasStoredFile: true,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Clear stored credential JSON" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
+  });
+
   test("no Clear stored key when the stored key IS the active source", () => {
     renderSheet(instance({ name: "a", providerId: "x", activeSource: "store", hasStoredFile: true }));
     expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
