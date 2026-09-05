@@ -71,6 +71,25 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	}
 }
 
+func TestCredentialsPanel_EnterOnACredentialJsonInstanceExplainsWhereToPaste(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "google-vertex", ProviderID: "google-vertex", ActiveSource: "none", AuthModes: []string{"adc", "credentialJson"}},
+	}}})
+	next, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("Enter emitted %+v; the TUI has no credential-JSON action to run", cmd())
+	}
+	view := next.View()
+	if !strings.Contains(view, "credential JSON") || !strings.Contains(view, "web hub") {
+		t.Fatalf("view after Enter = %q, want a notice naming the credential JSON and the web hub", view)
+	}
+	moved, _ := next.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if strings.Contains(moved.View(), "web hub") {
+		t.Fatal("the notice must clear when the cursor moves")
+	}
+}
+
 // --- new instance-based tests ---
 
 func TestCredentialsPanel_GroupsByType(t *testing.T) {

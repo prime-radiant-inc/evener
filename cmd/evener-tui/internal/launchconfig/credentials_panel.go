@@ -56,6 +56,12 @@ type CredentialsPanel struct {
 	testPending    map[string]bool
 	testResults    map[string]appwire.AuthTestResponse
 	testGeneration uint64
+
+	// notice is a one-line explanation shown under noticeFor's row when
+	// Enter has no action to run for that instance; it clears when the
+	// cursor moves or the list refreshes.
+	notice    string
+	noticeFor string
 }
 
 func NewCredentialsPanel() CredentialsPanel {
@@ -137,6 +143,7 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.testGeneration++
 		p.testPending = nil
 		p.testResults = nil
+		p.notice, p.noticeFor = "", ""
 		p.loading = false
 		p.err = m.Err
 		if m.Err == nil {
@@ -191,10 +198,12 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.done = true
 		return p, nil
 	case tea.KeyUp:
+		p.notice, p.noticeFor = "", ""
 		if next := nextSelectableRow(p.rows, p.cursor, -1); next >= 0 {
 			p.cursor = next
 		}
 	case tea.KeyDown:
+		p.notice, p.noticeFor = "", ""
 		if next := nextSelectableRow(p.rows, p.cursor, +1); next >= 0 {
 			p.cursor = next
 		}
@@ -209,6 +218,13 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if strings.Contains(modes, "oauth") {
 			return p, func() tea.Msg { return CredentialsActionMsg{Action: "oauth", Instance: cur.Name} }
+		}
+		// A gcp-adc instance is configured by application-default
+		// credentials or a pasted credential JSON; the TUI has no multiline
+		// paste, so say where the paste lives instead of doing nothing.
+		if strings.Contains(modes, "credentialJson") {
+			p.notice = "Uses application-default credentials. To store a credential JSON instead, paste it in the web hub's Credentials settings."
+			p.noticeFor = cur.Name
 		}
 	case tea.KeyRunes:
 		s := string(m.Runes)
@@ -488,6 +504,9 @@ func (p CredentialsPanel) View() string {
 				rows = append(rows, "    Testing credentials…")
 			} else if result, ok := p.testResults[inst.Name]; ok {
 				rows = append(rows, "    "+result.Status+": "+result.Message)
+			}
+			if p.notice != "" && p.noticeFor == inst.Name {
+				rows = append(rows, "    "+lipgloss.NewStyle().Foreground(th.TextDim).Render(p.notice))
 			}
 		}
 		body = strings.Join(rows, "\n")
