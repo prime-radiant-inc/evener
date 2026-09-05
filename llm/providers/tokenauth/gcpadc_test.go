@@ -190,6 +190,8 @@ func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
 	}
 }
 
+const externalAccountJSON = `{"type":"external_account","audience":"//iam.googleapis.com/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"/etc/passwd"}}`
+
 func TestValidateCredentialJSON(t *testing.T) {
 	if err := ValidateCredentialJSON([]byte(storedUserJSON)); err != nil {
 		t.Fatalf("authorized_user JSON rejected: %v", err)
@@ -199,5 +201,29 @@ func TestValidateCredentialJSON(t *testing.T) {
 	}
 	if err := ValidateCredentialJSON([]byte(`{"hello":"world"}`)); err == nil {
 		t.Fatal("JSON with no credential type accepted")
+	} else if !strings.Contains(err.Error(), `no "type"`) {
+		t.Fatalf("err = %v, want it to name the missing \"type\" field", err)
+	}
+	if err := ValidateCredentialJSON([]byte(externalAccountJSON)); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("err = %v, want an external_account document rejected as not supported", err)
+	}
+	// The parser does not read the key until a token is minted, so a
+	// placeholder private_key does not fail validation.
+	const serviceAccountJSON = `{"type":"service_account","private_key":"not-a-real-key","client_email":"sa@example.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`
+	if err := ValidateCredentialJSON([]byte(serviceAccountJSON)); err != nil {
+		t.Fatalf("service_account JSON rejected: %v", err)
+	}
+}
+
+func TestGCPADCRejectsUnsupportedStoredCredentialType(t *testing.T) {
+	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
+		t.Fatal("the allowlist must reject external_account before the CredentialsFromJSON seam is called")
+		return nil, nil
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, storedRes("vertex", externalAccountJSON))
+	var cfg *llm.ConfigurationError
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("err = %v", err)
 	}
 }

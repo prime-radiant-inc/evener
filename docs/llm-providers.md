@@ -495,7 +495,8 @@ tracked as
 else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-default
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
-pasted in the hub's instance sheet or written into `credentials.toml`), which
+pasted in the hub's instance sheet or written into `credentials.toml`;
+other credential types, such as `external_account`, are refused), which
 outranks the ADC file. Requests authenticated with user credentials — an
 `authorized_user` ADC file or a stored `authorized_user` JSON — carry
 `x-goog-user-project` = `GOOGLE_VERTEX_PROJECT`, which such credentials need

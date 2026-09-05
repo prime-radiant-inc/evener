@@ -260,11 +260,16 @@ today and stays that way.
 
 The hub can hold a Google credential JSON for a Vertex instance so the hub
 host needs neither `gcloud` nor environment variables. Two JSON shapes are
-accepted by construction, because `google.CredentialsFromJSON` accepts both:
+accepted, because `google.CredentialsFromJSON` accepts both:
 a **service-account key** and an **`authorized_user`** file (the contents
 of a workstation's `application_default_credentials.json`). The second lets a
 laptop's ADC be pasted into a remote hub; it needs the quota-project header
 from §2.2, which is why that section precedes this one.
+
+*(Amended 2026-09-05, roborev round 1: only `service_account` and
+`authorized_user` are accepted; `external_account` configurations can name
+local files or executables as credential sources and are refused at
+validation and at first request.)*
 
 ### 4.1 Storage
 

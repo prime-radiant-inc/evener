@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -42,14 +43,49 @@ type tokenSource struct {
 	userCredential bool
 }
 
+// credentialJSONType returns raw's declared "type" field, or "" when raw is
+// not valid JSON, has no "type" field, or "type" is not a string.
+func credentialJSONType(raw []byte) string {
+	var f struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &f) != nil {
+		return ""
+	}
+	return f.Type
+}
+
 // isUserCredential reports whether raw — a credential file's JSON — is an
 // authorized_user (user) credential rather than a service account or other
 // type. A nil/empty or unparsable raw is not a user credential.
 func isUserCredential(raw []byte) bool {
-	var f struct {
-		Type string `json:"type"`
+	return credentialJSONType(raw) == "authorized_user"
+}
+
+// allowedCredentialTypes are the two documented pasteable shapes (spec §4):
+// a service-account key and an authorized_user file. external_account and
+// its siblings (workload identity federation, impersonated service
+// accounts, …) can name a local file or an executable as their credential
+// source, so a pasted one is refused rather than accepted sight-unseen.
+var allowedCredentialTypes = map[string]bool{
+	"service_account": true,
+	"authorized_user": true,
+}
+
+// credentialTypeError reports why raw's declared credential type cannot
+// mint a gcp-adc token: no "type" field, or a type outside
+// allowedCredentialTypes. Both ValidateCredentialJSON and the stored-
+// credential path in tokenSource run this check before either seam calls
+// into google.CredentialsFromJSON.
+func credentialTypeError(raw []byte) error {
+	t := credentialJSONType(raw)
+	if t == "" {
+		return errors.New(`credential JSON has no "type" field`)
 	}
-	return json.Unmarshal(raw, &f) == nil && f.Type == "authorized_user"
+	if !allowedCredentialTypes[t] {
+		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", t)
+	}
+	return nil
 }
 
 // Apply sets Authorization from the instance's cached token source and, for
@@ -80,10 +116,18 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 }
 
 // ValidateCredentialJSON reports whether data is a credential JSON the
-// gcp-adc scheme can mint tokens from (service_account, authorized_user,
-// external_account, …). The hub calls it when a credential is pasted so a
-// bad paste fails at set time, not at the first request (spec §4.4).
+// gcp-adc scheme can mint tokens from: a service_account key or an
+// authorized_user file (spec §4; other types, such as external_account, are
+// refused by credentialTypeError). The hub calls it when a credential is
+// pasted so a bad paste fails at set time, not at the first request (spec
+// §4.4).
 func ValidateCredentialJSON(data []byte) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("not valid JSON")
+	}
+	if err := credentialTypeError(data); err != nil {
+		return err
+	}
 	_, err := google.CredentialsFromJSON(context.Background(), data, cloudPlatformScope) //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
 	return err
 }
@@ -112,6 +156,9 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenS
 	var creds *google.Credentials
 	var err error
 	if res.Credential.Source == "store" {
+		if err := credentialTypeError([]byte(res.Credential.Value)); err != nil {
+			return tokenSource{}, err
+		}
 		fromJSON := a.CredentialsFromJSON
 		if fromJSON == nil {
 			fromJSON = google.CredentialsFromJSON //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
