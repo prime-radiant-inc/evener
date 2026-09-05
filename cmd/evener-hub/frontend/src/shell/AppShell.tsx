@@ -3,6 +3,8 @@
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
 import { useEffect, useReducer, useRef, useState } from "react";
+import { ACTIONS } from "../keybindings/actions";
+import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
@@ -23,6 +25,7 @@ import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
+import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
@@ -299,36 +302,34 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
     return () => owned?.close();
   }, [client, owned]);
 
-  // Global command-palette entry points (floor §2.1): ⌘K / Ctrl-K from
-  // anywhere in the app, and a click on any [data-search-trigger] element.
-  // Both open the palette through the one openPalette() the whole app shares
-  // (Composer's leading-"/"-on-empty hook is the third). ⌘B (sidebar cycle,
-  // T5) is a separate, disjoint listener and is never added here (PIN-D).
+  // Global chord wiring (floor §2.1 + the UX-fix chords), now driven by the
+  // keybindings dispatcher (src/keybindings/, installed app-wide by
+  // installKeybindings): this effect registers the three actions AppShell
+  // owns - palette.open (⌘K / Ctrl-K from anywhere, through the one
+  // openPalette() the whole app shares; Composer's leading-"/"-on-empty hook
+  // and the [data-search-trigger] click listener below are the other entry
+  // points), composer.focus (⌘I: focuses the focused session pane's composer
+  // via composerFocus.ts's per-ref seam - a no-op when the focused pane isn't
+  // a session), and next-needs-you (⌘J: cycles the needs-you sessions, tree
+  // order, wrapping from whichever session is currently focused, opening a
+  // hit through the same top-level/nested seams the rail itself uses -
+  // needsYouCycle.ts). ⌘B (sidebar cycle) is RailHost's action, never
+  // registered here (PIN-D).
   //
-  // ⌘I / Ctrl-I (UX fix) focuses the focused session pane's composer
-  // (composerFocus.ts's per-ref seam) - a no-op when the focused pane isn't a
-  // session. ⌘J / Ctrl-J (UX fix) cycles the needs-you sessions (tree order,
-  // wrapping from whichever session is currently focused), opening a hit
-  // through the same top-level/nested seams the rail itself uses
-  // (needsYouCycle.ts). Both are Mod-chords, like ⌘K, so they fire
-  // everywhere - including while typing in an input/textarea - matching how
-  // ⌘K already behaves; only event.defaultPrevented (another handler already
-  // claimed this keystroke) suppresses them.
-  //
-  // BLOCKER fix: I/J used to fire straight through an open modal (the
-  // command palette itself, or a Dialog/Sheet like Settings' credential
-  // editors) - ⌘I stealing focus into a session composer, or ⌘J navigating
-  // the tree, out from under a modal the user is still looking at. Guarded
-  // two ways: paletteStore's own `open` flag (the palette isn't a
-  // [role=dialog] - it's CommandPalette's own overlay, so the DOM check
-  // below wouldn't catch it) and event.target sitting inside any
-  // [aria-modal="true"] element (every OverlayPanel-based Dialog/Sheet sets
-  // this - see widgets/dialog/OverlayPanel.tsx - and it needs no per-modal
-  // wiring here to keep catching new ones). ⌘K is deliberately exempt:
-  // opening the palette while it's already open is a harmless no-op reset,
-  // not a focus hijack, and ⌘K from inside a Dialog is the same "open the
-  // palette" intent as anywhere else.
+  // The chords' shared guards live on the bindings (keybindings/defaults.ts),
+  // not in these runners: all three fire from editable targets
+  // (allowInEditable) and yield to a keydown another handler already claimed
+  // (defaultPrevented). The modal guard (the old blockedByOpenModal:
+  // paletteStore.open, plus the event target sitting inside any
+  // [aria-modal="true"] element - every OverlayPanel Dialog/Sheet) is the
+  // dispatcher's injected isModalOpen predicate; it suppresses ⌘I/⌘J (the
+  // BLOCKER fix: ⌘I stealing composer focus, or ⌘J navigating the tree, out
+  // from under a modal the user is still looking at) while ⌘K stays
+  // deliberately exempt via its binding's allowInModal - opening the palette
+  // while it's already open is a harmless no-op reset, and ⌘K from inside a
+  // Dialog is the same "open the palette" intent as anywhere else.
   useEffect(() => {
+    installKeybindings();
     const requestedPages = new Set<string>();
     let generation = navigationStore.getState().clientGenerationID;
     let mounted = true;
@@ -383,30 +384,14 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         })
         .catch(() => undefined);
     };
-    function blockedByOpenModal(event: KeyboardEvent): boolean {
-      if (paletteStore.getState().open) return true;
-      const target = event.target;
-      return target instanceof Element && target.closest('[aria-modal="true"]') !== null;
-    }
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.defaultPrevented) return;
-      if (!(event.metaKey || event.ctrlKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === "k") {
-        event.preventDefault();
-        openPalette();
-        return;
-      }
-      if (key === "i") {
-        if (blockedByOpenModal(event)) return;
-        event.preventDefault();
+    const registry = keybindingsRegistry.getState();
+    const unregisterActions = [
+      registry.registerAction(ACTIONS.paletteOpen, () => openPalette()),
+      registry.registerAction(ACTIONS.composerFocus, () => {
         const ref = focusedSessionRef();
         if (ref !== null) requestComposerFocus(ref);
-        return;
-      }
-      if (key === "j") {
-        if (blockedByOpenModal(event)) return;
-        event.preventDefault();
+      }),
+      registry.registerAction(ACTIONS.nextNeedsYou, () => {
         const state = navigationStore.getState();
         if (state.clientGenerationID !== generation) {
           generation = state.clientGenerationID;
@@ -449,8 +434,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         }
         const next = nextNeedsYouRef(refs, current);
         if (next !== null) openNeedsYouSession(next);
-      }
-    }
+      }),
+    ];
     function onClick(event: MouseEvent): void {
       const target = event.target as Element | null;
       if (target?.closest("[data-search-trigger]")) {
@@ -458,12 +443,11 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         openPalette();
       }
     }
-    window.addEventListener("keydown", onKeyDown);
     document.addEventListener("click", onClick);
     return () => {
       mounted = false;
       intent++;
-      window.removeEventListener("keydown", onKeyDown);
+      for (const unregister of unregisterActions) unregister();
       document.removeEventListener("click", onClick);
     };
   }, []);
