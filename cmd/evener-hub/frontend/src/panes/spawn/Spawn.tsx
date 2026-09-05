@@ -827,7 +827,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             type="button"
             id="spawn-cwd"
             className={CLASS.directoryButton}
-            aria-label="Working directory"
+            aria-label={`Working directory: ${cwd || "Choose a folder"}`}
             aria-haspopup="dialog"
             aria-expanded={directoryOpen}
             onClick={() => setDirectoryOpen(true)}

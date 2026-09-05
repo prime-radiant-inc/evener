@@ -1999,7 +1999,11 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // The working directory is a PathField: its closed trigger holds the path as
   // text (plus a chevron and a screen-reader hint), so the value is matched
   // inside that text rather than read off an input's .value.
-  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/me/app"));
+  await waitFor(() =>
+    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+      "/home/me/app",
+    ),
+  );
 
   // A second /new?dir= navigation (e.g. RailRow's own spawnInProject, for a
   // DIFFERENT project) while the spawn pane is already open and focused -
@@ -2015,7 +2019,11 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // shows the SECOND navigation's dir, not the first one silently retained.
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
-  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/other"));
+  await waitFor(() =>
+    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+      "/home/other",
+    ),
+  );
 });
 
 // --- mobile full-bleed shell (2026-07-30-mobile-session-layout-design.md, decision 1) ---

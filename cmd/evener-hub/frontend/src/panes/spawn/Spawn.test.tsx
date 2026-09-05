@@ -127,7 +127,7 @@ function renderSpawn(client: FakeClient) {
 const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
 function workingDir(): HTMLElement {
-  return screen.getByLabelText("Working directory");
+  return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
 }
 
 // The DESKTOP Model field's closed trigger (ModelField -> ModelCatalog): a
@@ -198,15 +198,23 @@ test("the directory is established before composing the prompt", async () => {
   await settled();
 
   const card = screen.getByTestId("spawn-prompt-card");
-  const dir = screen.getByLabelText("Working directory");
+  const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
   expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the desktop directory trigger announces the confirmed path", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
 test("the configuration row is working directory, model and effort - and nothing else", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.getByLabelText("Working directory")).toBeTruthy();
+  expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" })).toBeTruthy();
   expect(screen.getAllByText("Model").length).toBeGreaterThan(0);
   expect(screen.getByLabelText("Effort")).toBeTruthy();
 });
@@ -2281,7 +2289,7 @@ test("typing a working directory does not reload the model catalog per keystroke
   await settled();
 
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
-  await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
+  await user.type(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }), "/tmp/some/project");
   await settled();
 
   // 17 characters typed. One reload for the settled path is the contract; a
