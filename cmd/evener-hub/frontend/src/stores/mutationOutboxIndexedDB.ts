@@ -377,17 +377,25 @@ export class MutationOutboxIndexedDB {
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
       let abandoned = false;
+      let upgradeTransaction: IDBTransaction | null = null;
       const fail = (error: unknown) => {
         abandoned = true;
         clearTimeout(timer);
+        try {
+          // Release the database open lock if its schema upgrade is still active.
+          upgradeTransaction?.abort();
+        } catch {
+          // A completed upgrade cannot be aborted; late success closes its connection.
+        }
         reject(error);
       };
       const timer = setTimeout(() => fail(new MutationStorageTimeoutError()), STORAGE_WAIT_MS);
       request.addEventListener(
         "upgradeneeded",
         () => {
+          upgradeTransaction = request.transaction;
           if (abandoned || this.#databasePromise !== opening) {
-            request.transaction?.abort();
+            upgradeTransaction?.abort();
             return;
           }
           const database = request.result;

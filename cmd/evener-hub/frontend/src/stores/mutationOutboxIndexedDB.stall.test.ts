@@ -77,6 +77,41 @@ test("a timed-out open cannot install its late connection over a recovered conne
   storage.close();
 });
 
+test("a timed-out upgrade releases its lock so the adapter can reopen", async () => {
+  const storage = new MutationOutboxIndexedDB({ indexedDB: new IDBFactory() });
+  const createObjectStore = IDBDatabase.prototype.createObjectStore;
+  let keepAlive = true;
+  let reached: () => void = () => {};
+  const upgrading = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  vi.spyOn(IDBDatabase.prototype, "createObjectStore").mockImplementationOnce(function (this: IDBDatabase, ...args) {
+    const store = createObjectStore.apply(this, args);
+    const pulse = () => {
+      store.count().addEventListener("success", () => {
+        reached();
+        if (keepAlive) pulse();
+      });
+    };
+    pulse();
+    return store;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const failure = storage.listOutbox().catch((error: unknown) => error);
+  try {
+    await upgrading;
+    await vi.runOnlyPendingTimersAsync();
+    expect(await failure).toMatchObject({ name: "MutationStorageTimeoutError" });
+    // Reopening must finish while the abandoned upgrade would otherwise remain alive.
+    const record = await storage.enqueueIntent(intent);
+    expect(await storage.listOutbox()).toEqual([record]);
+    expect(record.intentSequence).toBe(1);
+  } finally {
+    keepAlive = false;
+    storage.close();
+  }
+});
+
 test("a write past cancellation stays pending until its original commit is observed", async () => {
   const stalled: boolean[] = [];
   const storage = new MutationOutboxIndexedDB({
