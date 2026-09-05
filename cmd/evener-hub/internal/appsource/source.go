@@ -139,8 +139,12 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	next, extends := itemSnapshotStateAdvance(previous, candidates, response.OlderCursor == "")
 	rotated := !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends
 	if !rotated {
-		if previous.NativeCursor == "" || response.OlderCursor == "" {
-			rotated = previous.NativeCursor != response.OlderCursor
+		if response.OlderCursor == "" {
+			// A complete response is a stronger observation than the prior bounded
+			// window. itemSnapshotStateAdvance already proved that window unchanged.
+			next.NativeCursor = ""
+		} else if previous.NativeCursor == "" {
+			rotated = true
 		} else {
 			if len(candidates) == 0 {
 				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
@@ -159,13 +163,11 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	if rotated {
 		incarnation = fmt.Sprintf("local-daemon-incarnation-%d", localDaemonItemIncarnationSequence.Add(1))
 		next = itemSnapshotStateForCandidates(resolved.pagingRef, incarnation, daemonIdentity, candidates, response.OlderCursor == "")
+		next.NativeCursor = response.OlderCursor
 	}
 	next.ThreadRef = resolved.pagingRef
 	next.Incarnation = incarnation
 	next.SourceIdentity = daemonIdentity
-	if rotated {
-		next.NativeCursor = response.OlderCursor
-	}
 	s.itemSnapshots.put(resolved.pagingRef, next)
 	return ItemCandidateResult{
 		// The daemon cursor has its own identity. Exhausted retains its truth, but
