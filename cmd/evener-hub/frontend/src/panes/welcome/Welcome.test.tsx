@@ -19,12 +19,16 @@ afterEach(() => {
   resetCredentialsStoreForTests();
 });
 
-test("a welcome pane with no provider opens the normal composer", async () => {
+test("automatic setup replaces Welcome so Back returns to the previous page", async () => {
+  window.history.replaceState({}, "", "/settings");
+  window.history.pushState({}, "", "/");
   const client = new FakeClient("ready");
   client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
   connectionStore.getState().connect(client);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   await waitFor(() => expect(window.location.pathname).toBe("/new"));
+  window.history.back();
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
 });
 
 test("a background welcome pane does not replace the active session for setup", async () => {

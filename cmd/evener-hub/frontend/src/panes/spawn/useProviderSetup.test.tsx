@@ -66,11 +66,16 @@ test("a hidden provider cannot satisfy setup", async () => {
   await waitFor(() => expect(result.current.status).toBe("missing"));
 });
 
-test("an implicit keyless provider without models does not hide onboarding on a fresh install", async () => {
-  connect([{ ...provider, name: "ollama", implicit: true, auth: "optional-bearer", credentialRequired: false }]);
-  const { result } = renderHook(useProviderSetup);
-  await waitFor(() => expect(result.current.status).toBe("missing"));
-});
+test.each(["none", "store", "env:OLLAMA_API_KEY"])(
+  "implicit keyless providers with source %s still require available models",
+  async (activeSource) => {
+    connect([
+      { ...provider, name: "ollama", implicit: true, auth: "optional-bearer", credentialRequired: false, activeSource },
+    ]);
+    const { result } = renderHook(useProviderSetup);
+    await waitFor(() => expect(result.current.status).toBe("missing"));
+  },
+);
 
 test("an implicit keyless provider offering models is available without credentials", async () => {
   const client = connect([

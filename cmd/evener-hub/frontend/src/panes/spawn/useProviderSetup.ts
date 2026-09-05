@@ -30,8 +30,9 @@ export function useProviderSetup() {
   const configured = instances.some(
     (instance) =>
       !instance.hidden &&
-      ((!instance.credentialRequired && !instance.implicit) ||
-        (instance.activeSource !== "none" && instance.activeSource !== "")),
+      (instance.credentialRequired
+        ? instance.activeSource !== "none" && instance.activeSource !== ""
+        : !instance.implicit),
   );
   const implicitKeyless = instances.some(
     (instance) => !instance.hidden && !instance.credentialRequired && instance.implicit,
