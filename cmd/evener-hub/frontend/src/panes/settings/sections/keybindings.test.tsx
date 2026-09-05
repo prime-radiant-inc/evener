@@ -1331,3 +1331,124 @@ test("a wedged support loss keeps the overrides firing and the status does not c
   expect(within(row).getByText("Customized")).toBeTruthy();
   expect(within(row).getByText("P")).toBeTruthy();
 });
+
+// Finding 37: the round-3 gate locks editing while hubError is set, and a
+// successful refresh clears it - the error block offers a Retry control that
+// re-drives the refresh. The control unmounts the moment the refresh starts
+// (refreshFor's entry clears hubError), so a double-click has no second
+// target; the in-flight window with a PRESERVED rollback error disables it
+// instead (separate test).
+test("a failed patch locks editing and shows a Retry that re-drives the refresh and restores editability (finding 37)", async () => {
+  const client = new FakeClient("ready");
+  let pending: Promise<KeybindingsOverrides> | undefined;
+  client.on("evener/settings/keybindings/get", () => pending ?? overridesPayload(1, []));
+  let failPatch = true;
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (failPatch) throw new Error("hub exploded");
+    return overridesPayload(2, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // A transient server error: the PATCH rejects on the live generation, so
+  // hubError surfaces and editing locks behind the round-3 gate.
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBe("hub exploded"));
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  const retry = screen.getByRole("button", { name: "Retry" });
+
+  // The hub recovers. Arm a hanging get so the in-flight window is
+  // observable: clicking Retry starts the refresh, which clears hubError at
+  // entry - the alert and the Retry control unmount, leaving no second
+  // click target (the double-fire guard on this path).
+  failPatch = false;
+  let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
+  pending = new Promise<KeybindingsOverrides>((resolve) => {
+    resolveGet = resolve;
+  });
+  const getCalls = () => client.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+  const before = getCalls();
+  await userEvent.setup().click(retry);
+  await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+  expect(getCalls()).toBe(before + 1);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+  // The refresh lands: hubError clears and editability returns.
+  resolveGet?.(overridesPayload(1, []));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+  await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
+});
+
+// Finding 37: on an unsupported hub a refresh cannot help (refreshFor's
+// entry guard refuses it) - no Retry, even when the rollback alert is
+// showing (that state's retry is connection-change-driven, findings 31/35).
+test("Retry does not appear on an unsupported hub, even with the rollback alert (finding 37)", async () => {
+  const client = await wireEditableClient([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+  render(<KeybindingsSection />);
+  // The wedge rolls the support drop's un-apply back (finding-35 staging):
+  // the rollback alert shows, but the hub is unsupported - no Retry.
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("still in effect");
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+// Finding 37, in-flight window: through a rewire rollback the hubError is
+// PRESERVED while the new hub's refresh is in flight (unapplyRolledBack), so
+// the Retry control stays mounted - disabled while hubLoading, making a
+// double-click a no-op. When the refresh lands and clears the error, the
+// control unmounts.
+test("Retry is disabled while a refresh is in flight through the rollback window (finding 37)", async () => {
+  const clientA = new FakeClient("ready");
+  clientA.on("evener/settings/keybindings/get", () =>
+    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  await wireClient(clientA, true);
+  render(<KeybindingsSection />);
+
+  // The wedge: a foreign binding squatting palette.open's default chord, so
+  // the rewire's un-apply restore throws and rolls back.
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  const clientB = new FakeClient("ready");
+  let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
+  clientB.on(
+    "evener/settings/keybindings/get",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolveGet = resolve;
+      }),
+  );
+  connectionStore.getState().connect(clientB);
+  connectionStore.setState({
+    features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+  expect(keybindingsStore.getState().hubError).toContain("still in effect");
+
+  // Retry is mounted (supported hub, hubError present) but disabled for the
+  // flight: clicking it fires no second get.
+  const retry = screen.getByRole("button", { name: "Retry" });
+  expect((retry as HTMLButtonElement).disabled).toBe(true);
+  const getCalls = () => clientB.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+  const before = getCalls();
+  await userEvent.setup().click(retry);
+  expect(getCalls()).toBe(before);
+
+  // Unwedge; the refresh lands, clears the rollback error, and the control
+  // unmounts.
+  keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+  resolveGet?.(overridesPayload(1, []));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});

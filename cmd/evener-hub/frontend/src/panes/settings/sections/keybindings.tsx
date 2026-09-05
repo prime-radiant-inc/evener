@@ -533,6 +533,23 @@ export function KeybindingsSection() {
       {hubError !== null && (
         <p className={CLASS.error} role="alert">
           Could not load keybinding overrides: {hubError}
+          {hubSupport === "supported" && (
+            // Finding 37: the round-3 gate locks editing while hubError is
+            // set, and a successful refresh clears it - offer the recovery
+            // inline. Supported hubs only: on an unsupported hub a refresh
+            // cannot help (refreshFor's entry guard refuses it), and the
+            // rollback message's own retry is connection-change-driven.
+            // Disabled while hubLoading so a double-click cannot double-fire
+            // the refresh.
+            <button
+              type="button"
+              className={CLASS.actionButton}
+              disabled={hubLoading}
+              onClick={() => void keybindingsStore.getState().refreshOverrides()}
+            >
+              Retry
+            </button>
+          )}
         </p>
       )}
       {warnings.length > 0 && (
