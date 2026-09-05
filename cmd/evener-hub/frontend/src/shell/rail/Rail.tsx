@@ -13,8 +13,6 @@ import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import type {
   NavigationCatalogs,
-  NavigationInvalidatedPayload,
-  NavigationInvalidationTarget,
   NavigationProjectPage,
   NavigationProjectResource,
   NavigationProjectSummary,
@@ -25,13 +23,12 @@ import {
   nextNavigationOffset,
   relativeAge,
   selectAttentionSummary,
-  selectLiveRows,
-  selectNeedsYouRows,
   selectPinSectionSummaries,
   selectPinSections,
   selectRailModel,
 } from "../../stores/navigation/selectors";
-import { awaitNavigationConvergence, navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import {
   keyID,
   navigationOwnedContainerKey,
@@ -1128,35 +1125,11 @@ function NavigationRail({
           true,
         ),
       onShutdownSession: async (session) => {
-        const targets: NavigationInvalidationTarget[] = [
-          { kind: "section", section: "live" },
-          { kind: "section", section: "needs_you" },
-          ...(session.pin_section_id ? [{ kind: "pin_section", sectionId: session.pin_section_id } as const] : []),
-          ...(session.project_key ? [{ kind: "project", projectKey: session.project_key } as const] : []),
-        ];
-        const matchesSession = (payload: NavigationInvalidatedPayload): boolean =>
-          payload.targets.some(
-            (target) =>
-              target.kind === "all_loaded_projects" ||
-              (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
-              (target.kind === "pin_section" && target.sectionId === session.pin_section_id) ||
-              (target.kind === "project" && target.projectKey === session.project_key),
-          );
-        // Ended sessions leave the live/needs-you tiers (tree.go builds both
-        // from live roster entries), so the shutdown is reflected exactly
-        // when its ref is gone from both. Already-exited sessions are absent
-        // up front, which also keeps the no-op path from stalling.
-        const sessionSettled = (): boolean => {
-          const state = navigationStore.getState();
-          return (
-            selectLiveRows(state).every((row) => row.ref !== session.ref) &&
-            selectNeedsYouRows(state).every((row) => row.ref !== session.ref)
-          );
-        };
-        const invalidation = navigationStore.getState().awaitNavigationInvalidation(matchesSession);
-        // Suppress the waiter's own rejection (e.g. navigation never
-        // initialized): awaitNavigationConvergence observes it separately.
-        void invalidation.promise.catch(() => undefined);
+        const convergence = buildShutdownConvergence(session.ref, {
+          pinSectionId: session.pin_section_id,
+          projectKey: session.project_key,
+        });
+        const invalidation = convergence.arm();
         try {
           await runAction(
             () => threadsStore.getState().shutdown(session.ref),
@@ -1164,14 +1137,7 @@ function NavigationRail({
             undefined,
             true,
           );
-          await awaitNavigationConvergence(invalidation, targets, {
-            settled: sessionSettled,
-            rearm: () => {
-              const rearmed = navigationStore.getState().awaitNavigationInvalidation(matchesSession);
-              void rearmed.promise.catch(() => undefined);
-              return rearmed;
-            },
-          });
+          await convergence.converge(invalidation);
         } catch (error) {
           invalidation.cancel();
           throw error;

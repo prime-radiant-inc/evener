@@ -31,6 +31,13 @@ export interface NavigationInvalidationWaiter {
   cancel(): void;
 }
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
+
+/** True when error is a generation-mismatch rejection from this revalidator
+ * (stale waiters after resetGeneration, waiter calls against a new
+ * generation). Callers treat it as converged-by-reboot instead of failing. */
+export function isGenerationMismatch(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("generation mismatch");
+}
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
   if (typeof structuredClone === "function") return structuredClone(value);

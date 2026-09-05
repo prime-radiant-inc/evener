@@ -24,11 +24,7 @@
 // goal chip + clear popover only.
 import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
-import type {
-  NavigationInvalidatedPayload,
-  NavigationInvalidationTarget,
-  NavigationSessionLocation,
-} from "../../../protocol/types.gen";
+import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -37,8 +33,9 @@ import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
-import { selectLiveRows, selectLocation, selectNeedsYouRows } from "../../../stores/navigation/selectors";
-import { awaitNavigationConvergence, navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { selectLocation } from "../../../stores/navigation/selectors";
+import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
+import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
@@ -216,43 +213,14 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 }
               },
               onShutdown: async () => {
-                const targets: NavigationInvalidationTarget[] = [
-                  { kind: "section", section: "live" },
-                  { kind: "section", section: "needs_you" },
-                  ...(menuSession?.pin_section_id
-                    ? [{ kind: "pin_section", sectionId: menuSession.pin_section_id } as const]
-                    : []),
-                  ...(location?.project_key ? [{ kind: "project", projectKey: location.project_key } as const] : []),
-                ];
-                const matchesSession = (payload: NavigationInvalidatedPayload): boolean =>
-                  payload.targets.some(
-                    (target) =>
-                      target.kind === "all_loaded_projects" ||
-                      (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
-                      (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
-                      (target.kind === "project" && target.projectKey === location?.project_key),
-                  );
-                const sessionSettled = (): boolean => {
-                  const state = navigationStore.getState();
-                  return (
-                    selectLiveRows(state).every((row) => row.ref !== sessionRef) &&
-                    selectNeedsYouRows(state).every((row) => row.ref !== sessionRef)
-                  );
-                };
-                const invalidation = navigationStore.getState().awaitNavigationInvalidation(matchesSession);
-                // Suppress the waiter's own rejection (e.g. navigation never
-                // initialized): awaitNavigationConvergence observes it separately.
-                void invalidation.promise.catch(() => undefined);
+                const convergence = buildShutdownConvergence(sessionRef, {
+                  pinSectionId: menuSession?.pin_section_id,
+                  projectKey: location?.project_key,
+                });
+                const invalidation = convergence.arm();
                 try {
                   await threadsStore.getState().shutdown(sessionRef);
-                  await awaitNavigationConvergence(invalidation, targets, {
-                    settled: sessionSettled,
-                    rearm: () => {
-                      const rearmed = navigationStore.getState().awaitNavigationInvalidation(matchesSession);
-                      void rearmed.promise.catch(() => undefined);
-                      return rearmed;
-                    },
-                  });
+                  await convergence.converge(invalidation);
                 } catch (err) {
                   invalidation.cancel();
                   toasts.push("error", sessionActionError("Couldn't shut down session", err));

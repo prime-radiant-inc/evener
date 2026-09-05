@@ -109,6 +109,13 @@ function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
   return { client: real, owned: real };
 }
 
+// Adopting a banner-retry client into the provider slot. Same ownership
+// rule as construction: the shell closes real clients it provides on
+// unmount, while injected (test) clients stay their owner's responsibility.
+function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
+  return { client: fresh, owned: fresh instanceof AppwireClient ? fresh : null };
+}
+
 // Hand-rolled rather than react-router (see Task 1's report for the
 // justification): the routing surface here is still exactly "re-render
 // (and, this task, open a pane) when the path changes" - and pushState
@@ -283,10 +290,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // pointed at the live client instead of a closed orphan. connect() is
   // idempotent on an already-connected client, so the mount effect below
   // safely re-runs for the adopted instance.
-  const handleClientReplaced = useCallback(
-    (fresh: AppwireClientLike) => setSlot({ client: fresh, owned: fresh instanceof AppwireClient ? fresh : null }),
-    [],
-  );
+  const handleClientReplaced = useCallback((fresh: AppwireClientLike) => setSlot(adoptClientSlot(fresh)), []);
 
   useEffect(() => {
     connectionStore.getState().connect(client);

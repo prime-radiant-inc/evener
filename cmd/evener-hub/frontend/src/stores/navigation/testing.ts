@@ -78,30 +78,47 @@ export const completeBody = (data: unknown, revision: number, gen: string): Reco
   return body;
 };
 
+// Test mirrors of the store's page-limit defaults (store.ts PAGE_LIMIT and
+// CATALOG_LIMIT): fixtures must agree with the codec's effective limits.
+const SECTION_LIMIT = 50;
+const CATALOG_LIMIT = 100;
+
+const paged = (params: NavigationReadParams, limit: number): { offset: number; limit: number } => ({
+  offset: params.offset ?? 0,
+  limit: params.limit ?? limit,
+});
+
+const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
+  manifest: "manifest",
+  section: "sessions",
+  pin_catalog: "pin_sections",
+  pin_section: "sessions",
+  catalog: "projects",
+  project: undefined,
+  project_page: "sessions",
+  location: "session",
+};
+
 export const paramsToResourceKey = (params: NavigationReadParams): ResourceKey => {
   if (params.resource === "manifest") return { kind: "manifest" };
   if (params.resource === "section")
     return {
       kind: "section",
       section: params.section as "live" | "needs_you",
-      offset: params.offset ?? 0,
-      limit: params.limit ?? 50,
+      ...paged(params, SECTION_LIMIT),
     };
-  if (params.resource === "pin_catalog")
-    return { kind: "pin_catalog", offset: params.offset ?? 0, limit: params.limit ?? 100 };
+  if (params.resource === "pin_catalog") return { kind: "pin_catalog", ...paged(params, CATALOG_LIMIT) };
   if (params.resource === "pin_section")
     return {
       kind: "pin_section",
       sectionId: params.sectionId as string,
-      offset: params.offset ?? 0,
-      limit: params.limit ?? 50,
+      ...paged(params, SECTION_LIMIT),
     };
   if (params.resource === "catalog")
     return {
       kind: "catalog",
       catalog: params.catalog as "projects" | "archived_projects" | "test_runs",
-      offset: params.offset ?? 0,
-      limit: params.limit ?? 100,
+      ...paged(params, CATALOG_LIMIT),
     };
   if (params.resource === "project") return { kind: "project", projectKey: params.projectKey as string };
   if (params.resource === "project_page")
@@ -109,8 +126,7 @@ export const paramsToResourceKey = (params: NavigationReadParams): ResourceKey =
       kind: "project_page",
       projectKey: params.projectKey as string,
       tier: params.tier as "current" | "recent" | "archived",
-      offset: params.offset ?? 0,
-      limit: params.limit ?? 50,
+      ...paged(params, SECTION_LIMIT),
     };
   return { kind: "location", ref: params.ref as string };
 };
@@ -148,26 +164,19 @@ export const wireV2 = (
   };
   const offset = typeof params.offset === "number" ? params.offset : 0;
   const limit =
-    typeof params.limit === "number" ? params.limit : key.kind === "catalog" || key.kind === "pin_catalog" ? 100 : 50;
+    typeof params.limit === "number"
+      ? params.limit
+      : key.kind === "catalog" || key.kind === "pin_catalog"
+        ? CATALOG_LIMIT
+        : SECTION_LIMIT;
   let metadata: Record<string, unknown>;
   const rootChildren: string[] = [];
-  const rootSlot =
-    key.kind === "manifest"
-      ? "manifest"
-      : key.kind === "pin_catalog"
-        ? "pin_sections"
-        : key.kind === "catalog"
-          ? "projects"
-          : key.kind === "location"
-            ? "session"
-            : key.kind === "project"
-              ? undefined
-              : "sessions";
+  const rootSlot = ROOT_SLOT[key.kind];
   if (key.kind === "manifest") {
     metadata = body;
   } else if (key.kind === "section" || key.kind === "pin_section" || key.kind === "project_page") {
     const sessions = Array.isArray(body.sessions) ? (body.sessions as Record<string, unknown>[]) : [];
-    for (const session of sessions) rootChildren.push(addSessionTree(session));
+    rootChildren.push(...sessions.map((session) => addSessionTree(session)));
     metadata = {
       generation_id: gen,
       revision,

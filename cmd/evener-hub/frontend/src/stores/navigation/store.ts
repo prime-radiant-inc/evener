@@ -29,7 +29,7 @@ import {
   normalizedGraphFromSnapshot,
 } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
-import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
+import { isGenerationMismatch, type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
@@ -95,7 +95,7 @@ export async function awaitNavigationConvergence(
       } catch (error) {
         // Generation reset rejects outstanding waiters: the reboot refetches
         // every loaded resource, which converges the caller's change.
-        if (error instanceof Error && error.message.includes("generation mismatch")) return;
+        if (isGenerationMismatch(error)) return;
         throw error;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
@@ -558,23 +558,24 @@ function nonemptyCatalogs(manifest: NavigationManifest): Array<(typeof NAVIGATIO
   return NAVIGATION_CATALOGS.filter((catalog) => manifest.catalogs[catalog].count > 0);
 }
 
+// Single capability gate for boot and reconnect: envelope version 1 with an
+// advertised v2 representation. Returns the protocol error for the store to
+// publish, or null when the capability is acceptable.
+function navigationCapabilityError(cap: NavigationCapability): Error | null {
+  if (cap.version !== 1) return new Error(`unsupported navigation capability version ${cap.version}`);
+  if (!cap.readVersions?.includes(2)) return new Error("navigation server does not advertise representation v2");
+  return null;
+}
+
 async function boot(cap: NavigationCapability, epoch: number, client: AppwireClientLike): Promise<void> {
   if (client !== activeClient || epoch !== bootEpoch) return;
-  if (cap.version !== 1) {
+  const capabilityError = navigationCapabilityError(cap);
+  if (capabilityError) {
     navigationStore.setState({
       mode: "error",
       capability: cap,
       attention: initialAttention,
-      protocolError: new Error(`unsupported navigation capability version ${cap.version}`),
-    });
-    return;
-  }
-  if (!cap.readVersions?.includes(2)) {
-    navigationStore.setState({
-      mode: "error",
-      capability: cap,
-      attention: initialAttention,
-      protocolError: new Error("navigation server does not advertise representation v2"),
+      protocolError: capabilityError,
     });
     return;
   }
@@ -774,16 +775,13 @@ export function initNavigation(
         return;
       }
       const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
-      if (cap.version !== 1 || !cap.readVersions?.includes(2)) {
+      const reconnectError = navigationCapabilityError(cap);
+      if (reconnectError) {
         navigationStore.setState({
           mode: "error",
           capability: cap,
           attention: initialAttention,
-          protocolError: new Error(
-            cap.version !== 1
-              ? `unsupported navigation capability version ${cap.version}`
-              : "navigation server does not advertise representation v2",
-          ),
+          protocolError: reconnectError,
         });
         return;
       }
