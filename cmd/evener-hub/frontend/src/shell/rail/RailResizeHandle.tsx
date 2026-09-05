@@ -91,6 +91,11 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    // Alt/Ctrl/Meta mean the key belongs elsewhere (Alt+Arrow/Alt+Home/End are
+    // the global session/transcript chords); a blanket preventDefault here
+    // would swallow them while the handle has focus (roborev PR #884 round
+    // 3). Shift stays: it selects the coarse step below.
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const coarse = event.shiftKey ? KEY_STEP_COARSE : KEY_STEP;
     switch (event.key) {
       case "ArrowLeft":

@@ -61,6 +61,12 @@ test("lists every default action with its title and effective chord, none custom
     expect.stringContaining("Focus the composer"),
     expect.stringContaining("Go to the next session needing you"),
     expect.stringContaining("Quote the selection into the composer"),
+    expect.stringContaining("Focus the next session pane"),
+    expect.stringContaining("Focus the previous session pane"),
+    expect.stringContaining("Scroll the transcript up one line"),
+    expect.stringContaining("Scroll the transcript down one line"),
+    expect.stringContaining("Scroll the transcript up one page"),
+    expect.stringContaining("Scroll the transcript down one page"),
     expect.stringContaining("Close settings"),
   ]);
   expect(screen.queryByText("Customized")).toBeNull();

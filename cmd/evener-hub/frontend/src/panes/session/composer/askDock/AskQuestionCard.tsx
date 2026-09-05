@@ -54,6 +54,12 @@ export interface AskQuestionCardProps {
   // [answers] reply's own numbering (askCompose.ts).
   number: number;
   answer: AskAnswerState;
+  // True while the batch's send is in flight (AskBatch.sending): the
+  // successful send removes the batch, so an edit made mid-flight would be
+  // silently discarded - every editing control disables until the send
+  // settles (roborev PR #884 round 10). askDockStore's setAnswer/setNote
+  // refuse the same writes at the store boundary.
+  disabled: boolean;
   onResolutionChange(resolution: AskResolution | null): void;
   onNoteChange(note: string): void;
 }
@@ -73,7 +79,14 @@ function orderedOptions(options: AskQuestionRef["options"]) {
     .map(({ opt }) => opt);
 }
 
-export function AskQuestionCard({ question, number, answer, onResolutionChange, onNoteChange }: AskQuestionCardProps) {
+export function AskQuestionCard({
+  question,
+  number,
+  answer,
+  disabled,
+  onResolutionChange,
+  onNoteChange,
+}: AskQuestionCardProps) {
   const id = useId();
   const headerId = `${id}-header`;
   const textId = `${id}-text`;
@@ -141,6 +154,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             type={multiSelect ? "checkbox" : "radio"}
             name={radioName}
             aria-label={opt.label}
+            disabled={disabled}
             checked={
               multiSelect
                 ? checkedLabels.has(opt.label)
@@ -166,6 +180,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             type="radio"
             name={radioName}
             aria-label="Something else…"
+            disabled={disabled}
             checked={freeActive}
             onClick={(e) => {
               if (freeActive) {
@@ -221,6 +236,7 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
           ref={noteInputRef}
           type="text"
           className={CLASS.textInput}
+          disabled={disabled}
           placeholder={freeActive ? "type your answer" : "note (optional)"}
           aria-labelledby={freeActive ? `${freeLabelId} ${headerId} ${textId}` : `${headerId} ${textId} ${noteLabelId}`}
           data-ask-free-input={freeActive ? "true" : undefined}

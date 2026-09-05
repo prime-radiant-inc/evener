@@ -229,6 +229,23 @@ describe("keyboard operation", () => {
     expect(committedWidth()).toBe(SIDEBAR_WIDTH_DEFAULT);
   });
 
+  test("Alt/Ctrl/Meta arrows and Home/End belong to the global chords - no resize, no preventDefault", () => {
+    render(<Harness />);
+    // Alt+Arrow/Alt+Home/End are the global session-cycling and transcript
+    // jump chords; the handle must leave modified keys entirely alone so the
+    // dispatcher's defaultPrevented check never sees them swallowed here
+    // (roborev PR #884 round 3). Shift stays the coarse-step modifier.
+    for (const event of [
+      { key: "ArrowLeft", altKey: true },
+      { key: "ArrowRight", ctrlKey: true },
+      { key: "Home", altKey: true },
+      { key: "End", metaKey: true },
+    ]) {
+      expect(fireEvent.keyDown(handle(), event)).toBe(true);
+    }
+    expect(committedWidth()).toBe(SIDEBAR_WIDTH_DEFAULT);
+  });
+
   test("a resizing key is preventDefaulted so the page never scrolls instead", () => {
     render(<Harness />);
     expect(fireEvent.keyDown(handle(), { key: "ArrowRight" })).toBe(false);
