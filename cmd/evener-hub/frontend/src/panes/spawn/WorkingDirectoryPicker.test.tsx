@@ -43,14 +43,15 @@ test("typed paths are validated and canonicalized before selection", async () =>
 });
 
 test("an invalid typed path cannot accidentally select the previously browsed folder", async () => {
+  const validationDetail = "fixture-path-validation-detail";
   const { user, onPick } = setup({
-    validatePath: async (path) => ({ valid: path !== "/missing", path, error: "not found" }),
+    validatePath: async (path) => ({ valid: path !== "/missing", path, error: validationDetail }),
   });
   await screen.findByRole("button", { name: "Open /work/app" });
   const input = screen.getByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/missing{Enter}");
-  await screen.findByRole("alert");
+  expect((await screen.findByRole("alert")).textContent).toBe(validationDetail);
   expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
   expect(onPick).not.toHaveBeenCalled();
 });

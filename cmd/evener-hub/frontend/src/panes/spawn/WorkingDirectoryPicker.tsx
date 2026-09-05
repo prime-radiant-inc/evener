@@ -88,7 +88,10 @@ export function WorkingDirectoryPicker({
     try {
       const result = await validatePath(path.trim(), "dir");
       if (!mounted.current || request.current !== id) return;
-      if (!result.valid) throw new Error(result.error || "This path is not a directory.");
+      if (!result.valid) {
+        setError(result.error || "This path is not a directory.");
+        return;
+      }
       const canonical = result.path || path.trim();
       setCurrent(canonical);
       setTyped(canonical);
