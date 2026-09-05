@@ -653,8 +653,9 @@ the merge order of §4.1 applies to them.
   "-"`, `body = { anthropic_version = "vertex-2023-10-16" }`, `auth =
   gcp-adc`); `vertex-gemini` (`endpoint =
   /publishers/google/models/{model}:generateContent`, `stream_endpoint =
-  …:streamGenerateContent?alt=sse`, `models_endpoint = "-"`,
-  `count_tokens_endpoint = "-"`, `auth = gcp-adc`); `bedrock-mantle-openai`
+  …:streamGenerateContent?alt=sse`, `models_endpoint =
+  /publishers/google/models`, `count_tokens_endpoint = "-"`, `auth =
+  gcp-adc`); `bedrock-mantle-openai`
   (`auth = bearer`, `models_endpoint = /models`, `count_tokens_endpoint =
   "-"`).
 - **Base URLs and their environment overrides.** Every implicit provider's
