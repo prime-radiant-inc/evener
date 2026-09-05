@@ -898,7 +898,7 @@ func TestProjectIndexedRangeObservedOpenError(t *testing.T) {
 	index := turnIndexDisk{
 		VisibleRecords: 3,
 		Records: []indexedTurn{
-			{Offset: 0, Length: 10, Index: 1, Kind: "entry", Visible: true, VisibleIndex: 1},
+			{Offset: 0, Length: 10, Index: 1, Kind: "entry", TurnKind: schema.TurnUserInput, TurnID: "turn_1", Visible: true, VisibleIndex: 1, GroupItems: 1},
 		},
 	}
 	_, _, err := projectIndexedRangeObserved(filepath.Join(t.TempDir(), "missing.transcript.jsonl"), index, 0, 3, nil, nil)

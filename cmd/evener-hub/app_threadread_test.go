@@ -1090,9 +1090,17 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	// flushes, so the transcript read back is byte-identical.
 	w.SyncInterval = time.Hour
 	for range 199 {
+		// One logical turn per exchange: user input opens, assistant reply
+		// continues. Bare assistant runs would merge into one logical turn.
+		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("capture"))); err != nil {
+		t.Fatal(err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
 	if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
@@ -1227,12 +1235,22 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !reflect.DeepEqual(got.Thread.Turns, wantTurns) || got.OlderCursor != wantCursor {
 		t.Fatal("bounded saved read differs from full reference")
 	}
-	if !reflect.DeepEqual(projected, []int{40}) {
-		t.Fatalf("saved read used legacy full projection of 200 turns; bounded projection reports = %v, want [40]", projected)
+	// 40 logical turns of two records each: the bounded reader projects 80
+	// records to materialize them, not the 200 of a full projection.
+	if !reflect.DeepEqual(projected, []int{80}) {
+		t.Fatalf("saved read used legacy full projection of 200 turns; bounded projection reports = %v, want [80]", projected)
 	}
-	last := got.Thread.Turns[len(got.Thread.Turns)-1].Items[0]
-	if len(last.OutputImages) != 1 || last.OutputImages[0].Name != "screenshot" {
-		t.Fatalf("bounded saved projection lost embedded output image: %+v", last)
+	// The newest logical turn is the user input plus its tool result; the
+	// command-execution item with the embedded image is the second item.
+	last := got.Thread.Turns[len(got.Thread.Turns)-1]
+	found := false
+	for _, item := range last.Items {
+		if len(item.OutputImages) == 1 && item.OutputImages[0].Name == "screenshot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bounded saved projection lost embedded output image: %+v", last.Items)
 	}
 }
 
@@ -1312,8 +1330,9 @@ func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatal("bounded saved page differs from full reference")
 	}
-	if !reflect.DeepEqual(projected, []int{30}) {
-		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [30]", projected)
+	// 30 logical turns of two records each: 60 records projected.
+	if !reflect.DeepEqual(projected, []int{60}) {
+		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [60]", projected)
 	}
 }
 
@@ -1354,14 +1373,20 @@ func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
 	if latest.OlderCursor == "" {
 		t.Fatal("latest item page has no opaque older cursor")
 	}
-	if len(latest.Thread.Turns) != 2 || len(latest.Thread.Turns[0].Items) != 35 || len(latest.Thread.Turns[1].Items) != 5 {
-		t.Fatalf("latest turn fragments = %+v, want 35 items and 5 items", latest.Thread.Turns)
+	// Each logical turn is a user input followed by its assistant burst, so
+	// the fixture's 40- and 5-item bursts become 41- and 6-item turns; the
+	// 40-item window splits turn one 6+34 and returns all six of turn two.
+	if len(latest.Thread.Turns) != 2 || len(latest.Thread.Turns[0].Items) != 34 || len(latest.Thread.Turns[1].Items) != 6 {
+		t.Fatalf("latest turn fragments = %+v, want 34 items and 6 items", latest.Thread.Turns)
 	}
-	if got := latest.Thread.Turns[0].Items[0].Text; got != "item-05" {
-		t.Fatalf("latest first fragment item=%q, want item-05", got)
+	if got := latest.Thread.Turns[0].Items[0].Text; got != "item-06" {
+		t.Fatalf("latest first fragment item=%q, want item-06", got)
 	}
-	if got := latest.Thread.Turns[1].Items[0].Text; got != "item-40" {
-		t.Fatalf("latest second fragment first item=%q, want item-40", got)
+	if got := latest.Thread.Turns[1].Items[0].Text; got != "in" {
+		t.Fatalf("latest second fragment first item=%q, want the second turn's user input", got)
+	}
+	if got := latest.Thread.Turns[1].Items[1].Text; got != "item-40" {
+		t.Fatalf("latest second fragment second item=%q, want item-40", got)
 	}
 	if !latest.Thread.Turns[0].HasEarlierItems || latest.Thread.Turns[0].HasLaterItems || latest.Thread.Turns[1].HasEarlierItems || latest.Thread.Turns[1].HasLaterItems {
 		t.Fatalf("fragment completeness = first(%v,%v) second(%v,%v), want first earlier and no later on final", latest.Thread.Turns[0].HasEarlierItems, latest.Thread.Turns[0].HasLaterItems, latest.Thread.Turns[1].HasEarlierItems, latest.Thread.Turns[1].HasLaterItems)
@@ -1376,11 +1401,14 @@ func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("past older item page = (%+v, %v, %v)", older, found, err)
 	}
-	if older.PageUnit != appwire.TranscriptPageUnitItem || len(older.Data) != 1 || len(older.Data[0].Items) != 5 {
-		t.Fatalf("older item page = %+v, want one five-item fragment", older)
+	if older.PageUnit != appwire.TranscriptPageUnitItem || len(older.Data) != 1 || len(older.Data[0].Items) != 7 {
+		t.Fatalf("older item page = %+v, want one seven-item fragment", older)
 	}
-	if got := older.Data[0].Items[0].Text; got != "item-00" {
-		t.Fatalf("older first item=%q, want item-00", got)
+	if got := older.Data[0].Items[0].Text; got != "in" {
+		t.Fatalf("older first item=%q, want the first turn's user input", got)
+	}
+	if got := older.Data[0].Items[1].Text; got != "item-00" {
+		t.Fatalf("older second item=%q, want item-00", got)
 	}
 	if older.Data[0].HasEarlierItems || !older.Data[0].HasLaterItems {
 		t.Fatalf("older completeness=(%v,%v), want no earlier and later", older.Data[0].HasEarlierItems, older.Data[0].HasLaterItems)
@@ -1413,6 +1441,10 @@ func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntr
 		parts := make([]llm.ContentPart, 0, count)
 		for i := range count {
 			parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: fmt.Sprintf("item-%02d", turnIndex*40+i)})
+		}
+		// One logical turn per assistant burst: a user input opens each one.
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
 		}
 		if err := writer.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}); err != nil {
 			t.Fatal(err)

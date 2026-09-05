@@ -77,8 +77,8 @@ func TestProjectedItemPositions(t *testing.T) {
 	if got := window.Candidates[0].Position; got != (appwire.ThreadItemPosition{Entry: 0, Item: 0}) {
 		t.Fatalf("first position=%+v, want entry 0 item 0", got)
 	}
-	if got := window.Candidates[1].Position; got != (appwire.ThreadItemPosition{Entry: 1, Item: 0}) {
-		t.Fatalf("second position=%+v, want entry 1 item 0", got)
+	if got := window.Candidates[1].Position; got != (appwire.ThreadItemPosition{Entry: 0, Item: 1}) {
+		t.Fatalf("second position=%+v, want entry 0 item 1 (same logical turn)", got)
 	}
 	if window.Candidates[0].Item.TranscriptKey == window.Candidates[1].Item.TranscriptKey {
 		t.Fatal("projected items reused transcript key")

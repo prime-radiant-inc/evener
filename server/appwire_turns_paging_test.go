@@ -402,8 +402,8 @@ func TestServerAppWireBoundedReadsWindowOneInstalledSlice(t *testing.T) {
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 
 	all := readTurns(t, conn, appwire.ThreadReadParams{Ref: "local:th_1", IncludeTurns: true}).Thread.Turns
-	if len(all) != 200 {
-		t.Fatalf("full transcript has %d turns, want 200", len(all))
+	if len(all) != 100 {
+		t.Fatalf("full transcript has %d turns, want 100 (one logical turn per exchange)", len(all))
 	}
 	wantLatest, wantCursor := appwire.WindowTurns(all, 40)
 	wantPage := appwire.PageTurns(all, wantCursor, 30)
@@ -484,8 +484,8 @@ func TestServerAppWireNotifierEvictionDoesNotTruncateMaterializedSnapshot(t *tes
 func TestServerAppWireInstalledSnapshotNeedsNoTranscriptReads(t *testing.T) {
 	srv, path := seedTranscriptServerPath(t, 3)
 	installed := srv.appAllTurns("th_1")
-	if len(installed) != 6 {
-		t.Fatalf("installed turns = %v, want the transcript's 6", turnIDs(installed))
+	if len(installed) != 3 {
+		t.Fatalf("installed turns = %v, want the transcript's 3 logical turns", turnIDs(installed))
 	}
 	writeTranscriptPairs(t, path, 1)
 
@@ -548,8 +548,8 @@ func recordNotificationTurns(t *testing.T, srv *Server, count int) {
 func TestServerAppWireLaterTranscriptWritesCannotReachAnInstalledSnapshot(t *testing.T) {
 	srv, path := seedTranscriptServerPath(t, 1)
 	seeded := len(srv.appAllTurns("th_1"))
-	if seeded != 2 {
-		t.Fatalf("seeded turns = %d, want the transcript's 2", seeded)
+	if seeded != 1 {
+		t.Fatalf("seeded turns = %d, want the transcript's 1 logical turn", seeded)
 	}
 
 	appendTranscriptTurns(t, path, 8)
@@ -560,7 +560,7 @@ func TestServerAppWireLaterTranscriptWritesCannotReachAnInstalledSnapshot(t *tes
 	srv.RecordAppEvent(events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "th_1",
-		Data:      events.SessionStartData{Restored: true, TranscriptEntries: seeded},
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: 2},
 	})
 	recordNotificationTurns(t, srv, 4)
 	if got := len(srv.appAllTurns("th_1")); got != seeded+4 {
@@ -1017,8 +1017,8 @@ func TestPreparedAppIdentityRequiresAThreadID(t *testing.T) {
 func TestPreparedAppIdentityKeepsLiveTurnIDsAboveSeededTranscriptIDs(t *testing.T) {
 	srv, _ := seedTranscriptServerPath(t, 3)
 	seeded := srv.appAllTurns("th_1")
-	if len(seeded) != 6 {
-		t.Fatalf("seeded turns = %v, want the transcript's 6", turnIDs(seeded))
+	if len(seeded) != 3 {
+		t.Fatalf("seeded turns = %v, want the transcript's 3 logical turns", turnIDs(seeded))
 	}
 	seededIDs := map[string]bool{}
 	for _, id := range turnIDs(seeded) {
@@ -1028,7 +1028,7 @@ func TestPreparedAppIdentityKeepsLiveTurnIDsAboveSeededTranscriptIDs(t *testing.
 	srv.RecordAppEvent(events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "th_1",
-		Data:      events.SessionStartData{Restored: true, TranscriptEntries: len(seeded), Profile: "openai", Model: "gpt-5.5"},
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: 6, Profile: "openai", Model: "gpt-5.5"},
 	})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "next"}})
 
@@ -1056,8 +1056,8 @@ func TestPreparedAppIdentityKeepsLiveTurnIDsAboveSeededTranscriptIDs(t *testing.
 func TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn(t *testing.T) {
 	srv, _ := seedTranscriptServerPath(t, 5)
 	seeded := srv.appAllTurns("th_1")
-	if len(seeded) != 10 {
-		t.Fatalf("seeded turns = %v, want the transcript's 10", turnIDs(seeded))
+	if len(seeded) != 5 {
+		t.Fatalf("seeded turns = %v, want the transcript's 5 logical turns", turnIDs(seeded))
 	}
 	seededItems := map[string]int{}
 	for _, turn := range seeded {
@@ -1069,7 +1069,7 @@ func TestSeededTranscriptDoesNotAbsorbAReservedClientMutationTurn(t *testing.T) 
 	srv.RecordAppEvent(events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "th_1",
-		Data:      events.SessionStartData{Restored: true, TranscriptEntries: len(seeded), Profile: "openai", Model: "gpt-5.5"},
+		Data:      events.SessionStartData{Restored: true, TranscriptEntries: 10, Profile: "openai", Model: "gpt-5.5"},
 	})
 
 	// The reply answering a pending ask carries the id reserved from the

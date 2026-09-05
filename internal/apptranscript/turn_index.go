@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 9
+	turnIndexVersion        = 10
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -156,6 +156,43 @@ type indexedTurn struct {
 	ItemCount    uint32            `json:"item_count"`
 	ToolSeed     map[string]string `json:"tool_seed,omitempty"`
 	ToolChanges  []toolNameChange  `json:"tool_changes,omitempty"`
+	// TurnKind is the entry's semantic turn kind ("USER_INPUT", "ASSISTANT",
+	// ...), the logical-grouping input (Kind above is the record kind
+	// "entry"). TurnID is the entry's resolved persistedTurnID at scan time
+	// — a group opener's record names the logical turn. GroupItems is the
+	// number of items this record contributes to its group's MERGED count
+	// and GroupCalls the call ids its merged items introduce (the counting
+	// form of mergeGroupedItems).
+	TurnKind   schema.TurnKind `json:"turn_kind,omitempty"`
+	TurnID     string          `json:"turn_id,omitempty"`
+	GroupItems uint32          `json:"group_items,omitempty"`
+	GroupCalls []string        `json:"group_calls,omitempty"`
+}
+
+// groupRole classifies a record within its logical turn group.
+type groupRole string
+
+const (
+	// groupOpener starts a logical turn (USER_INPUT, STEERING).
+	groupOpener groupRole = "opener"
+	// groupContinuation extends the open logical turn (ASSISTANT, TOOL,
+	// TOOL_RESULTS, TURN_FAILURE).
+	groupContinuation groupRole = "continuation"
+	// groupStandalone is its own logical turn, grouped with nothing
+	// (every other kind).
+	groupStandalone groupRole = "standalone"
+)
+
+// groupRoleFor classifies a turn kind's role in a logical turn.
+func groupRoleFor(kind schema.TurnKind) groupRole {
+	switch {
+	case opensLogicalTurn(kind):
+		return groupOpener
+	case continuesLogicalTurn(kind):
+		return groupContinuation
+	default:
+		return groupStandalone
+	}
 }
 
 type turnIndexAnchor struct {
@@ -276,12 +313,101 @@ func observeIndexRead(stats ReadStats) {
 	}
 }
 
+// logicalTurnCount returns the number of turns a full grouped projection
+// emits: the prelude (when the header carries one) plus every logical group
+// whose merged item count is nonzero. It is a single allocation-free forward
+// pass — bounded append reads call it on every request, so it must not
+// materialize groups or walk spans backward.
 func (d turnIndexDisk) logicalTurnCount() int {
-	count := d.VisibleRecords
+	count := 0
 	if PreludeTurn(d.Header) != nil {
 		count++
 	}
+	n := d.recordCount()
+	groupItems := uint64(0)
+	for i := range n {
+		record := d.recordAt(i)
+		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind) {
+			// The previous group just closed: count it when it projected
+			// items.
+			if groupItems > 0 {
+				count++
+			}
+			groupItems = 0
+		}
+		groupItems += uint64(record.GroupItems)
+	}
+	if groupItems > 0 {
+		count++
+	}
 	return count
+}
+
+// indexedGroup is one logical turn materialized over persisted records: the
+// group's contiguous record span and its accumulated state.
+type indexedGroup struct {
+	// id is the 0-based logical group ordinal over the whole record list.
+	id int
+	// start/end are the record ordinals [start, end) of the group's span.
+	start, end int
+	// turnID is the group opener's persistedTurnID; openerIndex is the
+	// opener's 1-based entry index.
+	turnID      string
+	openerIndex int
+	// items is the group's merged item count.
+	items uint64
+	// calls is the set of command call ids the group's merged items use.
+	calls map[string]bool
+	// open reports whether the group accepts continuations.
+	open bool
+}
+
+// indexedGroups materializes the whole record list into logical groups in
+// order. It mirrors the accumulator's state machine: openers start groups,
+// continuations join the open group, standalone kinds close it. Records whose
+// projected items are all invisible (ItemCount == 0) still join their group —
+// they carry stamps — but add no items.
+func (d turnIndexDisk) indexedGroups() []indexedGroup {
+	var groups []indexedGroup
+	n := d.recordCount()
+	for i := range n {
+		record := d.recordAt(i)
+		role := groupRoleFor(record.TurnKind)
+		join := role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
+		if join {
+			group := &groups[len(groups)-1]
+			group.end = i + 1
+			group.items += uint64(record.GroupItems)
+			for _, id := range record.GroupCalls {
+				group.calls[id] = true
+			}
+			continue
+		}
+		turnID := record.TurnID
+		if turnID == "" {
+			// Defensive: a record the version bump let through without a
+			// resolved id still answers by its fallback rule.
+			turnID = persistedTurnID(record.KindTurn(), record.Index)
+		}
+		group := indexedGroup{
+			id:          len(groups),
+			start:       i,
+			end:         i + 1,
+			turnID:      turnID,
+			openerIndex: record.Index,
+			items:       uint64(record.GroupItems),
+			calls:       cloneGroupCalls(record.GroupCalls),
+			open:        role != groupStandalone,
+		}
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+// KindTurn reconstructs the record's turn kind from persisted fields (the
+// turn kind itself is persisted as TurnKind).
+func (r indexedTurn) KindTurn() schema.Turn {
+	return schema.Turn{Kind: r.TurnKind}
 }
 
 func (d turnIndexDisk) recordCount() int {
@@ -690,6 +816,12 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 	if n := index.recordCount(); n > 0 {
 		entryIndex = index.recordAt(n - 1).Index
 	}
+	// openCalls is the open logical group's accumulated call-id set and
+	// openTurnID its turn id. openCalls is nil until a continuation first
+	// needs it (then reconstructed from the indexed prefix) and both reset
+	// at every group start.
+	var openCalls map[string]bool
+	var openTurnID string
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
@@ -735,18 +867,40 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 				return readBytes, fmt.Errorf("parse transcript entry: %w", err)
 			}
 			entryIndex++
-			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind}
+			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
+			// Logical-group bookkeeping runs BEFORE projection: the entry is
+			// projected under its group's turn id (the opener's), exactly
+			// the way the range reader names it, so the index scan and the
+			// projection cannot disagree (kata: one name per entry).
+			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+			prevKind := schema.TurnKind("")
+			if len(appended) > 0 {
+				prevKind = appended[len(appended)-1].TurnKind
+			} else if n := index.recordCount(); n > 0 {
+				prevKind = index.recordAt(n - 1).TurnKind
+			}
+			if recordStartsGroup(entry.Turn.Kind, prevKind) {
+				openTurnID = record.TurnID
+				openCalls = map[string]bool{}
+			} else if openCalls == nil || openTurnID == "" {
+				// Continues a group whose opener lives in the previously
+				// indexed prefix: reconstruct its id and accumulated calls.
+				openTurnID, openCalls = openGroupState(*index)
+			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
-				projectedItems = project(entry.Turn, persistedTurnID(entry.Turn, entryIndex), entryIndex, recordNames)
+				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
 				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
 					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
 				}
 			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
 			record.ItemCount = uint32(len(projectedItems))
+			contribution, introduced := mergedContribution(projectedItems, openCalls)
+			record.GroupItems = uint32(contribution)
+			record.GroupCalls = introduced
 			record.Visible = record.ItemCount > 0
 			if record.Visible {
 				visibleRecords++
@@ -925,55 +1079,121 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 	if lo >= hi {
 		return nil, 0, nil
 	}
+	// Project the visible groups [lo, hi): each group is one turn. The
+	// prelude, when present, is visible slot 0. Groups whose merged items
+	// are empty emit no turn, so a group's visible slot — and its entry
+	// ordinal — are only consumed by groups that project.
+	turns := []appwire.Turn{}
+	projected := 0
+	prelude := PreludeTurn(index.Header)
+	slot := 0
+	if prelude != nil {
+		if lo == 0 {
+			positioned, err := positionPreludeItems(prelude.Items)
+			if err != nil {
+				return nil, projected, err
+			}
+			prelude.Items = positioned
+			turns = append(turns, *prelude)
+			projected++
+		}
+		slot = 1
+	}
+	entryOrdinal := uint64(0)
+	if prelude != nil {
+		entryOrdinal = 1
+	}
+	n := index.recordCount()
+	for i := 0; i < n; {
+		// Walk the record list group by group without materializing all
+		// groups: find where this group's span ends, then decide whether to
+		// project it.
+		spanEnd := i + 1
+		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind) {
+			spanEnd++
+		}
+		groupItems := uint64(0)
+		for r := i; r < spanEnd; r++ {
+			groupItems += uint64(index.recordAt(r).GroupItems)
+		}
+		if groupItems == 0 {
+			i = spanEnd
+			continue
+		}
+		thisSlot := slot
+		slot++
+		entryOrdinalAt := entryOrdinal
+		entryOrdinal++
+		groupStart := i
+		i = spanEnd
+		if thisSlot >= hi {
+			// Past the projected window: no later group can be inside it.
+			break
+		}
+		if thisSlot < lo {
+			continue
+		}
+		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
+		turn, projectedGroup, err := projectIndexedGroup(path, index, &group, entryOrdinalAt, project)
+		if err != nil {
+			return nil, projected, err
+		}
+		projected += projectedGroup
+		if turn == nil {
+			continue
+		}
+		turns = append(turns, *turn)
+	}
+	return turns, projected, nil
+}
+
+// projectIndexedGroup materializes one logical group's turn: it reads every
+// record of the group's span, projects each through the BoundedEntryProjector
+// under the group's turn id, merges the items by call id, positions them at
+// the group's entry ordinal, and stamps failure/usage/timestamp across the
+// group's entries. It returns nil (not an error) when the group projects to
+// no items — the indexed metadata said otherwise, so the caller invalidates.
+func projectIndexedGroup(path string, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector) (*appwire.Turn, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close errors are not actionable
-	var turns []appwire.Turn
+	var items []appwire.ThreadItem
+	var entries []schema.Turn
 	projected := 0
-	prelude := PreludeTurn(index.Header)
-	recordBase := 0
-	if prelude != nil {
-		if lo == 0 && hi > 0 {
-			turns = append(turns, *prelude)
-			projected++
-		}
-		recordBase = 1
-	}
-	recordLogicalLo := max(lo-recordBase, 0)
-	for rank := recordLogicalLo; rank < hi-recordBase && rank < index.VisibleRecords; rank++ {
-		record, ok := index.visibleRecordAt(rank, stats)
-		if !ok {
-			break
-		}
+	for i := group.start; i < group.end; i++ {
+		record := index.recordAt(i)
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
 		}
-		projected++
 		entry, err := transcript.DecodeEntry(raw)
 		if err != nil {
 			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
 		}
-		turnID := persistedTurnID(entry.Turn, record.Index)
-		var items []appwire.ThreadItem
-		if project != nil {
-			items = project(entry.Turn, turnID, record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
-		}
-		if len(items) == 0 {
+		projected++
+		entries = append(entries, entry.Turn)
+		if project == nil {
 			continue
 		}
-		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		StampTurnFailure(&turn, entry.Turn)
-		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.UnixMilli()
-			turn.StartedAt = &startedAt
-		}
-		turn.Usage = appwire.EvenerUsageFromLLM(entry.Turn.Usage)
-		turns = append(turns, turn)
+		projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+		items = append(items, projectedItems...)
 	}
-	return turns, projected, nil
+	merged := mergeGroupedItems(items)
+	if len(merged) == 0 {
+		return nil, projected, nil
+	}
+	for j := range merged {
+		merged[j].TurnID = group.turnID
+	}
+	positioned, err := positionProjectedItemsAt(merged, group.turnID, entryOrdinal)
+	if err != nil {
+		return nil, projected, err
+	}
+	turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	stampGroupedTurnFromEntries(&turn, entries)
+	return &turn, projected, nil
 }
 
 func readTurnIndex(path string) (turnIndexDisk, error) {
@@ -1461,6 +1681,54 @@ func equalToolNames(a, b map[string]string) bool {
 
 func cloneToolNames(names map[string]string) map[string]string {
 	return cloneToolNamesObserved(names, nil)
+}
+
+// openGroupState reconstructs the open logical group's turn id and
+// accumulated call-id set at the tail of an indexed prefix. It walks back
+// through the group's records (each contributes the ids its merged items
+// introduced) until the record that started the group, whose resolved turn id
+// names the group.
+func openGroupState(index turnIndexDisk) (string, map[string]bool) {
+	calls := map[string]bool{}
+	n := index.recordCount()
+	if n == 0 {
+		return "", calls
+	}
+	turnID := ""
+	for i := n - 1; i >= 0; i-- {
+		record := index.recordAt(i)
+		for _, id := range record.GroupCalls {
+			calls[id] = true
+		}
+		turnID = record.TurnID
+		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind) {
+			break
+		}
+	}
+	if turnID == "" && n > 0 {
+		turnID = persistedTurnID(recordAtKindTurn(index, n-1), index.recordAt(n-1).Index)
+	}
+	return turnID, calls
+}
+
+// recordAtKindTurn reconstructs a record's turn kind for the fallback id
+// rule when the persisted TurnID is absent.
+func recordAtKindTurn(index turnIndexDisk, i int) schema.Turn {
+	return schema.Turn{Kind: index.recordAt(i).TurnKind}
+}
+
+// cloneGroupCalls copies a record's persisted group-call slice into the set
+// form the counting merge uses. The slice is part of the durable sidecar, so
+// readers never mutate it in place.
+func cloneGroupCalls(calls []string) map[string]bool {
+	if len(calls) == 0 {
+		return map[string]bool{}
+	}
+	set := make(map[string]bool, len(calls))
+	for _, id := range calls {
+		set[id] = true
+	}
+	return set
 }
 
 func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[string]string {

@@ -49,9 +49,11 @@ func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 		if entryIndex > entries {
 			entries = entryIndex
 		}
-		return positionAppItems(apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages), turnID, uint64(entryIndex-1))
+		// Positioning is apptranscript's now: TurnsFromFile groups entries
+		// into logical turns and assigns each item its Position/TranscriptKey
+		// there. Re-positioning here would clobber the grouped ordinals.
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 	})
-	positionAppTurns(turns)
 	return turns, entries, err
 }
 
@@ -71,9 +73,8 @@ func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) (
 		if entryIndex > highest {
 			highest = entryIndex
 		}
-		return positionAppItems(apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages), turnID, uint64(entryIndex-1))
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 	})
-	positionAppTurns(turns)
 	return turns, highest, err
 }
 
@@ -84,30 +85,6 @@ func positionAppItems(items []appwire.ThreadItem, turnID string, entry uint64) [
 		items[i].TranscriptKey = appitempaging.TranscriptItemKey(turnID, position)
 	}
 	return items
-}
-
-// positionAppTurns repairs the prelude coordinate shift after the shared
-// legacy projector has produced the complete turn slice. Entry zero is reserved
-// for the synthetic prelude whenever one exists.
-func positionAppTurns(turns []appwire.Turn) {
-	prelude := len(turns) > 0 && turns[0].ID == appwire.SystemPreludeTurnID
-	for ti := range turns {
-		for ii := range turns[ti].Items {
-			item := &turns[ti].Items[ii]
-			if item.Position == nil {
-				position := appwire.ThreadItemPosition{Entry: uint64(ti), Item: uint32(ii)}
-				item.Position = &position
-			}
-			position := *item.Position
-			if prelude && ti == 0 {
-				position = appwire.ThreadItemPosition{Entry: 0, Item: uint32(ii)}
-			} else if prelude {
-				position.Entry++
-			}
-			item.Position = &position
-			item.TranscriptKey = appitempaging.TranscriptItemKey(turns[ti].ID, position)
-		}
-	}
 }
 
 func positionMissingAppItems(turns []appwire.Turn) {

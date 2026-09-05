@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -48,6 +49,9 @@ func (c *TurnCache) PreviousItemWindowFromFile(
 }
 
 type indexedItemRange struct {
+	// group is the range's logical group; for the prelude range it is the
+	// zero value with prelude set.
+	group   *indexedGroup
 	record  indexedTurn
 	entry   uint64
 	start   uint64
@@ -127,6 +131,7 @@ func (c *TurnCache) itemWindowFromFile(path string, maxLineBytes int, options It
 func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) {
 	ranges := make([]indexedItemRange, 0, index.VisibleRecords+1)
 	var total uint64
+	hasPrelude := false
 	if prelude := PreludeTurn(index.Header); prelude != nil {
 		count := uint64(len(prelude.Items))
 		if count > uint64(math.MaxUint32) {
@@ -134,26 +139,27 @@ func indexedItemRanges(index turnIndexDisk) ([]indexedItemRange, uint64, error) 
 		}
 		ranges = append(ranges, indexedItemRange{start: 0, count: count, prelude: true})
 		total = count
+		hasPrelude = true
 	}
-	for rank := 0; rank < index.VisibleRecords; rank++ {
-		record, ok := index.visibleRecordAt(rank, nil)
-		if !ok || record.ItemCount == 0 {
+	// One range per logical group (the turn a live snapshot rendered), with
+	// the group's MERGED item count and entry ordinal. Entry 0 is the
+	// prelude's range; the first group follows it when a prelude exists.
+	groups := index.indexedGroups()
+	entry := uint64(0)
+	if hasPrelude {
+		entry = 1
+	}
+	for gi := range groups {
+		group := &groups[gi]
+		if group.items == 0 {
 			continue
 		}
-		if record.Index <= 0 {
-			return nil, 0, fmt.Errorf("indexed entry ordinal %d is invalid", record.Index)
-		}
-		count := uint64(record.ItemCount)
-		if ^uint64(0)-total < count {
+		if ^uint64(0)-total < group.items {
 			return nil, 0, errors.New("projected item count overflows uint64")
 		}
-		entry := uint64(record.Index - 1)
-		if PreludeTurn(index.Header) != nil {
-			// Entry zero is reserved for the synthetic prelude item range.
-			entry = uint64(record.Index)
-		}
-		ranges = append(ranges, indexedItemRange{record: record, entry: entry, start: total, count: count})
-		total += count
+		ranges = append(ranges, indexedItemRange{group: group, record: index.recordAt(group.start), entry: entry, start: total, count: group.items})
+		total += group.items
+		entry++
 	}
 	return ranges, total, nil
 }
@@ -226,50 +232,61 @@ func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexed
 			projectedRecords++
 			continue
 		}
+		group := itemRange.group
+		if group == nil || group.items == 0 {
+			continue
+		}
 		if file == nil {
 			file, err = os.Open(path)
 			if err != nil {
 				return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
 			}
 		}
-		raw := make([]byte, itemRange.record.Length)
-		if _, err := file.ReadAt(raw, itemRange.record.Offset); err != nil {
+		// Read and project every record of the group's span, then merge by
+		// call id — the same shape the full grouped read produces.
+		var items []appwire.ThreadItem
+		var entries []schema.Turn
+		for i := group.start; i < group.end; i++ {
+			record := index.recordAt(i)
+			raw := make([]byte, record.Length)
+			if _, err := file.ReadAt(raw, record.Offset); err != nil {
+				_ = file.Close()
+				return nil, projectedRecords, fmt.Errorf("read transcript entry: %w", err)
+			}
+			entry, err := transcript.DecodeEntry(raw)
+			if err != nil {
+				_ = file.Close()
+				return nil, projectedRecords, fmt.Errorf("parse transcript entry: %w", err)
+			}
+			entries = append(entries, entry.Turn)
+			projectedRecords++
+			if project != nil {
+				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+				items = append(items, projectedItems...)
+			}
+		}
+		merged := mergeGroupedItems(items)
+		if uint64(len(merged)) != itemRange.count {
 			_ = file.Close()
-			return nil, projectedRecords, fmt.Errorf("read transcript entry: %w", err)
+			return nil, projectedRecords, fmt.Errorf("indexed item count for logical group %d changed", group.id)
 		}
-		entry, err := transcript.DecodeEntry(raw)
-		if err != nil {
-			_ = file.Close()
-			return nil, projectedRecords, fmt.Errorf("parse transcript entry: %w", err)
+		for j := range merged {
+			merged[j].TurnID = group.turnID
 		}
-		turnID := persistedTurnID(entry.Turn, itemRange.record.Index)
-		var projected []appwire.ThreadItem
-		if project != nil {
-			projected = project(entry.Turn, turnID, itemRange.record.Index, cloneToolNames(itemRange.record.ToolSeed))
-		}
-		if uint64(len(projected)) != itemRange.count {
-			_ = file.Close()
-			return nil, projectedRecords, fmt.Errorf("indexed item count for entry %d changed", itemRange.record.Index)
-		}
-		positioned, err := positionProjectedItemsAt(projected, turnID, itemRange.entry)
+		positioned, err := positionProjectedItemsAt(merged, group.turnID, itemRange.entry)
 		if err != nil {
 			_ = file.Close()
 			return nil, projectedRecords, err
 		}
-		turn := appwire.Turn{ID: turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		StampTurnFailure(&turn, entry.Turn)
-		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.UnixMilli()
-			turn.StartedAt = &startedAt
-		}
-		turn.Usage = appwire.EvenerUsageFromLLM(entry.Turn.Usage)
+		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
+		stampGroupedTurnFromEntries(&turn, entries)
 		for itemIndex := range positioned {
 			position := *positioned[itemIndex].Position
 			if uint64(itemIndex) < itemRange.lo || uint64(itemIndex) >= itemRange.hi {
 				continue
 			}
 			candidate := appitempaging.TranscriptItemCandidate{
-				TurnID:          turnID,
+				TurnID:          group.turnID,
 				Turn:            turn,
 				Item:            positioned[itemIndex],
 				Position:        position,
@@ -278,7 +295,6 @@ func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexed
 			}
 			candidates = append(candidates, candidate)
 		}
-		projectedRecords++
 	}
 	if file != nil {
 		_ = file.Close()

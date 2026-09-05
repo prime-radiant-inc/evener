@@ -2318,14 +2318,19 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 3 {
+	// The user+assistant exchange is one logical turn; the trailing user
+	// input is its own open group.
+	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 2 {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
 		t.Fatalf("first item=%+v", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agentMessage" || got.Text != "first reply" {
+	if got := resp.Thread.Turns[0].Items[1]; got.Type != "agentMessage" || got.Text != "first reply" {
 		t.Fatalf("second item=%+v", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0]; got.Type != "userMessage" || got.Text != "second task" {
+		t.Fatalf("third item=%+v", got)
 	}
 }
 
@@ -2368,7 +2373,9 @@ func TestHubRPCSubscribedReadReturnsPastForCrashMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	// The user+assistant exchange is one logical turn; the trailing user
+	// input is its own open group.
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("saved thread = %+v", response.Thread)
 	}
 }
@@ -2505,7 +2512,7 @@ func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.
 	if err != nil {
 		t.Fatalf("non-subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("non-subscribed saved thread = %+v", response.Thread)
 	}
 }
@@ -2551,7 +2558,7 @@ func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.
 	if err != nil {
 		t.Fatalf("non-atomic subscribed thread/read: %v", err)
 	}
-	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 2 {
 		t.Fatalf("non-atomic saved thread = %+v", response.Thread)
 	}
 }
@@ -2641,10 +2648,12 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 2 || len(resp.Thread.Turns[1].Items) != 1 {
+	// The assistant tool call and its result are one logical turn with one
+	// merged command-execution item.
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v", resp.Thread.Turns)
 	}
-	item := resp.Thread.Turns[1].Items[0]
+	item := resp.Thread.Turns[0].Items[0]
 	if len(item.OutputImages) != 2 {
 		t.Fatalf("OutputImages=%+v, want tool-result then file-backed descriptors", item.OutputImages)
 	}
@@ -2832,7 +2841,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	if resp.Thread.Status.Type != appwire.ThreadStatusClosed {
 		t.Fatalf("status=%q", resp.Thread.Status.Type)
 	}
-	if len(resp.Thread.Turns) != 3 {
+	if len(resp.Thread.Turns) != 2 {
 		t.Fatalf("turns=%d thread=%+v", len(resp.Thread.Turns), resp.Thread)
 	}
 	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {

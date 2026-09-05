@@ -32,9 +32,11 @@ func TestPastThreadReadsNameAReservedTurnTheSameWayWindowedOrNot(t *testing.T) {
 	if !ok {
 		t.Fatal("past thread not found")
 	}
+	// Four user+assistant exchanges are four logical turns; the last one
+	// carries the reserved id its client-authored user input persisted.
 	fullIDs := threadTurnIDs(full.Turns)
-	if len(fullIDs) != 8 || fullIDs[6] != reserved {
-		t.Fatalf("full read turn IDs = %v, want the persisted %q at the seventh entry", fullIDs, reserved)
+	if len(fullIDs) != 4 || fullIDs[3] != reserved {
+		t.Fatalf("full read turn IDs = %v, want the persisted %q at the last logical turn", fullIDs, reserved)
 	}
 
 	windowed, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, TurnLimit: 3})

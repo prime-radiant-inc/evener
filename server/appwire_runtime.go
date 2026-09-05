@@ -82,8 +82,10 @@ func preparedItemProjector(turn schema.Turn, turnID string, entryIndex int, tool
 	if entryIndex <= 0 {
 		return nil
 	}
-	items := apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
-	return positionAppItems(items, turnID, uint64(entryIndex-1))
+	// The bounded item-window reader assigns each item its grouped
+	// Position/TranscriptKey; per-entry positioning here would only be
+	// overwritten, and wrong for merged call/result items.
+	return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
 }
 
 func preparedItemIndexIncarnation(path, threadRef string) (string, error) {

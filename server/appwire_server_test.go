@@ -173,8 +173,10 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	if !ok {
 		t.Fatalf("read response=%T", read.Response.Result)
 	}
-	if len(out.Thread.Turns) < 2 {
-		t.Fatalf("thread turns=%d, want the seeded transcript turns", len(out.Thread.Turns))
+	// The seeded user+assistant pair is one logical turn; the reserved live
+	// id is deliberately absent from turns.
+	if len(out.Thread.Turns) != 1 {
+		t.Fatalf("thread turns=%d, want the one seeded logical turn", len(out.Thread.Turns))
 	}
 	for _, turn := range out.Thread.Turns {
 		if turn.Status == appwire.TurnStatusInProgress {
@@ -1847,16 +1849,17 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	}
 
 	turns := requireTranscriptFileTurns(t, path)
-	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 1 {
+	// The assistant call and its tool result are one logical turn with one
+	// merged command-execution item carrying the call and result fields.
+	if len(turns) != 1 || len(turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v", turns)
 	}
-	start := turns[0].Items[0]
-	done := turns[1].Items[0]
-	if start.CallID != "call_read" || start.ArgumentsJSON == "" || !strings.Contains(start.ArgumentsJSON, "/tmp/example.txt") {
-		t.Fatalf("start item=%+v", start)
+	merged := turns[0].Items[0]
+	if merged.CallID != "call_read" || merged.ArgumentsJSON == "" || !strings.Contains(merged.ArgumentsJSON, "/tmp/example.txt") {
+		t.Fatalf("merged item=%+v", merged)
 	}
-	if done.CallID != "call_read" || done.Output != "line 1\nline 2\n" {
-		t.Fatalf("done item=%+v", done)
+	if merged.Output != "line 1\nline 2\n" {
+		t.Fatalf("merged item=%+v", merged)
 	}
 }
 
@@ -1951,16 +1954,18 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 3 {
-		t.Fatalf("turns=%v, want the 2 seeded turns plus the live one", turnIDs(resp.Thread.Turns))
+	// The seeded user+assistant pair is one logical turn; the live turn
+	// (user input + assistant reply) is another, so the thread has 2 turns.
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%v, want the seeded logical turn plus the live one", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("first turn text=%q, want the seeded head", got)
+		t.Fatalf("seeded turn head text=%q, want the user input", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
-		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
+		t.Fatalf("seeded turn items=%+v, want user input then assistant reply", resp.Thread.Turns[0].Items)
 	}
-	live := resp.Thread.Turns[2]
+	live := resp.Thread.Turns[1]
 	if len(live.Items) == 0 || live.Items[0].Text != "tail" {
 		t.Fatalf("live turn items=%+v, want the live user input", live.Items)
 	}
@@ -2717,13 +2722,14 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if len(resp.Thread.Turns) != 2 {
-		t.Fatalf("turns=%v, want the 2 seeded turns from the descendant's transcript", turnIDs(resp.Thread.Turns))
+	// The descendant's user+assistant pair is one logical turn.
+	if len(resp.Thread.Turns) != 1 {
+		t.Fatalf("turns=%v, want the seeded logical turn from the descendant's transcript", turnIDs(resp.Thread.Turns))
 	}
 	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
-		t.Fatalf("first turn text=%q, want the seeded head", got)
+		t.Fatalf("first item text=%q, want the seeded head", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0].Text; got != "second" {
-		t.Fatalf("second turn text=%q, want the seeded tail", got)
+	if len(resp.Thread.Turns[0].Items) < 2 || resp.Thread.Turns[0].Items[1].Text != "second" {
+		t.Fatalf("second item text missing, want the seeded tail in the same logical turn")
 	}
 }

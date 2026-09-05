@@ -98,21 +98,25 @@ func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 		t.Fatalf("next cursor=%q want=%q", page.NextCursor, wantPage.NextCursor)
 	}
 
-	wantIDs := []string{"turn_system", "turn_1", "turn_2", "turn_3", "turn_4", "turn_5"}
+	// Logical grouping: the user input swallows its assistant/tool
+	// continuation into one turn, so the file renders turn_system (prelude),
+	// turn_1 (first+call+result), turn_4 (fourth+last).
+	wantIDs := []string{"turn_system", "turn_1", "turn_4"}
 	if gotIDs := turnIDs(full); !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("turn IDs=%v want=%v", gotIDs, wantIDs)
 	}
-	for i, ts := range fixture.times[:4] {
-		turn := full[i+1]
-		if turn.StartedAt == nil || *turn.StartedAt != ts.UnixMilli() {
-			t.Fatalf("%s StartedAt=%v want=%d", turn.ID, turn.StartedAt, ts.UnixMilli())
-		}
+	// The first group's earliest entry timestamp (times[0]) opens the turn.
+	if turn := full[1]; turn.StartedAt == nil || *turn.StartedAt != fixture.times[0].UnixMilli() {
+		t.Fatalf("%s StartedAt=%v want=%d", turn.ID, turn.StartedAt, fixture.times[0].UnixMilli())
 	}
-	if full[2].Usage == nil || full[2].Usage.InputTokens != 11 || full[2].Usage.OutputTokens != 7 || full[2].Usage.TotalTokens != 18 {
-		t.Fatalf("turn_2 usage=%+v", full[2].Usage)
+	// The first group accumulates the call entry's usage.
+	if full[1].Usage == nil || full[1].Usage.InputTokens != 11 || full[1].Usage.OutputTokens != 7 || full[1].Usage.TotalTokens != 18 {
+		t.Fatalf("turn_1 usage=%+v", full[1].Usage)
 	}
-	if got[0].Items[0].ToolName != "read_file" {
-		t.Fatalf("bounded legacy tool-result name=%q want=%q", got[0].Items[0].ToolName, "read_file")
+	// The merged tool item carries the call's tool name (the result entry
+	// records none; the live merge resolves it from the call the same way).
+	if got[1].Items[1].ToolName != "read_file" {
+		t.Fatalf("bounded merged tool name=%q want=%q", got[1].Items[1].ToolName, "read_file")
 	}
 }
 
@@ -220,10 +224,12 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 		userEntry(3, "after result"),
 	)
 	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-	if got := turnIDs(full); !reflect.DeepEqual(got, []string{"turn_1", "turn_2", "turn_3"}) {
-		t.Fatalf("full turn IDs=%v want=%v", got, []string{"turn_1", "turn_2", "turn_3"})
+	// The leading call/result pair with no opener forms one group (turn_1);
+	// the user input after it opens turn_3.
+	if got := turnIDs(full); !reflect.DeepEqual(got, []string{"turn_1", "turn_3"}) {
+		t.Fatalf("full turn IDs=%v want=%v", got, []string{"turn_1", "turn_3"})
 	}
-	if got := full[1].Items[0].ToolName; got != "read_file" {
+	if got := full[0].Items[0].ToolName; got != "read_file" {
 		t.Fatalf("full result tool name=%q want=%q", got, "read_file")
 	}
 
@@ -234,14 +240,14 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[0].Items[0].ToolName, turnIDs(want), want[0].Items[0].ToolName)
 		}
-		if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_2", "turn_3"}) {
-			t.Fatalf("%s turn IDs=%v want=%v", label, gotIDs, []string{"turn_2", "turn_3"})
+		if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_1", "turn_3"}) {
+			t.Fatalf("%s turn IDs=%v want=%v", label, gotIDs, []string{"turn_1", "turn_3"})
 		}
 		if got[0].Items[0].ToolName != "read_file" {
 			t.Fatalf("%s result tool name=%q want=%q", label, got[0].Items[0].ToolName, "read_file")
 		}
-		if cursor != wantCursor || cursor != "1" {
-			t.Fatalf("%s cursor=%q want=%q", label, cursor, "1")
+		if cursor != wantCursor || cursor != "" {
+			t.Fatalf("%s cursor=%q want=%q", label, cursor, "")
 		}
 	}
 
@@ -254,11 +260,13 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) {
 		t.Fatalf("page exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", turnIDs(page.Turns), page.Turns[0].Items[0].ToolName, turnIDs(wantPage.Data), wantPage.Data[0].Items[0].ToolName)
 	}
-	if gotIDs := turnIDs(page.Turns); !reflect.DeepEqual(gotIDs, []string{"turn_2"}) {
-		t.Fatalf("page turn IDs=%v want=%v", gotIDs, []string{"turn_2"})
+	if gotIDs := turnIDs(page.Turns); !reflect.DeepEqual(gotIDs, []string{"turn_3"}) {
+		t.Fatalf("page turn IDs=%v want=%v", gotIDs, []string{"turn_3"})
 	}
-	if page.Turns[0].Items[0].ToolName != "read_file" {
-		t.Fatalf("page result tool name=%q want=%q", page.Turns[0].Items[0].ToolName, "read_file")
+	// The page's turn is the trailing user input; the merged tool item
+	// lives in the older turn_1 group, verified above via the full read.
+	if len(page.Turns[0].Items) != 1 || page.Turns[0].Items[0].Type != "userMessage" {
+		t.Fatalf("page result items=%+v want the user message only", page.Turns[0].Items)
 	}
 	if page.NextCursor != wantPage.NextCursor || page.NextCursor != "1" {
 		t.Fatalf("page next cursor=%q want=%q", page.NextCursor, "1")
@@ -292,8 +300,21 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 			)
 
 			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-			if got := full[len(full)-1].Items[0].ToolName; got != "read_file" {
-				t.Fatalf("full result tool name=%q want=%q", got, "read_file")
+			// The result lands in the FIRST group (the leading assistant
+			// call's continuation): the orphan result is last only per-entry,
+			// never per-group.
+			mergedTool := func(turns []appwire.Turn) *appwire.ThreadItem {
+				for ti := range turns {
+					for ii := range turns[ti].Items {
+						if item := &turns[ti].Items[ii]; item.Type == "commandExecution" {
+							return item
+						}
+					}
+				}
+				return nil
+			}
+			if item := mergedTool(full); item == nil || item.ToolName != "read_file" {
+				t.Fatalf("full merged tool name=%v want=%q", item, "read_file")
 			}
 
 			assertLatest := func(label string, cache *TurnCache) string {
@@ -301,13 +322,13 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 				got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
 				want, wantCursor := appwire.WindowTurns(full, 2)
 				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[len(got)-1].Items[0].ToolName, turnIDs(want), want[len(want)-1].Items[0].ToolName)
+					t.Fatalf("%s exact items differ: got IDs=%v; want IDs=%v", label, turnIDs(got), turnIDs(want))
 				}
 				if cursor != wantCursor {
 					t.Fatalf("%s cursor=%q want=%q", label, cursor, wantCursor)
 				}
-				if gotName := got[len(got)-1].Items[0].ToolName; gotName != "read_file" {
-					t.Fatalf("%s result tool name=%q want=%q", label, gotName, "read_file")
+				if item := mergedTool(got); item == nil || item.ToolName != "read_file" {
+					t.Fatalf("%s merged tool name=%v want=%q", label, item, "read_file")
 				}
 				return cursor
 			}
@@ -331,7 +352,7 @@ func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 	fixture := writeBoundedFixture(t)
 	cache := NewTurnCache()
 	before, _ := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
-	if got := turnIDs(before); !reflect.DeepEqual(got, []string{"turn_3", "turn_4", "turn_5"}) {
+	if got := turnIDs(before); !reflect.DeepEqual(got, []string{"turn_system", "turn_1", "turn_4"}) {
 		t.Fatalf("before append IDs=%v", got)
 	}
 
@@ -353,7 +374,8 @@ func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("after append got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 	}
-	if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_4", "turn_5", "turn_6"}) {
+	// The appended USER_INPUT entry opens its own group after turn_4's.
+	if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_1", "turn_4", "turn_6"}) {
 		t.Fatalf("after append IDs=%v", gotIDs)
 	}
 	if got[2].StartedAt == nil || *got[2].StartedAt != fixture.times[4].UnixMilli() {
@@ -718,8 +740,14 @@ func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 	if stat.IndexedBytes != 0 {
 		t.Fatalf("restart rescanned authoritative transcript: stats=%+v", stat)
 	}
-	if got[len(got)-1].Items[0].ToolName != "restart_tool" {
-		t.Fatalf("restart lost historical tool state: turn=%#v", got[len(got)-1])
+	// The newest group is turn_101 (user 101 + call 102 + result 103,
+	// grouped): its items are the user message and the merged tool item.
+	last := got[len(got)-1]
+	if len(last.Items) != 2 {
+		t.Fatalf("restart lost historical tool state: turn=%#v", last)
+	}
+	if last.Items[1].ToolName != "restart_tool" || last.Items[1].Output != "restart output" {
+		t.Fatalf("restart lost historical tool state: items=%#v", last.Items)
 	}
 }
 
@@ -1011,7 +1039,10 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 	}
 
 	got, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
-	if len(got) != 1 || len(got[0].Items) != 1 || got[0].Items[0].ToolName != "correct_tool" {
+	// The newest group is turn_128 (user 128 + result 129): the user
+	// message and the merged tool item, whose name must come from the
+	// REBUILT resolver (correct_tool), not the poisoned seed.
+	if len(got) != 1 || len(got[0].Items) != 2 || got[0].Items[1].ToolName != "correct_tool" {
 		t.Fatalf("invalid seed was reused: turns=%#v", got)
 	}
 }

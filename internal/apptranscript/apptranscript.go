@@ -669,89 +669,47 @@ func ImagesFromContent(parts []llm.ContentPart, imageProjector ImageProjector) [
 // header whose prelude is emitted, and each entry is decoded once for
 // validation by the scanner and once by the projector callback (the
 // per-entry contract of EntryProjector, kata j13r).
+//
+// Entries are grouped into logical turns (see logical_turn.go): the turn a
+// live snapshot would have rendered for the same persisted sequence, with one
+// entry ordinal per group, item ordinals numbered across the whole group
+// after call-id merge, and the prelude turn (when the header carries one) at
+// ordinal 0 shifting every group by one.
 func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	var turns []appwire.Turn
-	entryIndexNext := 1
+	var acc logicalTurnAccumulator
+	entryIndex := 0
 	header, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
-		entryIndex := entryIndexNext
-		entryIndexNext++
-		projectEntryIntoTurns(&turns, project, raw, schema.Turn{}, entryIndex)
+		entry, decodeErr := transcript.DecodeEntry(raw)
+		if decodeErr != nil {
+			// The scanner already strictly validated every entry it admits,
+			// so this cannot arise from durable bytes. Returning the error
+			// (rather than skipping the entry) keeps a partial read from
+			// silently dropping history.
+			return fmt.Errorf("decode transcript entry: %w", decodeErr)
+		}
+		entryIndex++
+		appendProjectedEntry(&acc, project, entry.Turn, entryIndex)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	// The prelude turn precedes every entry's turn: the pre-fix reader emitted
-	// it lazily at the first entry visit, which always lands it at position 0
-	// (and alone when the transcript has no entries). Prepending after the
-	// single pass reproduces that order without a second read.
-	if prelude := PreludeTurn(header); prelude != nil {
-		turns = append([]appwire.Turn{*prelude}, turns...)
-	}
-	return turns, nil
+	return groupedAppTurns(&acc, header)
 }
 
 // TurnsFromEntries projects already-decoded transcript entries into AppWire
 // turns. header must be the header of the same transcript the entries came
 // from; it is what the prelude turn is emitted from.
 //
-// It shares TurnsFromFile's per-entry projection exactly, so both forms of
-// the same transcript produce identical turns: same turn ids (the same
-// 1-based entry indexing TurnsFromFile's scan produces), same prelude, same
-// failure/usage/timestamp stamping. Callers that hold only a path must use
-// TurnsFromFile.
+// It shares TurnsFromFile's grouping exactly, so both forms of the same
+// transcript produce identical turns: same turn ids, same prelude, same
+// ordinals and keys. Callers that hold only a path must use TurnsFromFile.
 func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
-	var turns []appwire.Turn
+	var acc logicalTurnAccumulator
 	for i := range entries {
-		projectEntryIntoTurns(&turns, project, nil, entries[i].Turn, i+1)
+		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
-	// Same prelude position as TurnsFromFile: before every entry's turn.
-	if prelude := PreludeTurn(header); prelude != nil {
-		turns = append([]appwire.Turn{*prelude}, turns...)
-	}
-	return turns, nil
-}
-
-// projectEntryIntoTurns is the per-entry step both forms share: turn id,
-// items, failure stamp, timestamp, and usage. TurnsFromFile's scan passes
-// each raw entry, which this helper decodes; TurnsFromEntries passes the
-// already-decoded turn. entryIndex is the entry's 1-based position over the
-// whole scan.
-//
-// The malformed-entry skip is defense-in-depth for callers that pass raw
-// bytes: TurnsFromFile's own scanner aborts the whole read on a malformed
-// entry, so from that path the skip cannot fire. A caller that hands this
-// function raw bytes directly (bypassing the scan) still gets a skip rather
-// than a panic or a partial projection.
-func projectEntryIntoTurns(turns *[]appwire.Turn, project EntryProjector, raw json.RawMessage, turn schema.Turn, entryIndex int) {
-	if raw != nil {
-		// A malformed entry decodes to neither a projection nor a stamp: skip
-		// it rather than projecting partial items from bytes that failed to
-		// decode.
-		entry, decodeErr := transcript.DecodeEntry(raw)
-		if decodeErr != nil {
-			return
-		}
-		turn = entry.Turn
-	}
-	turnID := persistedTurnID(turn, entryIndex)
-	var items []appwire.ThreadItem
-	if project != nil {
-		items = project(turn, turnID, entryIndex)
-	}
-	if len(items) == 0 {
-		return
-	}
-	turnOut := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-	StampTurnFailure(&turnOut, turn)
-	if !turn.Timestamp.IsZero() {
-		startedAt := turn.Timestamp.UnixMilli()
-		turnOut.StartedAt = &startedAt
-	}
-	if usage := appwire.EvenerUsageFromLLM(turn.Usage); usage != nil {
-		turnOut.Usage = usage
-	}
-	*turns = append(*turns, turnOut)
+	return groupedAppTurns(&acc, header)
 }
 
 // persistedTurnID names the turn one persisted entry projects into.
