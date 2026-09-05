@@ -191,17 +191,18 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 		return current, false
 	}
 
+	first := candidates[0].Position
+	if first.Entry > previous.LastPosition.Entry ||
+		(first.Entry == previous.LastPosition.Entry && first.Item > previous.LastPosition.Item) {
+		// A disjoint native window can retain identity through its native token,
+		// but cannot extend an anchored digest across unobserved positions.
+		return current, true
+	}
 	fingerprints := make([]itemSnapshotFingerprint, len(candidates))
 	for index, candidate := range candidates {
 		fingerprints[index] = transcriptItemFingerprint(candidate)
 	}
 	previousTail := previous.FingerprintTail[:int(previous.FingerprintCount)]
-	if fingerprints[0].Position.Entry > previous.LastPosition.Entry ||
-		(fingerprints[0].Position.Entry == previous.LastPosition.Entry && fingerprints[0].Position.Item > previous.LastPosition.Item) {
-		// A disjoint native window can retain identity through its native token,
-		// but cannot extend an anchored digest across unobserved positions.
-		return current, true
-	}
 	maxOverlap := min(len(previousTail), len(fingerprints))
 	overlap := 0
 	matches := 0

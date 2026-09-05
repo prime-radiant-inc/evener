@@ -699,9 +699,6 @@ func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([
 }
 
 func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	var acc logicalTurnAccumulator
 	entryIndex := 0
 	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {

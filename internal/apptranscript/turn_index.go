@@ -219,9 +219,6 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 // LatestFromFileContext returns the newest bounded turn window while honoring
 // ctx cancellation.
 func (c *TurnCache) LatestFromFileContext(ctx context.Context, path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
-	if err := ctx.Err(); err != nil {
-		return nil, "", err
-	}
 	if limit <= 0 {
 		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
@@ -264,9 +261,6 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 // PageFromFileContext returns turns older than cursor while honoring ctx
 // cancellation.
 func (c *TurnCache) PageFromFileContext(ctx context.Context, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
-	if err := ctx.Err(); err != nil {
-		return FilePage{}, err
-	}
 	if limit <= 0 {
 		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
