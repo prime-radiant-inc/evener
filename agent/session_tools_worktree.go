@@ -1164,6 +1164,24 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	if err != nil {
 		return WorktreeResult{}, err
 	}
+	// Steps 1-6 added and locked the lane and wrote its sidecar for a session
+	// that, past any failure below, will never enter it; every such failure
+	// takes them back. The rollback runs on its own bounded control context,
+	// not the request's: the close that refuses the swap has already cancelled
+	// the request context res.Run is bound to, and a rollback through it would
+	// fail silently.
+	entered := false
+	defer func() {
+		if entered {
+			return
+		}
+		run, cancel, err := s.worktreeCleanupRun(res.MainRoot)
+		if err != nil {
+			return
+		}
+		defer cancel()
+		s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name)
+	}()
 
 	// Step 7: creating a new worktree from inside a managed one is a LEAVE of
 	// the old one — unlock it via Decide (spec §3 step 7; §5 EvLeave).
@@ -1173,15 +1191,12 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
 	// A sandbox re-root the host cannot satisfy fails closed here rather than
-	// entering the new worktree unconfined. A swap the session's close refused
-	// takes steps 1-6 back: the lane was added and locked and its sidecar
-	// written for a session that will never enter it.
+	// entering the new worktree unconfined; a swap the session's close refused
+	// fails the same way. Both roll the lane back above.
 	if err := s.enterWorktree(res.Path, true); err != nil {
-		if errors.Is(err, errSwapWhileClosing) {
-			s.rollbackFreshWorktree(res.Run, res.Path, res.Branch, res.MetaDir, name)
-		}
 		return WorktreeResult{}, err
 	}
+	entered = true
 
 	// Step 9: report the path, branch, base SHA, and main repo root.
 	return WorktreeResult{
@@ -1374,6 +1389,20 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 		return nil, err
 	}
 	return s.newWorktreeGitRunner(ctx, controlEnv), nil
+}
+
+// worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
+// the lane close budget the close-time cleanup runners use: a rollback of a
+// refused or failed op must not inherit the request context, which the close
+// that refused the swap has already cancelled. The caller cancels when done.
+func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	run, err := s.worktreeControlRun(ctx, mainRepoRoot)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return run, cancel, nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize

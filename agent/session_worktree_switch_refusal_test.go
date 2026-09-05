@@ -32,7 +32,7 @@ func TestWorktreeSwitch_RefusedMidSwapRestoresThePreviousLocks(t *testing.T) {
 	if _, locked, _ := sr.laneLocked(t, laneA); locked {
 		t.Fatal("lane a is still locked before the switch; the create of b should have left it")
 	}
-	closeDone := armCloseDuringSwap(r)
+	closeDone := armCloseDuringSwap(r, nil)
 
 	_, err = r.switchOp(t, map[string]any{"name": "a"})
 	<-closeDone
