@@ -12,7 +12,7 @@ import { applyViewport, clearViewportOverride, connectPage, createStartupDeadlin
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const WIDTHS = [390, 899, 900];
+const WIDTHS = [320, 390, 899, 900, 1440];
 // The staging cap (attachments/limits.ts MAX_ATTACHMENTS), so the row is
 // measured at the widest the product allows it to get.
 const STAGED_ATTACHMENTS = 8;
@@ -42,6 +42,10 @@ async function measureAt(cdpEndpoint, vitePort, width) {
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await evaluate(send, "window.settledSpawn");
+    const directoryFailures = await evaluate(send, "window.exerciseDirectoryPicker()");
+    if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
     await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
@@ -330,7 +334,7 @@ async function main() {
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(
-          `${width}px ... PASS - Spawn breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
+          `${width}px ... PASS - Spawn directory picker, breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
         );
       } else {
         failed++;
