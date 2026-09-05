@@ -209,14 +209,36 @@ func (s *Session) outstandingEnvWork() []string {
 // before the close cleans the environment, and says what it walked past when
 // the shared close budget expires first.
 //
-// The bound is deliberate, not a gap. Each admission's git runs under the
-// session's own context, which this close cancelled well before reaching here,
-// so the wait is short for anything that honors cancellation; the budget only
-// bites when a process is already ignoring it, and an unbounded fence there
-// would turn one hung git into a daemon that never shuts down. Walking past is
-// the lesser failure — but the cleanup below is about to reap the process table
-// under whatever is still running, which is exactly the kind of thing that must
-// not happen silently, so the warning names it.
+// The two kinds of admission reach this join by different routes:
+//
+//   - A SWAP's refresh runs under the session's own context, which this close
+//     cancelled in its step 2, well before reaching here. It stops on its own.
+//   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
+//     context.Background() with a LaneClosePassBudget of its own, because the
+//     close that refused the swap has already cancelled the request context the
+//     op's runner was bound to, and a rollback through that would fail
+//     silently. Cancelling the close cannot shorten it.
+//
+// So this bound is not a restatement of the rollback's bound: the close budget
+// is one LaneClosePassBudget minted when the close began and partly spent by
+// the time it gets here, while a rollback's is a full LaneClosePassBudget
+// starting later. The join can therefore always expire first. That is accepted
+// rather than fixed by waiting longer, for two reasons. The cascade budget
+// (spec §P0) exists so a whole close is bounded, and this join is a participant
+// in it, not an exception: giving rollback admissions their own full budget
+// would let one refused create roughly double a shutdown, which is the
+// unbounded-fence failure in slower motion. And the gap does not bite in
+// practice — a rollback of a just-created, still-empty lane is three git
+// commands and a sidecar unlink, and only approaches its ceiling when git is
+// already wedged, which is exactly the case the bound exists for. If the two
+// ever do need reconciling, the move is to shorten the ROLLBACK's budget (it
+// cleans up an empty lane; it is not a disposal pass) rather than lengthen the
+// close — a budget change, and its own decision, not something to smuggle in
+// here.
+//
+// Walking past is the lesser failure either way. But the cleanup below is about
+// to reap the process table under whatever is still running, which must not
+// happen silently, so the warning names it.
 func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 	joined := make(chan struct{})
 	go func() {
@@ -407,11 +429,12 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// after that swap returned. Both fork git on the session's shared
 		// process table, and both are work a close CAUSED — walking past them
 		// would tear the environment down mid-command and leave behind the very
-		// lane the rollback was removing. The session context was cancelled in
-		// step 2 above, so an admitted swap's git stops rather than running out
-		// its own timeout; the join is bounded by the shared close budget all
-		// the same. It runs for a child close too (cleanupEnv false): no such
-		// work may outlive the session that admitted it.
+		// lane the rollback was removing. A swap's refresh stops on the session
+		// context cancelled in step 2 above; a rollback is deliberately detached
+		// from it and bounded by a budget of its own, so this join is the
+		// backstop over both (see joinEnvWorkWithinCloseBudget). It runs for a
+		// child close too (cleanupEnv false): no such work may outlive the
+		// session that admitted it.
 		s.joinEnvWorkWithinCloseBudget(budgetCtx)
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
