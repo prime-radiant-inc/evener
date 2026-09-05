@@ -1296,7 +1296,7 @@ export interface ProviderDescriptor {
   name?: string;
   protocol: string;
   auth: string;
-  varsEnv?: string[];
+  varsEnv?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
 }

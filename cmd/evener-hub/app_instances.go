@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 
@@ -59,7 +58,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 				Name:      p.Name,
 				Protocol:  p.Protocol,
 				Auth:      p.Transport.Auth,
-				VarsEnv:   slices.Sorted(maps.Values(p.Transport.VarsEnv)),
+				VarsEnv:   maps.Clone(p.Transport.VarsEnv),
 				APIKeyEnv: append([]string(nil), p.APIKeyEnv...),
 				Implicit:  registry.BoolValue(p.Implicit),
 			})

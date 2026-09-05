@@ -156,12 +156,12 @@ Also in this section:
 
 **Hub behaviour, no code change:** the add dialog lists the provider (with
 a `GOOGLE_VERTEX_EXPRESS_BASE_URL` input it renders for every `vars_env`
-name — optional, and subject to the pre-existing name-mismatch limitation in
-§8, so the environment variable is the working override); after creation the
-instance's `authModes` is `["apiKey"]`, so the sheet offers **Set API key**,
-which stores the key in `credentials.toml` under the instance name and the
-registry reload makes the instance live. This is the exact flow the user
-described as missing.
+name — optional; the dialog submits it under the template key `BASE_URL`,
+so a typed value takes effect (fixed 2026-09-05, roborev round 1)); after
+creation the instance's `authModes` is `["apiKey"]`, so the sheet offers
+**Set API key**, which stores the key in `credentials.toml` under the
+instance name and the registry reload makes the instance live. This is the
+exact flow the user described as missing.
 
 ## 2. Live discovery for `google-vertex` (ADC and stored-credential instances)
 
@@ -400,11 +400,14 @@ recorded per `docs/developing-evener/agentic-testing.md`.
 
 ## 8. Notes and follow-ups
 
-- Observed, out of scope: the hub add dialog keys instance `vars` by the
+- ~~Observed, out of scope: the hub add dialog keys instance `vars` by the
   **environment** variable name (`instanceDialogs.tsx`, `setVars(...[varName])`)
   while the registry looks variables up by **template** name. Identity-mapped
   providers (`google-vertex`) work; a provider whose names differ (`google`:
   `BASE_URL` ↔ `GOOGLE_BASE_URL`) cannot take a typed override. Not touched
-  here; recorded for a separate fix.
+  here; recorded for a separate fix.~~ **Resolved 2026-09-05, roborev round
+  1:** `ProviderDescriptor.VarsEnv` is now a template-name → env-var-name
+  map, and the dialog keys `vars` (and its rendered inputs' ids) by the
+  template name while still labeling by the env name.
 - User OAuth ("Sign in with Google") is the natural next spec if per-user
   credentials or remote hubs without pasteable JSON become a requirement.

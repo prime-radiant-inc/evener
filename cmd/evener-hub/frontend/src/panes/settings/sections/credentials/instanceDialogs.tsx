@@ -9,8 +9,12 @@
 // becomes Base provider over availableProviders, the openai-only API-style
 // radio is gone (Protocol is no longer openai-specific data the form
 // special-cases), and the Add form gains a dynamic Input per the selected
-// provider's VarsEnv name plus api-key-env/credential-header fields
+// provider's VarsEnv entry plus api-key-env/credential-header fields
 // mirroring the CLI's --api-key-env/--credential-header flags (§11.2).
+// VarsEnv maps template placeholder name -> environment variable name
+// (roborev round 1, F3): the input is labeled by the env name (what the
+// docs tell users to set) but keyed by the template name, since that is
+// what the registry actually substitutes.
 import { type FormEvent, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
@@ -59,15 +63,15 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     { value: "", label: "" },
     ...availableProviders.map((p) => ({ value: p.id, label: p.name || p.id })),
   ];
-  const varsEnv = availableProviders.find((p) => p.id === base)?.varsEnv ?? [];
+  const varsEnv = availableProviders.find((p) => p.id === base)?.varsEnv ?? {};
 
   function handleBaseChange(nextBase: string): void {
     setBase(nextBase);
     setVars({}); // a var input from the previous base must not leak into the new one
   }
 
-  function updateVar(varName: string, value: string): void {
-    setVars((current) => ({ ...current, [varName]: value }));
+  function updateVar(template: string, value: string): void {
+    setVars((current) => ({ ...current, [template]: value }));
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -137,16 +141,18 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
             disabled={busy}
           />
         </FormRow>
-        {varsEnv.map((varName) => (
-          <FormRow key={varName} label={varName} htmlFor={`add-instance-var-${varName}`}>
-            <Input
-              id={`add-instance-var-${varName}`}
-              value={vars[varName] ?? ""}
-              onChange={(event) => updateVar(varName, event.target.value)}
-              disabled={busy}
-            />
-          </FormRow>
-        ))}
+        {Object.entries(varsEnv)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([template, envName]) => (
+            <FormRow key={template} label={envName} htmlFor={`add-instance-var-${template}`}>
+              <Input
+                id={`add-instance-var-${template}`}
+                value={vars[template] ?? ""}
+                onChange={(event) => updateVar(template, event.target.value)}
+                disabled={busy}
+              />
+            </FormRow>
+          ))}
         <FormRow label="API key environment variable (optional)" htmlFor="add-instance-apikeyenv">
           <Input
             id="add-instance-apikeyenv"

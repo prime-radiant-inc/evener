@@ -2601,15 +2601,18 @@ type InstanceEntry struct {
 
 // ProviderDescriptor is a registry provider the add form can build on: its
 // id and display name, the protocol and auth scheme it defaults to, and the
-// variable names its transport and credential read.
+// variables its transport and credential read. VarsEnv maps a template
+// placeholder name to the environment variable name it is fed by (the same
+// shape as registry.Transport.VarsEnv), so a typed override can be sent
+// keyed by the name the registry actually substitutes.
 type ProviderDescriptor struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name,omitempty"`
-	Protocol  string   `json:"protocol"`
-	Auth      string   `json:"auth"`
-	VarsEnv   []string `json:"varsEnv,omitempty"`
-	APIKeyEnv []string `json:"apiKeyEnv,omitempty"`
-	Implicit  bool     `json:"implicit"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name,omitempty"`
+	Protocol  string            `json:"protocol"`
+	Auth      string            `json:"auth"`
+	VarsEnv   map[string]string `json:"varsEnv,omitempty"`
+	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
+	Implicit  bool              `json:"implicit"`
 }
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics

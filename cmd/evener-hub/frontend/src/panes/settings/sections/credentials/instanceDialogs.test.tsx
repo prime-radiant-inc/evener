@@ -41,15 +41,20 @@ const VERTEX = provider({
   id: "google-vertex-anthropic",
   protocol: "anthropic",
   auth: "gcp-adc",
-  varsEnv: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+  varsEnv: { GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT", GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION" },
 });
-const BEDROCK = provider({ id: "amazon-bedrock", protocol: "anthropic", auth: "gcp-adc", varsEnv: ["AWS_REGION"] });
+const BEDROCK = provider({
+  id: "amazon-bedrock",
+  protocol: "anthropic",
+  auth: "gcp-adc",
+  varsEnv: { AWS_REGION: "AWS_REGION" },
+});
 const VERTEX_EXPRESS = provider({
   id: "google-vertex-express",
   protocol: "google",
   auth: "header",
   apiKeyEnv: ["GOOGLE_VERTEX_API_KEY"],
-  varsEnv: ["GOOGLE_VERTEX_EXPRESS_BASE_URL"],
+  varsEnv: { BASE_URL: "GOOGLE_VERTEX_EXPRESS_BASE_URL" },
 });
 
 beforeEach(() => {
@@ -105,6 +110,28 @@ describe("AddInstanceDialog", () => {
     expect(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL")).toBeTruthy();
     expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
     expect(screen.queryByLabelText("GOOGLE_VERTEX_LOCATION")).toBeNull();
+  });
+
+  test("google-vertex-express's base-URL override is sent under its template key, not the env var name", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/create", (params) => {
+      expect(params).toEqual({
+        name: "vertex-express",
+        base: "google-vertex-express",
+        baseUrl: "",
+        vars: { BASE_URL: "https://example.test/v1" },
+      });
+      return { instances: [], availableProviders: [] };
+    });
+    const user = userEvent.setup();
+    render(
+      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
+    await user.type(screen.getByLabelText("Name"), "vertex-express");
+    await user.type(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL"), "https://example.test/v1");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
 
   test("switching base providers clears the previous base's variable inputs and values", async () => {
