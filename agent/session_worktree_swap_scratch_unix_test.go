@@ -325,7 +325,7 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
-	r.s.cfg.testOnly.swapEnvAfterAdopt = func() {
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
 		go func() {
 			defer close(closeDone)
 			r.s.Close()

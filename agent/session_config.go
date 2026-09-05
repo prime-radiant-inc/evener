@@ -498,9 +498,10 @@ type testConfig struct {
 
 	// swapEnvAfterAdopt observes the point in swapEnvAndRefresh just after the
 	// session's scratch moved onto the next environment and before the refresh
-	// and install, so a test can begin a close in that window. Nil in
-	// production.
-	swapEnvAfterAdopt func()
+	// and install, so a test can begin a close in that window. It receives the
+	// context the refresh's git runs under, so a test can also assert that a
+	// close cancels that work. Nil in production.
+	swapEnvAfterAdopt func(refreshCtx context.Context)
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned, so a test can begin a close there and

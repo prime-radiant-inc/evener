@@ -11,17 +11,23 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
-// armCloseDuringSwap makes the next environment swap on r.s run the session's
-// close to completion between the scratch move and the install, so the swap
-// is refused and its caller has to undo the git changes it already made.
-// before, when non-nil, runs in that window first (a test cancels the request
-// context there, as the close's own cancel does). The returned channel closes
-// when that close has finished.
+// armCloseDuringSwap begins the session's close between the next environment
+// swap's scratch move and its install, so the swap is refused and its caller
+// has to undo the git changes it already made. before, when non-nil, runs in
+// that window first (a test cancels the request context there, as the close's
+// own cancel does). The returned channel closes when that close has finished,
+// which every caller waits for before asserting.
+//
+// The window ends once the close has set `closing` and passed its dispose and
+// sweep joins — not once the close has finished. Close waits for an admitted
+// swap before it cleans the environment (swapEnvAndRefresh), so a hook holding
+// the swap until the close returned would hold it for the whole close budget
+// and then trip that join's give-up warning.
 func armCloseDuringSwap(r *wtRepo, before func()) <-chan struct{} {
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
-	r.s.cfg.testOnly.swapEnvAfterAdopt = func() {
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
 		if before != nil {
 			before()
 		}
@@ -30,7 +36,6 @@ func armCloseDuringSwap(r *wtRepo, before func()) <-chan struct{} {
 			r.s.Close()
 		}()
 		<-closeBegun
-		<-closeDone
 	}
 	return closeDone
 }

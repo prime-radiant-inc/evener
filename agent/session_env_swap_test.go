@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,4 +339,66 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	})
 
 	wg.Wait()
+}
+
+// closeDuringRefreshProbe bounds the window the test below gives a close to
+// reach environment cleanup while it holds an admitted swap. It only has to
+// cover a scripted close's teardown (tens of milliseconds); the probe is spent
+// on every passing run, so it is as short as that margin allows.
+const closeDuringRefreshProbe = 2 * time.Second
+
+// A swap that passed its closing check is admitted: the session promised to
+// finish it. Its refresh then runs git on the environment it is installing —
+// forks on the process table the session's own close reaps — so a close that
+// walks past an admitted swap tears the environment down while those commands
+// are still starting, on contexts it never gets to cancel.
+//
+// Close therefore waits for every admitted swap before it cleans the
+// environment, and the refresh runs under the session's own context so the
+// close's cancel makes that wait short rather than a full close budget.
+//
+// The hook below holds the swap in exactly the window step 1's git occupies:
+// admitted, past the scratch move, with the install still to come.
+func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	cleanupObserved := make(chan struct{})
+	var refreshLiveAfterClose, cleanupDuringRefresh atomic.Bool
+
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(refreshCtx context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// The close cancels the session context before any teardown, so by here
+		// the refresh is already cancelled: its git stops instead of forking
+		// onto a process table the close is about to reap.
+		if refreshCtx.Err() == nil {
+			refreshLiveAfterClose.Store(true)
+		}
+		select {
+		case <-cleanupObserved:
+			cleanupDuringRefresh.Store(true)
+		case <-time.After(closeDuringRefreshProbe):
+		}
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	if refreshLiveAfterClose.Load() {
+		t.Error("the refresh context was still live after the session began closing: the close cannot stop the git the refresh forks")
+	}
+	if cleanupDuringRefresh.Load() {
+		t.Error("the close cleaned the session's environment while an admitted swap was still in flight")
+	}
 }

@@ -42,15 +42,23 @@ func SetGitExecTimeoutForTesting(d time.Duration) (restore func()) {
 // with a short timeout. The fallback resolves symlinks and sanity-checks that
 // the reported root is a prefix of cwd.
 func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
+	return GitRootOrEmptyContext(context.Background(), env, cwd)
+}
+
+// GitRootOrEmptyContext is GitRootOrEmpty under the caller's work context:
+// cancelling ctx stops the `git rev-parse` fallback instead of leaving it to
+// run out its own timeout. Callers whose work must stop when their session
+// closes use this; the rest keep the shorter spelling.
+func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd string) string {
 	// Memoize per environment: a session resolves the git root several times at
 	// init, all on the same env and cwd, so fork `git rev-parse` once.
 	if local, ok := env.(*LocalExecutionEnvironment); ok && local.gitRoots != nil {
-		return local.gitRoots.lookup(cwd, func() string { return gitRootUncached(env, cwd) })
+		return local.gitRoots.lookup(cwd, func() string { return gitRootUncached(ctx, env, cwd) })
 	}
-	return gitRootUncached(env, cwd)
+	return gitRootUncached(ctx, env, cwd)
 }
 
-func gitRootUncached(env ExecutionEnvironment, cwd string) string {
+func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) string {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
 		if root, ok := structuralWorktreeRoot(cwd); ok {
 			return root
@@ -60,10 +68,10 @@ func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
 	defer cancel()
 
-	res, err := RunGit(ctx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
+	res, err := RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}

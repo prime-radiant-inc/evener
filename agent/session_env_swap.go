@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -40,6 +41,14 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // and returns errSwapWhileClosing for the op to surface. Both `closing` and the
 // install are written under s.mu, so one of the two always sees the other.
 //
+// A swap that passes that first check is ADMITTED: it registers on envSwapWG
+// under the same s.mu hold that read `closing` (the beginDispose idiom), so the
+// Add happens-before Close()'s join, and Close waits for it before cleaning the
+// environment. Without that wait a close walks past the refusal it just caused
+// and reaps the process table while step 1's git is still forking on it, on
+// contexts the close never reaches. The refusal alone is not enough: it lands at
+// step 2, AFTER those commands have run.
+//
 // record, when non-nil, runs under the same s.mu hold that installs next, so
 // the session's worktree occupancy — above all the environment an enter parks
 // (worktreeRestoreEnv), whose scratch close retains — is published atomically
@@ -59,15 +68,25 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
+	if !closing {
+		s.envSwapWG.Add(1)
+	}
 	s.mu.Unlock()
 	if closing {
 		return errSwapWhileClosing
 	}
+	defer s.envSwapWG.Done()
 	if current != nil {
 		next.AdoptSessionScratch(current)
 	}
+	// Step 0b — the context step 1's git runs under. Every command below forks
+	// on the process table the session's close reaps, so none of them may
+	// outlive that close: the refresh context is the session's own, which the
+	// close cancels before it waits here and cleans the environment.
+	refreshCtx, cancelRefresh := context.WithCancel(s.sessionContext())
+	defer cancelRefresh()
 	if hook := s.cfg.testOnly.swapEnvAfterAdopt; hook != nil {
-		hook()
+		hook(refreshCtx)
 	}
 
 	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
@@ -83,18 +102,18 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(next, newWD); inRepo {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(refreshCtx, next, newWD); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
 			ei.GitRecentCommitTitles = commits
-			ei.GitOriginURL = gitOriginURL(next, newWD)
+			ei.GitOriginURL = gitOriginURL(refreshCtx, next, newWD)
 		}
 	}
 	if !s.cfg.NoProjectPrompts {
 		// Pre-warm next's git-root cache; see the lock-order comment above.
-		_ = execenv.GitRootOrEmpty(next, newWD)
+		_ = execenv.GitRootOrEmptyContext(refreshCtx, next, newWD)
 	}
 
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are

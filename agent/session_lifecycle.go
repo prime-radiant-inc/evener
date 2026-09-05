@@ -297,6 +297,17 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
 		}
 
+		// Join the environment swaps admitted before `closing` was set. A swap's
+		// refresh forks git on the session's shared process table, and a swap
+		// admitted a moment before this close still has to reach its own step-2
+		// refusal — walking past it would leave those commands running on an
+		// environment the cleanup below has already torn down. The session
+		// context was cancelled in step 2 above, so an admitted swap's git stops
+		// rather than running out its own timeout; the join is bounded by the
+		// shared close budget all the same. It runs for a child close too
+		// (cleanupEnv false): no swap may outlive the session that admitted it.
+		s.joinWithinCloseBudget(budgetCtx, &s.envSwapWG, "in-flight environment swaps")
+
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
