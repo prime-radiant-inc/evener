@@ -175,11 +175,11 @@ export function Composer({ ref }: ComposerProps) {
   // still clear the composer (only if unchanged since THAT read, mirroring
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
-  const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number> } | null>(null);
-  // Invalidates the post-request cleanup captured by a submit that predates a
-  // canonical goal replacement. In particular, old marker ids may be reused
-  // after attachments.reset(), so stale cleanup must not strip new content.
-  const submissionVersionRef = useRef(0);
+  const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number>; revision: number } | null>(null);
+  // Tracks edits within this mount, including recovery drafts whose persistence
+  // writes can finish without an edit. Commit notifications only update the
+  // display; they must still let this mount remove its submitted attachments.
+  const draftEditRevisionRef = useRef(0);
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -307,6 +307,14 @@ export function Composer({ ref }: ComposerProps) {
     setText(nextText);
   }, []);
 
+  const editText = useCallback(
+    (nextText: string): void => {
+      draftEditRevisionRef.current += 1;
+      updateText(nextText);
+    },
+    [updateText],
+  );
+
   useLayoutEffect(() => {
     mountedRef.current = true;
     // Re-read at subscription time so a commit between render and mount
@@ -355,7 +363,7 @@ export function Composer({ ref }: ComposerProps) {
       cursor: cursorToRestoreRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
     }),
     write: (nextText, cursor) => {
-      updateText(nextText);
+      editText(nextText);
       if (activeRecoveryIdRef.current === null) writeDraft(ref, nextText);
       cursorToRestoreRef.current = cursor;
     },
@@ -377,7 +385,6 @@ export function Composer({ ref }: ComposerProps) {
     setSlashToken(null);
     setSlashHighlighted(0);
     lastDrainSnapshotRef.current = null;
-    submissionVersionRef.current += 1;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
@@ -499,7 +506,7 @@ export function Composer({ ref }: ComposerProps) {
     const recovered = recoveryComposerDraft(record);
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(record.clientMutationId);
-    updateText(recovered.text);
+    editText(recovered.text);
     attachments.replaceWithSettled(recovered.attachments);
     clearDraft(ref);
     cursorToRestoreRef.current = recovered.text.length;
@@ -510,7 +517,7 @@ export function Composer({ ref }: ComposerProps) {
     recoveryEntries,
     ref,
     setActiveRecoveryId,
-    updateText,
+    editText,
   ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
@@ -744,7 +751,7 @@ export function Composer({ ref }: ComposerProps) {
   const followUpEngaged = followUpFocused || hasContent;
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
-    updateText(event.target.value);
+    editText(event.target.value);
     if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
@@ -775,45 +782,25 @@ export function Composer({ ref }: ComposerProps) {
     textareaRef.current?.focus();
   }
 
-  // clearIfUnchanged mirrors clearComposerDraftIfUnchanged (parity-m5-
-  // composer.md §A): reads textRef.current, not `submittedText` (a `const`
-  // closed over by this async handler at call time, which never changes
-  // after that point regardless of later renders) - textRef.current is
-  // kept synchronously current by updateText() regardless of which
-  // render's closure this particular submitAction call started from.
-  function clearIfUnchanged(submittedText: string): void {
+  // Equal text can belong to a newer edit, including a reused image marker.
+  // A commit notification may already have cleared the display without editing
+  // the draft; its original attachment cleanup still belongs to this revision.
+  function clearIfUnchanged(submittedText: string, submittedRevision: number): boolean {
+    if (!mountedRef.current || draftEditRevisionRef.current !== submittedRevision) return false;
     if (textRef.current === submittedText) {
       updateText("");
       clearDraft(ref);
     }
+    return true;
   }
 
-  // handleDrainSuccess is QueueStrip's own onDrainSuccess seam (its "Steer
-  // now" button, a SEPARATE trigger from this component's own classic
-  // steer/drain path below): mirrors the legacy "the textarea clears" rule
-  // after the drain is durably recorded, gated the SAME way
-  // clearIfUnchanged gates this
-  // component's own drain path - only if the text is unchanged since the
-  // drain was TRIGGERED (lastDrainSnapshotRef, populated by getComposerText
-  // below at the moment QueueStrip actually read it), not unconditionally.
-  // QueueStripProps.onDrainSuccess itself takes no arguments, so this ref is
-  // the seam's own way of recovering a submitted-snapshot to compare
-  // against - see w5-integration-wiring-report.md Concern #2, previously an
-  // unconditional clear that could silently discard an edit made while the
-  // strip's own drain request was still in flight.
+  // QueueStrip captures this mount's payload and edit revision through
+  // getComposerText before it starts the drain's durable write.
   function handleDrainSuccess(): void {
-    if (!mountedRef.current) return;
     const snapshot = lastDrainSnapshotRef.current;
-    if (snapshot === null) return; // defensive only: onDrainSuccess never fires without a prior getComposerText() call
-    if (textRef.current === snapshot.text) {
-      updateText("");
-      clearDraft(ref);
+    if (snapshot && clearIfUnchanged(snapshot.text, snapshot.revision)) {
+      attachments.clearSubmitted(snapshot.markers);
     }
-    // Unconditional, like submitAction's own clearSubmitted call below: safe
-    // regardless of the text-unchanged check above, since it only ever
-    // removes the SPECIFIC markers this drain's own snapshot captured - an
-    // attachment staged after that snapshot survives untouched either way.
-    attachments.clearSubmitted(snapshot.markers);
   }
 
   // restoreTextToComposer implements the shared "put text back into the
@@ -853,7 +840,7 @@ export function Composer({ ref }: ComposerProps) {
       recoveryOwnsLocalDraftRef.current = true;
       setActiveRecoveryId(record.clientMutationId);
     }
-    updateText(merged.text);
+    editText(merged.text);
     attachments.replaceWithSettled(merged.attachments);
     cursorToRestoreRef.current = merged.text.length;
     textareaRef.current?.focus();
@@ -886,14 +873,14 @@ export function Composer({ ref }: ComposerProps) {
   // image missing (toInputAttachments() itself only ever filters incomplete
   // items without signaling it - see that function's own doc comment) - see
   // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text + the currently-staged marker set) so
+  // lastDrainSnapshotRef (text, edit revision, and the currently-staged marker set) so
   // handleDrainSuccess can later tell whether the composer changed between
   // THIS read and the drain actually resolving - QueueStrip only ever calls
   // this once per handleDrain invocation, immediately before starting the
   // request, so the snapshot always reflects exactly what that drain sent.
   function getComposerText() {
     const markers = new Set(attachments.items.map((item) => item.marker));
-    lastDrainSnapshotRef.current = { text: textRef.current, markers };
+    lastDrainSnapshotRef.current = { text: textRef.current, markers, revision: draftEditRevisionRef.current };
     return {
       text: textRef.current,
       attachments: attachments.toInputAttachments(),
@@ -921,7 +908,7 @@ export function Composer({ ref }: ComposerProps) {
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = textRef.current;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
-    const submissionVersion = submissionVersionRef.current;
+    const submittedRevision = draftEditRevisionRef.current;
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
@@ -955,10 +942,9 @@ export function Composer({ ref }: ComposerProps) {
         recoveryOwnsLocalDraftRef.current = false;
         setActiveRecoveryId(null);
         if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-        if (textRef.current !== submittedText) writeDraft(ref, textRef.current);
+        if (draftEditRevisionRef.current !== submittedRevision) writeDraft(ref, textRef.current);
       }
-      if (submissionVersionRef.current === submissionVersion) {
-        clearIfUnchanged(submittedText);
+      if (clearIfUnchanged(submittedText, submittedRevision)) {
         attachments.clearSubmitted(submittedMarkers);
       }
     } catch {
@@ -983,6 +969,7 @@ export function Composer({ ref }: ComposerProps) {
   // while the RPC was still in flight.
   async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
     const submittedText = textRef.current;
+    const submittedRevision = draftEditRevisionRef.current;
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
@@ -995,7 +982,7 @@ export function Composer({ ref }: ComposerProps) {
     };
     const outcome = await runBuiltinCommand(match, ctx);
     setBusyAction(null);
-    if (outcome.ok) clearIfUnchanged(submittedText);
+    if (outcome.ok) clearIfUnchanged(submittedText, submittedRevision);
     // On failure: the draft is left exactly as typed (clearIfUnchanged is
     // simply never called) - runBuiltinCommand has already toasted why.
   }

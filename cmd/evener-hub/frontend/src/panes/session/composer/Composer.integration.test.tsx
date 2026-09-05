@@ -382,75 +382,86 @@ test("a second message queues behind a committed start even when recovery projec
 });
 
 test.each([
-  { edited: false, fromStrip: false },
-  { edited: true, fromStrip: false },
-  { edited: false, fromStrip: true },
-  { edited: true, fromStrip: true },
-  { edited: "same", fromStrip: false },
-  { edited: "same", fromStrip: true },
-])("a pending submission survives a composer remount ($edited, $fromStrip)", async ({ edited, fromStrip }) => {
-  const fake = await mountComposer(
-    "ref_a",
-    fromStrip
-      ? {
-          evener: {
-            ref: "ref_a",
-            capabilities: FULL_CAPABILITIES,
-            activeTurnId: "turn_1",
-            queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
-          },
-        }
-      : {},
-  );
-  const method = fromStrip ? "turn/drainAsSteer" : "turn/steer";
-  const actionButton = fromStrip ? drainButton : composerSteerButton;
-  fake.on(method, (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thr_ref_a",
-      projectionState: "reflected",
-    },
-  }));
-  await flushPendingTurnsProjectionForTests();
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let announceCommit: (() => void) | undefined;
-  const committed = new Promise<void>((resolve) => {
-    announceCommit = resolve;
-  });
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => announceCommit?.());
-    }
-    return transaction;
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  try {
-    await act(async () => {
-      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
-      fireEvent.click(actionButton());
-      await committed;
-    });
-    cleanup();
-    render(<Composer ref="ref_a" />);
-    expect(actionButton().disabled).toBe(true);
-    fireEvent.click(actionButton());
-    if (edited) fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "new draft" } });
-    if (edited === "same")
-      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
-  } finally {
-    await act(async () => hold?.release());
-    vi.useRealTimers();
+  { edited: false, fromStrip: false, remount: true },
+  { edited: false, fromStrip: false, remount: false },
+  { edited: true, fromStrip: false, remount: true },
+  { edited: true, fromStrip: false, remount: false },
+  { edited: false, fromStrip: true, remount: true },
+  { edited: false, fromStrip: true, remount: false },
+  { edited: true, fromStrip: true, remount: true },
+  { edited: true, fromStrip: true, remount: false },
+  { edited: "same", fromStrip: false, remount: true },
+  { edited: "same", fromStrip: false, remount: false },
+  { edited: "same", fromStrip: true, remount: true },
+  { edited: "same", fromStrip: true, remount: false },
+])(
+  "pending submissions preserve draft ownership ($edited, strip $fromStrip, remount $remount)",
+  async ({ edited, fromStrip, remount }) => {
+    const fake = await mountComposer(
+      "ref_a",
+      fromStrip
+        ? {
+            evener: {
+              ref: "ref_a",
+              capabilities: FULL_CAPABILITIES,
+              activeTurnId: "turn_1",
+              queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+            },
+          }
+        : {},
+    );
+    const method = fromStrip ? "turn/drainAsSteer" : "turn/steer";
+    const actionButton = fromStrip ? drainButton : composerSteerButton;
+    fake.on(method, (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
     await flushPendingTurnsProjectionForTests();
-  }
-  const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
-  expect(textarea()?.value).toBe(expectedDraft);
-  expect(readDraft("ref_a")).toBe(expectedDraft);
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
-});
+    const transact = IDBDatabase.prototype.transaction;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let announceCommit: (() => void) | undefined;
+    const committed = new Promise<void>((resolve) => {
+      announceCommit = resolve;
+    });
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+        hold = holdIndexedDBEvent(transaction, "complete");
+        void hold.reached.then(() => announceCommit?.());
+      }
+      return transaction;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await act(async () => {
+        fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
+        fireEvent.click(actionButton());
+        await committed;
+      });
+      if (remount) {
+        cleanup();
+        render(<Composer ref="ref_a" />);
+      }
+      expect(actionButton().disabled).toBe(true);
+      fireEvent.click(actionButton());
+      if (edited) fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "new draft" } });
+      if (edited === "same")
+        fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
+    } finally {
+      await act(async () => hold?.release());
+      vi.useRealTimers();
+      await flushPendingTurnsProjectionForTests();
+    }
+    const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
+    expect(textarea()?.value).toBe(expectedDraft);
+    expect(readDraft("ref_a")).toBe(expectedDraft);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+  },
+);
 
 test.each(["storage", "composer"] as const)(
   "a throwing %s subscriber cannot fail a committed submission",
