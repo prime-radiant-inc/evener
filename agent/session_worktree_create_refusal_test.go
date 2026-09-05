@@ -133,8 +133,7 @@ func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
 	r := sr.wt()
 	path, sidecar := createLaneExpectations(t, r, "lane")
 	boom := errors.New("injected enter failure")
-	worktreeSeams.Store(r.s, worktreeTestSeams{enterWorktree: func(string, bool) error { return boom }})
-	t.Cleanup(func() { worktreeSeams.Delete(r.s) })
+	installWorktreeSeams(t, r.s, worktreeTestSeams{enterWorktree: func(string, bool) error { return boom }})
 
 	_, err := r.s.worktreeCreate(context.Background(), "lane", "")
 

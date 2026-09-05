@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -1177,6 +1178,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 		}
 		run, cancel, err := s.worktreeCleanupRun(res.MainRoot)
 		if err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, err)})
 			return
 		}
 		defer cancel()
@@ -1243,22 +1245,17 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 	if project.ID == "" || project.CanonicalPath == "" {
 		return
 	}
-	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		return
-	}
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
 	if err != nil {
 		return
 	}
-	controlEnv := active.WithWorkingDirectory(project.CanonicalPath)
-	if controlEnv.SandboxReRootError() != nil {
-		return // best-effort: cannot build a confined control env for this lane
+	// Best-effort: a control env the host cannot confine or a control policy it
+	// cannot satisfy skips the rollback rather than running it unscoped.
+	run, cancel, err := s.worktreeCleanupRun(project.CanonicalPath)
+	if err != nil {
+		return
 	}
-	if err := s.useWorktreeControlPolicy(controlEnv, project.CanonicalPath); err != nil {
-		return // best-effort: skip when the control policy is unsatisfiable
-	}
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	defer cancel()
 	s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
 }
 
@@ -1266,9 +1263,8 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 // managed worktree: its lock, the worktree itself, the branch cut for it, and
 // its metadata sidecar under metaDir. It is the git-level core
 // rollbackFreshDelegateWorktree wraps for an isolation lane and worktreeCreate
-// uses when the session's own close refuses the swap into the lane it just
-// added. Errors are swallowed for the reason rollbackFreshDelegateWorktree
-// gives.
+// uses on every failure after its core added the lane. Errors are swallowed
+// for the reason rollbackFreshDelegateWorktree gives.
 func (s *Session) rollbackFreshWorktree(run worktree.GitRunner, lanePath, branch, metaDir, sidecarName string) {
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
@@ -1392,9 +1388,11 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
-// the lane close budget the close-time cleanup runners use: a rollback of a
-// refused or failed op must not inherit the request context, which the close
-// that refused the swap has already cancelled. The caller cancels when done.
+// LaneClosePassBudget — the budget the close disposal pass spends
+// (session_worktree_close.go); the close-time cleanup runners themselves are
+// deliberately unbudgeted. A rollback of a refused or failed op must not
+// inherit the request context, which the close that refused the swap has
+// already cancelled. The caller cancels when done.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
 	run, err := s.worktreeControlRun(ctx, mainRepoRoot)
@@ -1578,6 +1576,7 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 			}
 			unlock, cancel, err := s.worktreeCleanupRun(st.mainRepoRoot)
 			if err != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, err)})
 				return
 			}
 			defer cancel()

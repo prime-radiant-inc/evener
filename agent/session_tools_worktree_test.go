@@ -39,6 +39,13 @@ func TestWorktreeRootResolutionErrorDoesNotSelectFallbackIdentity(t *testing.T) 
 	}
 }
 
+// installWorktreeSeams registers test seams for s for the rest of the test.
+func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
+	t.Helper()
+	worktreeSeams.Store(s, seams)
+	t.Cleanup(func() { worktreeSeams.Delete(s) })
+}
+
 func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T) {
 	root := t.TempDir()
 	stateDir := t.TempDir()
@@ -47,15 +54,12 @@ func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T
 	lanePath := filepath.Join(t.TempDir(), "alternate-project", "delegate")
 
 	var gotMetaDir string
-	worktreeSeams.Store(s, worktreeTestSeams{
+	installWorktreeSeams(t, s, worktreeTestSeams{
 		useControlPolicy: func(*execenv.LocalExecutionEnvironment, string) error { return nil },
 		deleteSidecar: func(dir, _ string) error {
 			gotMetaDir = dir
 			return nil
 		},
-	})
-	t.Cleanup(func() {
-		worktreeSeams.Delete(s)
 	})
 	s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
 		return func(...string) (string, error) { return "", nil }
