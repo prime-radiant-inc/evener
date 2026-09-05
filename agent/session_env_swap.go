@@ -22,6 +22,19 @@ import "primeradiant.com/evener/agent/execenv"
 // daemon's uptime. (resumeWorktreeReentry makes the same move for the swap it
 // performs before this helper can run.)
 func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
+	// Step 0 — move the session's scratch onto next BEFORE any command runs on
+	// it: the git snapshot and the pre-warm below spawn through next, and a
+	// command is what mints a scratch on an environment that owns none. Adopting
+	// after them would find next already owning a fresh one, keep it, and retain
+	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an
+	// extra retained directory per enter.
+	s.mu.Lock()
+	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
+	s.mu.Unlock()
+	if current != nil {
+		next.AdoptSessionScratch(current)
+	}
+
 	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
 	// pre-warm next's git-root cache. The git snapshot forks several `git`
 	// subprocesses and `git status` can take seconds on a big repo; s.mu must
@@ -55,9 +68,6 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// hits the cache instead of forking.
 	s.mu.Lock()
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
-	if current, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
-		next.AdoptSessionScratch(current)
-	}
 	s.env = next
 	s.envInfo = ei
 	s.rebuildToolDefsCache()

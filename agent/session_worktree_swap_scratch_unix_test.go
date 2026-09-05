@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -239,5 +240,63 @@ func TestParentCloseWhileEnteredRetainsTheParkedEnvironmentScratch(t *testing.T)
 	}
 	if len(cleaned) != 1 || cleaned[0] != execenv.ExecutionEnvironment(entered) {
 		t.Errorf("Cleanup ran on %d environment(s) %v, want exactly once on the current clone %p", len(cleaned), cleaned, entered)
+	}
+}
+
+// retainedScratchDirsIn lists the session scratch dirs under base whose lease
+// is no longer held: the ones some environment retained for a handoff.
+func retainedScratchDirsIn(t *testing.T, base string) []string {
+	t.Helper()
+	found, err := filepath.Glob(filepath.Join(base, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatalf("glob session scratch dirs: %v", err)
+	}
+	var retained []string
+	for _, dir := range found {
+		if !scratchLeaseHeld(t, dir) {
+			retained = append(retained, dir)
+		}
+	}
+	return retained
+}
+
+// The swap's git snapshot and prompt pre-warm run commands on the entered
+// clone before it is installed, and a command is what mints a scratch on an
+// environment that owns none. The clone has to adopt the session's scratch
+// before any of that runs, or the snapshot mints a fresh one, the adoption
+// keeps it (the clone now owns one) and retains the session's original, and
+// the enter silently changes $EVENER_SCRATCH_DIR while leaving an extra
+// retained directory behind.
+func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+	cfg := worktreeTestSessionConfig()
+	cfg.testOnly.skipGitSnapshot = false
+	r := newWorktreeRepoWithConfig(t, cfg)
+	launch := currentLocalEnv(t, r.s)
+	// The session's own snapshot at construction minted the launch scratch.
+	scratch := launch.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the session's construction snapshot minted no scratch on the launch environment")
+	}
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatal("the launch environment's scratch lease is not held")
+	}
+	if got := retainedScratchDirsIn(t, isolated); len(got) != 0 {
+		t.Fatalf("retained scratch dirs before the enter = %v, want none", got)
+	}
+
+	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if got := currentLocalEnv(t, r.s).SessionScratchDir(); got != scratch {
+		t.Errorf("the enter changed the session's scratch from %q to %q", scratch, got)
+	}
+	if !scratchLeaseHeld(t, scratch) {
+		t.Errorf("the session's scratch %s lease was released by the enter", scratch)
+	}
+	if got := retainedScratchDirsIn(t, isolated); len(got) != 0 {
+		t.Errorf("the enter left retained scratch dirs %v behind, want none", got)
 	}
 }
