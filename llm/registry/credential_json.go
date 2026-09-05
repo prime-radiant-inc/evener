@@ -52,12 +52,16 @@ func CheckCredentialJSON(raw []byte) error {
 	if !AllowedCredentialJSONTypes[t] {
 		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", t)
 	}
-	// A type came back, so raw is a JSON object and this decode cannot fail.
-	var fields map[string]any
-	_ = json.Unmarshal(raw, &fields)
+	// Raw messages, so an unrelated field Go cannot represent (a number past
+	// float64) does not decide the verdict; only the required fields are read.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("credential JSON: %w", err)
+	}
 	var missing []string
 	for _, name := range requiredCredentialJSONFields[t] {
-		if s, ok := fields[name].(string); !ok || s == "" {
+		var s string
+		if json.Unmarshal(fields[name], &s) != nil || s == "" {
 			missing = append(missing, name)
 		}
 	}

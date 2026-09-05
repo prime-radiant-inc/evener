@@ -47,6 +47,11 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "missing private_key",
 		},
 		{
+			name: "service_account with an unrelated field Go cannot represent",
+			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key","x":1e999}`,
+			want: "",
+		},
+		{
 			name: "empty object",
 			raw:  `{}`,
 			want: `no "type"`,
