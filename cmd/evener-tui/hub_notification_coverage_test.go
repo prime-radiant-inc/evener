@@ -33,6 +33,9 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// Transcript display defaults configure the Web UI's projector. The TUI has
 	// its own transcript renderer and no matching live/default settings surface.
 	appwire.NotifyEvenerSettingsTranscriptDisplayChanged,
+	// Keybinding overrides configure the Web UI's dispatcher. The TUI has its
+	// own input handling and no remappable-binding surface.
+	appwire.NotifyEvenerSettingsKeybindingsChanged,
 }
 
 // kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored

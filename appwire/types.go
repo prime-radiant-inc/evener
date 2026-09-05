@@ -527,6 +527,7 @@ type FeatureSet struct {
 	DirectoryComplete         bool `json:"directoryComplete"`
 	Auth                      bool `json:"auth"`
 	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings,omitempty"`
+	KeybindingsSettings       bool `json:"keybindingsSettings,omitempty"`
 }
 
 type Thread struct {
