@@ -50,7 +50,9 @@ behavioral verification, including errors, authorization, and hub isolation.
   `.superpowers/sdd/2026-09-05-native-session-creation/standalone-runtime.md`
   record real isolated hub + scripted provider creation on iOS and Android.
   iOS send/steer/queue/stop manual evidence predates final hydration-race fixes;
-  Android running-turn action verification remains incomplete. These are
+  Android basic send/steer/queue/stop were subsequently exercised on the installed
+  release APK; see [artifact identity and observations](../../design/mobile/android-runtime-evidence.md).
+  Complete final-head and lifecycle coverage remains outstanding. These are
   historical observations, not freshly repeated final-head manual results.
 - Current source anchors: `mobile-native/src/screens.tsx` (four-route shell,
   first-page roster, composer), `ConnectionProvider.tsx` (one foreground client),
