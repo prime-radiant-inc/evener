@@ -1217,10 +1217,10 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	// git forks on the process table a close reaps. Take an admission of its own
 	// so a close that refused the swap waits for the undo it caused instead of
 	// tearing the environment down mid-rollback.
-	rollbackFenced := s.beginEnvWork()
+	rollbackAdmission, rollbackFenced := s.beginEnvWork("create rollback for " + res.Path)
 	defer func() {
 		if rollbackFenced {
-			defer s.endEnvWork()
+			defer s.endEnvWork(rollbackAdmission)
 		}
 		if entered {
 			return
@@ -1645,10 +1645,10 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 		// forks git on the process table a close reaps, so it takes an admission
 		// of its own; a lock left behind here strands the target under this
 		// session's marker, which prune skips.
-		unlockFenced := s.beginEnvWork()
+		unlockAdmission, unlockFenced := s.beginEnvWork("switch target unlock for " + target)
 		defer func() {
 			if unlockFenced {
-				defer s.endEnvWork()
+				defer s.endEnvWork(unlockAdmission)
 			}
 			if entered {
 				return

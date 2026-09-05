@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -403,5 +404,74 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 	}
 	if cleanupDuringRefresh.Load() {
 		t.Error("the close cleaned the session's environment while an admitted swap was still in flight")
+	}
+}
+
+// The fence on admitted environment work is BOUNDED by the close budget on
+// purpose. The refresh runs under the session's own context, which the close
+// cancels before it reaches the join, so the bound only bites when a process is
+// already ignoring cancellation — and an unbounded fence there would turn one
+// hung git into a daemon that never shuts down. Giving up is the lesser
+// failure, but it must not be a silent one: the close is about to reap the
+// process table under whatever is still running, so it says what it walked
+// past, by name.
+func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 200 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	lanePath, _ := createLaneExpectations(t, r, "lane")
+
+	// Collect warnings off the live session until its close shuts the channel.
+	warnings := make(chan []string, 1)
+	go func() {
+		var msgs []string
+		for ev := range r.s.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok {
+				msgs = append(msgs, data.Message)
+			}
+		}
+		warnings <- msgs
+	}()
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// Stand in for a refresh whose git ignores the cancellation the close
+		// already delivered: outlast the whole budget.
+		time.Sleep(2 * LaneClosePassBudget)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	// Close completed rather than hanging behind the held swap: <-closeDone
+	// returned above, and the events channel it closes ends the collector.
+	msgs := <-warnings
+	var fence string
+	for _, msg := range msgs {
+		if strings.Contains(msg, "environment work still in flight") {
+			fence = msg
+		}
+	}
+	if fence == "" {
+		t.Fatalf("no warning named the environment work the close walked past; warnings were %q", msgs)
+	}
+	if !strings.Contains(fence, lanePath) {
+		t.Errorf("fence warning %q does not name the swap still in flight (%s)", fence, lanePath)
 	}
 }

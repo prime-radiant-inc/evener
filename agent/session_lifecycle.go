@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -138,33 +139,97 @@ func (s *Session) endDispose() {
 	s.disposeWG.Done()
 }
 
+// envWorkID handles one admission on envWorkWG, so its label can be dropped
+// again when the work returns.
+type envWorkID uint64
+
+// registerEnvWorkLocked records an admission described by label and returns its
+// handle. The caller holds s.mu and has already established that the session is
+// not closing — that pairing is the whole point (see beginEnvWork).
+func (s *Session) registerEnvWorkLocked(label string) envWorkID {
+	s.envWorkSeq++
+	id := envWorkID(s.envWorkSeq)
+	if s.envWork == nil {
+		s.envWork = make(map[envWorkID]string)
+	}
+	s.envWork[id] = label
+	s.envWorkWG.Add(1)
+	return id
+}
+
 // beginEnvWork admits work that runs commands on the session's execution
 // environment and must therefore finish before Close reaps that environment's
 // process table. It is the beginDispose idiom again — the closing check AND the
 // envWorkWG Add happen under one s.mu hold, so a successful Add happens-before
 // Close()'s join. A true return MUST be paired with a (deferred) endEnvWork().
 //
-// swapEnvAndRefresh admits its refresh inline rather than through this, because
-// it needs the environment it is adopting from out of the same lock hold that
-// reads `closing`; it is the same admission on the same WaitGroup.
+// label says what the work is, in the terms a human reading a shutdown warning
+// would want: it is what the close names if its bounded join gives up on this
+// admission.
+//
+// swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
+// because it needs the environment it is adopting from out of the same lock
+// hold that reads `closing`; it is the same admission on the same WaitGroup.
 //
 // A false return means the close was already under way when this work began.
 // There is nothing left to fence it against — the environment it would run on
 // is already being torn down — so the caller proceeds best-effort, exactly as
 // it did before the fence existed, rather than skipping cleanup it still owes.
-func (s *Session) beginEnvWork() bool {
+func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
-		return false
+		return 0, false
 	}
-	s.envWorkWG.Add(1)
-	return true
+	return s.registerEnvWorkLocked(label), true
 }
 
 // endEnvWork releases an admission obtained from beginEnvWork().
-func (s *Session) endEnvWork() {
+func (s *Session) endEnvWork(id envWorkID) {
+	s.mu.Lock()
+	delete(s.envWork, id)
+	s.mu.Unlock()
 	s.envWorkWG.Done()
+}
+
+// outstandingEnvWork lists the labels of every admission still in flight,
+// ordered so a warning reads the same way twice.
+func (s *Session) outstandingEnvWork() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	labels := make([]string, 0, len(s.envWork))
+	for _, label := range s.envWork {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// joinEnvWorkWithinCloseBudget waits for every admitted environment work item
+// before the close cleans the environment, and says what it walked past when
+// the shared close budget expires first.
+//
+// The bound is deliberate, not a gap. Each admission's git runs under the
+// session's own context, which this close cancelled well before reaching here,
+// so the wait is short for anything that honors cancellation; the budget only
+// bites when a process is already ignoring it, and an unbounded fence there
+// would turn one hung git into a daemon that never shuts down. Walking past is
+// the lesser failure — but the cleanup below is about to reap the process table
+// under whatever is still running, which is exactly the kind of thing that must
+// not happen silently, so the warning names it.
+func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		s.envWorkWG.Wait()
+	}()
+	select {
+	case <-joined:
+	case <-ctx.Done():
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
+			strings.Join(s.outstandingEnvWork(), "; "))})
+	}
 }
 
 func (s *Session) close(ctx context.Context, cleanupEnv bool) {
@@ -336,7 +401,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// its own timeout; the join is bounded by the shared close budget all
 		// the same. It runs for a child close too (cleanupEnv false): no such
 		// work may outlive the session that admitted it.
-		s.joinWithinCloseBudget(budgetCtx, &s.envWorkWG, "in-flight environment work")
+		s.joinEnvWorkWithinCloseBudget(budgetCtx)
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {

@@ -68,14 +68,15 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
+	var admission envWorkID
 	if !closing {
-		s.envWorkWG.Add(1)
+		admission = s.registerEnvWorkLocked("environment swap to " + next.WorkingDirectory())
 	}
 	s.mu.Unlock()
 	if closing {
 		return errSwapWhileClosing
 	}
-	defer s.envWorkWG.Done()
+	defer s.endEnvWork(admission)
 	if current != nil {
 		next.AdoptSessionScratch(current)
 	}
