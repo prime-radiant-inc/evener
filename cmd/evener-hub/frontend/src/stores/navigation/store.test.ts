@@ -1705,6 +1705,20 @@ test("shutdown convergence follows the invalidation receipt when one arrives", a
   expect(navigationStore.getState().lastSequence).toBe(1);
 });
 
+test("shutdown convergence is a no-op when navigation is not initialized", async () => {
+  resetNavigationStoreForTests();
+  let settled = false;
+  const waiter = {
+    promise: new Promise<never>(() => undefined),
+    cancel: () => {},
+  };
+  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 20).then(() => {
+    settled = true;
+  });
+  expect(settled).toBe(true);
+  expect(navigationStore.getState().protocolError).toBeNull();
+});
+
 test("shutdown convergence refreshes targets directly when no invalidation arrives", async () => {
   const calls: NavigationReadParams[] = [];
   await init((params) => {

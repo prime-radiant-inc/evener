@@ -52,12 +52,19 @@ export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
 
 /** Await a matching invalidation, but fall back to converging `targets`
  * directly when none arrives within the timeout. Resolves once the affected
- * resources are settled either way. */
+ * resources are settled either way. When navigation is not initialized or in
+ * error, convergence is impossible and the caller's mutation already
+ * committed, so this resolves immediately as a successful no-op instead of
+ * surfacing a false failure. */
 export async function awaitNavigationConvergence(
   invalidation: NavigationInvalidationWaiter,
   targets: NavigationInvalidationTarget[],
   timeoutMs = NAVIGATION_INVALIDATION_TIMEOUT_MS,
 ): Promise<void> {
+  if (navigationStore.getState().mode !== "v2") {
+    invalidation.cancel();
+    return;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const payload = await Promise.race([
