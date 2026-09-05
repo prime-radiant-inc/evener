@@ -110,7 +110,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 		if !ok {
 			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
-		page, err := pastEntryPageItems(entry, params.Cursor, itemLimit)
+			page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -173,7 +173,7 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	page, err := pastEntryLatestItems(entry, itemLimit)
+		page, err := pastEntryLatestItems(ctx, entry, itemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -209,9 +209,9 @@ func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
 	}
 }
 
-func pastEntryLatestItems(entry hubcore.PastEntry, limit int) (pastItemPage, error) {
+func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int) (pastItemPage, error) {
 	path := pastTranscriptPath(entry)
-	window, identity, err := pastTranscriptCache.LatestItemWindowFromFile(path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
+	window, identity, err := pastTranscriptCache.LatestItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
 		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
 		Limit:     limit,
 	}, projectBoundedPastTranscriptTurn)
@@ -226,9 +226,9 @@ func pastEntryLatestItems(entry hubcore.PastEntry, limit int) (pastItemPage, err
 	}, nil
 }
 
-func pastEntryPageItems(entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
+func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
 	path := pastTranscriptPath(entry)
-	window, identity, err := pastTranscriptCache.PreviousItemWindowFromFile(path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
+	window, identity, err := pastTranscriptCache.PreviousItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
 		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
 		Cursor:    cursor,
 		Limit:     limit,

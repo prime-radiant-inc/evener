@@ -1355,6 +1355,50 @@ func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {
 	}
 }
 
+func TestPastThreadItemBackfillHonorsPreCanceledContext(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("initial", func(t *testing.T) {
+		_, found, err := pastThreadItemReadResponse(ctx, cfg, appwire.ThreadReadParams{
+			Ref:          "local:" + entry.Meta.ID,
+			IncludeTurns: true,
+			PageUnit:     appwire.TranscriptPageUnitItem,
+			ItemLimit:    40,
+		})
+		if !found {
+			t.Fatal("past item read did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item backfill error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("continuation", func(t *testing.T) {
+		latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			PageUnit:  appwire.TranscriptPageUnitItem,
+			ItemLimit: 40,
+		})
+		if err != nil || !found {
+			t.Fatalf("seed item page = (%v, %v, %v)", latest, found, err)
+		}
+		_, found, err = pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			PageUnit:  appwire.TranscriptPageUnitItem,
+			ItemLimit: 40,
+			Cursor:    latest.NextCursor,
+		})
+		if !found {
+			t.Fatal("past item continuation did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item continuation error = %v, want context.Canceled", err)
+		}
+	})
+}
+
 func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
 	cfg, entry := seedPastItemPagingThread(t)
 	params := appwire.ThreadReadParams{

@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -211,6 +212,12 @@ type toolNameChange struct {
 // LatestFromFile returns the newest bounded turn window without projecting the
 // historical prefix. A non-positive limit preserves the full-read behavior.
 func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
+	return c.LatestFromFileContext(context.Background(), path, maxLineBytes, limit, project)
+}
+
+// LatestFromFileContext returns the newest bounded turn window while honoring
+// ctx cancellation.
+func (c *TurnCache) LatestFromFileContext(ctx context.Context, path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
 	if limit <= 0 {
 		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
 		if err != nil {
@@ -219,7 +226,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		turns, cursor := appwire.WindowTurns(all, limit)
 		return turns, cursor, nil
 	}
-	index, stats, err := c.loadTurnIndex(path, maxLineBytes, project)
+	index, stats, err := c.loadTurnIndexContext(ctx, path, maxLineBytes, project)
 	if err != nil {
 		return nil, "", err
 	}
@@ -229,7 +236,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		lo = count - limit
 		olderCursor = strconv.Itoa(lo)
 	}
-	turns, projected, err := projectIndexedRangeObserved(path, index, lo, count, project, &stats)
+	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, &stats)
 	if err != nil {
 		c.invalidate(path)
 		return nil, "", err
@@ -242,6 +249,12 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 // PageFromFile returns turns older than cursor without projecting records
 // outside that page. A non-positive limit delegates to the legacy full reader.
 func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
+	return c.PageFromFileContext(context.Background(), path, maxLineBytes, cursor, limit, project)
+}
+
+// PageFromFileContext returns turns older than cursor while honoring ctx
+// cancellation.
+func (c *TurnCache) PageFromFileContext(ctx context.Context, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
 	if limit <= 0 {
 		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
 		if err != nil {
@@ -250,7 +263,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 		page := appwire.PageTurns(all, cursor, limit)
 		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}, nil
 	}
-	index, stats, err := c.loadTurnIndex(path, maxLineBytes, project)
+	index, stats, err := c.loadTurnIndexContext(ctx, path, maxLineBytes, project)
 	if err != nil {
 		return FilePage{}, err
 	}
@@ -271,7 +284,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 	if lo > 0 {
 		next = strconv.Itoa(lo)
 	}
-	turns, projected, err := projectIndexedRangeObserved(path, index, lo, hi, project, &stats)
+	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, &stats)
 	if err != nil {
 		c.invalidate(path)
 		return FilePage{}, err
@@ -566,14 +579,18 @@ func recordNodeAt(node *turnIndexRecordNode, i int) indexedTurn {
 }
 
 func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
-	return c.loadTurnIndexInternal(path, maxLineBytes, project, false)
+	return c.loadTurnIndexContext(context.Background(), path, maxLineBytes, project)
 }
 
-func (c *TurnCache) loadTurnIndexForItemPaging(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
-	return c.loadTurnIndexInternal(path, maxLineBytes, project, true)
+func (c *TurnCache) loadTurnIndexForItemPaging(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, true)
 }
 
-func (c *TurnCache) loadTurnIndexInternal(path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool) (turnIndexDisk, ReadStats, error) {
+func (c *TurnCache) loadTurnIndexContext(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false)
+}
+
+func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool) (turnIndexDisk, ReadStats, error) {
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
 
@@ -681,7 +698,7 @@ func (c *TurnCache) loadTurnIndexInternal(path string, maxLineBytes int, project
 		c.mu.Unlock()
 	}
 	index = cloneTurnIndexForAppend(index)
-	indexedBytes, err := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, resolver, project)
+	indexedBytes, err := scanTurnIndexContext(ctx, file, info.Size(), start, maxLineBytes, &index, resolver, project)
 	if err != nil {
 		c.invalidate(path)
 		return turnIndexDisk{}, stats, err
@@ -803,6 +820,10 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 }
 
 func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
+	return scanTurnIndexContext(context.Background(), file, transcriptSize, start, maxLineBytes, index, projectNames, project)
+}
+
+func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
 	if start >= transcriptSize {
 		if err := transcript.ValidateHeader(index.Header); err != nil {
 			return 0, err
@@ -862,6 +883,9 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			index.TranscriptFormatVersion = transcript.FormatVersion
 			headerRead = true
 		} else {
+			if err := ctx.Err(); err != nil {
+				return readBytes, err
+			}
 			entry, err := transcript.DecodeEntry(trimmed)
 			if err != nil {
 				return readBytes, fmt.Errorf("parse transcript entry: %w", err)
@@ -907,6 +931,9 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			}
 			record.VisibleIndex = visibleRecords
 			appended = append(appended, record)
+		}
+		if err := ctx.Err(); err != nil {
+			return readBytes, err
 		}
 		offset += length
 		index.CompleteSize = offset
@@ -1071,11 +1098,15 @@ func anchorsMatchObserved(file *os.File, stats *ReadStats, anchors ...turnIndexA
 }
 
 func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector) ([]appwire.Turn, int) {
-	turns, projected, _ := projectIndexedRangeObserved(path, index, lo, hi, project, nil)
+	turns, projected, _ := projectIndexedRangeObservedContext(context.Background(), path, index, lo, hi, project, nil)
 	return turns, projected
 }
 
 func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector, stats *ReadStats) ([]appwire.Turn, int, error) {
+	return projectIndexedRangeObservedContext(context.Background(), path, index, lo, hi, project, stats)
+}
+
+func projectIndexedRangeObservedContext(ctx context.Context, path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector, stats *ReadStats) ([]appwire.Turn, int, error) {
 	if lo >= hi {
 		return nil, 0, nil
 	}
@@ -1087,6 +1118,9 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 	projected := 0
 	prelude := PreludeTurn(index.Header)
 	slot := 0
+	if err := ctx.Err(); err != nil {
+		return nil, projected, err
+	}
 	if prelude != nil {
 		if lo == 0 {
 			positioned, err := positionPreludeItems(prelude.Items)
@@ -1133,8 +1167,11 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 		if thisSlot < lo {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, projected, err
+		}
 		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
-		turn, projectedGroup, err := projectIndexedGroup(path, index, &group, entryOrdinalAt, project)
+		turn, projectedGroup, err := projectIndexedGroup(ctx, path, index, &group, entryOrdinalAt, project)
 		if err != nil {
 			return nil, projected, err
 		}
@@ -1153,7 +1190,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 // the group's entry ordinal, and stamps failure/usage/timestamp across the
 // group's entries. It returns nil (not an error) when the group projects to
 // no items — the indexed metadata said otherwise, so the caller invalidates.
-func projectIndexedGroup(path string, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector) (*appwire.Turn, int, error) {
+func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector) (*appwire.Turn, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open transcript: %w", err)
@@ -1163,6 +1200,9 @@ func projectIndexedGroup(path string, index turnIndexDisk, group *indexedGroup, 
 	var entries []schema.Turn
 	projected := 0
 	for i := group.start; i < group.end; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, projected, err
+		}
 		record := index.recordAt(i)
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
@@ -1179,6 +1219,9 @@ func projectIndexedGroup(path string, index turnIndexDisk, group *indexedGroup, 
 		}
 		projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
 		items = append(items, projectedItems...)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, projected, err
 	}
 	merged := mergeGroupedItems(items)
 	if len(merged) == 0 {
