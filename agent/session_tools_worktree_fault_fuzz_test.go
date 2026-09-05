@@ -1341,12 +1341,18 @@ func worktreeFaultCreateAndSwitchTailProgram(t *testing.T, program []byte) {
 		if _, err := h.exec(map[string]any{"operation": "create", "name": betaName}); err == nil {
 			t.Fatal("create accepted a failed previous-lane unlock")
 		}
+		// The old session state is intact: still in alpha, still holding its
+		// lock. The fresh lane the session will never enter is rolled back
+		// whole — registry entry, lock, branch, and sidecar.
 		h.requireCurrent(t, alpha, true)
 		h.requireOwnLock(t, alpha)
-		h.requireOwnLock(t, beta)
-		if _, err := worktree.ReadSidecar(h.metaDir(), betaName); err != nil {
-			t.Fatalf("create-away failure lost new sidecar: %v", err)
+		if h.git.entry(beta) != nil {
+			t.Fatal("create-away failure left the fresh lane registered")
 		}
+		if _, exists := h.git.branches[betaName]; exists {
+			t.Fatal("create-away failure left the fresh lane's branch behind")
+		}
+		h.requireNoSidecar(t, betaName)
 	})
 
 	t.Run("delegate create propagates preflight error", func(t *testing.T) {
@@ -1359,7 +1365,7 @@ func worktreeFaultCreateAndSwitchTailProgram(t *testing.T, program []byte) {
 		h.requireNoSidecar(t, name)
 	})
 
-	t.Run("switch leaves neither lane unlocked on failure", func(t *testing.T) {
+	t.Run("switch gives the target lock back on failure and leaves the old lane as the leave left it", func(t *testing.T) {
 		t.Run("managed target first", func(t *testing.T) {
 			h, faults := newWorktreeFaultSession(t)
 			alphaName := faultName(program, "switch-alpha")
@@ -1371,9 +1377,11 @@ func worktreeFaultCreateAndSwitchTailProgram(t *testing.T, program []byte) {
 			if _, err := h.exec(map[string]any{"operation": "switch", "name": alphaName}); err == nil {
 				t.Fatal("switch accepted a failed old-lane unlock")
 			}
+			// The leave failed before releasing beta, so beta stays locked and
+			// current; the lock the switch took on alpha goes back.
 			h.requireCurrent(t, beta, true)
 			h.requireOwnLock(t, beta)
-			h.requireOwnLock(t, alpha)
+			h.requireUnlocked(t, alpha)
 		})
 
 		t.Run("external target", func(t *testing.T) {
