@@ -117,8 +117,14 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
+	metadata, decodeErr := toml.Decode(string(data), &cfg)
+	for _, key := range []string{"codex_sources", "codex_launches"} {
+		if metadata.IsDefined(key) {
+			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
+		}
+	}
+	if decodeErr != nil {
+		return cfg, fmt.Errorf("parse config: %w", decodeErr)
 	}
 	applyConfigDefaults(&cfg)
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
