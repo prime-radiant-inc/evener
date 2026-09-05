@@ -428,6 +428,44 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	}
 }
 
+func TestShellToolBackgroundModelOutputRetainsJobIDUnderRegistryLimits(t *testing.T) {
+	t.Parallel()
+	s := newShellToolTestSession(t, SessionConfig{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+		},
+	})
+
+	// TRIPWIRE: background launch normally returns in well under a second;
+	// 30s only fires if the registered shell path genuinely hangs.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","mode":"background"}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+	if !strings.Contains(res.Output, out.JobID) {
+		t.Fatalf("shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
+	}
+}
+
 func TestShellBackgroundCompletionRetainsUnterminatedOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unterminated-output fixture uses POSIX printf")
@@ -543,6 +581,9 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		DefaultCommandTimeoutMS: 100,
 		MaxCommandTimeoutMS:     100,
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+		},
 	})
 	clk := agenttest.NewFakeClock()
 	s.jobManager.clock = clk
@@ -596,6 +637,9 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				out.Reason != "foreground_timeout" ||
 				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
+			}
+			if !strings.Contains(res.Output, out.JobID) {
+				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 			}
 			_, _ = s.jobManager.stop(out.JobID)
 			waitForShellDone(t, s.jobManager, out.JobID)

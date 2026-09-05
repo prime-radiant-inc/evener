@@ -580,7 +580,9 @@ func formatShellResult(out shellToolResult) string {
 	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
-	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
+	backgrounded := out.Mode == string(shellModeBackground) && out.JobID != ""
+	promoted := backgrounded && out.TimedOut
+	directBackground := backgrounded && !promoted
 
 	var foot []string
 	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
@@ -597,17 +599,27 @@ func formatShellResult(out shellToolResult) string {
 		}
 	case promoted:
 		foot = append(foot,
-			fmt.Sprintf("still running as %s — the foreground wait ended, not the command", out.JobID),
+			"the foreground wait ended, not the command",
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
-	case out.Mode == string(shellModeBackground) && out.JobID != "":
-		foot = append(foot, "running in background as "+out.JobID)
+	case directBackground:
+		// The identifying footer is appended after optional retention details so
+		// the job ID remains at the absolute tail.
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+	}
+	if promoted {
+		foot = append(foot, "still running as "+out.JobID)
+	} else if directBackground {
+		foot = append(foot, "running in background as "+out.JobID)
+	}
+	if backgrounded {
+		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		b.WriteByte(' ')
 	}
 	if len(foot) > 0 {
 		b.WriteString("[")
