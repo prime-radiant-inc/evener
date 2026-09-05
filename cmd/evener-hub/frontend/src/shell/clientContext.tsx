@@ -7,6 +7,7 @@
 // stores/connection.ts).
 import { createContext, type ReactNode, useContext } from "react";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import { useConnectionStore } from "../stores/connection";
 
 const ClientContext = createContext<AppwireClientLike | null>(null);
 
@@ -19,5 +20,10 @@ export function useClient(): AppwireClientLike {
 }
 
 export function ClientProvider({ client, children }: { client: AppwireClientLike; children: ReactNode }) {
-  return <ClientContext.Provider value={client}>{children}</ClientContext.Provider>;
+  // The mount-time client covers first render (the store is wired in an
+  // effect just after). Once connectionStore holds a client — including a
+  // fresh one from a banner retry — the whole tree follows the swap instead
+  // of calling the closed original.
+  const storeClient = useConnectionStore((s) => s.client);
+  return <ClientContext.Provider value={storeClient ?? client}>{children}</ClientContext.Provider>;
 }

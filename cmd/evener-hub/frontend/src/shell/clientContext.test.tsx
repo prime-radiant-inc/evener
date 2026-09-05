@@ -1,9 +1,13 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import { connectionStore } from "../stores/connection";
 import { ClientProvider, useClient } from "./clientContext";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  connectionStore.setState({ client: null, state: "idle", serverInfo: undefined, features: undefined });
+});
 
 function Consumer() {
   const client = useClient();
@@ -33,4 +37,27 @@ test("useClient throws a clear error when rendered outside a ClientProvider", ()
   } finally {
     spy.mockRestore();
   }
+});
+
+function Identity() {
+  const client = useClient();
+  return <p>client identity: {(client as { identity?: string }).identity ?? client.state}</p>;
+}
+
+test("useClient follows the connection-store client after a retry swap", () => {
+  const original = new FakeClient("ready");
+  const fresh = new FakeClient("connecting");
+  (fresh as { identity?: string }).identity = "fresh-client";
+
+  render(
+    <ClientProvider client={original}>
+      <Identity />
+    </ClientProvider>,
+  );
+  expect(screen.getByText("client identity: ready")).toBeTruthy();
+
+  act(() => {
+    connectionStore.getState().connect(fresh);
+  });
+  expect(screen.getByText("client identity: fresh-client")).toBeTruthy();
 });
