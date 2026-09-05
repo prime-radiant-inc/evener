@@ -24,6 +24,8 @@ Distinguish connecting, working, waiting for the person, disconnected and uncert
 
 Returning to a session restores the reading position and draft. A streaming response must not pull someone away from earlier content they are reading. Keyboard appearance should reshape the working area smoothly. A reversible action should be easy to undo where the protocol supports it; the UI must not promise reversibility the server cannot provide.
 
+Continuity also means retaining unfinished composition across settings, backgrounding and relaunch, and keeping decisions reachable until resolved. The [Codex/ChatGPT and Claude Code research](agent-mobile-research.md) makes these concrete design obligations: a calm surface still needs trustworthy state and a clear path to act.
+
 ## Share the product, respect the platform
 
 One codebase should share domain behavior, hierarchy and recognizable identity. It need not force identical navigation bars, menus, sheets, back gestures or selection behavior onto both operating systems. Use native platform behavior where people already know what to expect. Material guidance and Apple’s materials are inputs, not interchangeable decoration.

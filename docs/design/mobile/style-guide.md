@@ -36,6 +36,8 @@ Use at least 44 pt interactive regions on iOS as our proposed minimum and 48 dp 
 
 Use the OS navigation structure, safe areas, back behavior, menus and sheets. The selected hub must be discoverable at the root and explicit in destination-sensitive actions. For aggregated lists, include a readable hub name. Keep normal connection health quiet; elevate loss of connectivity or uncertain delivery. Avoid a permanent strip of low-value status controls.
 
+Keep a stable route back to saved hubs and ongoing sessions. Setup explains where execution happens and what must be available on the host. Receiving events, establishing a connection and confirming a submitted action are different states; the interface must not substitute one for another.
+
 ### Conversation
 
 Assistant prose sits directly on the reading surface. Distinguish speakers with alignment, attribution and spacing; investigate a restrained user-message surface in screen studies. Render headings, lists, links, quotes, code and tables as content, with purposeful overflow handling. Do not repeat a large role label before every fragment of one response.
@@ -46,9 +48,17 @@ Group routine activity with a concise, understandable summary and an accessible 
 
 Keep the input and its main action visually unified. Respect safe areas and the actual keyboard transition. Use native text editing, selection and dictation affordances. Attachment controls and secondary actions must not overpower the text. While work is running, distinguish steer, queue and stop through clear action placement and labels; do not imply a send succeeded before confirmation.
 
+Scope drafts to hub and session. Preserve them through settings visits, backgrounding and relaunch; keep an uncertain submission distinct from a newer draft. With long dictation, pasted logs or large text, bound the input's growth and retain a reachable submit action above the keyboard. Ordinary OS dictation does not require the deferred interactive voice feature.
+
 ### Decisions and failures
 
 An approval shows the requested action, destination, relevant consequence and available choices together. Give dangerous actions appropriate emphasis without turning the entire conversation red. Questions remain answerable in context. A connection failure explains recovery; uncertain delivery offers reconciliation rather than blind repeated submission.
+
+Give consequential decisions more visual weight than routine transcript activity. Closing a sheet must not hide an unanswered decision: retain an accessible route to it in the session. Reconcile answers made on another device so resolved decisions cannot invite duplicate action.
+
+### Reviewing changes
+
+Study a changed-file summary leading to readable diffs, with line wrapping and contextual discussion. Keep code selection and copying native where possible. Verify Evener's supported review operations before offering controls; these are screen-study requirements, not claims of implemented protocol capability.
 
 ### Lists and settings
 
@@ -77,3 +87,5 @@ Native library support must be verified; a design aspiration is not proof that a
 Use identical content across comparisons: a long session title; several hubs with overlapping names; a prose response with headings and code; a burst of tool activity; an approval; a question; a blocked operation; an offline session; uncertain delivery; a draft while switching sessions; keyboard open; largest accessibility text; screen-reader navigation; reduced motion; light and dark appearances.
 
 Record task completion, accidental taps, lost context, and reading interruptions during review. Proposed targets: no lost draft or reading position on ordinary return, no automatic scroll away from earlier content, and a visible path to the next required decision. Record failures as product work rather than explaining them away as polish.
+
+The [agent-product research](agent-mobile-research.md) adds interruption sequences to these fixtures: background during a pending approval; answer it on another device; reconnect after missing events; visit settings with a long draft; relaunch with an uncertain submission; and return from a notification to the exact hub and session. Exercise long input with the keyboard open on both platforms. Historical competitor reports motivate these scenarios; they do not establish defects in current releases.
