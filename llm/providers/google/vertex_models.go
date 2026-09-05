@@ -94,6 +94,10 @@ func filterVertexModels(entries []vertexPublisherModel) []registry.Model {
 func (p *Protocol) listVertexModels(ctx context.Context, res registry.Resolved) ([]registry.Model, error) {
 	var entries []vertexPublisherModel
 	pageToken := ""
+	// A page token names the page after the one it came with, so the same
+	// token twice means the server is not advancing; following it would
+	// loop until the context expires.
+	seen := map[string]bool{}
 	for {
 		u, err := vertexModelsURL(res, pageToken)
 		if err != nil {
@@ -113,6 +117,10 @@ func (p *Protocol) listVertexModels(ctx context.Context, res registry.Resolved) 
 		if page.NextPageToken == "" {
 			return filterVertexModels(entries), nil
 		}
+		if seen[page.NextPageToken] {
+			return nil, fmt.Errorf("models.list: repeated page token %q", page.NextPageToken)
+		}
+		seen[page.NextPageToken] = true
 		pageToken = page.NextPageToken
 	}
 }

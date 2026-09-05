@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -92,6 +93,27 @@ func TestVertexListModelsFollowsPagination(t *testing.T) {
 	}
 	if len(paths) != 2 || paths[1] != "/v1beta1/publishers/google/models?pageSize=200&pageToken=p2" {
 		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestVertexListModelsStopsOnARepeatedPageToken(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-3.8-flash","launchStage":"GA"}],"nextPageToken":"stuck"}`))
+	}))
+	defer srv.Close()
+	// The deadline only bounds a regression; the listing must give up on
+	// its own the first time a page token repeats.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, vertexRes(srv))
+	if err == nil || !strings.Contains(err.Error(), "repeated page token") {
+		t.Fatalf("err = %v, want the listing to refuse a repeated page token", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2 (the first page and the one that repeated its token)", requests)
 	}
 }
 
