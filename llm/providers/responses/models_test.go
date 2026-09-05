@@ -3,11 +3,40 @@ package responses
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// Codex advertises ultra alongside API efforts, but it is a client-side
+// delegation preset. Evener must offer only the actual reasoning efforts.
+func TestListModelsCodexOmitsDelegationPreset(t *testing.T) {
+	for _, defaultEffort := range []string{"medium", "ultra"} {
+		t.Run(defaultEffort, func(t *testing.T) {
+			srv, _ := server(t, 200, `{"models":[{"slug":"gpt-6-astra","context_window":272000,"max_context_window":872000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"`+defaultEffort+`"}]}`)
+			rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].ID != "gpt-6-astra" {
+				t.Fatalf("rows = %+v", rows)
+			}
+			caps := rows[0].Caps
+			if !slices.Equal(caps.EffortValues, []string{"low", "medium", "high", "xhigh", "max"}) {
+				t.Fatalf("selectable efforts = %v", caps.EffortValues)
+			}
+			wantDefault := defaultEffort
+			if defaultEffort == "ultra" {
+				wantDefault = ""
+			}
+			if registry.StringValue(caps.DefaultEffort) != wantDefault || caps.ContextWindow == nil || *caps.ContextWindow != 272000 {
+				t.Fatalf("model facts = %+v", caps)
+			}
+		})
+	}
+}
 
 func TestListModelsPlatformAndCodexShapes(t *testing.T) {
 	srv, got := server(t, 200, `{"data":[{"id":"gpt-5.5","context_window":1050000,"max_input_tokens":922000,"max_output_tokens":128000},{"id":"text-embedding-3-large"}]}`)
