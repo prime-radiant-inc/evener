@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -31,10 +32,25 @@ func (c *TurnCache) LatestItemWindowFromFile(
 	options ItemWindowOptions,
 	project BoundedEntryProjector,
 ) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	return c.LatestItemWindowFromFileContext(context.Background(), path, maxLineBytes, options, project)
+}
+
+// LatestItemWindowFromFileContext returns the newest indexed projected items
+// while honoring ctx cancellation.
+func (c *TurnCache) LatestItemWindowFromFileContext(
+	ctx context.Context,
+	path string,
+	maxLineBytes int,
+	options ItemWindowOptions,
+	project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+	}
 	if options.Cursor != "" {
 		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, appwire.TranscriptItemCursorStale()
 	}
-	return c.itemWindowFromFile(path, maxLineBytes, options, project, false)
+	return c.itemWindowFromFile(ctx, path, maxLineBytes, options, project, false)
 }
 
 // PreviousItemWindowFromFile returns the indexed projected items immediately
@@ -45,7 +61,22 @@ func (c *TurnCache) PreviousItemWindowFromFile(
 	options ItemWindowOptions,
 	project BoundedEntryProjector,
 ) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
-	return c.itemWindowFromFile(path, maxLineBytes, options, project, true)
+	return c.PreviousItemWindowFromFileContext(context.Background(), path, maxLineBytes, options, project)
+}
+
+// PreviousItemWindowFromFileContext returns the indexed projected items before
+// the cursor boundary while honoring ctx cancellation.
+func (c *TurnCache) PreviousItemWindowFromFileContext(
+	ctx context.Context,
+	path string,
+	maxLineBytes int,
+	options ItemWindowOptions,
+	project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+	}
+	return c.itemWindowFromFile(ctx, path, maxLineBytes, options, project, true)
 }
 
 type indexedItemRange struct {
@@ -61,12 +92,15 @@ type indexedItemRange struct {
 	prelude bool
 }
 
-func (c *TurnCache) itemWindowFromFile(path string, maxLineBytes int, options ItemWindowOptions, project BoundedEntryProjector, previous bool) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+func (c *TurnCache) itemWindowFromFile(ctx context.Context, path string, maxLineBytes int, options ItemWindowOptions, project BoundedEntryProjector, previous bool) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
+	if err := ctx.Err(); err != nil {
+		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+	}
 	limit, err := appwire.NormalizeTranscriptItemLimit(options.Limit)
 	if err != nil {
 		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
 	}
-	index, stats, err := c.loadTurnIndexForItemPaging(path, maxLineBytes, project)
+	index, stats, err := c.loadTurnIndexForItemPaging(ctx, path, maxLineBytes, project)
 	if err != nil {
 		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
 	}
@@ -104,7 +138,7 @@ func (c *TurnCache) itemWindowFromFile(path string, maxLineBytes int, options It
 	}
 
 	selectedRanges := intersectItemRanges(ranges, start, end)
-	candidates, projectedRecords, err := projectIndexedItemRanges(path, index, selectedRanges, project)
+	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project)
 	if err != nil {
 		c.invalidate(path)
 		return appitempaging.TranscriptItemWindow{}, identity, err
@@ -201,11 +235,21 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 }
 
 func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
+	return projectIndexedItemRangesContext(context.Background(), path, index, ranges, project)
+}
+
+func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0
 	var file *os.File
 	var err error
 	for _, itemRange := range ranges {
+		if err := ctx.Err(); err != nil {
+			if file != nil {
+				_ = file.Close()
+			}
+			return nil, projectedRecords, err
+		}
 		if itemRange.prelude {
 			turn := PreludeTurn(index.Header)
 			if turn == nil {
@@ -242,11 +286,19 @@ func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexed
 				return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
 			}
 		}
+			if err := ctx.Err(); err != nil {
+				_ = file.Close()
+				return nil, projectedRecords, err
+			}
 		// Read and project every record of the group's span, then merge by
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
 		var entries []schema.Turn
 		for i := group.start; i < group.end; i++ {
+				if err := ctx.Err(); err != nil {
+					_ = file.Close()
+					return nil, projectedRecords, err
+				}
 			record := index.recordAt(i)
 			raw := make([]byte, record.Length)
 			if _, err := file.ReadAt(raw, record.Offset); err != nil {
