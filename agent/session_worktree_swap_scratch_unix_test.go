@@ -516,3 +516,28 @@ func TestWorktreeOps_ControlEnvironmentsLeaveNoHeldLease(t *testing.T) {
 		}
 	})
 }
+
+// The worktree report a delegate's finish and create result carry runs its
+// git through clones built for the report — a lane probe and a control
+// environment — and a command on either mints a scratch and takes its lease.
+// The report has to dispose both on the way out, or every delegate finish on
+// an unsandboxed session leaks a held lease.
+func TestDelegateWorktreeReport_LeavesNoUnownedHeldLease(t *testing.T) {
+	worktreeBaseRepo(t)
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+	r := newWorktreeRepo(t)
+	_, lanePath, _ := r.seedStableIsolationLane(t)
+
+	report := r.s.delegateWorktreeReport("worktree", lanePath)
+
+	if report == nil || report.Path != lanePath {
+		t.Fatalf("delegateWorktreeReport = %+v, want a report for %s", report, lanePath)
+	}
+	own := sessionOwnedScratchDirs(t, r.s)
+	for _, dir := range heldScratchDirsIn(t, isolated) {
+		if !own[dir] {
+			t.Errorf("the report left a held lease on %s that no session environment owns", dir)
+		}
+	}
+}
