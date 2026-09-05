@@ -28,18 +28,20 @@ export function Action({
   onPress,
   disabled = false,
   label,
+  expanded,
 }: {
   children: string;
   onPress: () => void;
   disabled?: boolean;
   label?: string;
+  expanded?: boolean;
 }) {
   const colors = useColors();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label ?? children}
-      accessibilityState={{ disabled }}
+      accessibilityState={{ disabled, expanded }}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
