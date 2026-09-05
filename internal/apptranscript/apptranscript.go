@@ -285,6 +285,19 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
 func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
+	// A persisted message has the entry's recorded instant, not a duration.
+	defer func() {
+		if turn.Timestamp.IsZero() {
+			return
+		}
+		for i := range out {
+			if out[i].Type == "userMessage" || out[i].Type == "agentMessage" || (out[i].Type == "steering" && out[i].Source == "user") {
+				ms := turn.Timestamp.UnixMilli()
+				out[i].StartedAt = &ms
+			}
+		}
+	}()
+
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
