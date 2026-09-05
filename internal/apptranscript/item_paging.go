@@ -140,7 +140,9 @@ func (c *TurnCache) itemWindowFromFile(ctx context.Context, path string, maxLine
 	selectedRanges := intersectItemRanges(ranges, start, end)
 	candidates, projectedRecords, err := projectIndexedItemRangesContext(ctx, path, index, selectedRanges, project)
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return appitempaging.TranscriptItemWindow{}, identity, err
 	}
 	selected, _, err := appitempaging.SelectCandidates(candidates, nil, limit)
@@ -286,19 +288,19 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, fmt.Errorf("open transcript: %w", err)
 			}
 		}
-			if err := ctx.Err(); err != nil {
-				_ = file.Close()
-				return nil, projectedRecords, err
-			}
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			return nil, projectedRecords, err
+		}
 		// Read and project every record of the group's span, then merge by
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
 		var entries []schema.Turn
 		for i := group.start; i < group.end; i++ {
-				if err := ctx.Err(); err != nil {
-					_ = file.Close()
-					return nil, projectedRecords, err
-				}
+			if err := ctx.Err(); err != nil {
+				_ = file.Close()
+				return nil, projectedRecords, err
+			}
 			record := index.recordAt(i)
 			raw := make([]byte, record.Length)
 			if _, err := file.ReadAt(raw, record.Offset); err != nil {
@@ -316,8 +318,16 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
 				items = append(items, projectedItems...)
 			}
+			if err := ctx.Err(); err != nil {
+				_ = file.Close()
+				return nil, projectedRecords, err
+			}
 		}
 		merged := mergeGroupedItems(items)
+		if err := ctx.Err(); err != nil {
+			_ = file.Close()
+			return nil, projectedRecords, err
+		}
 		if uint64(len(merged)) != itemRange.count {
 			_ = file.Close()
 			return nil, projectedRecords, fmt.Errorf("indexed item count for logical group %d changed", group.id)
@@ -350,6 +360,9 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 	}
 	if file != nil {
 		_ = file.Close()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, projectedRecords, err
 	}
 	return candidates, projectedRecords, nil
 }

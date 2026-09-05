@@ -238,7 +238,9 @@ func (c *TurnCache) LatestFromFileContext(ctx context.Context, path string, maxL
 	}
 	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, &stats)
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return nil, "", err
 	}
 	stats.ProjectedTurns = projected
@@ -286,7 +288,9 @@ func (c *TurnCache) PageFromFileContext(ctx context.Context, path string, maxLin
 	}
 	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, &stats)
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return FilePage{}, err
 	}
 	stats.ProjectedTurns = projected
@@ -689,8 +693,8 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		c.mu.Lock()
 		entry := c.entries[path]
 		if fromCache && entry.toolResolver != nil {
-			// indexMu excludes every other scanner for this cache, so the private
-			// resolver can advance in place. It is never published in an index.
+			// indexMu excludes every other scanner for this cache. The scan keeps a
+			// suffix-bounded undo log so a failure cannot mutate this published state.
 			resolver = entry.toolResolver
 		} else {
 			resolver = replayToolResolver(index, &stats)
@@ -700,7 +704,9 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 	index = cloneTurnIndexForAppend(index)
 	indexedBytes, err := scanTurnIndexContext(ctx, file, info.Size(), start, maxLineBytes, &index, resolver, project)
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return turnIndexDisk{}, stats, err
 	}
 	stats.IndexedBytes += indexedBytes
@@ -716,6 +722,8 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 	if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
 		entry.turns = nil
 		entry.full = false
+		entry.itemTurns = nil
+		entry.itemFull = false
 	}
 	entry.size = info.Size()
 	entry.mod = info.ModTime()
@@ -830,6 +838,24 @@ func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int
 		}
 		return 0, nil
 	}
+	type resolverValue struct {
+		name    string
+		present bool
+	}
+	var resolverUndo map[string]resolverValue
+	scanSucceeded := false
+	defer func() {
+		if scanSucceeded {
+			return
+		}
+		for id, previous := range resolverUndo {
+			if previous.present {
+				projectNames[id] = previous.name
+			} else {
+				delete(projectNames, id)
+			}
+		}
+	}()
 	section := io.NewSectionReader(file, start, transcriptSize-start)
 	reader := bufio.NewReader(section)
 	offset := start
@@ -920,6 +946,19 @@ func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int
 					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
 				}
 			}
+			for _, change := range record.ToolChanges {
+				if change.Lookup {
+					continue
+				}
+				if _, recorded := resolverUndo[change.ID]; recorded {
+					continue
+				}
+				if resolverUndo == nil {
+					resolverUndo = make(map[string]resolverValue)
+				}
+				name, present := projectNames[change.ID]
+				resolverUndo[change.ID] = resolverValue{name: name, present: present}
+			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
 			record.ItemCount = uint32(len(projectedItems))
 			contribution, introduced := mergedContribution(projectedItems, openCalls)
@@ -952,6 +991,7 @@ func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int
 	if !headerRead {
 		return readBytes, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
+	scanSucceeded = true
 	return readBytes, nil
 }
 
