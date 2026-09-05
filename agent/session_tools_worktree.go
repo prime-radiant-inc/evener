@@ -1528,25 +1528,36 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	// is load-bearing (spec §4 switch step 3): a lost race fails right here,
 	// with nothing yet changed, instead of leaving the session unlocked out of
 	// its old worktree.
+	lockedTarget := false
 	switch worktree.Decide(worktree.EvEnter, targetState) {
 	case worktree.ActLock:
 		marker := worktree.FormatSessionMarker(s.id)
 		if _, err := run("worktree", "lock", "--reason", marker, target); err != nil {
 			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: locking the target: %w", err)
 		}
+		lockedTarget = true
 	case worktree.ActAdopt:
 		// Already carries our own marker (crash-resume case); nothing to do.
 	default:
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %s is locked (%s)", target, reason)
 	}
+	left := s.worktreeLeaveRecord(porcelain)
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
 
 	// Steps 4-5: swap the env directly to the target (no intermediate
 	// restore step) and refresh envInfo + the prompt cache. A sandbox re-root the
-	// host cannot satisfy fails closed rather than switching in unconfined.
+	// host cannot satisfy fails closed rather than switching in unconfined. A
+	// swap the session's close refused gives step 3 back: the target's lock
+	// and the lock the leave released.
 	if err := s.enterWorktree(target, true); err != nil {
+		if errors.Is(err, errSwapWhileClosing) {
+			if lockedTarget {
+				_, _ = run("worktree", "unlock", target)
+			}
+			s.restoreLeftWorktreeLock(run, left)
+		}
 		return WorktreeSwitchResult{}, err
 	}
 
@@ -1647,13 +1658,53 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
 		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
 	}
+	left := s.worktreeLeaveRecord(porcelain)
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
 	if err := s.enterWorktree(matchedPath, false); err != nil {
+		if errors.Is(err, errSwapWhileClosing) {
+			s.restoreLeftWorktreeLock(run, left)
+		}
 		return WorktreeSwitchResult{}, err
 	}
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
+}
+
+// worktreeLeftLock records what leaving the current worktree is about to do
+// to its lock, so a refused swap can put it back.
+type worktreeLeftLock struct {
+	path     string
+	unlocked bool // the leave releases this session's own marker on path
+}
+
+// worktreeLeaveRecord reads, from the porcelain the leave itself decides on,
+// whether leaving the current worktree will release this session's own lock
+// on it (spec §5 EvLeave: only an own marker is unlocked).
+func (s *Session) worktreeLeaveRecord(porcelain []worktree.PorcelainEntry) worktreeLeftLock {
+	s.mu.Lock()
+	path := s.worktreeCurrentPath
+	s.mu.Unlock()
+	if path == "" {
+		return worktreeLeftLock{}
+	}
+	locked, reason := lockStateFromPorcelain(porcelain, path)
+	st := worktree.Unlocked
+	if locked {
+		st = worktree.ClassifyReason(reason, s.id, "")
+	}
+	return worktreeLeftLock{path: path, unlocked: worktree.Decide(worktree.EvLeave, st) == worktree.ActUnlock}
+}
+
+// restoreLeftWorktreeLock puts back the own-marker lock a leave released, for
+// a switch whose swap was then refused: the session still occupies that
+// worktree, so it must hold its lock again. Best-effort, like every rollback
+// of a refused op.
+func (s *Session) restoreLeftWorktreeLock(run worktree.GitRunner, left worktreeLeftLock) {
+	if !left.unlocked {
+		return
+	}
+	_, _ = run("worktree", "lock", "--reason", worktree.FormatSessionMarker(s.id), left.path)
 }
 
 // worktreeAdopt performs the adopt operation: convert a worktree that sits
