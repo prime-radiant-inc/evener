@@ -37,3 +37,5 @@ The [Codex/ChatGPT and Claude Code visual comparisons](agent-mobile-lookbook.htm
 ## Screen studies and first native visual slice
 
 Jesse approved the researched direction and delegated routine choices while in meetings. [Screen studies](screen-studies.html) show the proposed session list, reading, decision and keyboard-open compositions. The [implementation plan](../../superpowers/plans/2026-09-05-native-mobile-visual-foundations.md) applies the existing native list/conversation hierarchy first; illustrated search, rich Markdown and approval controls do not claim implemented capability.
+
+[Native visual slice evidence](visual-slice-evidence.md) records the tested build, both-platform keyboard screenshots, real-hub cross-device actions and the remaining accessibility and persistence defects.
