@@ -242,10 +242,6 @@ type worktreeGuard struct {
 	// exitWorktree()), or an error when the swap was refused because the
 	// session is closing.
 	exitWorktree func() (restoredRoot string, ok bool, err error)
-	// controlEnv returns a local env rooted at the main repo root for lifecycle
-	// git commands (spec §7 controlEnv()). It errors when the session env is not
-	// a LocalExecutionEnvironment.
-	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// liveWorkUnder reports live child/delegate/shell work rooted at or under
 	// path (spec §7 liveWorkUnder()); remove/prune use it.
 	liveWorkUnder func(path string) []string
