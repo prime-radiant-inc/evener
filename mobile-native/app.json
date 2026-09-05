@@ -38,7 +38,8 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "scheme": "evener-native"
   }

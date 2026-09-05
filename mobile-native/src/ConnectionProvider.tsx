@@ -1,15 +1,15 @@
+import * as Crypto from "expo-crypto";
+import * as SecureStore from "expo-secure-store";
 import {
 	createContext,
+	type ReactNode,
 	useCallback,
 	useContext,
 	useEffect,
 	useMemo,
 	useState,
-	type ReactNode,
 } from "react";
 import { AppState } from "react-native";
-import * as SecureStore from "expo-secure-store";
-import * as Crypto from "expo-crypto";
 import type {
 	AppwireClient,
 	ConnectionState,
@@ -17,10 +17,13 @@ import type {
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
 import {
 	createHubClient,
-	HubProfiles,
 	type HubInput,
 	type HubProfile,
+	HubProfiles,
 } from "./connection";
+
+import { drafts } from "./nativeDrafts";
+import { removeSavedHub } from "./removeHub";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -85,6 +88,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			subscription.remove();
 		};
 	}, []);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
 		let connection: AppwireClient | null = null;
@@ -152,9 +156,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		setSelected(profile.id);
 	}, []);
 	const removeHub = useCallback(async (id: string) => {
-		await repository.remove(id);
-		setSelected((current) => (current === id ? null : current));
-		setProfiles(await repository.list());
+		const result = await removeSavedHub(repository, drafts, id);
+		setProfiles(
+			(current) =>
+				result.profiles ??
+				(result.removed
+					? current.filter((profile) => profile.id !== id)
+					: current),
+		);
+		if (result.removed)
+			setSelected((current) => (current === id ? null : current));
+		if (result.error) throw new Error(result.error);
 	}, []);
 	const value = useMemo(
 		() => ({
