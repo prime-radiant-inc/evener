@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { createRef } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ActivityMarkerRenderProps,
   ChromeRenderProps,
@@ -358,6 +358,9 @@ describe("fieldNotesConversationSkin", () => {
   });
 
   it("preserves a measured editorial anchor through prepend and skin switches", async () => {
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame"],
+    });
     const restoreGeometry = installAnchorGeometry();
     anchorRowHeights.clear();
     measuredAnchorRows.clear();
@@ -413,10 +416,15 @@ describe("fieldNotesConversationSkin", () => {
 
     try {
       const view = render(transcript(fieldNotesConversationSkin, items));
+      // Drain frame reconciliation after measurement so each simulated
+      // interaction starts after the prior scroll has settled.
       await act(async () => {
         AnchorResizeObserver.emit();
         await Promise.resolve();
         AnchorResizeObserver.emit();
+      });
+      await act(async () => {
+        await vi.runAllTimersAsync();
       });
       for (const key of ["field-short", "field-editorial", "field-activity"]) {
         expect(measuredAnchorRows).toContain(key);
@@ -439,6 +447,9 @@ describe("fieldNotesConversationSkin", () => {
         await Promise.resolve();
         AnchorResizeObserver.emit();
       });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
       await waitFor(() => {
         const afterPrepend = transcriptRef.current?.captureAnchor();
         expect(afterPrepend?.itemKey).toBe(before.itemKey);
@@ -458,6 +469,21 @@ describe("fieldNotesConversationSkin", () => {
         await Promise.resolve();
         AnchorResizeObserver.emit();
       });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      // A skin change restores its anchor after the incoming rows are
+      // measured. Await that restoration before starting the return switch.
+      await waitFor(() => {
+        const afterStillwater = transcriptRef.current?.captureAnchor();
+        expect(afterStillwater?.itemKey).toBe(before.itemKey);
+        expect(
+          Math.abs(
+            (afterStillwater?.offsetPx ?? Number.POSITIVE_INFINITY) -
+              before.offsetPx,
+          ),
+        ).toBeLessThanOrEqual(2);
+      });
       view.rerender(
         transcript(fieldNotesConversationSkin, [olderItem, ...items]),
       );
@@ -465,6 +491,9 @@ describe("fieldNotesConversationSkin", () => {
         AnchorResizeObserver.emit();
         await Promise.resolve();
         AnchorResizeObserver.emit();
+      });
+      await act(async () => {
+        await vi.runAllTimersAsync();
       });
       await waitFor(() => {
         const afterSwitch = transcriptRef.current?.captureAnchor();
@@ -484,6 +513,7 @@ describe("fieldNotesConversationSkin", () => {
     } finally {
       cleanup();
       restoreGeometry();
+      vi.useRealTimers();
     }
   });
 

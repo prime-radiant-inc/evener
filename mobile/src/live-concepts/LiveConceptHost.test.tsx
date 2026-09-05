@@ -40,6 +40,7 @@ const capabilities: MobileCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: true,
   goal: false,
   rename: false,

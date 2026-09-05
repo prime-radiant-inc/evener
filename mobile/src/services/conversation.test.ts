@@ -105,6 +105,7 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -329,6 +330,7 @@ describe("ConversationService", () => {
       expect(startParams).toMatchObject({
         ref: "ref-1",
         input: [{ type: "text", text: "hello" }],
+        expectedInstanceId: "thread-1",
       });
       expect(startParams.clientMutationId).toBe("cmid-1");
     });
@@ -346,6 +348,7 @@ describe("ConversationService", () => {
       expect(call?.params).toMatchObject({
         ref: "ref-1",
         input: [{ type: "text", text: "steer this" }],
+        expectedInstanceId: "thread-1",
       });
     });
 
@@ -362,6 +365,7 @@ describe("ConversationService", () => {
       expect(call?.params).toMatchObject({
         ref: "ref-1",
         input: [{ type: "text", text: "queued" }],
+        expectedInstanceId: "thread-1",
       });
     });
 
@@ -375,7 +379,10 @@ describe("ConversationService", () => {
       const receipt = await service.interrupt();
       expect(receipt.clientMutationId).toBe("cmid-1");
       const call = client.calls.find((c) => c.method === "turn/interrupt");
-      expect(call?.params).toMatchObject({ ref: "ref-1" });
+      expect(call?.params).toMatchObject({
+        ref: "ref-1",
+        expectedInstanceId: "thread-1",
+      });
     });
 
     it("rejects every malformed, stale, mismatched, or nonaccepted send receipt", async () => {
@@ -551,7 +558,54 @@ describe("ConversationService", () => {
         ref: "ref-1",
         index: 0,
         expectedEntryId: "entry-1",
+        expectedInstanceId: "thread-1",
       });
+    });
+  });
+
+  describe("session instance identity", () => {
+    it("pins mutations to the read instance until the conversation is rehydrated", async () => {
+      const { client, service, thread } = setup();
+      thread.evener.instanceId = "instance-a";
+      client.on("turn/start", (params) => {
+        expect(params.expectedInstanceId).toBe(thread.evener.instanceId);
+        return {
+          turn: { id: "turn-1" } as Turn,
+          receipt: makeReceipt("send", {
+            clientMutationId: params.clientMutationId,
+            instanceId: params.expectedInstanceId,
+          }),
+        };
+      });
+      await service.open("ref-1");
+      expect((await service.send(textInput("first"))).instanceId).toBe(
+        "instance-a",
+      );
+      const replacement = makeThread({
+        evener: { ...thread.evener, instanceId: "instance-b" },
+      });
+      client.on("thread/read", () => makeReadResponse(replacement));
+      await service.refreshCapabilities("ref-1");
+      expect((await service.send(textInput("still pinned"))).instanceId).toBe(
+        "instance-a",
+      );
+      await service.readProjection("ref-1");
+      thread.evener.instanceId = "instance-b";
+      expect((await service.send(textInput("replacement"))).instanceId).toBe(
+        "instance-b",
+      );
+    });
+
+    it("rejects a receipt for a different session instance", async () => {
+      const { client, service } = setup();
+      client.on("turn/start", () => ({
+        turn: { id: "turn-1" } as Turn,
+        receipt: makeReceipt("send", { instanceId: "other-instance" }),
+      }));
+      await service.open("ref-1");
+      await expect(service.send(textInput("hello"))).rejects.toThrow(
+        "instance mismatch",
+      );
     });
   });
 
@@ -2131,7 +2185,7 @@ describe("ConversationService", () => {
 
   // R5: Before ANY ref/capability state write in open/readProjection/refresh,
   // extract and runtime-validate response.thread.evener.capabilities into a
-  // complete plain local ThreadCapabilities copy. All 11 generated fields must
+  // complete plain local ThreadCapabilities copy. All 12 generated fields must
   // be booleans; allow future extra keys but never retain the response object
   // or getters. Null/missing/nonobject/wrong-field/throwing-getter must reject
   // before commit and leave the pair null.
@@ -2300,6 +2354,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         rename: true,
@@ -2367,6 +2422,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         get rename() {
@@ -2487,6 +2543,7 @@ describe("ConversationService", () => {
         forkFromTurn: true,
         shutdown: true,
         changeModel: true,
+        changeVisionModel: true,
         queue: true,
         goal: true,
         rename: true,

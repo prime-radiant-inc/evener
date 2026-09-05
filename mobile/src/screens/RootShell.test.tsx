@@ -106,6 +106,7 @@ const ALL_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -130,6 +131,17 @@ const TEST_INITIALIZE_RESULT: InitializeResponse = {
     auth: true,
   },
 };
+
+function rosterChangedNotification(ref: string): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: {
+      threadId: `thread-for-${ref}`,
+      ref,
+      status: { type: "idle" },
+    },
+  };
+}
 
 function handshakeVersion(
   version: string,
@@ -1426,10 +1438,7 @@ describe("RootShell — profile-scope ownership", () => {
     const oldRequestCount = oldClient.requests.length;
 
     act(() => {
-      oldClient.emit({
-        method: "evener/tree/changed",
-        params: { revision: 7 },
-      } as AnyNotification);
+      oldClient.emit(rosterChangedNotification("old-ref"));
     });
     await Promise.resolve();
     expect(oldClient.requests).toHaveLength(oldRequestCount);
@@ -1847,10 +1856,7 @@ describe("RootShell — profile-scope ownership", () => {
       await connectA.promise;
     });
     expect(clientA.requests).toHaveLength(0);
-    clientA.emitCaptured(0, {
-      method: "evener/tree/changed",
-      params: { revision: 11 },
-    } as AnyNotification);
+    clientA.emitCaptured(0, rosterChangedNotification("ref-a"));
     expect(clientA.requests).toHaveLength(0);
 
     await act(async () => {
@@ -1938,10 +1944,7 @@ describe("RootShell — profile-scope ownership", () => {
       controlA1.read.resolve({ thread: threadA1 });
       await controlA1.read.promise;
     });
-    clientA1.emitCaptured(0, {
-      method: "evener/tree/changed",
-      params: { revision: 12 },
-    } as AnyNotification);
+    clientA1.emitCaptured(0, rosterChangedNotification("ref-a1"));
     expect(screen.queryByText("Scope A1")).toBeNull();
 
     const clientB = harness.clients[1];
@@ -2032,10 +2035,7 @@ describe("RootShell — profile-scope ownership", () => {
       list.resolve({ data: [thread] });
       await list.promise;
     });
-    client.emitCaptured(0, {
-      method: "evener/tree/changed",
-      params: { revision: 13 },
-    } as AnyNotification);
+    client.emitCaptured(0, rosterChangedNotification("ref-a"));
     expect(screen.queryByText("Removed A")).toBeNull();
     expect(client.requests).toHaveLength(1);
   });
