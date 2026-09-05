@@ -1,11 +1,12 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { WorkingDirectoryPicker, type WorkingDirectoryPickerProps } from "./WorkingDirectoryPicker";
 
 afterEach(cleanup);
 
-function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}) {
+function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
   const props: WorkingDirectoryPickerProps = {
     value: "/work",
     onClose: vi.fn(),
@@ -16,7 +17,11 @@ function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}) {
     createDirectory: async () => {},
     ...overrides,
   };
-  render(<WorkingDirectoryPicker {...props} />);
+  render(
+    <Profiler id="picker" onRender={onCommit}>
+      <WorkingDirectoryPicker {...props} />
+    </Profiler>,
+  );
   return { ...props, user: userEvent.setup() };
 }
 
@@ -100,6 +105,32 @@ test.each(["create", "cancel"])("%s new folder keeps focus inside the dialog for
   expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
   await user.keyboard("{Escape}");
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+test("creation restores dialog focus before the completed form is painted", async () => {
+  let finishCreate!: () => void;
+  const focusedCommits: boolean[] = [];
+  let sawNameInput = false;
+  const { user } = setup(
+    {
+      createDirectory: () =>
+        new Promise<void>((resolve) => {
+          finishCreate = resolve;
+        }),
+    },
+    () => {
+      const dialog = document.querySelector('[role="dialog"]');
+      const name = document.querySelector('input[autocomplete="off"]:not([aria-label="Path"])');
+      if (name) sawNameInput = true;
+      else if (sawNameInput && dialog) focusedCommits.push(dialog.contains(document.activeElement));
+    },
+  );
+  await screen.findByRole("button", { name: "Open /work/app" });
+  await user.click(screen.getByRole("button", { name: "New folder" }));
+  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "new{Enter}");
+  await act(async () => finishCreate());
+  expect(focusedCommits.length).toBeGreaterThan(0);
+  expect(focusedCommits.every(Boolean)).toBe(true);
 });
 
 test("a late directory listing cannot replace a newer navigation", async () => {
