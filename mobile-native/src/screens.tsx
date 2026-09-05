@@ -28,6 +28,7 @@ import {
   restoreUnconfirmedDraft,
 } from "./draftRecovery";
 import { TimelineItem } from "./TimelineItem";
+import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
@@ -424,6 +425,10 @@ export function ConversationScreen({
     }
   }
   const conversation = snapshot.conversation;
+  const timelineRows = useMemo(
+    () => groupTimeline(conversation?.items ?? []),
+    [conversation?.items],
+  );
   const pending = snapshot.pendingMutation?.status === "pending";
   const ready =
     connected && snapshot.status === "open" && !refreshing && !pending;
@@ -510,7 +515,7 @@ export function ConversationScreen({
         ) : null}
         <FlatList
           ref={timeline}
-          data={conversation?.items ?? []}
+          data={timelineRows}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => <TimelineItem item={item} />}
           contentContainerStyle={styles.padded}
