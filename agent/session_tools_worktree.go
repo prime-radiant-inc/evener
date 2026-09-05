@@ -997,8 +997,12 @@ func metaDirForLane(lanePath string) string { return filepath.Join(filepath.Dir(
 // rather than four positional strings so callers can't transpose them.
 type worktreeCreateCoreResult struct {
 	Path, Branch, BaseSHA, MainRoot string
-	Project                         identifier.Project
-	Run                             worktree.GitRunner
+	// MetaDir is the project metadata dir the sidecar was written to. A nested
+	// name puts the lane under a subdirectory of the project dir while the
+	// sidecar stays here, so a rollback must not derive it from Path.
+	MetaDir string
+	Project identifier.Project
+	Run     worktree.GitRunner
 }
 
 // worktreeCreateCore is the shared git-level portion of managed-worktree
@@ -1138,6 +1142,7 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		Branch:   name,
 		BaseSHA:  baseSHA,
 		MainRoot: project.CanonicalPath,
+		MetaDir:  metaDir,
 		Project:  project,
 		Run:      run,
 	}, nil
@@ -1173,7 +1178,7 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	// written for a session that will never enter it.
 	if err := s.enterWorktree(res.Path, true); err != nil {
 		if errors.Is(err, errSwapWhileClosing) {
-			s.rollbackFreshWorktree(res.Run, res.Path, res.Branch, metaDirForLane(res.Path), name)
+			s.rollbackFreshWorktree(res.Run, res.Path, res.Branch, res.MetaDir, name)
 		}
 		return WorktreeResult{}, err
 	}
