@@ -545,16 +545,25 @@ func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.
 	<-readerDone
 }
 
-// writeBlockedEnvAt builds a file-tool-confined env with no kernel wrapper
-// (a write-blocked off policy) rooted at worktree, the one shape whose
-// effective scratch path comes from the fields AdoptSessionScratch moves.
-func writeBlockedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
+// readConfinedEnvAt builds a file-tool-confined env with no kernel wrapper
+// rooted at worktree — the one shape whose effective scratch path comes from
+// the fields AdoptSessionScratch moves — whose reads are confined to the
+// worktree and its own session scratch, so a probe's read half can fail as
+// well as its write half.
+func readConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
 	t.Helper()
 	env := NewLocalExecutionEnvironment(worktree)
 	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
-	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
-		t.Fatalf("EnableSandbox: %v", err)
+	env.Sandbox = &sandbox.ResolvedPolicy{
+		Mode:         sandbox.ModeOff,
+		WriteBlocked: true,
+		FileTool:     sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}},
 	}
+	tmp, err := env.newSessionScratch()
+	if err != nil {
+		t.Fatalf("newSessionScratch: %v", err)
+	}
+	env.setOwnedSessionTmp(tmp)
 	return env
 }
 
@@ -588,10 +597,10 @@ func assertFileToolsShareTheShellScratch(t *testing.T, env *LocalExecutionEnviro
 // unsandboxed scratch layer already does.
 func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 	t.Run("environment that adopts", func(t *testing.T) {
-		from := writeBlockedEnvAt(t, t.TempDir())
+		from := readConfinedEnvAt(t, t.TempDir())
 		// A confined env that owns no scratch (its own was disposed) builds its
 		// layer with no scratch at all.
-		to := writeBlockedEnvAt(t, t.TempDir())
+		to := readConfinedEnvAt(t, t.TempDir())
 		to.DisposeSandboxScratch()
 		if _, err := to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil); err == nil {
 			t.Fatal("reading a missing file succeeded")
@@ -602,7 +611,7 @@ func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 		assertFileToolsShareTheShellScratch(t, to)
 	})
 	t.Run("environment that was left", func(t *testing.T) {
-		from := writeBlockedEnvAt(t, t.TempDir())
+		from := readConfinedEnvAt(t, t.TempDir())
 		// A file tool builds the layer around the scratch the env owns now.
 		if _, err := from.WriteFile(filepath.Join(from.SessionScratchDir(), "before.txt"), "before\n"); err != nil {
 			t.Fatalf("write_file into the owned scratch: %v", err)
@@ -621,7 +630,7 @@ func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
 // mid-operation must stay race-free: the layer the operation holds is never
 // closed under it, and every cache field is read and written under the lock.
 func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testing.T) {
-	from := writeBlockedEnvAt(t, t.TempDir())
+	from := readConfinedEnvAt(t, t.TempDir())
 	to := from.WithWorkingDirectory(t.TempDir())
 	t.Cleanup(to.DisposeUnadoptedScratch)
 
@@ -671,8 +680,8 @@ func retiredLayerFootprint(e *LocalExecutionEnvironment) (layers, fds int) {
 // swaps — and an operation that is in flight across a rebuild still completes
 // against the root it started with.
 func TestRetiredFileToolLayersAreReclaimedOnceDrained(t *testing.T) {
-	from := writeBlockedEnvAt(t, t.TempDir())
-	to := writeBlockedEnvAt(t, t.TempDir())
+	from := readConfinedEnvAt(t, t.TempDir())
+	to := readConfinedEnvAt(t, t.TempDir())
 	to.DisposeSandboxScratch()
 	first := from.SessionScratchDir()
 	if _, err := from.WriteFile(filepath.Join(first, "held.txt"), "held\n"); err != nil {
