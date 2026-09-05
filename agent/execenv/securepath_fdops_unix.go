@@ -31,6 +31,7 @@ var (
 func (s *sandboxFS) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed.Store(true)
 	for k, fd := range s.rootFds {
 		_ = unix.Close(fd)
 		delete(s.rootFds, k)

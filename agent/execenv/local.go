@@ -111,12 +111,14 @@ type LocalExecutionEnvironment struct {
 	// it is closed with sbfs during environment teardown or policy replacement.
 	scratchFS     *sandboxFS
 	scratchFSRoot string
-	// retiredFS holds layers a rebuild replaced that an operation still holds.
-	// A layer's close is not safe against a file-tool operation still using it
-	// (sandboxFS.close), so a rebuild retires the old layer and closes, at that
-	// moment, every retired layer whose operations have all completed
-	// (sandboxFS.inUse); the set is therefore bounded by the operations in
-	// flight, not by the number of rebuilds. Teardown closes whatever is left.
+	// retiredFS holds layers taken out of service that an operation still held
+	// at the time: a layer's close is not safe against a file-tool operation
+	// still using it (sandboxFS.close), so a retired layer closes itself once
+	// its last operation completes (sandboxFS.retire, release). The list is
+	// bookkeeping — pruned of closed layers at each retirement — and is
+	// therefore bounded by the operations in flight, not by the number of
+	// rebuilds. Teardown retires every layer the same way, so a file tool in
+	// flight across Cleanup completes against its root and closes it after.
 	retiredFS []*sandboxFS
 
 	// sandboxReRootErr records a fail-closed re-root refusal from the
@@ -219,20 +221,18 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	return e.sbfs
 }
 
-// retireFileToolLayerLocked takes a replaced layer out of service: it is closed
-// now if no operation holds it, otherwise kept until a later retirement finds
-// it drained. Every retired layer is re-examined on each call, which keeps the
-// retired set bounded by the operations in flight. The caller holds sbMu, and
-// since a layer is acquired only under sbMu while it is current, a retired
-// layer that is drained can never be acquired again.
+// retireFileToolLayerLocked takes a layer out of service (sandboxFS.retire):
+// closed now if no operation holds it, otherwise by the release that drains it.
+// The bookkeeping list keeps only the layers still open, re-examined on each
+// call. The caller holds sbMu, and since a layer is acquired only under sbMu
+// while it is current, a retired layer is never acquired again.
 func (e *LocalExecutionEnvironment) retireFileToolLayerLocked(layer *sandboxFS) {
+	layer.retire()
 	retired := e.retiredFS[:0]
 	for _, candidate := range append(e.retiredFS, layer) {
-		if candidate.drained() {
-			candidate.close()
-			continue
+		if !candidate.closed.Load() {
+			retired = append(retired, candidate)
 		}
-		retired = append(retired, candidate)
 	}
 	e.retiredFS = retired
 	if len(e.retiredFS) == 0 {
@@ -390,23 +390,25 @@ func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
 	e.closeFileToolLayersLocked()
 }
 
-// closeFileToolLayersLocked closes every cached fd-anchored layer, current and
-// retired. The caller holds sbMu and is a teardown or a policy replacement,
-// after every file tool for the environment has returned: a layer's close is
-// not safe against an operation still using it.
+// closeFileToolLayersLocked takes every cached fd-anchored layer, current and
+// retired, out of service. The caller holds sbMu and is a teardown or a policy
+// replacement. A layer no operation holds closes now; one a file tool is still
+// mid-operation on (Session.close joins the tool wait group only after the
+// environment's Cleanup) closes when that operation completes, so the
+// operation never sees a closed root descriptor.
 func (e *LocalExecutionEnvironment) closeFileToolLayersLocked() {
 	if e.sbfs != nil {
-		e.sbfs.close()
+		e.sbfs.retire()
 		e.sbfs = nil
 		e.sbfsScratch = ""
 	}
 	if e.scratchFS != nil {
-		e.scratchFS.close()
+		e.scratchFS.retire()
 		e.scratchFS = nil
 		e.scratchFSRoot = ""
 	}
 	for _, retired := range e.retiredFS {
-		retired.close()
+		retired.retire()
 	}
 	e.retiredFS = nil
 }
