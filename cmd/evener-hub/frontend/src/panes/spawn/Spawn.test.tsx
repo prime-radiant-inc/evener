@@ -2304,3 +2304,29 @@ test("typing a working directory reloads the model catalog only after confirmati
   );
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(baseline + 1);
 });
+
+test.each(["desktop", "mobile"])("%s directory picker follows route directory changes while open", async (surface) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
+  renderSpawn(readyClient());
+  await waitFor(() => expectWorkingDir("/home/me/app"));
+  await user.click(
+    surface === "desktop"
+      ? workingDir()
+      : screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }),
+  );
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/uncommitted");
+  act(() => {
+    window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Path" }) as HTMLInputElement).value).toBe("/home/other"),
+  );
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
+  expectWorkingDir("/home/other");
+});

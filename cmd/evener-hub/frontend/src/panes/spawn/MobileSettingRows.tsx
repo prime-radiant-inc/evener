@@ -300,6 +300,7 @@ export function MobileSettingRows({
 
       {openPicker === "Working directory" && (
         <WorkingDirectoryPicker
+          key={cwd}
           value={cwd}
           fallbackDir={fallbackDir}
           complete={complete}

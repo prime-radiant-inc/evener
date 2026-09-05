@@ -90,6 +90,8 @@ export function WorkingDirectoryPicker({
     try {
       const result = await validatePath(path.trim(), "dir");
       if (!mounted.current || request.current !== id) return;
+      // Selection requires an existing directory; New folder explicitly creates
+      // a child before it becomes a selectable destination.
       if (!result.valid) {
         setError(result.error || "This path is not a directory.");
         return;
@@ -105,7 +107,8 @@ export function WorkingDirectoryPicker({
     }
   }
 
-  // Each opening mounts a fresh draft. Late responses cannot revive a closed
+  // Callers key this draft by the committed directory so external route changes
+  // discard stale browsing. Late responses cannot revive a closed
   // picker or replace a directory selected by a newer navigation.
   // biome-ignore lint/correctness/useExhaustiveDependencies: opening snapshot; callbacks belong to this picker lifetime
   useEffect(() => {
