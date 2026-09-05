@@ -1,5 +1,8 @@
 version: "2"
 
+run:
+  concurrency: 2
+
 # server/appwire_*.go carries the codex/appwire wire protocol, which forces
 # camelCase JSON tags, inside package `server`, which is snake_case everywhere
 # else (server.go alone holds 119 snake tags). evener-namingcheck expressed that
