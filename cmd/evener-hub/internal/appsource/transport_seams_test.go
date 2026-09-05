@@ -1152,6 +1152,182 @@ func TestLocalDaemonItemSnapshotBoundedToCompleteTransitions(t *testing.T) {
 			t.Fatalf("continued bounded disjoint cursor = %+v, want A,B", continued.Candidates.Candidates)
 		}
 	})
+
+	t.Run("full A,B then bounded disjoint C,D with rewritten hidden prefix", func(t *testing.T) {
+		source, _ := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("X", 0), item("Y", 1)})
+		nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
+		nativeOlderCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: 2})
+		if err != nil {
+			t.Fatalf("encode native older cursor: %v", err)
+		}
+		complete, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""))
+		if err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("C", 2), item("D", 3)}, nativeOlderCursor))
+		if err != nil {
+			t.Fatalf("bounded disjoint conversion: %v", err)
+		}
+		if bounded.Identity.Incarnation == complete.Identity.Incarnation {
+			t.Fatalf("rewritten hidden prefix preserved incarnation %q", bounded.Identity.Incarnation)
+		}
+	})
+}
+
+func TestLocalDaemonHiddenCompletePrefixValidation(t *testing.T) {
+	item := func(id string, ordinal uint32) appwire.ThreadItem {
+		position := appwire.ThreadItemPosition{Entry: 0, Item: ordinal}
+		return appwire.ThreadItem{
+			Type: "agentMessage", ID: id, TranscriptKey: "key-" + id, Position: &position, TurnID: "turn-1", Text: id,
+		}
+	}
+	read := func(items []appwire.ThreadItem, olderCursor string) appwire.ThreadReadResponse {
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: "thread", Evener: appwire.EvenerThread{Ref: "local:thread"}, Turns: []appwire.Turn{{
+				ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment, HasEarlierItems: olderCursor != "",
+			}}},
+			PageUnit: appwire.TranscriptPageUnitItem, OlderCursor: olderCursor,
+		}
+	}
+	page := func(items []appwire.ThreadItem, nextCursor string) appwire.ThreadTurnsListResponse {
+		turns := []appwire.Turn(nil)
+		if items != nil {
+			turns = []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment}}
+		}
+		return appwire.ThreadTurnsListResponse{Data: turns, NextCursor: nextCursor, PageUnit: appwire.TranscriptPageUnitItem}
+	}
+	newSource := func(t *testing.T, handler func(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error)) *LocalDaemonSource {
+		t.Helper()
+		server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+		appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, handler)
+		httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+		t.Cleanup(httpServer.Close)
+		entry := rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws" + httpServer.URL[len("http"):],
+			SourceID: "local", ThreadID: "thread", SessionID: "thread", WorkspaceRef: "local:thread",
+			InstanceID: "hidden-prefix-instance",
+		}
+		return NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+			return []LocalDaemonEntry{{Entry: entry}}
+		}, httpServer.Client())
+	}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
+	nativeCursor := func(t *testing.T, before uint32) string {
+		t.Helper()
+		cursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: before})
+		if err != nil {
+			t.Fatalf("encode native cursor before %d: %v", before, err)
+		}
+		return cursor
+	}
+	completeItems := []appwire.ThreadItem{item("A", 0), item("B", 1), item("C", 2), item("D", 3)}
+	boundedItems := []appwire.ThreadItem{item("E", 4), item("F", 5)}
+
+	t.Run("unchanged prefix across two pages", func(t *testing.T) {
+		firstCursor := nativeCursor(t, 4)
+		secondCursor := nativeCursor(t, 2)
+		var (
+			requestsMu sync.Mutex
+			requests   []appwire.ThreadTurnsListParams
+		)
+		source := newSource(t, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			requestsMu.Lock()
+			requests = append(requests, params)
+			requestsMu.Unlock()
+			switch params.Cursor {
+			case firstCursor:
+				return page([]appwire.ThreadItem{item("C", 2), item("D", 3)}, secondCursor), nil
+			case secondCursor:
+				return page([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""), nil
+			default:
+				return appwire.ThreadTurnsListResponse{}, fmt.Errorf("unexpected native cursor")
+			}
+		})
+		complete, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(completeItems, ""))
+		if err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		bounded, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(boundedItems, firstCursor))
+		if err != nil {
+			t.Fatalf("bounded conversion: %v", err)
+		}
+		if bounded.Identity.Incarnation != complete.Identity.Incarnation {
+			t.Fatalf("multi-page unchanged prefix rotated incarnation to %q, want %q", bounded.Identity.Incarnation, complete.Identity.Incarnation)
+		}
+		requestsMu.Lock()
+		gotRequests := append([]appwire.ThreadTurnsListParams(nil), requests...)
+		requestsMu.Unlock()
+		if len(gotRequests) != 2 || gotRequests[0].ItemLimit != 4 || gotRequests[1].ItemLimit != 2 {
+			t.Fatalf("hidden-prefix item limits = %+v, want [4,2]", gotRequests)
+		}
+		remaining := len(completeItems)
+		pageCounts := []int{2, 2}
+		for index, request := range gotRequests {
+			if request.ItemLimit > remaining {
+				t.Fatalf("request %d item limit = %d, exceeds remaining prefix %d", index, request.ItemLimit, remaining)
+			}
+			remaining -= pageCounts[index]
+		}
+	})
+
+	t.Run("pre-canceled context preserves snapshot", func(t *testing.T) {
+		firstCursor := nativeCursor(t, 4)
+		var calls int
+		source := newSource(t, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			calls++
+			return page(completeItems, ""), nil
+		})
+		if _, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(completeItems, "")); err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		before, ok := source.itemSnapshots.get("local:thread")
+		if !ok {
+			t.Fatal("complete conversion did not publish snapshot")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := source.ItemCandidatesFromRead(ctx, appwire.ThreadReadParams{Ref: "local:thread"}, read(boundedItems, firstCursor)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("pre-canceled bounded conversion error = %v, want context.Canceled", err)
+		}
+		after, ok := source.itemSnapshots.get("local:thread")
+		if !ok || after != before {
+			t.Fatalf("snapshot after canceled validation = %+v, %v; want unchanged %+v", after, ok, before)
+		}
+		if calls != 0 {
+			t.Fatalf("pre-canceled validation made %d daemon calls, want 0", calls)
+		}
+	})
+
+	t.Run("repeated no-progress continuation", func(t *testing.T) {
+		firstCursor := nativeCursor(t, 4)
+		var (
+			calls     int
+			itemLimit int
+		)
+		source := newSource(t, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			calls++
+			itemLimit = params.ItemLimit
+			return page(nil, firstCursor), nil
+		})
+		if _, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(completeItems, "")); err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		before, _ := source.itemSnapshots.get("local:thread")
+		_, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(boundedItems, firstCursor))
+		if err == nil || !strings.Contains(err.Error(), "made no progress") {
+			t.Fatalf("repeated no-progress conversion error = %v", err)
+		}
+		after, _ := source.itemSnapshots.get("local:thread")
+		if after != before {
+			t.Fatalf("snapshot changed after rejected no-progress continuation: got %+v, want %+v", after, before)
+		}
+		if calls != 1 {
+			t.Fatalf("repeated no-progress validation made %d daemon calls, want 1", calls)
+		}
+		if itemLimit > len(completeItems) {
+			t.Fatalf("no-progress item limit = %d, exceeds retained prefix %d", itemLimit, len(completeItems))
+		}
+	})
 }
 
 func TestLocalDaemonItemPagingIsolatesSharedWorkspaceAliases(t *testing.T) {

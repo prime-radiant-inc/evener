@@ -261,6 +261,30 @@ func itemSnapshotStateForCandidates(
 	return state
 }
 
+func itemSnapshotStateMatchesCompleteCandidates(previous itemSnapshotState, candidates []appitempaging.TranscriptItemCandidate) bool {
+	if !previous.Prefix || previous.ItemCount != len(candidates) {
+		return false
+	}
+	digest, ok := transcriptItemDigest(candidates, len(candidates))
+	if !ok || digest != previous.TranscriptDigest {
+		return false
+	}
+	if len(candidates) > 0 && (candidates[0].Position != previous.FirstPosition || candidates[len(candidates)-1].Position != previous.LastPosition) {
+		return false
+	}
+	fingerprintCount := int(previous.FingerprintCount)
+	if fingerprintCount > len(candidates) {
+		return false
+	}
+	fingerprintStart := len(candidates) - fingerprintCount
+	for index, candidate := range candidates[fingerprintStart:] {
+		if transcriptItemFingerprint(candidate) != previous.FingerprintTail[index] {
+			return false
+		}
+	}
+	return true
+}
+
 type keyedMutexEntry struct {
 	mu   sync.Mutex
 	refs int
