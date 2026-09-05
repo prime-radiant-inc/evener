@@ -7,6 +7,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
+import { CredentialsSection } from "./CredentialsSection";
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
@@ -50,6 +51,35 @@ afterEach(() => {
 });
 
 describe("ConnectProviderDialog", () => {
+  test.each(["onboarding", "settings"])(
+    "%s recovers when its first listing is interrupted by reconnect",
+    async (view) => {
+      const old = deferred<InstanceListResponse>();
+      const fake = new FakeClient("ready");
+      fake.on("evener/instance/list", () => old.promise);
+      connectionStore.getState().connect(fake);
+      render(
+        view === "onboarding" ? (
+          <ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />
+        ) : (
+          <CredentialsSection sectionId="credentials" />
+        ),
+      );
+      await act(async () => {
+        fake.emitStateChange("reconnecting");
+        fake.on("evener/instance/list", () => ({
+          instances: [instance({ name: "recovered-provider", providerId: "anthropic", authModes: ["apiKey"] })],
+          availableProviders: [],
+        }));
+        fake.emitReady();
+        old.resolve({ instances: [], availableProviders: [] });
+        await old.promise;
+      });
+      expect(await screen.findByText("recovered-provider")).toBeTruthy();
+      expect(credentialsStore.getState().loading).toBe(false);
+    },
+  );
+
   test("saving an API key still requires an explicit successful credential test", async () => {
     const anthropic = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
     let saved = false;

@@ -108,6 +108,7 @@ function emptyListState(): ListState {
 }
 
 let requestVersion = 0;
+let requestedList = false;
 
 // Reads and writes share ordering: only the most recently started request
 // can replace the listing, even when responses arrive out of order.
@@ -130,6 +131,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async fetch() {
     const client = requireClient();
+    requestedList = true;
     const version = ++requestVersion;
     set({ loading: true, error: null });
     try {
@@ -270,10 +272,24 @@ function attachNotifications(client: AppwireClientLike | null): void {
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
     requestVersion += 1;
+    credentialsStore.setState({ loading: false });
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
   }
   attachNotifications(state.client);
+  // Once a view has requested credentials, reconnects must restore its list
+  // even if its one-shot mount loader was interrupted.
+  if (
+    requestedList &&
+    state.client &&
+    state.state === "ready" &&
+    (state.client !== previous.client || previous.state !== "ready")
+  ) {
+    void credentialsStore
+      .getState()
+      .fetch()
+      .catch(() => {});
+  }
 });
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
@@ -284,6 +300,7 @@ if (initialClient) attachNotifications(initialClient);
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
   requestVersion += 1;
+  requestedList = false;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;

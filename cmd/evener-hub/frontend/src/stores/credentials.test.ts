@@ -62,6 +62,30 @@ describe("fetch", () => {
     await oldRead;
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
+  test("disconnecting releases an interrupted fetch and ready reloads the list", async () => {
+    const fake = connectFakeClient();
+    let finishOld!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishOld = resolve;
+        }),
+    );
+    const old = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    fake.emitStateChange("reconnecting");
+    expect(credentialsStore.getState().loading).toBe(false);
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.emitReady();
+    await Promise.resolve();
+    await Promise.resolve();
+    finishOld({ instances: [], availableProviders: [] });
+    await old;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    expect(credentialsStore.getState().loading).toBe(false);
+  });
+
   test("throws if no client is connected", async () => {
     await expect(credentialsStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
