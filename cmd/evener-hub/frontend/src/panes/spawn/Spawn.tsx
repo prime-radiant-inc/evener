@@ -847,6 +847,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
         {directoryOpen && (
           <WorkingDirectoryPicker
+            key={cwd}
             value={cwd}
             fallbackDir={getGlobalLastWorkingDir()}
             complete={complete}
