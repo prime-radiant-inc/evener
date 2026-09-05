@@ -1562,14 +1562,27 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	// is load-bearing (spec §4 switch step 3): a lost race fails right here,
 	// with nothing yet changed, instead of leaving the session unlocked out of
 	// its old worktree.
-	lockedTarget := false
+	entered := false
 	switch worktree.Decide(worktree.EvEnter, targetState) {
 	case worktree.ActLock:
 		marker := worktree.FormatSessionMarker(s.id)
 		if _, err := run("worktree", "lock", "--reason", marker, target); err != nil {
 			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: locking the target: %w", err)
 		}
-		lockedTarget = true
+		// The lock this switch took goes back on every failure from here on,
+		// through a control runner of its own: the close that refuses the swap
+		// has already cancelled the request context run is bound to.
+		defer func() {
+			if entered {
+				return
+			}
+			unlock, cancel, err := s.worktreeCleanupRun(st.mainRepoRoot)
+			if err != nil {
+				return
+			}
+			defer cancel()
+			_, _ = unlock("worktree", "unlock", target)
+		}()
 	case worktree.ActAdopt:
 		// Already carries our own marker (crash-resume case); nothing to do.
 	default:
@@ -1581,20 +1594,18 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 
 	// Steps 4-5: swap the env directly to the target (no intermediate
 	// restore step) and refresh envInfo + the prompt cache. A sandbox re-root the
-	// host cannot satisfy fails closed rather than switching in unconfined. A
-	// swap the session's close refused gives the target's lock back. The lock
-	// the leave released is deliberately NOT restored: the refusal means the
-	// session is closing, and its close unlocks its own lane on the way out
-	// (unlockOwnManagedWorktreeAtClose) — a re-lock landing after that would
-	// strand the lane under a dead session's marker, which prune skips and
-	// remove refuses. Resume handles either state; worktreeCreate leaves its
-	// own leave alone for the same reason.
+	// host cannot satisfy fails closed rather than switching in unconfined; a
+	// swap the session's close refused fails the same way, and the target's
+	// lock goes back above. The lock the leave released is deliberately NOT
+	// restored: the refusal means the session is closing, and its close
+	// unlocks its own lane on the way out (unlockOwnManagedWorktreeAtClose) —
+	// a re-lock landing after that would strand the lane under a dead session's
+	// marker, which prune skips and remove refuses. Resume handles either
+	// state; worktreeCreate leaves its own leave alone for the same reason.
 	if err := s.enterWorktree(target, true); err != nil {
-		if errors.Is(err, errSwapWhileClosing) && lockedTarget {
-			_, _ = run("worktree", "unlock", target)
-		}
 		return WorktreeSwitchResult{}, err
 	}
+	entered = true
 
 	// Step 6: report the path and branch.
 	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target)}, nil
