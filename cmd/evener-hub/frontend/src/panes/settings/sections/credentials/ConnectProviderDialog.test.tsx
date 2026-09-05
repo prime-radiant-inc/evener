@@ -311,6 +311,58 @@ describe("ConnectProviderDialog", () => {
     expect(onConnected).toHaveBeenCalledTimes(1);
   });
 
+  test.each(["replacement", "reconnect"])(
+    "a %s invalidates a pending test before the registry refresh",
+    async (change) => {
+      const response = deferred<{ provider: string; status: string; message: string }>();
+      const fake = connectFakeClient({
+        instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
+        availableProviders: [],
+      });
+      fake.on("evener/auth/test", () => response.promise);
+      const onConnected = vi.fn();
+      render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
+      await act(async () => {
+        if (change === "replacement") connectionStore.getState().connect(new FakeClient("connecting"));
+        else fake.emitStateChange("reconnecting");
+        response.resolve({ provider: "work", status: "success", message: "" });
+        await response.promise;
+      });
+      expect(onConnected).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
+    },
+  );
+
+  test("a reconnect invalidates a pending OAuth start before the registry refresh", async () => {
+    const start = deferred<{
+      provider: string;
+      flowId: string;
+      userCode: string;
+      verificationUrl: string;
+      intervalSeconds: number;
+    }>();
+    const fake = connectFakeClient({
+      instances: [instance({ name: "work", providerId: "openai-codex", authModes: ["oauth"] })],
+      availableProviders: [],
+    });
+    fake.on("evener/auth/device/start", () => start.promise);
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Sign in" }));
+    await act(async () => {
+      fake.emitStateChange("reconnecting");
+      start.resolve({
+        provider: "work",
+        flowId: "old-flow",
+        userCode: "OLD",
+        verificationUrl: "https://login.example",
+        intervalSeconds: 5,
+      });
+      await start.promise;
+    });
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+  });
+
   test("a credential test result is discarded when the instance list changes underneath it", async () => {
     const first = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
     const changed = { ...first, baseUrl: "https://changed.example" };

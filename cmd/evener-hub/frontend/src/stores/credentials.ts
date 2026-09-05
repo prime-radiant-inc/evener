@@ -108,8 +108,10 @@ function emptyListState(): ListState {
 }
 
 let fetchVersion = 0;
+let connectionVersion = 0;
 
-function applyList(resp: InstanceListResponse): void {
+function applyList(resp: InstanceListResponse, version: number): void {
+  if (version !== connectionVersion) return;
   fetchVersion += 1;
   credentialsStore.setState({ ...listState(resp), loading: false, error: null });
 }
@@ -135,22 +137,26 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async create(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/create", params));
+    const version = connectionVersion;
+    applyList(await client.request("evener/instance/create", params), version);
   },
 
   async edit(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/edit", params));
+    const version = connectionVersion;
+    applyList(await client.request("evener/instance/edit", params), version);
   },
 
   async remove(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/remove", { name }));
+    const version = connectionVersion;
+    applyList(await client.request("evener/instance/remove", { name }), version);
   },
 
   async setDefault(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/setDefault", { name }));
+    const version = connectionVersion;
+    applyList(await client.request("evener/instance/setDefault", { name }), version);
   },
 
   async setApiKey(provider, value) {
@@ -222,6 +228,7 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
+let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleRefetch(): void {
@@ -243,10 +250,13 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/auth/updated") scheduleRefetch();
 }
 
-function attachNotifications(client: AppwireClientLike): void {
+function attachNotifications(client: AppwireClientLike | null): void {
   if (client === wiredClient) return; // already wired to this exact client
+  unsubscribeNotifications?.();
+  clearTimeout(refetchTimer);
+  refetchTimer = undefined;
   wiredClient = client;
-  client.onNotification(handleNotification);
+  unsubscribeNotifications = client?.onNotification(handleNotification);
 }
 
 // Watches connectionStore for the client becoming available and attaches
@@ -254,8 +264,14 @@ function attachNotifications(client: AppwireClientLike): void {
 // identical wiring for the full "why react to the store instead of reading
 // it once" rationale (a mount-order race between this module and AppShell's
 // own connect() effect).
-connectionStore.subscribe((state) => {
-  if (state.client) attachNotifications(state.client);
+connectionStore.subscribe((state, previous) => {
+  if (state.client !== previous.client || state.state !== previous.state) {
+    connectionVersion += 1;
+    fetchVersion += 1;
+    clearTimeout(refetchTimer);
+    refetchTimer = undefined;
+  }
+  attachNotifications(state.client);
 });
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
@@ -266,6 +282,9 @@ if (initialClient) attachNotifications(initialClient);
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
   fetchVersion += 1;
+  connectionVersion += 1;
+  unsubscribeNotifications?.();
+  unsubscribeNotifications = undefined;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;

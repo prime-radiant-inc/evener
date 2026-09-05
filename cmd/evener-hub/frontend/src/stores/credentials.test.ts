@@ -130,6 +130,41 @@ describe("fetch", () => {
 });
 
 describe("mutations returning the updated instance list", () => {
+  test.each(["replacement", "reconnect"])("a delayed mutation cannot overwrite a %s refresh", async (change) => {
+    const old = connectFakeClient();
+    let finishMutation!: (value: InstanceListResponse) => void;
+    old.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishMutation = resolve;
+        }),
+    );
+    const mutation = credentialsStore.getState().remove("work");
+    await Promise.resolve();
+    const current = change === "replacement" ? connectFakeClient() : old;
+    if (change === "reconnect") {
+      old.emitStateChange("reconnecting");
+      old.emitReady();
+    }
+    let finishRead!: (value: InstanceListResponse) => void;
+    current.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    finishMutation({ instances: [], availableProviders: [] });
+    await mutation;
+    expect(credentialsStore.getState().loading).toBe(true);
+    finishRead(LIST_RESPONSE);
+    await refresh;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
   test("an authoritative mutation completes loading and supersedes an older read", async () => {
     const fake = connectFakeClient();
     let resolveRead: ((response: InstanceListResponse) => void) | undefined;
@@ -355,6 +390,21 @@ describe("notification-triggered refetch", () => {
     await vi.advanceTimersByTimeAsync(250);
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
+
+  test.each(["replacement", "reset"])(
+    "%s removes old notification subscriptions and scheduled refreshes",
+    async (change) => {
+      const old = connectFakeClient();
+      old.emitNotification({ method: "evener/auth/updated", params: {} });
+      const current = change === "replacement" ? connectFakeClient() : old;
+      if (change === "reset") resetCredentialsStoreForTests();
+      const list = vi.fn(() => LIST_RESPONSE);
+      current.on("evener/instance/list", list);
+      old.emitNotification({ method: "evener/auth/updated", params: {} });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(list).not.toHaveBeenCalled();
+    },
+  );
 
   test("an irrelevant notification does not trigger a refetch", async () => {
     const fake = connectFakeClient();

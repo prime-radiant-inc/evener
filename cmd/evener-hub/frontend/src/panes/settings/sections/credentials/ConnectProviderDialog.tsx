@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../../../protocol/errors";
 import type { AuthTestResponse } from "../../../../protocol/types.gen";
+import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -64,6 +65,28 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
       mounted.current = false;
     };
   }, []);
+
+  // Connection transitions invalidate operations immediately, before the
+  // replacement connection has delivered a different instance list.
+  useEffect(
+    () =>
+      connectionStore.subscribe((current, previous) => {
+        if (current.client === previous.client && current.state === previous.state) return;
+        operationVersion.current += 1;
+        setTestState((test) =>
+          test?.pending
+            ? {
+                name: test.name,
+                version: instanceVersion.current,
+                pending: false,
+                notice: "Connection changed while testing. Test the connection again.",
+              }
+            : null,
+        );
+        setOpenEditor((editor) => (editor?.kind === "device" || editor?.kind === "oauth-redirect" ? null : editor));
+      }),
+    [],
+  );
 
   // A refresh can represent a secret rotation even when every public row
   // field is unchanged, so an in-flight test cannot safely survive it. Keep
