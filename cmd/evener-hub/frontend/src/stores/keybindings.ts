@@ -122,9 +122,15 @@ const appliedOverrides = new Map<string, string | null>();
  * character-key reconcile subscribes to - AFTER this returns, so the
  * reconcile sees the final shape (restore re-registers the conditional "?"
  * entry with no knowledge of the pref; the reconcile then removes it if the
- * pref is off). */
-function unapplyAllOverrides(): void {
-  if (appliedOverrides.size === 0) return;
+ * pref is off).
+ *
+ * Returns false when the restore rolled back (the registry still holds the
+ * overrides and the applied map is intact), true otherwise - callers that
+ * discard the hub payload state after un-applying must NOT do so on false:
+ * the retained payload is the only thing that can re-drive reconciliation
+ * once the wedge clears (finding 31). */
+function unapplyAllOverrides(): boolean {
+  if (appliedOverrides.size === 0) return true;
   const snapshot = keybindingsRegistry.getState().bindings;
   try {
     for (const action of appliedOverrides.keys()) removeActionBindings(keybindingsRegistry, action);
@@ -139,10 +145,18 @@ function unapplyAllOverrides(): void {
   } catch {
     // See the doc comment: roll back, keep the applied map, never propagate.
     rollbackBindings(snapshot);
-    return;
+    return false;
   }
   appliedOverrides.clear();
+  return true;
 }
+
+/** Surfaced when support loss could not un-apply the overrides (the restore
+ * rolled back against a wedged registry): the overrides are still in effect
+ * and the hub payload state is RETAINED, so the next connection change -
+ * which re-runs setSupportFromConnection - gets a fresh attempt. */
+const UNAPPLY_ROLLED_BACK_MESSAGE =
+  "Could not restore the built-in default shortcuts: a conflicting binding is holding a default chord. This hub's keybinding overrides are still in effect; restoring retries on the next connection change.";
 
 /** Structural check for a wire payload (get result, changed params, patch
  * response, conflict `current`). The server's own validation already ran; this
@@ -346,6 +360,7 @@ function setSupportFromConnection(): void {
     if (state.hubSupport !== support) keybindingsStore.setState({ hubSupport: support });
     return;
   }
+  let unrestored = false;
   if (support === "unsupported") {
     // Support resolving to UNSUPPORTED is not the transient-disconnect case
     // (a supported hub that is temporarily unreachable keeps its overrides
@@ -354,17 +369,22 @@ function setSupportFromConnection(): void {
     // defaults are in effect". The registry must match that claim. Un-apply
     // BEFORE the setState - the character-key reconcile subscribes to the
     // store and must see the final registry shape (see unapplyAllOverrides).
-    unapplyAllOverrides();
+    unrestored = !unapplyAllOverrides();
   }
   // The unsupported drop also discards the hub PAYLOAD state: retaining
   // loaded/revision/rawOverrides across a flap would let a later supported
   // reconnect's refresh be eaten by the stale guard (the retained revision
   // can be HIGHER than the returning hub's - a restored backup, a reset
   // state file) and would leave edits composing from the old hub's raw set
-  // with the old expectedRevision. The setState stays AFTER the registry
-  // mutation, per the reconcile ordering contract.
+  // with the old expectedRevision. EXCEPT when the un-apply rolled back:
+  // the registry still fires the overrides, so forgetting the payload would
+  // strand the section claiming "defaults in effect" against live user
+  // behavior with no way to re-drive reconciliation - retain the hub state
+  // and surface a retryable hubError instead (finding 31). The setState
+  // stays AFTER the registry mutation, per the reconcile ordering contract.
   const dropHubState =
     support === "unsupported" &&
+    !unrestored &&
     (state.loaded || state.revision !== 0 || state.overrides.length > 0 || state.rawOverrides.length > 0);
   // The conflict notice clears with hubError here too (the 2b clear
   // asymmetry): a support drop disconnects the store from the hub state the
@@ -379,7 +399,7 @@ function setSupportFromConnection(): void {
     keybindingsStore.setState({
       hubSupport: support,
       hubLoading: false,
-      hubError: null,
+      hubError: unrestored ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
       conflict: null,
       ...(dropHubState ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [] } : {}),
     });

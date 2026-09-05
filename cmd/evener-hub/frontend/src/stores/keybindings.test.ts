@@ -1003,6 +1003,59 @@ describe("keybindings store: support loss", () => {
     ]);
   });
 
+  test("support loss against a WEDGED registry RETAINS the hub state with a retryable hubError, and the retry after unwedging resets", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // The wedge: a foreign binding squatting palette.open's DEFAULT chord,
+    // so the un-apply's restore exact-matches, throws, and rolls back - the
+    // registry keeps firing the override. palette.open's default is $mod+K
+    // with legacyEitherMod, so the restored base serializes
+    // "Control+[Meta]+K" (Meta OPTIONAL) - the squatter must hold exactly
+    // that, not bare "Control+K".
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+
+    expect(keybindingsStore.getState().hubSupport).toBe("unsupported");
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+    // The store must not claim "defaults in effect" against live user
+    // behavior: the hub payload is RETAINED (it re-drives reconciliation
+    // once the wedge clears) and the error says so, retryably.
+    const retained = keybindingsStore.getState();
+    expect(retained.loaded).toBe(true);
+    expect(retained.revision).toBe(3);
+    expect(retained.rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    expect(retained.hubError).toContain("still in effect");
+
+    // Unwedge; the next connection change re-runs the unsupported branch,
+    // the restore succeeds, and the drop proceeds exactly as on the clean
+    // path (the regression test above).
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+
+    const reset = keybindingsStore.getState();
+    expect(reset.hubError).toBeNull();
+    expect(reset.loaded).toBe(false);
+    expect(reset.revision).toBe(0);
+    expect(reset.rawOverrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
   test("a transient disconnect of a SUPPORTED hub keeps the overrides applied", async () => {
     // The ruled behavior, pinned: while a supported hub is temporarily
     // unreachable the feature set is unknown, not contradicted - the rows
