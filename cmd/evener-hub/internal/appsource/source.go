@@ -144,7 +144,9 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 			// window. itemSnapshotStateAdvance already proved that window unchanged.
 			next.NativeCursor = ""
 		} else if previous.NativeCursor == "" {
-			rotated = true
+			// A prior complete snapshot has no native continuation token. When the
+			// bounded window is a proved advance, adopt its token without rotating.
+			next.NativeCursor = response.OlderCursor
 		} else {
 			if len(candidates) == 0 {
 				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
