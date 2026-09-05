@@ -14,6 +14,13 @@
 // different ref" for a fresh mount to ever see. Restoring this ref's draft
 // on mount (Composer.tsx) is therefore unconditional, not guarded.
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
+const draftRevisions = new Map<string, number>();
+
+// A remount inherits the same draft revision. Editing or replacing its
+// contents changes ownership even when the resulting text is identical.
+export function readDraftRevision(ref: string): number {
+  return draftRevisions.get(ref) ?? 0;
+}
 
 export function draftStorageKey(ref: string): string {
   return `${STORAGE_PREFIX}${ref}`;
@@ -33,6 +40,7 @@ export function readDraft(ref: string): string {
 // Blank/whitespace-only content removes the key rather than storing an
 // empty string - a draft that would never send is never persisted.
 export function writeDraft(ref: string, value: string): void {
+  draftRevisions.set(ref, readDraftRevision(ref) + 1);
   try {
     if (value.trim() === "") {
       localStorage.removeItem(draftStorageKey(ref));
@@ -49,6 +57,7 @@ export function writeDraft(ref: string, value: string): void {
 // successful send/steer/queue/drain (never on failure), mirroring the
 // legacy clearComposerDraftIfUnchanged convention.
 export function clearDraft(ref: string): void {
+  draftRevisions.set(ref, readDraftRevision(ref) + 1);
   try {
     localStorage.removeItem(draftStorageKey(ref));
   } catch {

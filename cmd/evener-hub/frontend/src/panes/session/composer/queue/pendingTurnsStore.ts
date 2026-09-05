@@ -18,7 +18,7 @@ import {
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
-import { clearDraft, readDraft } from "../draft";
+import { clearDraft, readDraft, readDraftRevision } from "../draft";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
@@ -259,6 +259,7 @@ export function submitWithPendingTracking(
     return Promise.reject(new Error("A message submission is already pending for this task"));
   }
   const epoch = refreshEpoch;
+  const draftRevision = readDraftRevision(opts.ref);
   pendingTurnsStore.setState((state) => ({ submittingRefs: new Set(state.submittingRefs).add(opts.ref) }));
   return trackProjectionWork(
     (async () => {
@@ -271,7 +272,11 @@ export function submitWithPendingTracking(
         }
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
-        if (epoch === refreshEpoch && readDraft(opts.ref) === opts.text) {
+        if (
+          epoch === refreshEpoch &&
+          readDraftRevision(opts.ref) === draftRevision &&
+          readDraft(opts.ref) === opts.text
+        ) {
           clearDraft(opts.ref);
           for (const listener of submissionCommittedListeners) {
             try {

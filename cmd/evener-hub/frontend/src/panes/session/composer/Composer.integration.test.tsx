@@ -386,6 +386,8 @@ test.each([
   { edited: true, fromStrip: false },
   { edited: false, fromStrip: true },
   { edited: true, fromStrip: true },
+  { edited: "same", fromStrip: false },
+  { edited: "same", fromStrip: true },
 ])("a pending submission survives a composer remount ($edited, $fromStrip)", async ({ edited, fromStrip }) => {
   const fake = await mountComposer(
     "ref_a",
@@ -437,13 +439,16 @@ test.each([
     expect(actionButton().disabled).toBe(true);
     fireEvent.click(actionButton());
     if (edited) fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "new draft" } });
+    if (edited === "same")
+      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
   } finally {
     await act(async () => hold?.release());
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
-  expect(textarea()?.value).toBe(edited ? "new draft" : "");
-  expect(readDraft("ref_a")).toBe(edited ? "new draft" : "");
+  const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
+  expect(textarea()?.value).toBe(expectedDraft);
+  expect(readDraft("ref_a")).toBe(expectedDraft);
   await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
 });
 

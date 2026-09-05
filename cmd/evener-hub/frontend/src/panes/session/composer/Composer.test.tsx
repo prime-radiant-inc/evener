@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -15,6 +15,7 @@ import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -2548,6 +2549,48 @@ test("pasting an image renders a removable attachment tile and inserts its marke
   pastePngInto(textarea());
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+});
+
+test("a remounted draft with a reused image marker survives the old submission committing", async () => {
+  installCanvasStubs();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const user = userEvent.setup();
+  pastePngInto(textarea(), "original.png");
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await flushPendingTurnsProjectionForTests();
+
+  const transact = IDBDatabase.prototype.transaction;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceCommit: (() => void) | undefined;
+  const committed = new Promise<void>((resolve) => {
+    announceCommit = resolve;
+  });
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+    const transaction = transact.apply(this, args);
+    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+      hold = holdIndexedDBEvent(transaction, "complete");
+      void hold.reached.then(() => announceCommit?.());
+    }
+    return transaction;
+  });
+  try {
+    await user.click(submitButton());
+    await committed;
+    cleanup();
+    render(<Composer ref="ref_a" />);
+    fireEvent.change(textarea(), { target: { value: "" } });
+    pastePngInto(textarea(), "replacement.png");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
+    expect(textarea().value).toBe("[image 1]");
+  } finally {
+    await act(async () => hold?.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+  expect(textarea().value).toBe("[image 1]");
+  expect(readDraft("ref_a")).toBe("[image 1]");
+  expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy();
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 });
 
 test("the remove button names the specific attachment it removes", async () => {
