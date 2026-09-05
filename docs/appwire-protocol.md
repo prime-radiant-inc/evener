@@ -172,6 +172,8 @@ no router (reserved).
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
+| `evener/settings/keybindings/get` | hub | `EmptyParams` | `KeybindingsOverrides` | Reads the canonical user keybinding overrides (version, revision, rules). |
+| `evener/settings/keybindings/patch` | hub | `KeybindingsPatchParams` | `KeybindingsOverrides` | Replaces the user keybinding overrides using an expected revision and returns the canonical value. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
@@ -216,6 +218,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
+| `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
 
 ## Type reference
 
@@ -927,6 +930,24 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `revision` | `uint64` |  |  |
+
+
+### `KeybindingsOverrides`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `version` | `int` |  |  |
+| `revision` | `uint64` |  |  |
+| `rules` | `[]appwire.KeybindingsRule` |  |  |
+| `loadError` | `string` | yes |  |
+
+
+### `KeybindingsPatchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `expectedRevision` | `uint64` |  |  |
+| `config` | `appwire.KeybindingsConfig` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`

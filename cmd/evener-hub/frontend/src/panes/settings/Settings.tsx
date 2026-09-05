@@ -22,6 +22,7 @@ import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
+import { KeybindingsSection } from "./sections/keybindings";
 import { CodexLaunchSection } from "./sections/launchCodex";
 import { LaunchServerSection } from "./sections/launchServer";
 import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
@@ -81,6 +82,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   transcript: TranscriptSection,
   display: DisplaySection,
   notifications: NotificationsSection,
+  keybindings: KeybindingsSection,
   hub: HubSection,
   mobile: MobileSection,
   storage: StorageSection,

@@ -16,7 +16,8 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
   it. Cited from live source comments.
 - **[keybindings.md](keybindings.md)** — the keybindings dispatcher: registry,
   scope stack, precedence layers, per-binding policy flags, and how to
-  register an action or a chord.
+  register an action or a chord, plus the hub-persisted override sync
+  (payload contract, validation split, failure posture).
 - **[parity/](parity/)** — the behaviour-parity checklists the React rewrite was
   graded against, mined from the legacy hub before it was deleted. The code they
   cite is gone, so their `path:line` citations no longer resolve; they survive

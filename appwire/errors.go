@@ -24,6 +24,10 @@ const (
 	ErrorQueuedDrainPartial     ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown ErrorInfo = "mutationOutcomeUnknown"
 	ErrorInternal               ErrorInfo = "internal"
+	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
+	// rename published the new revision) before a follow-up durable step
+	// failed; the error's data carries the applied canonical state.
+	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
 )
 
 type MutationOutcome string
