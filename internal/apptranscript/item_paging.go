@@ -100,10 +100,21 @@ func (c *TurnCache) itemWindowFromFile(ctx context.Context, path string, maxLine
 	if err != nil {
 		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
 	}
-	index, stats, err := c.loadTurnIndexForItemPaging(ctx, path, maxLineBytes, project)
+	var window appitempaging.TranscriptItemWindow
+	var identity appitempaging.CursorIdentity
+	_, stats, err := c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, true, func(index turnIndexDisk, stats *ReadStats) error {
+		var err error
+		window, identity, err = c.itemWindowFromIndex(ctx, path, options, project, previous, limit, index, stats)
+		return err
+	})
 	if err != nil {
-		return appitempaging.TranscriptItemWindow{}, appitempaging.CursorIdentity{}, err
+		return appitempaging.TranscriptItemWindow{}, identity, err
 	}
+	observeIndexRead(stats)
+	return window, identity, nil
+}
+
+func (c *TurnCache) itemWindowFromIndex(ctx context.Context, path string, options ItemWindowOptions, project BoundedEntryProjector, previous bool, limit int, index turnIndexDisk, stats *ReadStats) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error) {
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         options.ThreadRef,
 		Incarnation:       index.Incarnation,
@@ -151,7 +162,6 @@ func (c *TurnCache) itemWindowFromFile(ctx context.Context, path string, maxLine
 	}
 	stats.ProjectedItems = len(selected)
 	stats.ProjectedTurns = projectedRecords
-	observeIndexRead(stats)
 
 	window := appitempaging.TranscriptItemWindow{Candidates: selected}
 	if start > 0 && len(selected) > 0 {

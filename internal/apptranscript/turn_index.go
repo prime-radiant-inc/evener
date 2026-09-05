@@ -210,7 +210,8 @@ type toolNameChange struct {
 }
 
 // LatestFromFile returns the newest bounded turn window without projecting the
-// historical prefix. A non-positive limit preserves the full-read behavior.
+// historical prefix. All limits use grouped logical turns, including the non-positive full fallback.
+// TurnsFromFile remains the separate legacy per-entry API.
 func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
 	return c.LatestFromFileContext(context.Background(), path, maxLineBytes, limit, project)
 }
@@ -218,38 +219,44 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 // LatestFromFileContext returns the newest bounded turn window while honoring
 // ctx cancellation.
 func (c *TurnCache) LatestFromFileContext(ctx context.Context, path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	if limit <= 0 {
-		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
+		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
 			return nil, "", err
 		}
 		turns, cursor := appwire.WindowTurns(all, limit)
 		return turns, cursor, nil
 	}
-	index, stats, err := c.loadTurnIndexContext(ctx, path, maxLineBytes, project)
-	if err != nil {
-		return nil, "", err
-	}
-	count := index.logicalTurnCount()
-	lo := 0
-	if count > limit {
-		lo = count - limit
-		olderCursor = strconv.Itoa(lo)
-	}
-	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, &stats)
-	if err != nil {
-		if !isContextError(err) {
-			c.invalidate(path)
+	_, stats, err := c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		count := index.logicalTurnCount()
+		lo := max(count-limit, 0)
+		if lo > 0 {
+			olderCursor = strconv.Itoa(lo)
 		}
+		selected, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				c.invalidate(path)
+			}
+			return err
+		}
+		turns = selected
+		stats.ProjectedTurns = projected
+		return nil
+	})
+	if err != nil {
 		return nil, "", err
 	}
-	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
 	return turns, olderCursor, nil
 }
 
 // PageFromFile returns turns older than cursor without projecting records
-// outside that page. A non-positive limit delegates to the legacy full reader.
+// outside that page. All limits use the same grouped logical-turn numeric coordinates;
+// non-positive limits use the grouped full reader, not legacy TurnsFromFile.
 func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
 	return c.PageFromFileContext(context.Background(), path, maxLineBytes, cursor, limit, project)
 }
@@ -257,45 +264,47 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 // PageFromFileContext returns turns older than cursor while honoring ctx
 // cancellation.
 func (c *TurnCache) PageFromFileContext(ctx context.Context, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
+	if err := ctx.Err(); err != nil {
+		return FilePage{}, err
+	}
 	if limit <= 0 {
-		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
+		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
 			return FilePage{}, err
 		}
 		page := appwire.PageTurns(all, cursor, limit)
 		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}, nil
 	}
-	index, stats, err := c.loadTurnIndexContext(ctx, path, maxLineBytes, project)
+	var page FilePage
+	_, stats, err := c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		hi := index.logicalTurnCount()
+		if cursor != "" {
+			if parsed, err := strconv.Atoi(cursor); err == nil {
+				hi = parsed
+			}
+		}
+		hi = min(max(hi, 0), index.logicalTurnCount())
+		lo := max(hi-limit, 0)
+		next := ""
+		if lo > 0 {
+			next = strconv.Itoa(lo)
+		}
+		turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				c.invalidate(path)
+			}
+			return err
+		}
+		stats.ProjectedTurns = projected
+		page = FilePage{Turns: turns, NextCursor: next}
+		return nil
+	})
 	if err != nil {
 		return FilePage{}, err
 	}
-	hi := index.logicalTurnCount()
-	if cursor != "" {
-		if parsed, err := strconv.Atoi(cursor); err == nil {
-			hi = parsed
-		}
-	}
-	if hi > index.logicalTurnCount() {
-		hi = index.logicalTurnCount()
-	}
-	if hi < 0 {
-		hi = 0
-	}
-	lo := max(hi-limit, 0)
-	next := ""
-	if lo > 0 {
-		next = strconv.Itoa(lo)
-	}
-	turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, &stats)
-	if err != nil {
-		if !isContextError(err) {
-			c.invalidate(path)
-		}
-		return FilePage{}, err
-	}
-	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
-	return FilePage{Turns: turns, NextCursor: next}, nil
+	return page, nil
 }
 
 // TurnCountFromFile returns the indexed logical turn count without projecting
@@ -586,17 +595,19 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	return c.loadTurnIndexContext(context.Background(), path, maxLineBytes, project)
 }
 
-func (c *TurnCache) loadTurnIndexForItemPaging(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
-	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, true)
-}
-
 func (c *TurnCache) loadTurnIndexContext(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
-	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false)
+	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, nil)
 }
 
-func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool) (turnIndexDisk, ReadStats, error) {
+func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool, consume func(turnIndexDisk, *ReadStats) error) (turnIndexDisk, ReadStats, error) {
+	if err := ctx.Err(); err != nil {
+		return turnIndexDisk{}, ReadStats{}, err
+	}
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return turnIndexDisk{}, ReadStats{}, err
+	}
 
 	var stats ReadStats
 	file, err := os.Open(path)
@@ -618,8 +629,13 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 	fromCache := false
 	identityMatches := false
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return turnIndexDisk{}, stats, err
+	}
 	if entry, ok := c.entries[path]; ok && entry.turnIndex != nil {
-		candidate = entry.turnIndex
+		copy := *entry.turnIndex
+		candidate = &copy
 		fromCache = true
 		identityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) &&
 			entry.fileIdentity == currentFileIdentity && entry.changeIdentity == currentChangeIdentity
@@ -672,7 +688,16 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		}
 		start = 0
 	} else if fromCache && identityMatches && start == info.Size() {
+		if consume != nil {
+			if err := consume(index, &stats); err != nil {
+				return turnIndexDisk{}, stats, err
+			}
+		}
 		c.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return turnIndexDisk{}, stats, err
+		}
 		c.touch(path)
 		c.mu.Unlock()
 		return index, stats, nil
@@ -702,60 +727,71 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		c.mu.Unlock()
 	}
 	index = cloneTurnIndexForAppend(index)
-	indexedBytes, err := scanTurnIndexContext(ctx, file, info.Size(), start, maxLineBytes, &index, resolver, project)
+	// Keep the scanner's suffix-bounded resolver undo log alive through selected
+	// projection and publication; cancellation cannot leak resolver changes.
+	scanComplete := false
+	finish := func(indexedBytes int64) error {
+		scanComplete = true
+		stats.IndexedBytes += indexedBytes
+		index.TranscriptSize = info.Size()
+		index.MaxLineBytes = maxLineBytes
+		index.ProjectionID = projectionID
+		index.FileIdentity = currentFileIdentity
+		index.ChangeIdentity = currentChangeIdentity
+		index.ModTimeUnixNS = info.ModTime().UnixNano()
+		if consume != nil {
+			if err := consume(index, &stats); err != nil {
+				return err
+			}
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// Linearization point: no selected work can fail or cancel before this commit.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		stored := index
+		basePath := path + ".appwire-index.json"
+		if rebuilt || (!fromCache && candidate == nil) {
+			index.IntegrityStamp = turnIndexIntegrityStampObserved(index, &stats)
+			stored.IntegrityStamp = index.IntegrityStamp
+			_ = writeTurnIndex(basePath, index, &stats)
+		} else if indexedBytes > 0 || index.journalNeedsRepair {
+			if err := appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats); err == nil {
+				stored.IntegrityStamp = index.IntegrityStamp
+			}
+		} else if !identityMatches {
+			// Metadata-only changes do not alter indexed content, but must be durable
+			// so a restart can validate the authoritative transcript identity.
+			_ = appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats)
+			stored.IntegrityStamp = index.IntegrityStamp
+		}
+		entry := c.entries[path]
+		if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
+			entry.turns = nil
+			entry.full = false
+			entry.itemTurns = nil
+			entry.itemFull = false
+		}
+		entry.size = info.Size()
+		entry.mod = info.ModTime()
+		entry.fileIdentity = currentFileIdentity
+		entry.changeIdentity = currentChangeIdentity
+		entry.turnIndex = &stored
+		entry.toolResolver = resolver
+		c.entries[path] = entry
+		c.touch(path)
+		c.evictLocked()
+
+		return nil
+	}
+	_, err = scanTurnIndexWithCommitContext(ctx, file, info.Size(), start, maxLineBytes, &index, resolver, project, finish)
 	if err != nil {
-		if !isContextError(err) {
+		if !scanComplete && !isContextError(err) {
 			c.invalidate(path)
 		}
 		return turnIndexDisk{}, stats, err
 	}
-	stats.IndexedBytes += indexedBytes
-	index.TranscriptSize = info.Size()
-	index.MaxLineBytes = maxLineBytes
-	index.ProjectionID = projectionID
-	index.FileIdentity = currentFileIdentity
-	index.ChangeIdentity = currentChangeIdentity
-	index.ModTimeUnixNS = info.ModTime().UnixNano()
-	stored := index
-	c.mu.Lock()
-	entry := c.entries[path]
-	if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
-		entry.turns = nil
-		entry.full = false
-		entry.itemTurns = nil
-		entry.itemFull = false
-	}
-	entry.size = info.Size()
-	entry.mod = info.ModTime()
-	entry.fileIdentity = currentFileIdentity
-	entry.changeIdentity = currentChangeIdentity
-	entry.turnIndex = &stored
-	entry.toolResolver = resolver
-	c.entries[path] = entry
-	c.touch(path)
-	c.evictLocked()
-	c.mu.Unlock()
-
-	basePath := path + ".appwire-index.json"
-	if rebuilt || (!fromCache && candidate == nil) {
-		index.IntegrityStamp = turnIndexIntegrityStampObserved(index, &stats)
-		stored.IntegrityStamp = index.IntegrityStamp
-		_ = writeTurnIndex(basePath, index, &stats)
-	} else if indexedBytes > 0 || index.journalNeedsRepair {
-		if err := appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats); err == nil {
-			stored.IntegrityStamp = index.IntegrityStamp
-		}
-	} else if !identityMatches {
-		// Metadata-only changes do not alter indexed content, but must be durable
-		// so a restart can validate the authoritative transcript identity.
-		_ = appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats)
-		stored.IntegrityStamp = index.IntegrityStamp
-	}
-	c.mu.Lock()
-	entry = c.entries[path]
-	entry.turnIndex = &stored
-	c.entries[path] = entry
-	c.mu.Unlock()
 	return index, stats, nil
 }
 
@@ -832,11 +868,18 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 }
 
 func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
+	return scanTurnIndexWithCommitContext(ctx, file, transcriptSize, start, maxLineBytes, index, projectNames, project, nil)
+}
+
+func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector, commit func(int64) error) (int64, error) {
 	if start >= transcriptSize {
 		if err := transcript.ValidateHeader(index.Header); err != nil {
 			return 0, err
 		}
-		return 0, nil
+		if commit != nil {
+			return 0, commit(0)
+		}
+		return 0, ctx.Err()
 	}
 	type resolverValue struct {
 		name    string
@@ -990,6 +1033,14 @@ func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int
 	index.FirstAnchor, index.TailAnchor = transcriptAnchors(file, index.CompleteSize)
 	if !headerRead {
 		return readBytes, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
+	}
+	if err := ctx.Err(); err != nil {
+		return readBytes, err
+	}
+	if commit != nil {
+		if err := commit(readBytes); err != nil {
+			return readBytes, err
+		}
 	}
 	scanSucceeded = true
 	return readBytes, nil

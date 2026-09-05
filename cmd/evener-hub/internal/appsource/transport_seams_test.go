@@ -290,8 +290,16 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		requests = append(requests, params)
+		selected := items
+		if params.PageUnit == appwire.TranscriptPageUnitItem {
+			before, err := appitempaging.DecodeCursor(params.Cursor, appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-native", ProjectionVersion: 1})
+			if err != nil {
+				return appwire.ThreadTurnsListResponse{}, err
+			}
+			selected = items[:int(before.Item)]
+		}
 		return appwire.ThreadTurnsListResponse{
-			Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment}}, PageUnit: appwire.TranscriptPageUnitItem,
+			Data: []appwire.Turn{{ID: "turn-1", Items: selected, ItemsView: appwire.TurnItemsViewFragment}}, PageUnit: appwire.TranscriptPageUnitItem,
 		}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))

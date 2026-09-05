@@ -103,8 +103,12 @@ func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryPr
 // authoritative file metadata matches the cached entry, otherwise parses via
 // the package ItemTurnsFromFile and caches the result.
 func (c *TurnCache) ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	return c.loadProjection(path, true, func() ([]appwire.Turn, error) {
-		return ItemTurnsFromFile(path, maxLineBytes, project)
+	return c.itemTurnsFromFileContext(context.Background(), path, maxLineBytes, project)
+}
+
+func (c *TurnCache) itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return c.loadProjectionContext(ctx, path, true, func() ([]appwire.Turn, error) {
+		return itemTurnsFromFileContext(ctx, path, maxLineBytes, project)
 	})
 }
 
@@ -114,12 +118,23 @@ func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]a
 }
 
 func (c *TurnCache) loadProjection(path string, grouped bool, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	return c.loadProjectionContext(context.Background(), path, grouped, parse)
+}
+
+func (c *TurnCache) loadProjectionContext(ctx context.Context, path string, grouped bool, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		// Without a stable identity we can't cache safely; parse uncached.
 		return parse()
 	}
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
 	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
 		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) &&
 		((grouped && e.itemFull) || (!grouped && e.full)) {
@@ -135,6 +150,9 @@ func (c *TurnCache) loadProjection(path string, grouped bool, parse func() ([]ap
 
 	// Parse outside the lock so a slow read doesn't block other sessions.
 	turns, err := parse()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		if !isContextError(err) {
 			c.invalidate(path)
@@ -143,6 +161,10 @@ func (c *TurnCache) loadProjection(path string, grouped bool, parse func() ([]ap
 	}
 
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
 	entry := c.entries[path]
 	if entry.size != fi.Size() || !entry.mod.Equal(fi.ModTime()) || entry.fileIdentity != fileIdentity(fi) || entry.changeIdentity != fileChangeIdentity(fi) {
 		entry.turns = nil

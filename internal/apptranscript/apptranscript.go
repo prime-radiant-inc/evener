@@ -3,6 +3,7 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -694,9 +695,16 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 // paging. Unlike the legacy TurnsFromFile API, continuation entries share the
 // opener's turn identity and one item-position entry ordinal.
 func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return itemTurnsFromFileContext(context.Background(), path, maxLineBytes, project)
+}
+
+func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var acc logicalTurnAccumulator
 	entryIndex := 0
-	header, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
+	header, err := scanSemanticTranscriptContext(ctx, path, maxLineBytes, func(raw json.RawMessage) error {
 		entry, decodeErr := transcript.DecodeEntry(raw)
 		if decodeErr != nil {
 			// The scanner already strictly validated every entry it admits,
@@ -707,12 +715,19 @@ func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([
 		}
 		entryIndex++
 		appendProjectedEntry(&acc, project, entry.Turn, entryIndex)
-		return nil
+		return ctx.Err()
 	})
 	if err != nil {
 		return nil, err
 	}
-	return groupedAppTurns(&acc, header)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	turns, err := groupedAppTurns(&acc, header)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return turns, err
 }
 
 // TurnsFromEntries projects already-decoded transcript entries into AppWire
@@ -793,6 +808,13 @@ func positionProjectedItemsAt(items []appwire.ThreadItem, turnID string, entryOr
 }
 
 func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+	return scanSemanticTranscriptContext(context.Background(), path, maxLineBytes, visit)
+}
+
+func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+	if err := ctx.Err(); err != nil {
+		return transcript.Header{}, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return transcript.Header{}, fmt.Errorf("open transcript: %w", err)
@@ -805,6 +827,9 @@ func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMe
 	var header transcript.Header
 	headerRead := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return transcript.Header{}, err
+		}
 		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
 		if readErr != nil {
 			return transcript.Header{}, readErr
