@@ -47,6 +47,21 @@ afterEach(() => {
 });
 
 describe("fetch", () => {
+  test("a late read cannot overwrite credentials from a newer refresh", async () => {
+    const client = connectFakeClient();
+    let resolveOld: (value: InstanceListResponse) => void = () => {};
+    const oldResponse = new Promise<InstanceListResponse>((resolve) => {
+      resolveOld = resolve;
+    });
+    client.on("evener/instance/list", () => oldResponse);
+    const oldRead = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    client.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    resolveOld({ instances: [], availableProviders: [] });
+    await oldRead;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
   test("throws if no client is connected", async () => {
     await expect(credentialsStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
@@ -115,6 +130,27 @@ describe("fetch", () => {
 });
 
 describe("mutations returning the updated instance list", () => {
+  test("an authoritative mutation completes loading and supersedes an older read", async () => {
+    const fake = connectFakeClient();
+    let resolveRead: ((response: InstanceListResponse) => void) | undefined;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    fake.on("evener/instance/create", () => LIST_RESPONSE);
+    const read = credentialsStore.getState().fetch();
+    expect(credentialsStore.getState().loading).toBe(true);
+    await credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" });
+    expect(credentialsStore.getState().loading).toBe(false);
+    expect(credentialsStore.getState().error).toBeNull();
+    resolveRead?.({ instances: [], availableProviders: [] });
+    await read;
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
   test("create() calls evener/instance/create and applies the returned list", async () => {
     const fake = connectFakeClient();
     const created: InstanceListResponse = { instances: [ONE_INSTANCE], availableProviders: [] };

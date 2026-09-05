@@ -107,8 +107,11 @@ function emptyListState(): ListState {
   return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
 }
 
+let fetchVersion = 0;
+
 function applyList(resp: InstanceListResponse): void {
-  credentialsStore.setState(listState(resp));
+  fetchVersion += 1;
+  credentialsStore.setState({ ...listState(resp), loading: false, error: null });
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
@@ -118,11 +121,14 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async fetch() {
     const client = requireClient();
+    const version = ++fetchVersion;
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
+      if (version !== fetchVersion || connectionStore.getState().client !== client) return;
       set({ ...listState(resp), loading: false });
     } catch (err) {
+      if (version !== fetchVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });
     }
   },
@@ -259,6 +265,7 @@ if (initialClient) attachNotifications(initialClient);
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
+  fetchVersion += 1;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;

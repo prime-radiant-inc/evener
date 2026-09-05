@@ -30,6 +30,7 @@ afterEach(() => {
 function connect(instances: InstanceEntry[]) {
   const client = new FakeClient("ready");
   client.on("evener/instance/list", () => ({ instances, availableProviders: [] }));
+  client.on("model/list", () => ({ data: [] }));
   connectionStore.getState().connect(client);
   return client;
 }
@@ -63,6 +64,21 @@ test("a hidden provider cannot satisfy setup", async () => {
   connect([{ ...provider, activeSource: "store", hidden: true }]);
   const { result } = renderHook(useProviderSetup);
   await waitFor(() => expect(result.current.status).toBe("missing"));
+});
+
+test("an implicit keyless provider without models does not hide onboarding on a fresh install", async () => {
+  connect([{ ...provider, name: "ollama", implicit: true, auth: "optional-bearer", credentialRequired: false }]);
+  const { result } = renderHook(useProviderSetup);
+  await waitFor(() => expect(result.current.status).toBe("missing"));
+});
+
+test("an implicit keyless provider offering models is available without credentials", async () => {
+  const client = connect([
+    { ...provider, name: "ollama", implicit: true, auth: "optional-bearer", credentialRequired: false },
+  ]);
+  client.on("model/list", () => ({ data: [{ provider: "ollama", model: "local-model" }] }));
+  const { result } = renderHook(useProviderSetup);
+  await waitFor(() => expect(result.current.status).toBe("ready"));
 });
 
 test("failed status requests offer retry instead of claiming credentials are missing", async () => {

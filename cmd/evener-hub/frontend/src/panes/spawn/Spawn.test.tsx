@@ -216,6 +216,45 @@ test("missing credentials surface setup in the composer without opening a dialog
   expectWorkingDir("/tmp/my-project");
 });
 
+test("successful keyless testing refreshes availability without an auth notification", async () => {
+  const user = userEvent.setup();
+  let available = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: [
+        {
+          name: "ollama",
+          providerId: "ollama",
+          protocol: "openai-chat",
+          auth: "none",
+          implicit: true,
+          isDefault: true,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: false,
+        },
+      ],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
+    fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "ollama/local-model" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  const testConnection = await screen.findByRole("button", { name: "Test connection" });
+  available = true;
+  await user.click(testConnection);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  await user.click(modelTrigger());
+  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
+});
+
 test("credential changes reload the cached model catalog and re-enter setup after removal", async () => {
   const user = userEvent.setup();
   let configured = false;
@@ -243,7 +282,7 @@ test("credential changes reload the cached model catalog and re-enter setup afte
       modelRequests++;
       return { data: configured ? [{ provider: "work", model: "test-model" }] : [] };
     });
-    fake.on("evener/launch/resolve", () => ({ effective: { model: "work/test-model" }, layers: [] }));
+    fake.on("evener/launch/resolve", () => ({ effective: { model: "work/test-model" }, layers: {}, provenance: {} }));
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);

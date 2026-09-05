@@ -8,6 +8,9 @@ export function useProviderSetup() {
   const { client, state: connection } = useConnectionStore();
   const { instances, loading, error, writesRefused, fetch } = useCredentialsStore();
   const [checkedClient, setCheckedClient] = useState<typeof client>(null);
+  const [keyless, setKeyless] = useState<{ instances: typeof instances; status: "ready" | "missing" | "error" } | null>(
+    null,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -27,8 +30,46 @@ export function useProviderSetup() {
   const configured = instances.some(
     (instance) =>
       !instance.hidden &&
-      (!instance.credentialRequired || (instance.activeSource !== "none" && instance.activeSource !== "")),
+      ((!instance.credentialRequired && !instance.implicit) ||
+        (instance.activeSource !== "none" && instance.activeSource !== "")),
   );
+  const implicitKeyless = instances.some(
+    (instance) => !instance.hidden && !instance.credentialRequired && instance.implicit,
+  );
+  // The registry includes an implicit Ollama instance even on a fresh install
+  // without a local server. It is available only if it actually offers models.
+  // Explicitly configured endpoints retain their configuration on network failure.
+  useEffect(() => {
+    let cancelled = false;
+    setKeyless(null);
+    if (
+      client &&
+      connection === "ready" &&
+      checkedClient === client &&
+      !loading &&
+      !error &&
+      !configured &&
+      implicitKeyless
+    ) {
+      void client.request("model/list", {}).then(
+        (response) => {
+          if (cancelled) return;
+          const available = (response.data ?? []).some((model) =>
+            instances.some(
+              (instance) => !instance.hidden && !instance.credentialRequired && instance.name === model.provider,
+            ),
+          );
+          setKeyless({ instances, status: available ? "ready" : "missing" });
+        },
+        () => {
+          if (!cancelled) setKeyless({ instances, status: "error" });
+        },
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [client, connection, checkedClient, loading, error, configured, implicitKeyless, instances]);
   const status =
     !client || connection !== "ready" || checkedClient !== client || loading
       ? "loading"
@@ -36,6 +77,10 @@ export function useProviderSetup() {
         ? "error"
         : configured
           ? "ready"
-          : "missing";
+          : implicitKeyless
+            ? keyless?.instances === instances
+              ? keyless.status
+              : "loading"
+            : "missing";
   return { status, instances, retry: fetch };
 }

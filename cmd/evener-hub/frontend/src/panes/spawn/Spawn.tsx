@@ -158,6 +158,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const providerSetup = useProviderSetup();
   const [connectingProvider, setConnectingProvider] = useState(false);
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
+  const providerConnected = useCallback(() => {
+    setConnectingProvider(false);
+    void providerSetup.retry();
+  }, [providerSetup.retry]);
 
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState("");
@@ -959,7 +963,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             </Button>
           </div>
         )}
-        {connectingProvider && <ConnectProviderDialog onClose={closeProviderSetup} onConnected={closeProviderSetup} />}
+        {connectingProvider && <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />}
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         {/* The same AttachmentTile the session composer draws (kata kbg7):

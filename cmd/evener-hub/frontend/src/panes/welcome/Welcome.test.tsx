@@ -28,13 +28,13 @@ test("a welcome pane with no provider opens the normal composer", async () => {
 });
 
 test("a background welcome pane does not replace the active session for setup", async () => {
-  window.history.pushState({}, "", "/session/local:existing");
+  window.history.pushState({}, "", "/s/local:existing");
   const client = new FakeClient("ready");
   client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
   connectionStore.getState().connect(client);
   render(<Welcome params={{}} paneId="welcome" focused={false} />);
   await screen.findByText("No session open");
-  expect(window.location.pathname).toBe("/session/local:existing");
+  expect(window.location.pathname).toBe("/s/local:existing");
 });
 
 function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
