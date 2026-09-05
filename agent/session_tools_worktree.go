@@ -230,10 +230,6 @@ type WorktreePruneResult struct {
 type worktreeGuard struct {
 	// state snapshots the current worktree occupancy (spec §7 state()).
 	state func() worktreeState
-	// controlEnv returns a local env rooted at the main repo root for lifecycle
-	// git commands (spec §7 controlEnv()). It errors when the session env is not
-	// a LocalExecutionEnvironment.
-	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// enterWorktree swaps the session env into path, saving the prior env the
 	// first time (spec §7 enterWorktree()). managed records whether path is a
 	// evener-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
@@ -246,6 +242,10 @@ type worktreeGuard struct {
 	// exitWorktree()), or an error when the swap was refused because the
 	// session is closing.
 	exitWorktree func() (restoredRoot string, ok bool, err error)
+	// controlEnv returns a local env rooted at the main repo root for lifecycle
+	// git commands (spec §7 controlEnv()). It errors when the session env is not
+	// a LocalExecutionEnvironment.
+	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// liveWorkUnder reports live child/delegate/shell work rooted at or under
 	// path (spec §7 liveWorkUnder()); remove/prune use it.
 	liveWorkUnder func(path string) []string
@@ -605,6 +605,32 @@ func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.Executio
 		return cachingWorktreeRunner(scripted(ctx, env))
 	}
 	return cachingWorktreeRunner(gitRunner(ctx, env))
+}
+
+// resolveLaneMainRoot resolves the main repository root of the worktree at
+// lanePath through a probe clone rooted there, and disposes the probe: a
+// resolution that falls back to the git binary mints a scratch on it. Empty
+// when the lane is not part of a repository.
+func resolveLaneMainRoot(local *execenv.LocalExecutionEnvironment, lanePath string) string {
+	probe := local.WithWorkingDirectory(lanePath)
+	defer probe.DisposeUnadoptedScratch()
+	return execenv.ResolveMainRepoRoot(probe, lanePath)
+}
+
+// laneControlEnv builds the control environment a lane-scoped lifecycle step
+// runs its git through: a clone rooted at the lane's main repository root,
+// resolved through resolveLaneMainRoot. The clone is this step's alone, and
+// its first command mints a scratch and takes its lease, so done disposes it
+// and the caller runs it on the way out — every caller gets one by
+// construction. ok is false when the lane is not part of a repository. The
+// caller applies whatever control policy its step needs.
+func laneControlEnv(local *execenv.LocalExecutionEnvironment, lanePath string) (controlEnv *execenv.LocalExecutionEnvironment, mainRoot string, done func(), ok bool) {
+	mainRoot = resolveLaneMainRoot(local, lanePath)
+	if mainRoot == "" {
+		return nil, "", nil, false
+	}
+	controlEnv = local.WithWorkingDirectory(mainRoot)
+	return controlEnv, mainRoot, controlEnv.DisposeUnadoptedScratch, true
 }
 
 // worktreeControlEnv returns a local env rooted at mainRepoRoot for lifecycle

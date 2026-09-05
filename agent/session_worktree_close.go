@@ -111,16 +111,11 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	// Both clones are this call's alone; a command on either mints a scratch
-	// and takes its lease, so both are disposed on the way out.
-	defer rootedAtLane.DisposeUnadoptedScratch()
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return "", false
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer done()
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
@@ -226,14 +221,11 @@ func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return ""
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	defer rootedAtLane.DisposeUnadoptedScratch()
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return ""
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	metaDir := metaDirForLane(lanePath)
 
@@ -448,14 +440,11 @@ func (s *Session) unlockOwnManagedWorktreeAtClose() {
 	if !ok {
 		return
 	}
-	rootedAtPath := local.WithWorkingDirectory(path)
-	defer rootedAtPath.DisposeUnadoptedScratch()
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtPath, path)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, path)
+	if !ok {
 		return
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
-	defer controlEnv.DisposeUnadoptedScratch()
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})
