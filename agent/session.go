@@ -1518,8 +1518,8 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 	return true
 }
 
-// extractOriginalPrompt returns the text of the first user input in the session history.
-// If compaction removed it, falls back to the SubagentTask from config.
+// extractOriginalPrompt returns a delegate's assignment or the first user
+// input of a root session. Inherited conversation does not redefine the task.
 func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
