@@ -163,23 +163,16 @@ func transcriptItemDigest(candidates []appitempaging.TranscriptItemCandidate, co
 // and retain their native cursor before preserving transcript identity.
 func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempaging.TranscriptItemCandidate, prefix bool) (itemSnapshotState, bool) {
 	current := itemSnapshotStateForCandidates(previous.ThreadRef, previous.Incarnation, previous.SourceIdentity, candidates, prefix)
-	if prefix && !previous.Prefix {
-		if previous.FingerprintCount == 0 || len(candidates) < int(previous.FingerprintCount) {
-			return current, false
-		}
-		currentTail := candidates[len(candidates)-int(previous.FingerprintCount):]
-		for index, candidate := range currentTail {
-			if transcriptItemFingerprint(candidate) != previous.FingerprintTail[index] {
-				return current, false
-			}
-		}
-		return current, true
-	}
 	if previous.ItemCount == 0 {
-		return current, prefix || len(candidates) == 0
+		return current, (prefix && previous.Prefix) || (!prefix && len(candidates) == 0)
 	}
 	if prefix {
 		start := 0
+		if !previous.Prefix {
+			for start < len(candidates) && candidates[start].Position != previous.FirstPosition {
+				start++
+			}
+		}
 		end := start + previous.ItemCount
 		if end > len(candidates) || candidates[end-1].Position != previous.LastPosition {
 			return current, false

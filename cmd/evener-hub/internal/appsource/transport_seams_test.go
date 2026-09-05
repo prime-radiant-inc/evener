@@ -880,7 +880,10 @@ func TestLocalDaemonItemSnapshotBoundedToCompleteTransitions(t *testing.T) {
 
 	t.Run("nonempty bounded B,C then full X,B,C", func(t *testing.T) {
 		source, setItems := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)})
-		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("B", 1), item("C", 2)}, "daemon-cursor"))
+		fixture := inverseNativeFixture{items: []appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)}, identity: appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "native", ProjectionVersion: 1}}
+		source.dial = fixture.dial
+		native := inverseCursor(t, fixture.identity, *fixture.items[1].Position)
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("B", 1), item("C", 2)}, native))
 		if err != nil {
 			t.Fatalf("bounded conversion: %v", err)
 		}

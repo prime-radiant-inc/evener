@@ -1412,7 +1412,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 // evenerUsageFromLLM maps a session's cumulative llm.Usage to the wire
 // appwire.EvenerUsage shown in thread/read. Returns nil when every
 // total (including CacheReadTokens) is zero — a fresh session, an old daemon
-// that never seeded usage, or a Codex thread — so the status row hides the
+// that never seeded usage, or a session without recorded usage — so the status row hides the
 // usage cluster rather than rendering ↑0 ↓0 (WS2 A7).
 func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 	return appwire.EvenerUsageFromLLM(u)
