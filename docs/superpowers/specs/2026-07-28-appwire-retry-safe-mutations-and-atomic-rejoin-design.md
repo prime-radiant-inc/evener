@@ -757,6 +757,20 @@ restores the submitted payload into the main composer because the durable
 outbox or recovery tray already owns it. Clicking Send again therefore cannot
 create a second mutation merely because the first response was lost.
 
+Browser storage waits have a bounded watchdog. A stalled open or read retires
+its connection; a late open cannot replace the recovered connection. For a
+write, the watchdog attempts transaction abort. Only successful cancellation
+permits reporting a local failure and leaving the draft available to retry.
+If the browser refuses abort because the transaction is committing or finished,
+the original submission remains pending until its complete or abort event arrives.
+The composer displays that uncertainty without offering a fresh submission of
+the same draft. The watchdog never deletes the database or bypasses the outbox.
+
+Discovery and projection refresh are background work after a successful commit.
+Their delays or failures cannot turn a saved message into a failed submission.
+A failed startup scan remains retryable, and repeated lifecycle scans of the
+same kind share outstanding work rather than accumulating behind stalled storage.
+
 An outbox record moves through:
 
 1. `submitting`: locally recorded, no authoritative outcome observed;

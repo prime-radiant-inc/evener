@@ -227,7 +227,9 @@ export function submitWithPendingTracking(
         opts.onFailure(error);
         throw error;
       } finally {
-        await refreshPendingTurnsProjection(opts.ref);
+        // Projection reads own their tracking, but cannot delay or change the
+        // result of a submission whose durable outcome is already known.
+        void refreshPendingTurnsProjection(opts.ref);
       }
     })(),
   );

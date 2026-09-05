@@ -93,6 +93,7 @@ export interface ComposerProps {
 
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
+  storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
@@ -154,6 +155,7 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoad
 
 export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
@@ -1150,6 +1152,12 @@ export function Composer({ ref }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
+      {mutationWriteStalled && (
+        <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
+          Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
+          confirmation.
+        </div>
+      )}
       {/* The ask dock no longer renders here: pending questions are the
           transcript's trailing row (Session.tsx passes AskDock as
           TranscriptBody's trailingRow), so the answering surface scrolls

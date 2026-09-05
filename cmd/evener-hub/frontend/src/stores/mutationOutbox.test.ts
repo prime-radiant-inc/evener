@@ -548,6 +548,107 @@ describe("MutationOutbox discovery", () => {
     await tabB.stop();
   });
 
+  test("a discovery failure cannot report a committed message as a failed submission", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover() {
+        throw new Error("discovery unavailable");
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    await outbox.start();
+    try {
+      const accepted = await outbox.enqueueIntent(intent("already saved"));
+      expect(await storage.listOutbox()).toEqual([accepted]);
+    } finally {
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("submission does not wait for background discovery to finish", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    let announceDiscovery: (() => void) | undefined;
+    let releaseDiscovery: (() => void) | undefined;
+    const discovered = new Promise<void>((resolve) => {
+      announceDiscovery = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover() {
+        announceDiscovery?.();
+        return gate;
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    await outbox.start();
+    let accepted = false;
+    const submit = outbox.enqueueIntent(intent("saved while discovery waits")).then(() => {
+      accepted = true;
+    });
+    try {
+      await discovered;
+      expect(await storage.listOutbox()).toHaveLength(1);
+      expect(accepted).toBe(true);
+    } finally {
+      releaseDiscovery?.();
+      await submit;
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("a failed startup scan does not poison later delivery", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const record = await storage.enqueueIntent(intent("recover at startup"));
+    const discovered: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(targets, reason) {
+        if (reason === "startup") throw new Error("storage was unavailable during startup");
+        discovered.push(...targets);
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    try {
+      await outbox.start();
+      await outbox.connectionReady();
+      expect(discovered).toEqual([TARGET]);
+      expect(await storage.listOutbox()).toEqual([record]);
+    } finally {
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("repeated liveness ticks share an outstanding scan instead of building a backlog", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await storage.enqueueIntent(intent("already saved"));
+    let tick: (() => void) | undefined;
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(_targets, reason) {
+        discoveries.push(reason);
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+      setInterval(callback) {
+        tick = callback;
+        return 1;
+      },
+      clearInterval() {},
+    });
+    await outbox.start();
+    for (let index = 0; index < 20; index += 1) tick?.();
+    await outbox.stop();
+    expect(discoveries).toEqual(["startup", "interval"]);
+    storage.close();
+  });
+
   test("the ready-state timer discovers a commit whose origin crashed before broadcasting", async () => {
     const storage = new MutationOutboxIndexedDB({
       indexedDB,

@@ -9,13 +9,14 @@
 // AskDock's own already-covered internal behavior.
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -215,6 +216,108 @@ function drainButton(): HTMLButtonElement {
 function composerSteerButton(): HTMLButtonElement {
   return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
+
+test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+  await flushPendingTurnsProjectionForTests();
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let commitObserved: (() => void) | undefined;
+  const committed = new Promise<void>((resolve) => {
+    commitObserved = resolve;
+  });
+  const transact = IDBDatabase.prototype.transaction;
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+    const transaction = transact.apply(this, args);
+    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+      hold = holdIndexedDBEvent(transaction, "complete");
+      void hold.reached.then(() => commitObserved?.());
+    }
+    return transaction;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await act(async () => {
+      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "one message only" } });
+      fireEvent.click(composerSteerButton());
+      await committed;
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(screen.getByRole("status", { name: "Message storage" }).textContent).toBeTruthy();
+    expect(textarea()?.value).toBe("one message only");
+    expect(textarea()?.disabled).toBe(false);
+    expect(composerSteerButton().disabled).toBe(true);
+    fireEvent.click(composerSteerButton());
+  } finally {
+    await act(async () => hold?.release());
+    vi.useRealTimers();
+    await flushPendingTurnsProjectionForTests();
+  }
+  expect(textarea()?.value).toBe("");
+  expect(screen.queryByRole("status", { name: "Message storage" })).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
+});
+
+test("a cancelled storage stall keeps the draft, reports the problem, and allows one safe retry", async () => {
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+  await flushPendingTurnsProjectionForTests();
+  const get = IDBObjectStore.prototype.get;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let requestObserved: (() => void) | undefined;
+  let keepAlive = true;
+  const reached = new Promise<void>((resolve) => {
+    requestObserved = resolve;
+  });
+  vi.spyOn(IDBObjectStore.prototype, "get").mockImplementationOnce(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    hold = holdIndexedDBEvent(request, "success");
+    void hold.reached.then(() => requestObserved?.());
+    const pulse = () => {
+      this.count().addEventListener("success", () => {
+        if (keepAlive) pulse();
+      });
+    };
+    pulse();
+    return request;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await act(async () => {
+      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "keep this draft" } });
+      fireEvent.click(composerSteerButton());
+      await reached;
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBeTruthy();
+    expect(textarea()?.value).toBe("keep this draft");
+    expect(composerSteerButton().disabled).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(0);
+  } finally {
+    keepAlive = false;
+    hold?.release();
+    vi.useRealTimers();
+    await flushPendingTurnsProjectionForTests();
+  }
+  fireEvent.click(composerSteerButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea()?.value).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
+});
 
 // --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
 

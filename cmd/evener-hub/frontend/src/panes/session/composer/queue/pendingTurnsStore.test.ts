@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
@@ -121,6 +122,47 @@ test("an action becomes pending only after its durable enqueue commits", async (
   await flushPendingTurnsProjectionForTests();
 
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
+});
+
+test("a committed submission releases its caller while recovery projection reads are stalled", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect();
+  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  const getAll = IDBObjectStore.prototype.getAll;
+  const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let firstRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    firstRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      const hold = holdIndexedDBEvent(request, "success");
+      held.push(hold);
+      void hold.reached.then(() => firstRead?.());
+    }
+    return request;
+  });
+  let accepted = false;
+  const onFailure = vi.fn();
+  const submit = submitWithPendingTracking({ ref: "ref_a", method: "steer", text: "one send", onFailure }, () =>
+    threadsStore.getState().steer("ref_a", "one send"),
+  ).then(() => {
+    accepted = true;
+  });
+  try {
+    await readStarted;
+    expect(await storage.listOutbox()).toHaveLength(1);
+    expect(accepted).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+    for (const hold of held) hold.release();
+    await submit;
+    await flushPendingTurnsProjectionForTests();
+  }
 });
 
 test("a local commit failure reports the exact error and never creates optimistic state", async () => {

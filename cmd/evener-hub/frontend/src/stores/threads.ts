@@ -102,6 +102,7 @@ export class ConflictError extends Error {
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
+  mutationWriteStalled: boolean;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -688,8 +689,14 @@ function getMutationRuntime(): MutationRuntime | null {
   if (mutationRuntime) return mutationRuntime;
   if (!globalThis.indexedDB) return null;
 
-  const storage = mutationStorageForTests ?? new MutationOutboxIndexedDB();
   let runtime: MutationRuntime | null = null;
+  const storage =
+    mutationStorageForTests ??
+    new MutationOutboxIndexedDB({
+      onWriteStalled: (waiting) => {
+        if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
+      },
+    });
   const dispatcher = new MutationDispatcher(storage, {
     getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
     onStorageChange: (targetRefs) => {
@@ -2039,6 +2046,7 @@ function replaceThread(
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
+  mutationWriteStalled: false,
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
