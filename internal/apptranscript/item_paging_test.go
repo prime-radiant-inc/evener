@@ -2,6 +2,8 @@ package apptranscript
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -267,6 +269,43 @@ func TestItemPagingCorruptResumeSidecarDoesNotDisableNonEmptyPaging(t *testing.T
 	}
 	if len(window.Candidates) != 2 || window.Candidates[0].Item.Text != "two" || window.Candidates[1].Item.Text != "three" {
 		t.Fatalf("paging with corrupt resume sidecar=%+v", window.Candidates)
+	}
+}
+
+func TestItemPageCancellationDuringFinalProjectorReturnsContextError(t *testing.T) {
+	path := writeEntries(t, userEntry(1, "selected"))
+	cache := NewTurnCache()
+	armed := false
+	var cancel context.CancelFunc
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
+		if armed {
+			cancel()
+		}
+		return items
+	}
+	_, before, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:final-projector", Limit: 1}, project)
+	if err != nil {
+		t.Fatalf("prime item index: %v", err)
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	cancel = cancelContext
+	armed = true
+	_, _, err = cache.LatestItemWindowFromFileContext(ctx, path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:final-projector", Limit: 1}, project)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("latest item window error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(path + ".appwire-index.json"); err != nil {
+		t.Errorf("valid item sidecar removed after cancellation: %v", err)
+	}
+	armed = false
+	_, after, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:final-projector", Limit: 1}, project)
+	if err != nil {
+		t.Fatalf("item read after cancellation: %v", err)
+	}
+	if after.Incarnation != before.Incarnation {
+		t.Fatalf("item cancellation rotated incarnation: before=%q after=%q", before.Incarnation, after.Incarnation)
 	}
 }
 

@@ -1,6 +1,8 @@
 package apptranscript
 
 import (
+	"context"
+	"errors"
 	"os"
 	"sync"
 	"time"
@@ -10,16 +12,16 @@ import (
 
 const defaultTurnCacheSize = 32
 
-// TurnCache memoizes one full transcript projection by path and authoritative
-// file metadata.
+// TurnCache memoizes legacy and grouped full transcript projections by path and
+// authoritative file metadata.
 // Transcript files are append-only, so matching object identity, size, mtime,
 // and platform change time means the parse is unchanged — a cache hit returns
 // the previously parsed turns without re-reading and re-projecting the file.
 //
 // The returned slice is shared and MUST be treated as read-only by callers
 // (WindowTurns/PageTurns slice it without mutating elements). A cache instance
-// assumes a single EntryProjector and projection mode, so give each call site
-// its own cache.
+// assumes a single EntryProjector; legacy and grouped projections have separate
+// slots because their turn cardinality differs.
 type TurnCache struct {
 	mu      sync.Mutex
 	indexMu sync.Mutex // serializes suffix advancement and journal appends
@@ -35,6 +37,8 @@ type turnCacheEntry struct {
 	changeIdentity string
 	turns          []appwire.Turn
 	full           bool
+	itemTurns      []appwire.Turn
+	itemFull       bool
 	turnIndex      *turnIndexDisk
 	// toolResolver is private scanning state. indexMu protects it; published
 	// turnIndex snapshots never reference this mutable map.
@@ -99,23 +103,31 @@ func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryPr
 // authoritative file metadata matches the cached entry, otherwise parses via
 // the package ItemTurnsFromFile and caches the result.
 func (c *TurnCache) ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	return c.load(path, func() ([]appwire.Turn, error) {
+	return c.loadProjection(path, true, func() ([]appwire.Turn, error) {
 		return ItemTurnsFromFile(path, maxLineBytes, project)
 	})
 }
 
 // load is the cache core, split out so tests can supply a counting parse fn.
 func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	return c.loadProjection(path, false, parse)
+}
+
+func (c *TurnCache) loadProjection(path string, grouped bool, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		// Without a stable identity we can't cache safely; parse uncached.
 		return parse()
 	}
 	c.mu.Lock()
-	if e, ok := c.entries[path]; ok && e.full && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
-		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) {
+	if e, ok := c.entries[path]; ok && e.size == fi.Size() && e.mod.Equal(fi.ModTime()) &&
+		e.fileIdentity == fileIdentity(fi) && e.changeIdentity == fileChangeIdentity(fi) &&
+		((grouped && e.itemFull) || (!grouped && e.full)) {
 		c.touch(path)
 		turns := e.turns
+		if grouped {
+			turns = e.itemTurns
+		}
 		c.mu.Unlock()
 		return turns, nil
 	}
@@ -124,23 +136,40 @@ func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]a
 	// Parse outside the lock so a slow read doesn't block other sessions.
 	turns, err := parse()
 	if err != nil {
-		c.invalidate(path)
+		if !isContextError(err) {
+			c.invalidate(path)
+		}
 		return nil, err
 	}
 
 	c.mu.Lock()
 	entry := c.entries[path]
+	if entry.size != fi.Size() || !entry.mod.Equal(fi.ModTime()) || entry.fileIdentity != fileIdentity(fi) || entry.changeIdentity != fileChangeIdentity(fi) {
+		entry.turns = nil
+		entry.full = false
+		entry.itemTurns = nil
+		entry.itemFull = false
+	}
 	entry.size = fi.Size()
 	entry.mod = fi.ModTime()
 	entry.fileIdentity = fileIdentity(fi)
 	entry.changeIdentity = fileChangeIdentity(fi)
-	entry.turns = turns
-	entry.full = true
+	if grouped {
+		entry.itemTurns = turns
+		entry.itemFull = true
+	} else {
+		entry.turns = turns
+		entry.full = true
+	}
 	c.entries[path] = entry
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
 	return turns, nil
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (c *TurnCache) invalidate(path string) {

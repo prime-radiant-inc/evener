@@ -3,7 +3,9 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1220,6 +1222,100 @@ func TestTurnCacheBoundedReadsEvictBeyondDefaultPathLimit(t *testing.T) {
 	}
 	if _, ok := cache.entries[paths[len(paths)-1]]; !ok {
 		t.Fatalf("newest bounded transcript was evicted")
+	}
+}
+
+func TestTurnCacheCanceledProjectionPreservesValidItemIndexIdentity(t *testing.T) {
+	path := writeEntries(t, userEntry(1, "first"), userEntry(2, "second"))
+	cache := NewTurnCache()
+	armed := false
+	var cancel context.CancelFunc
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
+		if armed {
+			armed = false
+			cancel()
+		}
+		return items
+	}
+	_, before, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:preserve", Limit: 1}, project)
+	if err != nil {
+		t.Fatalf("prime item index: %v", err)
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	cancel = cancelContext
+	armed = true
+	if _, err := cache.PageFromFileContext(ctx, path, testMaxLineBytes, "", 1, project); !errors.Is(err, context.Canceled) {
+		t.Fatalf("page error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(path + ".appwire-index.json"); err != nil {
+		t.Errorf("valid sidecar removed after cancellation: %v", err)
+	}
+	if entry, ok := cache.entries[path]; !ok || entry.turnIndex == nil {
+		t.Errorf("valid cached index removed after cancellation")
+	}
+
+	_, after, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{ThreadRef: "local:preserve", Limit: 1}, project)
+	if err != nil {
+		t.Fatalf("read after cancellation: %v", err)
+	}
+	if after.Incarnation != before.Incarnation {
+		t.Fatalf("cancellation rotated incarnation: before=%q after=%q", before.Incarnation, after.Incarnation)
+	}
+}
+
+func TestTurnCacheCanceledAppendScanDoesNotPublishResolverState(t *testing.T) {
+	path := writeEntries(t, assistantToolCallEntry(1, "call", "communicate", `{}`))
+	cache := NewTurnCache()
+	armed := false
+	var cancel context.CancelFunc
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
+		if armed && turn.Kind == schema.TurnToolResults {
+			cancel()
+		}
+		return items
+	}
+	index, _, err := cache.loadTurnIndexContext(context.Background(), path, testMaxLineBytes, project)
+	if err != nil {
+		t.Fatalf("prime index: %v", err)
+	}
+	resolverBefore := cloneToolNames(cache.entries[path].toolResolver)
+	appendFile(t, path, marshalEntryLine(t, toolResultEntry(2, "call", "", "done")))
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	cancel = cancelContext
+	armed = true
+	_, _, err = cache.loadTurnIndexContext(ctx, path, testMaxLineBytes, project)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("append scan error = %v, want context.Canceled", err)
+	}
+	entry, ok := cache.entries[path]
+	if !ok || entry.turnIndex == nil {
+		t.Errorf("canceled append removed the previously valid cached index")
+	} else {
+		if entry.turnIndex.Incarnation != index.Incarnation {
+			t.Errorf("canceled append changed incarnation: before=%q after=%q", index.Incarnation, entry.turnIndex.Incarnation)
+		}
+		if entry.turnIndex.CompleteSize != index.CompleteSize || entry.turnIndex.recordCount() != index.recordCount() {
+			t.Errorf("canceled append published partial index: before=(size=%d records=%d) after=(size=%d records=%d)", index.CompleteSize, index.recordCount(), entry.turnIndex.CompleteSize, entry.turnIndex.recordCount())
+		}
+		if !reflect.DeepEqual(entry.toolResolver, resolverBefore) {
+			t.Errorf("canceled append published resolver state: got=%v want=%v", entry.toolResolver, resolverBefore)
+		}
+	}
+	if _, err := os.Stat(path + ".appwire-index.json"); err != nil {
+		t.Errorf("canceled append removed valid sidecar: %v", err)
+	}
+
+	armed = false
+	turns, _, err := cache.LatestFromFile(path, testMaxLineBytes, 1, project)
+	if err != nil {
+		t.Fatalf("uncanceled continuation: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("uncanceled continuation after canceled scan returned %d turns, want clean-build result 0", len(turns))
 	}
 }
 
