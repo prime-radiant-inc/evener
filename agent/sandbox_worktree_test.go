@@ -97,7 +97,9 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	s := sbxWorktreeSession(t)
 	laneAEnv := execenv.NewLocalExecutionEnvironment(laneA)
 	laneAEnv.Sandbox = sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)
-	s.swapEnvAndRefresh(laneAEnv)
+	if err := s.swapEnvAndRefresh(laneAEnv); err != nil {
+		t.Fatalf("swapEnvAndRefresh: %v", err)
+	}
 
 	s.enterWorktree(laneB, true)
 	entered := s.currentEnv().(*execenv.LocalExecutionEnvironment)
@@ -108,8 +110,8 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 		t.Errorf("entered sandbox write roots must be lane B only: %v", entered.Sandbox.FileTool.WriteRoots)
 	}
 
-	root, ok := s.exitWorktree()
-	if !ok || root != laneA {
+	root, ok, err := s.exitWorktree()
+	if err != nil || !ok || root != laneA {
 		t.Fatalf("exitWorktree must restore lane A, got (%q, %v)", root, ok)
 	}
 	restored := s.currentEnv().(*execenv.LocalExecutionEnvironment)

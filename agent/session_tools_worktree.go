@@ -242,8 +242,9 @@ type worktreeGuard struct {
 	enterWorktree func(path string, managed bool) error
 	// exitWorktree restores the saved pre-worktree env and clears it, returning
 	// the restored root and ok=false when no restore env was saved (spec §7
-	// exitWorktree()).
-	exitWorktree func() (restoredRoot string, ok bool)
+	// exitWorktree()), or an error when the swap was refused because the
+	// session is closing.
+	exitWorktree func() (restoredRoot string, ok bool, err error)
 	// liveWorkUnder reports live child/delegate/shell work rooted at or under
 	// path (spec §7 liveWorkUnder()); remove/prune use it.
 	liveWorkUnder func(path string) []string
@@ -740,7 +741,9 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 		return err
 	}
 
-	s.swapEnvAndRefresh(next)
+	if err := s.swapEnvAndRefresh(next); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if saveRestore {
@@ -755,18 +758,21 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 // exitWorktree implements worktreeGuard.exitWorktree() (spec §7): restore the
 // saved pre-worktree env and clear it so the next enter saves afresh. It
 // returns ok=false when no restore env was saved (the session is not in a
-// worktree entered via the tool). This is the env-restore primitive only; the
+// worktree entered via the tool), and an error when the swap was refused
+// because the session is closing. This is the env-restore primitive only; the
 // operation-level `exit` semantics (own-marker unlock, restore-land idempotent
 // lock rule) land with Task 14 and layer on top of this.
-func (s *Session) exitWorktree() (string, bool) {
+func (s *Session) exitWorktree() (string, bool, error) {
 	s.mu.Lock()
 	restore := s.worktreeRestoreEnv
 	s.mu.Unlock()
 	if restore == nil {
-		return "", false
+		return "", false, nil
 	}
 
-	s.swapEnvAndRefresh(restore)
+	if err := s.swapEnvAndRefresh(restore); err != nil {
+		return "", false, err
+	}
 
 	s.mu.Lock()
 	s.worktreeRestoreEnv = nil
@@ -774,7 +780,7 @@ func (s *Session) exitWorktree() (string, bool) {
 	s.worktreeCurrentManaged = false
 	root := restore.WorkingDirectory()
 	s.mu.Unlock()
-	return root, true
+	return root, true, nil
 }
 
 // liveWorkUnder implements worktreeGuard.liveWorkUnder() (spec §7): live
@@ -1855,7 +1861,10 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 
 	// Step 3: restore the saved env, clear it, recompute envInfo, refresh the
 	// prompt cache (spec §7 exitWorktree()).
-	restoredRoot, _ := s.exitWorktree()
+	restoredRoot, _, err := s.exitWorktree()
+	if err != nil {
+		return WorktreeExitResult{}, err
+	}
 	result := WorktreeExitResult{RestoredRoot: restoredRoot, LeftPath: leftPath}
 
 	// Step 4: if the restore root is itself a managed worktree (the session
@@ -2095,7 +2104,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: unlocking before restore: %w", err)
 			}
 		}
-		restoredRoot, _ := s.exitWorktree()
+		restoredRoot, _, err := s.exitWorktree()
+		if err != nil {
+			return WorktreeRemoveResult{}, err
+		}
 		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeRemoveResult{}, err

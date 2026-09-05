@@ -1236,7 +1236,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if err := h.s.enterWorktree(filepath.Join(h.root, "never-entered"), true); err != nil {
 			t.Fatalf("non-local enter returned error: %v", err)
 		}
-		if _, ok := h.s.exitWorktree(); ok {
+		if _, ok, _ := h.s.exitWorktree(); ok {
 			t.Fatal("non-local session unexpectedly had a restore environment")
 		}
 		if _, err := h.s.worktreeCreate(context.Background(), "lane", ""); err == nil {

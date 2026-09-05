@@ -300,3 +300,48 @@ func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.
 		t.Errorf("the enter left retained scratch dirs %v behind, want none", got)
 	}
 }
+
+// A session's close can begin while an enter is between moving the scratch
+// onto the next environment and installing it. Close cleans the environment
+// the session holds — the old one, which owns nothing any more — and the swap
+// must not then install next with a lease nothing will ever release: it
+// refuses, surfaces the refusal, and retains what next adopted.
+func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	scratch := launch.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the root's command minted no session scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func() {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	if got := currentLocalEnv(t, r.s); got != launch {
+		t.Errorf("the session installed %p during its close, want the launch environment %p kept", got, launch)
+	}
+	if _, statErr := os.Stat(scratch); statErr != nil {
+		t.Errorf("the scratch %s was removed, want it retained for the handoff: %v", scratch, statErr)
+	}
+	if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the scratch %s lease is still held after the close: no environment the session closes owns it", scratch)
+	}
+}

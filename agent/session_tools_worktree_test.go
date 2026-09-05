@@ -226,8 +226,8 @@ func TestEnterWorktree_NonLocalEnvNoOps(t *testing.T) {
 // restore env.
 func TestExitWorktree_NoSavedRestoreEnvReturnsFalse(t *testing.T) {
 	s := newSession(t)
-	root, ok := s.exitWorktree()
-	if ok || root != "" {
+	root, ok, err := s.exitWorktree()
+	if err != nil || ok || root != "" {
 		t.Fatalf("exitWorktree with no saved restore env = (%q, %v), want (\"\", false)", root, ok)
 	}
 }

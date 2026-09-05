@@ -1,6 +1,14 @@
 package agent
 
-import "primeradiant.com/evener/agent/execenv"
+import (
+	"errors"
+
+	"primeradiant.com/evener/agent/execenv"
+)
+
+// errSwapWhileClosing is what an environment swap returns when the session
+// began closing under it; the worktree op surfaces it to the caller.
+var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; environment swap refused")
 
 // swapEnvAndRefresh atomically installs next as the session's execution
 // environment and refreshes everything derived from it (envInfo, the git
@@ -21,7 +29,17 @@ import "primeradiant.com/evener/agent/execenv"
 // an environment a later exit discards, and it is held for the rest of the
 // daemon's uptime. (resumeWorktreeReentry makes the same move for the swap it
 // performs before this helper can run.)
-func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
+//
+// The swap is fenced against close. Close cleans the environment the session
+// holds when it runs, and between the move below and the install the session
+// still holds the OLD environment, which owns nothing any more: a close in that
+// window would leave next's lease with no teardown owner. So the swap refuses
+// to start once the session is closing, and re-checks under s.mu before
+// installing; a close that began meanwhile rolls the move back by retaining
+// what next adopted (lease released, directory kept, the handoff a close makes)
+// and returns errSwapWhileClosing for the op to surface. Both `closing` and the
+// install are written under s.mu, so one of the two always sees the other.
+func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) error {
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
 	// it: the git snapshot and the pre-warm below spawn through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
@@ -29,10 +47,17 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an
 	// extra retained directory per enter.
 	s.mu.Lock()
+	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.mu.Unlock()
+	if closing {
+		return errSwapWhileClosing
+	}
 	if current != nil {
 		next.AdoptSessionScratch(current)
+	}
+	if hook := s.cfg.testOnly.swapEnvAfterAdopt; hook != nil {
+		hook()
 	}
 
 	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
@@ -67,6 +92,11 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	// derive from them. next's git-root cache is already warm, so this render
 	// hits the cache instead of forking.
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		next.RetainSessionScratch()
+		return errSwapWhileClosing
+	}
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
 	s.env = next
 	s.envInfo = ei
@@ -74,4 +104,5 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) {
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
+	return nil
 }

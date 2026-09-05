@@ -496,6 +496,12 @@ type testConfig struct {
 	// it. Nil in production.
 	envCleanupObserved func(execenv.ExecutionEnvironment)
 
+	// swapEnvAfterAdopt observes the point in swapEnvAndRefresh just after the
+	// session's scratch moved onto the next environment and before the refresh
+	// and install, so a test can begin a close in that window. Nil in
+	// production.
+	swapEnvAfterAdopt func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta
