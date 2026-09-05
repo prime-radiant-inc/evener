@@ -580,8 +580,9 @@ func formatShellResult(out shellToolResult) string {
 	// promoted is the foreground-wait-timeout promotion (job-control.md:210,214):
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
-	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
-	directBackground := out.Mode == string(shellModeBackground) && out.JobID != "" && !promoted
+	backgrounded := out.Mode == string(shellModeBackground) && out.JobID != ""
+	promoted := backgrounded && out.TimedOut
+	directBackground := backgrounded && !promoted
 
 	var foot []string
 	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
@@ -615,7 +616,7 @@ func formatShellResult(out shellToolResult) string {
 		b.WriteString(strings.Join(foot, " · "))
 		b.WriteString("]")
 	}
-	if directBackground {
+	if backgrounded {
 		b.WriteByte('\n')
 		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
 	}
