@@ -7,12 +7,14 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Pressable,
   ScrollView,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -121,7 +123,7 @@ export function HubsScreen({
     >
       <KeyboardAvoidingView
         style={styles.fill}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
         <ScrollView
@@ -332,29 +334,35 @@ export function SessionsScreen({
                 });
             }}
             style={[
-              styles.card,
               {
-                marginBottom: 12,
-                backgroundColor: colors.surface,
+                paddingVertical: 13,
+                minHeight: Platform.OS === "android" ? 72 : 68,
+                borderBottomWidth: 0.5,
                 borderColor: colors.border,
+                gap: 4,
               },
             ]}
           >
             <Text
               numberOfLines={2}
-              style={{ color: colors.text, fontSize: 18, fontWeight: "600" }}
+              style={{ color: colors.text, fontSize: 17, fontWeight: "500" }}
             >
               {item.title || "Untitled session"}
             </Text>
-            <Copy muted>
-              {item.status}
-              {item.attention === "needsYou" ? " · Needs you" : ""}
-            </Copy>
-            {item.project ? (
-              <Text numberOfLines={1} style={{ color: colors.secondary }}>
-                {item.project}
-              </Text>
-            ) : null}
+            <Text
+              numberOfLines={2}
+              style={{
+                color:
+                  item.attention === "needsYou"
+                    ? colors.accent
+                    : colors.secondary,
+                fontSize: 13,
+                lineHeight: 19,
+              }}
+            >
+              {item.attention === "needsYou" ? "Needs you" : item.status}
+              {item.project ? ` · ${item.project}` : ""}
+            </Text>
           </Pressable>
         )}
       />
@@ -367,6 +375,7 @@ export function ConversationScreen({
 }: NativeStackScreenProps<Routes, "Conversation">) {
   const { activeProfile, client, state: connectionState } = useConnection();
   const colors = useColors();
+  const { fontScale } = useWindowDimensions();
   const headerHeight = useHeaderHeight();
   const store = useMemo(
     () => createConversationStore(),
@@ -460,82 +469,87 @@ export function ConversationScreen({
     >
       <KeyboardAvoidingView
         style={styles.fill}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
-        <ConnectionStatus />
-        {conversation?.items.length ? (
-          <View style={{ alignItems: "flex-end", paddingHorizontal: 16 }}>
-            <Action
-              onPress={() => timeline.current?.scrollToEnd({ animated: true })}
-            >
-              Latest messages
-            </Action>
-          </View>
-        ) : null}
-        <ErrorMessage message={snapshot.error || actionError} />
-        {unconfirmedSend !== null ? (
-          <View
-            style={[
-              styles.card,
-              { marginHorizontal: 16, borderColor: colors.border },
-            ]}
-          >
-            <Copy>Delivery unconfirmed</Copy>
-            <Copy muted>
-              Check the transcript before sending again. This message may have
-              reached the hub.
-            </Copy>
-            <ScrollView style={{ maxHeight: 100 }}>
-              <Copy>{unconfirmedSend}</Copy>
-            </ScrollView>
-            <View style={styles.row}>
-              <Action
-                disabled={snapshot.draft !== ""}
-                onPress={() => {
-                  const restored = restoreUnconfirmedDraft(
-                    store.getState().draft,
-                    unconfirmedSend,
-                  );
-                  if (restored === null) return;
-                  store.getState().setDraft(restored);
-                  setUnconfirmedSend(null);
-                }}
-              >
-                Restore to draft
-              </Action>
-              <Action onPress={() => setUnconfirmedSend(null)}>Dismiss</Action>
-            </View>
-            {snapshot.draft !== "" ? (
-              <Copy muted>
-                Your current draft is kept. Clear it to restore this message.
-              </Copy>
-            ) : null}
-          </View>
-        ) : null}
         <FlatList
           ref={timeline}
           data={timelineRows}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => <TimelineItem item={item} />}
-          contentContainerStyle={styles.padded}
-          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+          contentContainerStyle={{ padding: 16 }}
+          ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => {
             void refresh();
           }}
           ListHeaderComponent={
-            snapshot.olderCursor ? (
-              <Action
-                disabled={!ready || snapshot.loadingOlder}
-                onPress={() => {
-                  if (service) void store.getState().loadOlder(service);
-                }}
-              >
-                {snapshot.loadingOlder ? "Loading…" : "Load older messages"}
-              </Action>
-            ) : null
+            <View style={{ gap: 12, paddingBottom: 16 }}>
+              <ConnectionStatus />
+              <ErrorMessage message={snapshot.error || actionError} />
+              {unconfirmedSend !== null ? (
+                <View
+                  style={[
+                    styles.card,
+                    { marginHorizontal: 16, borderColor: colors.border },
+                  ]}
+                >
+                  <Copy>Delivery unconfirmed</Copy>
+                  <Copy muted>
+                    Check the transcript before sending again. This message may
+                    have reached the hub.
+                  </Copy>
+                  <ScrollView style={{ maxHeight: 100 }}>
+                    <Copy>{unconfirmedSend}</Copy>
+                  </ScrollView>
+                  <View style={styles.row}>
+                    <Action
+                      disabled={snapshot.draft !== ""}
+                      onPress={() => {
+                        const restored = restoreUnconfirmedDraft(
+                          store.getState().draft,
+                          unconfirmedSend,
+                        );
+                        if (restored === null) return;
+                        store.getState().setDraft(restored);
+                        setUnconfirmedSend(null);
+                      }}
+                    >
+                      Restore to draft
+                    </Action>
+                    <Action onPress={() => setUnconfirmedSend(null)}>
+                      Dismiss
+                    </Action>
+                  </View>
+                  {snapshot.draft !== "" ? (
+                    <Copy muted>
+                      Your current draft is kept. Clear it to restore this
+                      message.
+                    </Copy>
+                  ) : null}
+                </View>
+              ) : null}
+              <View style={{ flexShrink: 1 }}>
+                {connected &&
+                conversation &&
+                !conversation.capabilities.send &&
+                !conversation.capabilities.steer &&
+                !conversation.capabilities.queue ? (
+                  <Copy muted>Sending is unavailable for this session.</Copy>
+                ) : null}
+              </View>
+              {snapshot.olderCursor ? (
+                <Action
+                  disabled={!ready || snapshot.loadingOlder}
+                  onPress={() => {
+                    if (service) void store.getState().loadOlder(service);
+                  }}
+                >
+                  {snapshot.loadingOlder ? "Loading…" : "Load older messages"}
+                </Action>
+              ) : null}
+            </View>
           }
           ListEmptyComponent={
             <Copy muted>
@@ -551,17 +565,21 @@ export function ConversationScreen({
         />
         <View
           style={[
-            styles.padded,
-            { borderTopWidth: 1, borderColor: colors.border },
+            {
+              marginHorizontal: 12,
+              marginTop: 8,
+              marginBottom: 8,
+              padding: 12,
+              gap: 8,
+              borderWidth: 1,
+              borderRadius: 22,
+              borderColor: colors.border,
+              backgroundColor: colors.surface,
+            },
           ]}
         >
-          {conversation ? (
-            <Copy muted>
-              {conversation.status}
-              {conversation.queue.depth
-                ? ` · ${conversation.queue.depth} queued`
-                : ""}
-            </Copy>
+          {conversation?.queue.depth ? (
+            <Copy muted>{conversation.queue.depth} queued</Copy>
           ) : null}
           <TextInput
             accessibilityLabel="Message"
@@ -575,24 +593,53 @@ export function ConversationScreen({
               {
                 color: colors.text,
                 backgroundColor: colors.surface,
-                borderColor: colors.border,
-                maxHeight: 160,
+                borderWidth: 0,
+                padding: 2,
+                minHeight: Platform.OS === "android" ? 48 : 44,
+                maxHeight: fontScale > 1.6 ? 96 : 160,
                 textAlignVertical: "top",
               },
             ]}
           />
-          <View style={styles.row}>
-            <View style={styles.fill}>
-              {connected &&
-              conversation &&
-              !conversation.capabilities.send &&
-              !conversation.capabilities.steer &&
-              !conversation.capabilities.queue ? (
-                <Copy muted>Sending is unavailable for this session.</Copy>
-              ) : null}
-            </View>
+          <View
+            style={[
+              styles.row,
+              { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
+            ]}
+          >
+            {!connected ||
+            snapshot.error ||
+            actionError ||
+            unconfirmedSend !== null ? (
+              <Action
+                tone="quiet"
+                onPress={() => {
+                  Keyboard.dismiss();
+                  timeline.current?.scrollToOffset({
+                    offset: 0,
+                    animated: true,
+                  });
+                }}
+              >
+                {unconfirmedSend !== null
+                  ? "Check delivery"
+                  : !connected
+                    ? "Connection"
+                    : "Review error"}
+              </Action>
+            ) : conversation?.items.length ? (
+              <Action
+                tone="quiet"
+                onPress={() =>
+                  timeline.current?.scrollToEnd({ animated: true })
+                }
+              >
+                Latest
+              </Action>
+            ) : null}
             {conversation?.capabilities.interrupt ? (
               <Action
+                tone="quiet"
                 disabled={!ready}
                 onPress={() => {
                   void mutate("interrupt");
@@ -605,6 +652,12 @@ export function ConversationScreen({
               conversation?.capabilities[kind] ? (
                 <Action
                   key={kind}
+                  tone={
+                    kind === "send" ||
+                    (kind === "steer" && !conversation.capabilities.send)
+                      ? "primary"
+                      : "quiet"
+                  }
                   disabled={
                     !ready || unconfirmedSend !== null || !snapshot.draft.trim()
                   }

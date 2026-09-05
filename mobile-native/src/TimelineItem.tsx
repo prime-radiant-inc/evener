@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 import { View } from "react-native";
 import type { TimelineRow } from "./timeline";
-import { Action, Copy, styles, useColors } from "./ui";
+import { Action, Copy, useColors } from "./ui";
 
 export function TimelineItem({ item }: { item: TimelineRow }) {
   const [expanded, setExpanded] = useState(false);
@@ -12,6 +12,7 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
       content = (
         <>
           <Action
+            tone="quiet"
             label={`Session details, ${item.entries.length} ${item.entries.length === 1 ? "entry" : "entries"}`}
             expanded={expanded}
             onPress={() => setExpanded(!expanded)}
@@ -25,20 +26,15 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
       );
       break;
     case "user":
-      content = (
-        <>
-          <Copy muted>You</Copy>
-          <Copy>{item.text}</Copy>
-        </>
-      );
+      content = <Copy label={`You: ${item.text}`}>{item.text}</Copy>;
       break;
     case "assistant":
       content = (
         <>
-          <Copy muted>
-            {item.streaming ? "Assistant · writing" : "Assistant"}
+          {item.streaming ? <Copy muted>Writing…</Copy> : null}
+          <Copy label={`Evener: ${item.markdown || "Writing"}`}>
+            {item.markdown || "…"}
           </Copy>
-          <Copy>{item.markdown || "…"}</Copy>
         </>
       );
       break;
@@ -95,6 +91,7 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
       content = (
         <>
           <Action
+            tone="quiet"
             label={`${expanded ? "Collapse" : "Expand"} ${item.label}`}
             expanded={expanded}
             onPress={() => setExpanded(!expanded)}
@@ -134,16 +131,26 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
   return (
     <View
       style={[
-        styles.card,
-        { backgroundColor: colors.surface, borderColor: colors.border },
-        item.kind === "details" || item.kind === "activity"
+        { gap: 8 },
+        item.kind === "user"
           ? {
-              backgroundColor: colors.background,
-              borderWidth: 0,
-              paddingVertical: 0,
-              paddingHorizontal: 8,
+              backgroundColor: colors.surface,
+              borderRadius: 18,
+              borderBottomRightRadius: 5,
+              padding: 14,
+              marginLeft: 24,
             }
-          : null,
+          : item.kind === "question" ||
+              item.kind === "failure" ||
+              (item.kind === "notice" && item.tone === "warning")
+            ? {
+                borderLeftWidth: 2,
+                borderLeftColor:
+                  item.kind === "failure" ? colors.error : colors.accent,
+                paddingLeft: 14,
+                paddingVertical: 8,
+              }
+            : null,
       ]}
     >
       {content}
