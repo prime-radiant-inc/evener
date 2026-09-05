@@ -1,12 +1,38 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
+import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import Settings from "./Settings";
+
+// Node 26 shadows jsdom's real window.localStorage with its own
+// (non-functional under vitest) global - the same MemoryStorage stand-in
+// stores/prefs.test.ts's own comment documents, needed here because the
+// last-visited-section memory persists through localStorage.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
 
 // jsdom does not implement window.matchMedia at all - useIsMobile.test.ts's
 // own header comment documents this; every test file that drives mobile
@@ -27,6 +53,8 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
   // @ts-expect-error restores jsdom's own honest default between tests.
   delete window.matchMedia;
+  localStorage.clear();
+  resetPrefsStoreForTests();
   resetWorkspaceStoreForTests();
   resetChromeStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -244,4 +272,90 @@ test("the pane title reflects the focused section", () => {
   stubMatchMedia(false);
   render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
   expect(screen.getByRole("heading", { name: "Providers & credentials" })).toBeTruthy();
+});
+
+// Reopening Settings returns to the section the user last visited
+// (prefs.ts's lastSettingsSection), not always the first nav entry. The
+// memory is prefs-backed, so it survives a full reload; the bare URL stays
+// bare (the mobile list depends on that shape).
+test("a bare /settings reopens on the last visited section", async () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  const first = render(<Settings params={{ section: "keybindings" }} paneId="settings-1" focused={true} />);
+  // The visit is recorded - and persisted - while the section is shown.
+  expect(prefsStore.getState().lastSettingsSection).toBe("keybindings");
+  expect(localStorage.getItem("evener.prefs.lastSettingsSection")).toBe("keybindings");
+  first.unmount();
+
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  expect(await screen.findByRole("heading", { name: "Keybindings" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Keybindings" }).getAttribute("aria-current")).toBe("page");
+});
+
+test("a bare /settings opens on General when no section has been visited", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+});
+
+test("the pane tab title follows the remembered section too - no General tab over Keybindings content", async () => {
+  // The registry's title() is the DOCK TAB label (DockHost); it must resolve
+  // a bare /settings through the same remembered-section fallback the content
+  // uses (roborev PR #884 round 8).
+  const { paneFor } = await import("../../shell/paneRegistry");
+  await import("./index");
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  localStorage.setItem("evener.prefs.lastSettingsSection", "keybindings");
+  resetPrefsStoreForTests();
+
+  expect(paneFor("settings").title({}, {})).toBe("Keybindings");
+  // An explicit section always wins over the memory.
+  expect(paneFor("settings").title({ section: "theme" }, {})).toBe("Theme");
+  // And a stale remembered id falls back to General, like the content does.
+  localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
+  resetPrefsStoreForTests();
+  expect(paneFor("settings").title({}, {})).toBe("General");
+});
+
+test("a remembered section that is no longer a known section falls back to General", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
+  resetPrefsStoreForTests();
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+
+  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
+});
+
+test("the project section is not remembered (it has no nav row and needs its ?cwd= context)", () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  render(<Settings params={{ section: "project" }} paneId="settings-1" focused={true} />);
+
+  expect(prefsStore.getState().lastSettingsSection).toBeNull();
+});
+
+// The flow that motivated the memory: open Keybindings, leave, reopen, and
+// the character-key toggle is right there - one click, pref flipped, no
+// re-navigation.
+test("the remembered section carries the character-key toggle flow", async () => {
+  stubMatchMedia(false);
+  seedOpenSettingsPane();
+  const first = render(<Settings params={{ section: "keybindings" }} paneId="settings-1" focused={true} />);
+  first.unmount();
+
+  render(<Settings params={{}} paneId="settings-1" focused={true} />);
+  const toggle = await screen.findByRole("switch", { name: "Character-key shortcuts" });
+  // Default ON (the WCAG 2.1.4 turn-off exists, per the p4 plan's Design
+  // decision 3).
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+  await userEvent.setup().click(toggle);
+
+  expect(prefsStore.getState().characterKeyTriggers).toBe(false);
+  expect(localStorage.getItem("evener.prefs.characterKeyTriggers")).toBe("0");
 });

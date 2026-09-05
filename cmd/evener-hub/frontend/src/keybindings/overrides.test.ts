@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
 import { serializeChord } from "./chord";
-import { registerDefaultBindings } from "./defaults";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "./defaults";
 import { rebindAction, restoreDefaultBinding } from "./overrides";
 import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
@@ -124,6 +124,32 @@ describe("restoreDefaultBinding", () => {
     expect(bindingsFor(registry, ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
       ACTIONS.paletteOpen,
       `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("with the character-key pref off, the restore does not re-register the ? trigger", () => {
+    const registry = withDefaults();
+    // What the cheatsheetController does while the pref is off: the live
+    // registry has no "?" entry. A restore that re-registered it would
+    // resurrect a binding the user turned off (and could exact-match a
+    // surviving "Shift+?" override elsewhere).
+    registry.getState().unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+    rebindAction(registry, ACTIONS.cheatsheetToggle, "Control+Shift+/");
+    restoreDefaultBinding(registry, ACTIONS.cheatsheetToggle, { characterKeyTriggers: false });
+    expect(bindingsFor(registry, ACTIONS.cheatsheetToggle).map((b) => b.id)).toEqual([
+      ACTIONS.cheatsheetToggle,
+      `${ACTIONS.cheatsheetToggle}#mod-twin`,
+    ]);
+  });
+
+  test("without the pref option the restore still registers the ? trigger (pref-on default)", () => {
+    const registry = withDefaults();
+    rebindAction(registry, ACTIONS.cheatsheetToggle, "Control+Shift+/");
+    restoreDefaultBinding(registry, ACTIONS.cheatsheetToggle);
+    expect(bindingsFor(registry, ACTIONS.cheatsheetToggle).map((b) => b.id)).toEqual([
+      ACTIONS.cheatsheetToggle,
+      `${ACTIONS.cheatsheetToggle}#mod-twin`,
+      CHARACTER_KEY_TRIGGER_BINDING_ID,
     ]);
   });
 

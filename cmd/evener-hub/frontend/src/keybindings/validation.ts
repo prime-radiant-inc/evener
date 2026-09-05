@@ -13,8 +13,16 @@
 // the offending rule is skipped, so persisted data can degrade to defaults
 // but can never crash the shell.
 
-import { chordsOverlap, type KeySequence, keyComparisonIdentity, parseChord, regexMatchesKeyValue } from "./chord";
-import { DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
+import { ACTIONS } from "./actions";
+import {
+  chordsOverlap,
+  type KeySequence,
+  keyComparisonIdentity,
+  parseChord,
+  regexMatchesKeyValue,
+  serializeChord,
+} from "./chord";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
 import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export type KeybindingsPlatform = "apple" | "other";
@@ -25,6 +33,19 @@ export type KeybindingsPlatform = "apple" | "other";
 export function currentKeybindingsPlatform(): KeybindingsPlatform {
   if (typeof window === "undefined") return "other";
   return /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "apple" : "other";
+}
+
+/** User-facing label for an action id in conflict messages: the default
+ * map's title plus the id when the action is known
+ * ("Open the command palette" (palette.open)); the bare id otherwise (a
+ * binding registered outside the default map - e.g. a test double or a
+ * conditional entry - has no title here). A conflict message names the
+ * HOLDER of the chord the user tried to claim; a bare action id meant
+ * nothing in the editor's inline error or the skipped-overrides warnings
+ * list, where the rows themselves are titled. */
+export function actionDisplayLabel(actionId: string): string {
+  const title = DEFAULT_BINDINGS.find((b) => b.actionId === actionId)?.title;
+  return title === undefined ? `"${actionId}"` : `"${title}" (${actionId})`;
 }
 
 // The survey's verified never-use list ("not interceptable by pages"),
@@ -128,7 +149,17 @@ export interface OverrideRule {
   chord: string | null;
 }
 
-export type ValidationWarningReason = "unknown-action" | "unparseable-chord" | "reserved-chord" | "conflict";
+export type ValidationWarningReason =
+  | "unknown-action"
+  | "unparseable-chord"
+  | "reserved-chord"
+  | "conflict"
+  /** Not a validation outcome: the cheatsheetController's conditional "?"
+   * entry skipped registration because a live binding of ANOTHER action
+   * overlaps it (the chord was claimed while the character-key pref kept
+   * the entry unregistered, so nothing conflicted at bind time). Surfaces
+   * through the same store warnings channel as skipped override rules. */
+  | "character-key-conflict";
 
 export interface ValidationWarning {
   rule: OverrideRule;
@@ -170,12 +201,17 @@ interface EffectiveBinding {
  * alternative (deferring the restore) would strand the dropped action on an
  * override the hub payload no longer contains, diverging the registry from
  * the payload indefinitely. Defaults never conflict with each other, so a
- * conflict always has a rule claim to blame. */
+ * conflict always has a rule claim to blame.
+ *
+ * `characterKeyTriggers: false` mirrors the cheatsheet character-key pref:
+ * the live registry has no "?" cheatsheet binding while the pref is off, so
+ * the dropped-restore simulation must not claim one either. */
 export function validateOverrideRules(
   rules: readonly OverrideRule[],
   registry: KeybindingsRegistry,
   platform: KeybindingsPlatform = currentKeybindingsPlatform(),
   appliedActionIds: ReadonlySet<string> = new Set(),
+  characterKeyTriggers = true,
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
   const reserved = RESERVED_BY_PLATFORM[platform];
@@ -255,6 +291,37 @@ export function validateOverrideRules(
     list.push({ scope: binding.scope, sequence: binding.chord });
     live.set(binding.actionId, list);
   }
+  // The pref is authoritative over the live registry for the conditional
+  // "?" entry: a pref-flip re-apply (stores/keybindings.ts's prefs
+  // subscription) runs in the flip instant, BEFORE the cheatsheetController's
+  // reconcile has unregistered or re-registered "?", and must simulate the
+  // map the reconcile is about to establish - otherwise a pref-off re-apply
+  // would keep skipping a claim that is now valid, and a pref-on re-apply
+  // would leave a now-conflicting claim applied. Steady state (registry
+  // already mirrors the pref) is untouched. Only the default-map shape is
+  // adjusted: a cheatsheet.toggle override candidate or a dropped restore
+  // overwrites the action's whole final entry below anyway.
+  const questionShape = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+    characterKeyTriggers: true,
+  }).find((shape) => shape.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
+  if (questionShape !== undefined) {
+    const questionSerialized = serializeChord(questionShape.sequence);
+    const isQuestion = (binding: EffectiveBinding) =>
+      binding.scope === questionShape.scope && serializeChord(binding.sequence) === questionSerialized;
+    const toggleLive = live.get(ACTIONS.cheatsheetToggle) ?? [];
+    const liveHasQuestion = toggleLive.some(isQuestion);
+    if (characterKeyTriggers && !liveHasQuestion) {
+      live.set(ACTIONS.cheatsheetToggle, [
+        ...toggleLive,
+        { scope: questionShape.scope, sequence: questionShape.sequence },
+      ]);
+    } else if (!characterKeyTriggers && liveHasQuestion) {
+      live.set(
+        ACTIONS.cheatsheetToggle,
+        toggleLive.filter((binding) => !isQuestion(binding)),
+      );
+    }
+  }
   const dropped = new Set<string>();
   for (const action of appliedActionIds) {
     if (!candidates.some((c) => c.rule.action === action)) dropped.add(action);
@@ -273,7 +340,10 @@ export function validateOverrideRules(
     for (const action of dropped) {
       final.set(
         action,
-        defaultBindingShapesForAction(action).map((shape) => ({ scope: shape.scope, sequence: shape.sequence })),
+        defaultBindingShapesForAction(action, { characterKeyTriggers }).map((shape) => ({
+          scope: shape.scope,
+          sequence: shape.sequence,
+        })),
       );
     }
     for (const candidate of candidates) {
@@ -327,7 +397,7 @@ export function validateOverrideRules(
         rule: removed.rule,
         reason: "conflict",
         conflictWith,
-        message: `chord "${removed.rule.chord ?? ""}" in scope "${scope}" is already bound by "${conflictWith}"`,
+        message: `chord "${removed.rule.chord ?? ""}" in scope "${scope}" is already bound by ${actionDisplayLabel(conflictWith)}`,
       });
       if (appliedActionIds.has(removed.rule.action)) dropped.add(removed.rule.action);
       skipped = true;
