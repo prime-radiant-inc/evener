@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -660,6 +661,13 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		// nothing. Point at the flow that does configure it.
 		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
+		}
+		// gcp-adc reads no key either: a Vertex instance exists once
+		// application-default credentials or a stored credential JSON resolve
+		// and its base URL variables are set (spec §5.1). Point at those.
+		if p.Transport.Auth == registry.AuthGCPADC {
+			vars := slices.Sorted(maps.Values(p.Transport.VarsEnv))
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON via evener/auth/credentialJson/set; the instance also needs %s set", name, strings.Join(vars, ", ")))
 		}
 		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}

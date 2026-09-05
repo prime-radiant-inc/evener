@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -478,5 +479,33 @@ func TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads(t *testing.T) {
 				t.Error("the spawn gate still accepts an instance whose key was just cleared")
 			}
 		})
+	}
+}
+
+// TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies covers the spawn gate's
+// advice for an unconfigured implicit gcp-adc provider (google-vertex,
+// google-vertex-anthropic): it must point at application-default
+// credentials or a stored credential JSON, not evener/auth/apiKey/set — that
+// endpoint refuses a gcp-adc credential, and these providers' api_key_env is
+// empty anyway (roborev round 3, F2).
+func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	// An environment with no ADC (an empty HOME) and none of the instance's
+	// base-URL variables set.
+	env := map[string]string{"HOME": t.TempDir()}
+	ctrl := newTestAuthController(t, dir, stateDir, "", env)
+
+	err := validateProviderCredentials("google-vertex", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "credentialJson/set") || !strings.Contains(msg, "application-default login") {
+		t.Fatalf("err = %q, want it to name credentialJson/set and application-default login", msg)
+	}
+	if strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
 	}
 }
