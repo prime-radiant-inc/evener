@@ -225,11 +225,22 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 	}()
 	select {
 	case <-joined:
+		return
 	case <-ctx.Done():
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-			"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
-			strings.Join(s.outstandingEnvWork(), "; "))})
 	}
+	// The budget is spent. Warn only about work that is actually still there:
+	// a close reaches this join with an already-expired budget whenever the
+	// delegate-tree stop cancelled the cascade outright, and one that also
+	// admitted nothing has nothing the cleanup below can run under. An empty
+	// list is likewise what a drain that won the race by a hair leaves — both
+	// are silence, not a warning naming nobody.
+	outstanding := s.outstandingEnvWork()
+	if len(outstanding) == 0 {
+		return
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
+		strings.Join(outstanding, "; "))})
 }
 
 func (s *Session) close(ctx context.Context, cleanupEnv bool) {

@@ -424,20 +424,7 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 	r := sr.wt()
 	lanePath, _ := createLaneExpectations(t, r, "lane")
 
-	// Collect warnings off the live session until its close shuts the channel.
-	warnings := make(chan []string, 1)
-	go func() {
-		var msgs []string
-		for ev := range r.s.Events() {
-			if ev.Kind != events.EventWarning {
-				continue
-			}
-			if data, ok := ev.Data.(events.WarningData); ok {
-				msgs = append(msgs, data.Message)
-			}
-		}
-		warnings <- msgs
-	}()
+	warnings := collectWarningsUntilClosed(r.s)
 
 	closeBegun := make(chan struct{})
 	closeDone := make(chan struct{})
@@ -462,16 +449,67 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 	// Close completed rather than hanging behind the held swap: <-closeDone
 	// returned above, and the events channel it closes ends the collector.
 	msgs := <-warnings
-	var fence string
-	for _, msg := range msgs {
-		if strings.Contains(msg, "environment work still in flight") {
-			fence = msg
-		}
+	found := fenceWarnings(msgs)
+	if len(found) != 1 {
+		t.Fatalf("fence warnings = %q, want exactly one naming the work the close walked past; all warnings were %q", found, msgs)
 	}
-	if fence == "" {
-		t.Fatalf("no warning named the environment work the close walked past; warnings were %q", msgs)
-	}
+	fence := found[0]
 	if !strings.Contains(fence, lanePath) {
 		t.Errorf("fence warning %q does not name the swap still in flight (%s)", fence, lanePath)
+	}
+}
+
+// collectWarningsUntilClosed drains every EventWarning off sess until its close
+// shuts the events channel, and hands the messages back on the returned
+// channel. A fence test reads it AFTER the close it is watching has returned:
+// ranging over the channel is what makes "closed" the terminator, so unlike
+// warningMessages it is safe across a close.
+func collectWarningsUntilClosed(sess *Session) <-chan []string {
+	out := make(chan []string, 1)
+	go func() {
+		var msgs []string
+		for ev := range sess.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok {
+				msgs = append(msgs, data.Message)
+			}
+		}
+		out <- msgs
+	}()
+	return out
+}
+
+// fenceWarnings returns the environment-work fence warnings among msgs.
+func fenceWarnings(msgs []string) []string {
+	var found []string
+	for _, msg := range msgs {
+		if strings.Contains(msg, "environment work still in flight") {
+			found = append(found, msg)
+		}
+	}
+	return found
+}
+
+// A close whose budget is already spent still reaches the environment-work
+// fence: the delegate-tree stop cancels the cascade budget outright when its
+// own stop timed out, and the close carries on to cleanup. With nothing
+// admitted there is nothing the cleanup can run under, so there is nothing to
+// say — and a warning naming an empty list is noise on every such close.
+func TestWorktreeSwap_ExpiredBudgetWithNothingAdmittedSaysNothing(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	warnings := collectWarningsUntilClosed(r.s)
+
+	// A deadline already in the past: ensureCloseBudget reuses an incoming one
+	// rather than minting a fresh deadline, so the fence join meets a budget
+	// that expired before the close began.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	r.s.close(ctx, true)
+
+	if got := fenceWarnings(<-warnings); len(got) != 0 {
+		t.Errorf("a close with nothing admitted warned about the fence anyway: %q", got)
 	}
 }
