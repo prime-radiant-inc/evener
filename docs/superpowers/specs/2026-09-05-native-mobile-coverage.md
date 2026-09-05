@@ -61,8 +61,11 @@ behavioral verification, including errors, authorization, and hub isolation.
   validator with no native file picker. Its existence is not attachment support.
 - Production session listing can take about 28 seconds and sometimes exceed the
   existing 30-second request limit. Reducing page size did not resolve this. A
-  responsive app needs an investigation of the actual hub path before claiming
-  performance readiness.
+  responsive app needs the server path corrected before claiming performance
+  readiness. A subsequent [read-only investigation](../../design/mobile/roster-performance.md)
+  reproduced 12–14 second reads and sampled historical delegate-log loading
+  inside the running hub’s roster path. This worktree already avoids that path;
+  production deployment and same-dataset verification remain outstanding.
 - Release readiness requires standalone builds, deterministic tests through real
   Evener plumbing with a scripted provider boundary, and manual native E2E of the
   completed workflows. Include Android back behavior, iOS gestures, keyboard,
