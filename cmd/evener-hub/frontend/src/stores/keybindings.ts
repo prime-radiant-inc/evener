@@ -85,6 +85,12 @@ let activeReadyClient: AppwireClientLike | null = null;
 let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
+/** Set when a changed-notification is dropped because the current
+ * generation has no confirmed state yet (finding 25): the refresh that
+ * lands the state may carry a response PREDATING the dropped change, so a
+ * successful refresh with the flag set fires ONE follow-up fetch. Per
+ * generation: beginReadyGeneration starts every generation clean. */
+let missedChangeNotification = false;
 /** The write-serialization chain: every patchOverrides queues behind the
  * previous write's full settlement (success OR failure). Reset with the
  * rest of the store's wiring state in resetKeybindingsStoreForTests so a
@@ -294,6 +300,7 @@ function invalidateReadyGeneration(): void {
 function beginReadyGeneration(client: AppwireClientLike): number {
   activeReadyClient = client;
   activeReadyEpoch = ++clientEpoch;
+  missedChangeNotification = false;
   const epoch = activeReadyEpoch;
   unwireNotification?.();
   unwireNotification = client.onNotification((notification) => {
@@ -378,7 +385,15 @@ function onNotification(notification: AnyNotification): void {
   // (finding 24): its revision predates the flap, and applying it over the
   // reset state would let the stale guard eat the in-flight refresh's
   // older-but-current payload. Drop it; the refresh fetches the truth.
-  if (!keybindingsStore.getState().loaded) return;
+  // Not lost, though (finding 25): mark the generation dirty so the
+  // refresh that confirms its state fires ONE follow-up fetch - the
+  // in-flight get's response may PREDATE the dropped change, and without
+  // the follow-up the store would settle on the older snapshot until the
+  // next unrelated refresh.
+  if (!keybindingsStore.getState().loaded) {
+    missedChangeNotification = true;
+    return;
+  }
   const payload = fromWireOverrides(notification.params);
   if (payload === undefined) return;
   try {
@@ -401,6 +416,16 @@ async function refreshFor(client: AppwireClientLike, epoch: number): Promise<voi
     const payload = fromWireOverrides(result);
     if (payload === undefined) throw new Error("Hub returned malformed keybindings overrides");
     applyHubOverrides(payload);
+    if (missedChangeNotification) {
+      // A changed-notification was dropped while this generation had no
+      // confirmed state (finding 25) and THIS get's response may predate
+      // it. One follow-up fetch converges: the serial guard makes any
+      // older in-flight refresh lose, and the flag is cleared FIRST so it
+      // cannot loop - a notification arriving after this load applies
+      // directly (loaded is now true) instead of re-arming the flag.
+      missedChangeNotification = false;
+      void refreshFor(client, epoch);
+    }
   } catch (error) {
     // currentSupport() is rechecked here as on the success path: a refresh
     // rejecting after support was lost would otherwise overwrite the
@@ -528,6 +553,16 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       // unavailable" plus the round-3 editing gate would read the new hub
       // read-only until something cleared it. Throw only.
       if (callClient === null || callGeneration < 0 || !isCurrentReady(callClient, callGeneration)) {
+        throw new Error("Hub keybindings settings are unavailable.");
+      }
+      // Support resolved to UNSUPPORTED is the same hygiene class as the
+      // fence (finding 26): the unsupported state is deliberately clean -
+      // the section says the built-in defaults are in effect - and the
+      // write no longer owns it. A plain unsupported transition does not
+      // bump the generation (finding 24: currentSupport() gates the
+      // window), so a write QUEUED while supported can reach this point,
+      // as can one composed while unsupported. Both throw without hubError.
+      if (currentSupport() === "unsupported") {
         throw new Error("Hub keybindings settings are unavailable.");
       }
       if (
@@ -663,6 +698,7 @@ export function resetKeybindingsStoreForTests(): void {
   wiredClient = null;
   refreshSerial += 1;
   patchSerial += 1;
+  missedChangeNotification = false;
   writeQueue = Promise.resolve();
   // Restore defaults for every applied override so the registry singleton
   // cannot leak overrides into the next test (the next test rebuilds the

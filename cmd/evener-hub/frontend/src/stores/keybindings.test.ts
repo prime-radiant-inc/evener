@@ -1617,3 +1617,124 @@ describe("keybindings store: pref flips re-validate persisted overrides", () => 
     expect(keybindingsStore.getState().revision).toBe(1);
   });
 });
+
+// A changed-notification dropped by the loaded gate during the INITIAL load
+// must not be lost (finding 25): the in-flight get's response may predate
+// the change, so the drop marks the generation dirty and the refresh that
+// confirms its state fires ONE follow-up fetch.
+describe("keybindings store: notifications during the initial load", () => {
+  test("a notification dropped mid-initial-refresh is converged by one follow-up refresh", async () => {
+    // The FIRST get hangs so the notification lands inside the initial-load
+    // window; its resolved response (revision 3) PREDATES the change
+    // (revision 4) the notification announced. Follow-up gets serve the
+    // latest.
+    const client = new FakeClient("ready");
+    let resolveGet: ((value: KeybindingsOverrides) => void) | undefined;
+    let hang = true;
+    const current = overridesPayload(4, [{ action: ACTIONS.railToggle, chord: "Control+R" }]);
+    client.on("evener/settings/keybindings/get", () => {
+      if (hang)
+        return new Promise<KeybindingsOverrides>((resolve) => {
+          resolveGet = resolve;
+        });
+      return current;
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+
+    // The change arrives mid-load: dropped by the loaded gate (finding 24),
+    // marked dirty.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: current,
+    });
+
+    // The get's response predates the change: the store settles on revision
+    // 3 momentarily, then the follow-up fetch converges to revision 4.
+    // Delta-based: the wiring fires its own refresh(es) before this point,
+    // so the pin is exactly ONE additional get (the dirty-flag refetch).
+    const getsBefore = client.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+    hang = false;
+    resolveGet?.(overridesPayload(3, []));
+    await waitFor(() => expect(keybindingsStore.getState().revision).toBe(4));
+
+    const state = keybindingsStore.getState();
+    expect(state.loaded).toBe(true);
+    expect(state.hubLoading).toBe(false);
+    expect(state.rawOverrides).toEqual([{ action: ACTIONS.railToggle, chord: "Control+R" }]);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/get")).toHaveLength(getsBefore + 1);
+  });
+
+  test("a notification arriving when loaded applies once, with no follow-up refresh", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    await wireClient(client, true);
+    const getsBefore = client.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(4, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+    });
+
+    expect(keybindingsStore.getState().revision).toBe(4);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+    // No drop, no dirty flag, no refetch: the new path must not double-apply.
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/get")).toHaveLength(getsBefore);
+  });
+});
+
+// A write rejected because support resolved to UNSUPPORTED throws WITHOUT
+// setting hubError (finding 26): the unsupported state is deliberately
+// clean - the section says the built-in defaults are in effect - and the
+// write no longer owns it. Both orderings: queued while supported and
+// executing after the drop, and composed while unsupported.
+describe("keybindings store: unsupported write rejection", () => {
+  test("rejection due to unsupported support leaves hubError null, whether queued across the drop or composed in it", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    await wireClient(client, true);
+
+    const first = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    await waitFor(() =>
+      expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1),
+    );
+    // Write #2 queues behind the in-flight write, created while supported.
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+
+    // Support drops (no flap-back): a plain unsupported transition does not
+    // bump the generation, so write #2 reaches the guard - and rejects via
+    // the unsupported branch, throwing without hubError.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await first;
+    await expect(second).rejects.toThrow(/unavailable/);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+
+    // Composed while unsupported: the same clean rejection.
+    await expect(
+      keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+M" }]),
+    ).rejects.toThrow(/unavailable/);
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+  });
+});
