@@ -1213,7 +1213,15 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	// the request context res.Run is bound to, and a rollback through it would
 	// fail silently.
 	entered := false
+	// The rollback runs after the swap has already left the close fence, and its
+	// git forks on the process table a close reaps. Take an admission of its own
+	// so a close that refused the swap waits for the undo it caused instead of
+	// tearing the environment down mid-rollback.
+	rollbackFenced := s.beginEnvWork()
 	defer func() {
+		if rollbackFenced {
+			defer s.endEnvWork()
+		}
 		if entered {
 			return
 		}
@@ -1223,7 +1231,9 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 			return
 		}
 		defer done()
-		s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name)
+		if rbErr := s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name); rbErr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, rbErr)})
+		}
 	}()
 
 	// Step 7: creating a new worktree from inside a managed one is a LEAVE of
@@ -1298,20 +1308,38 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 		return
 	}
 	defer done()
-	s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
+	// Swallowed here, not at the core: this rollback runs on a delegate-create
+	// path whose own failure is the one worth reporting.
+	_ = s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
 }
 
-// rollbackFreshWorktree best-effort takes back a just-created, still-empty
-// managed worktree: its lock, the worktree itself, the branch cut for it, and
-// its metadata sidecar under metaDir. It is the git-level core
+// rollbackFreshWorktree takes back a just-created, still-empty managed
+// worktree: its lock, the worktree itself, the branch cut for it, and its
+// metadata sidecar under metaDir. It is the git-level core
 // rollbackFreshDelegateWorktree wraps for an isolation lane and worktreeCreate
-// uses on every failure after its core added the lane. Errors are swallowed
-// for the reason rollbackFreshDelegateWorktree gives.
-func (s *Session) rollbackFreshWorktree(run worktree.GitRunner, lanePath, branch, metaDir, sidecarName string) {
-	_, _ = run("worktree", "unlock", lanePath)
-	_, _ = run("worktree", "remove", "--force", "--", lanePath)
-	_, _ = run("branch", "-D", branch)
-	_ = s.deleteWorktreeSidecar(metaDir, sidecarName)
+// uses on every failure after its core added the lane.
+//
+// Every step is attempted regardless of what the ones before it did: a lock
+// that would not come off must not stop the worktree removal that makes the
+// lock moot. What it could not take back is JOINED AND RETURNED rather than
+// swallowed — the caller decides. A returned error never displaces the failure
+// that triggered the rollback (rollbackFreshDelegateWorktree's rationale); the
+// point is that residue this leaves is reported somewhere rather than silent.
+func (s *Session) rollbackFreshWorktree(run worktree.GitRunner, lanePath, branch, metaDir, sidecarName string) error {
+	var errs []error
+	if _, err := run("worktree", "unlock", lanePath); err != nil {
+		errs = append(errs, fmt.Errorf("unlocking the lane: %w", err))
+	}
+	if _, err := run("worktree", "remove", "--force", "--", lanePath); err != nil {
+		errs = append(errs, fmt.Errorf("removing the lane: %w", err))
+	}
+	if _, err := run("branch", "-D", branch); err != nil {
+		errs = append(errs, fmt.Errorf("deleting branch %s: %w", branch, err))
+	}
+	if err := s.deleteWorktreeSidecar(metaDir, sidecarName); err != nil {
+		errs = append(errs, fmt.Errorf("deleting the sidecar: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // currentStateDir reads s.stateDir under s.mu.
@@ -1612,8 +1640,16 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 		}
 		// The lock this switch took goes back on every failure from here on,
 		// through a control runner of its own: the close that refuses the swap
-		// has already cancelled the request context run is bound to.
+		// has already cancelled the request context run is bound to. Like the
+		// create rollback, it runs after the swap has left the close fence and
+		// forks git on the process table a close reaps, so it takes an admission
+		// of its own; a lock left behind here strands the target under this
+		// session's marker, which prune skips.
+		unlockFenced := s.beginEnvWork()
 		defer func() {
+			if unlockFenced {
+				defer s.endEnvWork()
+			}
 			if entered {
 				return
 			}
@@ -1623,7 +1659,9 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 				return
 			}
 			defer done()
-			_, _ = unlock("worktree", "unlock", target)
+			if _, unlockErr := unlock("worktree", "unlock", target); unlockErr != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, unlockErr)})
+			}
 		}()
 	case worktree.ActAdopt:
 		// Already carries our own marker (crash-resume case); nothing to do.

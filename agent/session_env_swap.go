@@ -41,7 +41,7 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // and returns errSwapWhileClosing for the op to surface. Both `closing` and the
 // install are written under s.mu, so one of the two always sees the other.
 //
-// A swap that passes that first check is ADMITTED: it registers on envSwapWG
+// A swap that passes that first check is ADMITTED: it registers on envWorkWG
 // under the same s.mu hold that read `closing` (the beginDispose idiom), so the
 // Add happens-before Close()'s join, and Close waits for it before cleaning the
 // environment. Without that wait a close walks past the refusal it just caused
@@ -69,13 +69,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	if !closing {
-		s.envSwapWG.Add(1)
+		s.envWorkWG.Add(1)
 	}
 	s.mu.Unlock()
 	if closing {
 		return errSwapWhileClosing
 	}
-	defer s.envSwapWG.Done()
+	defer s.envWorkWG.Done()
 	if current != nil {
 		next.AdoptSessionScratch(current)
 	}

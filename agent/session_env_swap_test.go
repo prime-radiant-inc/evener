@@ -341,14 +341,14 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Wait()
 }
 
-// closeDuringRefreshProbe bounds the window the test below gives a close to
-// reach environment cleanup while it holds an admitted swap. This is an
+// closeFenceProbe bounds the window a fence test gives a close to reach
+// environment cleanup while it holds admitted environment work. This is an
 // absence proof: the join is exactly what keeps close out of cleanup while the
-// swap is held, so there is no ordering signal to await, only a window to let
+// work is held, so there is no ordering signal to await, only a window to let
 // pass. A scripted close reaches cleanup in well under a second when the join
 // is missing, so two seconds is a tripwire with margin; it is spent on every
 // passing run.
-const closeDuringRefreshProbe = 2 * time.Second
+const closeFenceProbe = 2 * time.Second
 
 // A swap that passed its closing check is admitted: the session promised to
 // finish it. Its refresh then runs git on the environment it is installing —
@@ -388,7 +388,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 		select {
 		case <-cleanupObserved:
 			cleanupDuringRefresh.Store(true)
-		case <-time.After(closeDuringRefreshProbe):
+		case <-time.After(closeFenceProbe):
 		}
 	}
 

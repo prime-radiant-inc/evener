@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -144,6 +146,57 @@ func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
 
 	if !errors.Is(err, boom) {
 		t.Fatalf("create error = %v, want the injected %v", err, boom)
+	}
+	assertLaneRolledBack(t, sr, r, "lane", path, sidecar)
+}
+
+// The refused create's rollback runs AFTER the swap has left the close fence,
+// on a control runner of its own. Its git forks on the same process table the
+// session's close reaps, so the close has to wait for the rollback too, not
+// just for the swap: walk past it and the environment is torn down mid-rollback,
+// leaving behind the very lane the rollback was removing.
+func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	path, sidecar := createLaneExpectations(t, r, "lane")
+
+	cleanupObserved := make(chan struct{})
+	var cleanupDuringRollback, holding atomic.Bool
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+
+	// Hold the rollback at its first command — the lane unlock — and watch for
+	// the close reaching environment cleanup while it is held. The wait happens
+	// BEFORE the scripted double is entered, so it never blocks the close's own
+	// git behind it.
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == path &&
+				holding.CompareAndSwap(false, true) {
+				select {
+				case <-cleanupObserved:
+					cleanupDuringRollback.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	closeDone := armCloseDuringSwap(r, nil)
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Fatal("create succeeded while the session closed under its swap, want a refusal")
+	}
+	if !holding.Load() {
+		t.Fatal("the rollback never ran its lane unlock; the test observed nothing")
+	}
+	if cleanupDuringRollback.Load() {
+		t.Error("the close cleaned the session's environment while the refused create's rollback was still running")
 	}
 	assertLaneRolledBack(t, sr, r, "lane", path, sidecar)
 }
