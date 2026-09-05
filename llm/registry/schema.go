@@ -315,10 +315,8 @@ func validateProvider(ps providerSchema, where string) error {
 		if ps.InheritModels != nil && !*ps.InheritModels {
 			return fmt.Errorf("%s: inherit_models_matching conflicts with inherit_models = false", where)
 		}
-		for _, pattern := range ps.InheritModelsMatching {
-			if pattern == "" {
-				return fmt.Errorf("%s: inherit_models_matching: empty pattern", where)
-			}
+		if slices.Contains(ps.InheritModelsMatching, "") {
+			return fmt.Errorf("%s: inherit_models_matching: empty pattern", where)
 		}
 	}
 	if err := checkEnvRefs(ps.APIKey, where+".api_key"); err != nil {
