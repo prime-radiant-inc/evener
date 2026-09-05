@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // AllowedCredentialJSONTypes are the Google credential JSON shapes evener
@@ -12,6 +13,14 @@ import (
 // external_account and other types can name local files or executables as
 // credential sources and are refused.
 var AllowedCredentialJSONTypes = map[string]bool{"service_account": true, "authorized_user": true}
+
+// requiredCredentialJSONFields lists, per accepted type, the fields a token
+// source needs to mint a token. Google's parser accepts their absence and
+// fails only at the first request, so the gate checks them here.
+var requiredCredentialJSONFields = map[string][]string{
+	"service_account": {"client_email", "private_key"},
+	"authorized_user": {"client_id", "client_secret", "refresh_token"},
+}
 
 // CredentialJSONType returns a Google credential JSON's "type", or "" when
 // raw is not a JSON object carrying a string type.
@@ -27,10 +36,11 @@ func CredentialJSONType(raw []byte) string {
 
 // CheckCredentialJSON is the pre-parse gate every stored or pasted Google
 // credential must pass before anything mints a token from it: valid JSON,
-// then an allowed "type". The registry runs it when a gcp-adc instance's
-// credentials-store entry resolves; the tokenauth authenticator and the
-// hub's evener/auth/credentialJson/set run the identical check, so a value
-// the registry resolves is one the authenticator will accept.
+// then an allowed "type", then the fields that type needs to mint a token.
+// The registry runs it when a gcp-adc instance's credentials-store entry
+// resolves; the tokenauth authenticator and the hub's
+// evener/auth/credentialJson/set run the identical check, so a value the
+// registry resolves is one the authenticator will accept.
 func CheckCredentialJSON(raw []byte) error {
 	if !json.Valid(raw) {
 		return errors.New("not valid JSON")
@@ -41,6 +51,18 @@ func CheckCredentialJSON(raw []byte) error {
 	}
 	if !AllowedCredentialJSONTypes[t] {
 		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", t)
+	}
+	// A type came back, so raw is a JSON object and this decode cannot fail.
+	var fields map[string]any
+	_ = json.Unmarshal(raw, &fields)
+	var missing []string
+	for _, name := range requiredCredentialJSONFields[t] {
+		if s, ok := fields[name].(string); !ok || s == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
 	}
 	return nil
 }

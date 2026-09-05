@@ -27,6 +27,26 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "not supported",
 		},
 		{
+			name: "service_account with no fields",
+			raw:  `{"type":"service_account"}`,
+			want: "service_account credential JSON is missing client_email, private_key",
+		},
+		{
+			name: "authorized_user with only a client id",
+			raw:  `{"type":"authorized_user","client_id":"a"}`,
+			want: "missing client_secret, refresh_token",
+		},
+		{
+			name: "service_account with an empty private key",
+			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":""}`,
+			want: "missing private_key",
+		},
+		{
+			name: "service_account with a non-string private key",
+			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":1}`,
+			want: "missing private_key",
+		},
+		{
 			name: "empty object",
 			raw:  `{}`,
 			want: `no "type"`,

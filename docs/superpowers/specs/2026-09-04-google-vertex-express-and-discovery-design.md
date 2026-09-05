@@ -276,7 +276,10 @@ from §2.2, which is why that section precedes this one.
 *(Amended 2026-09-05, roborev round 1: only `service_account` and
 `authorized_user` are accepted; `external_account` configurations can name
 local files or executables as credential sources and are refused at
-validation and at first request.)*
+validation and at first request. Round 6: the fields each type needs to mint
+a token — `client_email` and `private_key`, or `client_id`, `client_secret`
+and `refresh_token` — must be present and non-empty; Google's parser does not
+check them and would fail only at the first request.)*
 
 ### 4.1 Storage
 

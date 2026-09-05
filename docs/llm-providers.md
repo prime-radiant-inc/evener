@@ -460,8 +460,10 @@ file using any of them fails to load; see
    `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known file); it
    never reads `api_key_env` or a `<NAME>_API_KEY` variable. A store entry
    under a `gcp-adc` instance that is not a credential JSON evener can use —
-   invalid JSON, or a type other than `service_account` / `authorized_user`
-   (for example a stale API key, or an `external_account` configuration) —
+   invalid JSON, a type other than `service_account` / `authorized_user`
+   (for example a stale API key, or an `external_account` configuration), or
+   a JSON missing the fields its type needs to mint a token (`client_email`
+   and `private_key`, or `client_id`, `client_secret` and `refresh_token`) —
    is ignored with a warning naming the remedy, and resolution falls through
    to application-default credentials.
 

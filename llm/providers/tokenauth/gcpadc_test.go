@@ -170,7 +170,7 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 		t.Fatalf("finds=%d fromJSON=%q; want the JSON parsed once and ADC never consulted", finds, fromJSON)
 	}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
-	if err := a.Apply(context.Background(), req, storedRes("vertex", `{"type":"authorized_user","client_id":"other"}`)); err != nil {
+	if err := a.Apply(context.Background(), req, storedRes("vertex", `{"type":"authorized_user","client_id":"other","client_secret":"b","refresh_token":"c"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if len(fromJSON) != 2 {
@@ -284,6 +284,9 @@ func TestValidateCredentialJSON(t *testing.T) {
 	}
 	if err := ValidateCredentialJSON([]byte(externalAccountJSON)); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("err = %v, want an external_account document rejected as not supported", err)
+	}
+	if err := ValidateCredentialJSON([]byte(`{"type":"service_account"}`)); err == nil || !strings.Contains(err.Error(), "missing client_email") {
+		t.Fatalf("err = %v, want a service_account with no key material refused", err)
 	}
 	// The parser does not read the key until a token is minted, so a
 	// placeholder private_key does not fail validation.

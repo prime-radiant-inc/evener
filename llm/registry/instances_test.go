@@ -481,6 +481,33 @@ func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
 	}
 }
 
+// TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC covers a stored value
+// whose type is allowed but which carries no key material: Google's parser
+// accepts it and fails only at the first request, so the gate refuses it here
+// and a working ADC file still wins (roborev round 6, F1).
+func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"service_account"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (a store value with no key material must not shadow it)", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"missing client_email, private_key", "not a credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
 func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
 	inst, ok := r.Instance("vertex")
@@ -502,7 +529,7 @@ func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
 	if slices.Contains(instanceNames(without), "google-vertex") {
 		t.Fatal("google-vertex exists with neither an ADC file nor a store entry")
 	}
-	with := fixtureLoad(t, env, "", WithCredentials(fakeCreds{"google-vertex": `{"type":"authorized_user"}`}))
+	with := fixtureLoad(t, env, "", WithCredentials(fakeCreds{"google-vertex": `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`}))
 	if !slices.Contains(instanceNames(with), "google-vertex") {
 		t.Fatalf("a store entry did not make google-vertex exist: %v", instanceNames(with))
 	}
