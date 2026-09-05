@@ -669,13 +669,31 @@ func ImagesFromContent(parts []llm.ContentPart, imageProjector ImageProjector) [
 // header whose prelude is emitted, and each entry is decoded once for
 // validation by the scanner and once by the projector callback (the
 // per-entry contract of EntryProjector, kata j13r).
-//
-// Entries are grouped into logical turns (see logical_turn.go): the turn a
-// live snapshot would have rendered for the same persisted sequence, with one
-// entry ordinal per group, item ordinals numbered across the whole group
-// after call-id merge, and the prelude turn (when the header carries one) at
-// ordinal 0 shifting every group by one.
 func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	var turns []appwire.Turn
+	entryIndex := 0
+	header, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
+		entry, decodeErr := transcript.DecodeEntry(raw)
+		if decodeErr != nil {
+			return fmt.Errorf("decode transcript entry: %w", decodeErr)
+		}
+		entryIndex++
+		appendLegacyProjectedEntry(&turns, project, entry.Turn, entryIndex)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if prelude := PreludeTurn(header); prelude != nil {
+		turns = append([]appwire.Turn{*prelude}, turns...)
+	}
+	return turns, nil
+}
+
+// ItemTurnsFromFile projects a transcript into the logical turns used by item
+// paging. Unlike the legacy TurnsFromFile API, continuation entries share the
+// opener's turn identity and one item-position entry ordinal.
+func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
 	var acc logicalTurnAccumulator
 	entryIndex := 0
 	header, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
@@ -699,17 +717,48 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 
 // TurnsFromEntries projects already-decoded transcript entries into AppWire
 // turns. header must be the header of the same transcript the entries came
-// from; it is what the prelude turn is emitted from.
-//
-// It shares TurnsFromFile's grouping exactly, so both forms of the same
-// transcript produce identical turns: same turn ids, same prelude, same
-// ordinals and keys. Callers that hold only a path must use TurnsFromFile.
+// from; it is what the prelude turn is emitted from. Like TurnsFromFile, this
+// legacy API emits one visible turn per decoded entry.
 func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
+	var turns []appwire.Turn
+	for i := range entries {
+		appendLegacyProjectedEntry(&turns, project, entries[i].Turn, i+1)
+	}
+	if prelude := PreludeTurn(header); prelude != nil {
+		turns = append([]appwire.Turn{*prelude}, turns...)
+	}
+	return turns, nil
+}
+
+// ItemTurnsFromEntries is the already-decoded form of ItemTurnsFromFile. The
+// header and entries must come from the same transcript.
+func ItemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
 	var acc logicalTurnAccumulator
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
 	return groupedAppTurns(&acc, header)
+}
+
+func appendLegacyProjectedEntry(turns *[]appwire.Turn, project EntryProjector, entry schema.Turn, entryIndex int) {
+	turnID := persistedTurnID(entry, entryIndex)
+	var items []appwire.ThreadItem
+	if project != nil {
+		items = project(entry, turnID, entryIndex)
+	}
+	if len(items) == 0 {
+		return
+	}
+	turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	StampTurnFailure(&turn, entry)
+	if !entry.Timestamp.IsZero() {
+		startedAt := entry.Timestamp.UnixMilli()
+		turn.StartedAt = &startedAt
+	}
+	if usage := appwire.EvenerUsageFromLLM(entry.Usage); usage != nil {
+		turn.Usage = usage
+	}
+	*turns = append(*turns, turn)
 }
 
 // persistedTurnID names the turn one persisted entry projects into.
@@ -720,9 +769,8 @@ func TurnsFromEntries(header transcript.Header, entries []transcript.Entry, proj
 // would rename it onto an unrelated entry's turn. Entry-index numbering is the
 // fallback for every entry that carries no reserved id.
 //
-// Both readers resolve an entry's id here — the full TurnsFromFile and the
-// bounded turn index — so one session answers with one set of turn ids however
-// it is read.
+// Every reader resolves an entry's persisted identity here. Item-mode grouping
+// subsequently assigns continuation items to the opener's resolved identity.
 func persistedTurnID(turn schema.Turn, entryIndex int) string {
 	if turn.StableTurnID != "" {
 		return turn.StableTurnID

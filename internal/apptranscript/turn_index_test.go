@@ -77,7 +77,7 @@ func TestTurnCacheTurnCountFromFileUsesIndexedLogicalVisibilityWithoutProjection
 
 func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	fixture := writeBoundedFixture(t)
-	full := requireTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
 
 	got, cursor := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
@@ -140,7 +140,7 @@ func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
 	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 3)
@@ -187,7 +187,7 @@ func TestTurnCacheBoundedPreludeUsesSemanticHeader(t *testing.T) {
 	if text := turnText(got[0]); text != "first header" {
 		t.Fatalf("prelude text=%q want=%q", text, "first header")
 	}
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	page := requirePageFromFile(t, cache, path, testMaxLineBytes, "1", 2, boundedTestProjector)
 	wantPage := appwire.PageTurns(full, "1", 2)
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
@@ -223,7 +223,7 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 		toolResultEntry(2, "", "", "contents"),
 		userEntry(3, "after result"),
 	)
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	// The leading call/result pair with no opener forms one group (turn_1);
 	// the user input after it opens turn_3.
 	if got := turnIDs(full); !reflect.DeepEqual(got, []string{"turn_1", "turn_3"}) {
@@ -299,7 +299,7 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 				toolResultEntry(3, "shared", "", "done"),
 			)
 
-			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			// The result lands in the FIRST group (the leading assistant
 			// call's continuation): the orphan result is last only per-entry,
 			// never per-group.
@@ -368,7 +368,7 @@ func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full := requireTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
 	got, cursor := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 3)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
@@ -496,7 +496,7 @@ func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) 
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 1)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("append projection got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
@@ -547,7 +547,7 @@ func TestTurnCacheToolProjectionSeedsMatchSequentialProjection(t *testing.T) {
 		toolResultEntry(4, "communicate", "", "orphan"),
 		multiple,
 	)
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
 	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, len(full), boundedTestProjector)
 	if !reflect.DeepEqual(got, full) || cursor != "" {
@@ -578,7 +578,7 @@ func TestTurnCacheSemanticSelectionIsVisibleRankBounded(t *testing.T) {
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 20, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 20)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("latest differs: got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
@@ -630,7 +630,7 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 5, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 5)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor || !stat.rebuilt {
 				t.Fatalf("anchor recovery got=(%v,%q) stats=%+v want=(%v,%q) rebuild", turnIDs(got), cursor, stat, turnIDs(want), wantCursor)
@@ -733,7 +733,7 @@ func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
 	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 40, boundedTestProjector)
-	want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 40)
+	want, wantCursor := appwire.WindowTurns(requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 40)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("restart got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 	}
@@ -785,7 +785,7 @@ func TestTurnCacheTruncatedFinalJournalAcceptsPrefixAndRepairsSuffix(t *testing.
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
 	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
-	want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
+	want, wantCursor := appwire.WindowTurns(requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("truncated-journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 	}
@@ -855,7 +855,7 @@ func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			t.Cleanup(func() { observeTurnIndexRead = previous })
 			got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
-			want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
+			want, wantCursor := appwire.WindowTurns(requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 			}
@@ -942,7 +942,7 @@ func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime
 		t.Fatalf("rewrite replaced inode: before=%q after=%q", fileIdentity(before), fileIdentity(after))
 	}
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 61, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 61)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
@@ -1387,7 +1387,7 @@ func projectionKeepingOddEntries(turn schema.Turn, turnID string, turnIndex int,
 
 func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
 	t.Helper()
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, limit, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, limit)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {

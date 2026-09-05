@@ -106,6 +106,59 @@ func TestTranscriptItemKeysMatchLiveAndIndexedHistory(t *testing.T) {
 	}
 }
 
+func TestPersistedSteeringKeepsOpenTurnOwnershipInFullAndIndexedItemProjection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "steering-ownership.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_steering"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	user := schema.NewTurn(schema.TurnUserInput, llm.User("question"))
+	user.StableTurnID = "turn_m1"
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("clarification"))
+	steering.StableTurnID = "turn_m77"
+	steering.SteeringSource = "user"
+	for _, turn := range []schema.Turn{
+		user,
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
+		steering,
+	} {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	full, _, err := appTurnsFromTranscriptFile(path)
+	if err != nil {
+		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
+	}
+	if len(full) != 1 || full[0].ID != "turn_m1" || len(full[0].Items) != 3 {
+		t.Fatalf("full item projection = %+v, want one three-item turn owned by turn_m1", full)
+	}
+
+	window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: "local:th_steering",
+		Limit:     40,
+	}, preparedItemProjector)
+	if err != nil {
+		t.Fatalf("LatestItemWindowFromFile: %v", err)
+	}
+	if len(window.Candidates) != 3 {
+		t.Fatalf("indexed candidates = %+v, want the full projection's three items", window.Candidates)
+	}
+	for i, candidate := range window.Candidates {
+		wantPosition := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
+		if candidate.TurnID != "turn_m1" || candidate.Item.TurnID != "turn_m1" || candidate.Position != wantPosition {
+			t.Fatalf("indexed candidate %d = %+v, want turn_m1 at %+v", i, candidate, wantPosition)
+		}
+		if got, want := candidate.Item.TranscriptKey, full[0].Items[i].TranscriptKey; got != want {
+			t.Fatalf("indexed candidate %d key = %q, want full projection key %q", i, got, want)
+		}
+	}
+}
+
 func TestPrepareAppIdentityHydratesPersistedCommunicate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "communicate.transcript.jsonl")
 	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_hydrate", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-test"})

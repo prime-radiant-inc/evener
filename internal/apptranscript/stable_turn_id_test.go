@@ -33,7 +33,7 @@ func TestBoundedReadsHonorPersistedStableTurnIDs(t *testing.T) {
 		assistantTextEntry(8, "out-3"),
 	)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	// Logical grouping: each reserved user input opens one turn that swallows
 	// its assistant continuation, so the fallback entries renumber.
 	wantIDs := []string{"turn_1", older, "turn_5", newer}
@@ -81,7 +81,7 @@ func TestBoundedReadsMatchTheFullReadOnDuplicatePersistedTurnIDs(t *testing.T) {
 	}
 	path := writeEntries(t, entries...)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	occurrences := 0
 	for _, id := range turnIDs(full) {
 		if id == "turn_11" {

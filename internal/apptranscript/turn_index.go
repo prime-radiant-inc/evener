@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 10
+	turnIndexVersion        = 11
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -173,10 +173,10 @@ type indexedTurn struct {
 type groupRole string
 
 const (
-	// groupOpener starts a logical turn (USER_INPUT, STEERING).
+	// groupOpener starts a logical turn (USER_INPUT).
 	groupOpener groupRole = "opener"
 	// groupContinuation extends the open logical turn (ASSISTANT, TOOL,
-	// TOOL_RESULTS, TURN_FAILURE).
+	// TOOL_RESULTS, TURN_FAILURE, STEERING). With no open turn it starts one.
 	groupContinuation groupRole = "continuation"
 	// groupStandalone is its own logical turn, grouped with nothing
 	// (every other kind).
