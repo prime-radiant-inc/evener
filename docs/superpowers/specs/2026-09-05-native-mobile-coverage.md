@@ -21,8 +21,8 @@ behavioral verification, including errors, authorization, and hub isolation.
 | --- | --- | --- |
 | Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect; one active foreground connection | Edit profiles, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
 | Browse conversations | First 50 distinct sessions, refresh, native navigation | Pagination, search, archived sessions, project organization, favorites and pin sections |
-| Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; unapproved visual experiment | Rich Markdown/code, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
-| Compose | Text send/steer/queue/stop gated by capabilities; uncertainty recovery while mounted | Persistent hub-scoped drafts, attachments, command selection, queue inspection/cancel/promotion/drain; complete both-platform running-turn E2E |
+| Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice | Rich Markdown/code, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
+| Compose | Text send/steer/queue/stop gated by capabilities; durable per-hub/session drafts and uncertain-send recovery | Attachments, command selection, queue inspection/cancel/promotion/drain; complete both-platform running-turn E2E |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
 | Manage session | Not exposed | Rename, fork, resume, clear, compact, shutdown; honor capabilities and identity |
 | Model and launch settings | Model/reasoning selection during creation only | Model, vision model, reasoning, launch layers, schema validation and repository trust |
@@ -34,7 +34,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Plugins and marketplaces | Not exposed | Browse/preview/install/upgrade/enable/disable/remove, source management, auto-upgrade |
 | Hub preferences | Not exposed | Overview, transcript display settings, upgrade |
 | Native distribution | Standalone simulator/emulator release builds and installation recorded; iOS credential persistence checked | Distribution signing, physical devices, final-head both-platform regression and performance evidence |
-| Design quality | Research, philosophy, style-guide and lookbook drafts; prototype rejected as too chunky | Direction review, realistic screen studies, native interaction prototypes, accessible visual system and measured fluency |
+| Design quality | Approved research, philosophy, style guide, lookbook and screen studies; first visual slice installed on both platforms | Further native interaction refinement, rich rendering, accessible visual system and measured fluency |
 
 ## Verification boundaries
 
@@ -74,3 +74,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 
 Update this inventory with exact evidence as iterations land. Do not mark a
 workflow complete merely because an RPC wrapper or generic settings form exists.
+
+## Draft continuity update — 5 September 2026
+
+Source `b4d7060cf` adds SQLite drafts keyed by hub and session, checkpointed uncertain submissions, explicit recovery, save/load errors and hub-removal cleanup. Native 44 tests, TypeScript, targeted Biome and both release builds pass. [Runtime evidence](../../design/mobile/draft-persistence-evidence.md) covers cold restart on both platforms, Android hub isolation, acknowledgement withholding with zero automatic replay, and recovery that preserves newer text. This does not complete composition: attachments, commands, queue management and representative-device performance remain outstanding.
