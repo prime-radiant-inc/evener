@@ -73,48 +73,6 @@ type CombinedItemReadSource interface {
 	ReadThreadWithItemCandidates(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, ItemCandidateResult, error)
 }
 
-func (s *CodexSource) ItemCandidatesFromRead(
-	_ context.Context,
-	params appwire.ThreadReadParams,
-	response appwire.ThreadReadResponse,
-) (ItemCandidateResult, error) {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	candidates, err := localDaemonItemCandidates(response.Thread.Turns)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	if err := appitempaging.ValidateCandidates(candidates); err != nil {
-		return ItemCandidateResult{}, err
-	}
-	state, ok := s.itemSnapshots.get(threadID)
-	if !ok {
-		return ItemCandidateResult{}, errors.New("codex item read did not publish cursor identity")
-	}
-	identity := appitempaging.CursorIdentity{
-		ThreadRef:         state.ThreadRef,
-		Incarnation:       state.Incarnation,
-		ProjectionVersion: codexItemCursorProjectionVersion,
-	}
-	if response.OlderCursor != "" {
-		if _, err := appitempaging.DecodeCursor(response.OlderCursor, identity); err != nil {
-			return ItemCandidateResult{}, err
-		}
-	} else {
-		responseState := itemSnapshotStateForCandidates(state.ThreadRef, state.Incarnation, "", candidates, true)
-		if state.ItemCount != responseState.ItemCount || state.TranscriptDigest != responseState.TranscriptDigest {
-			return ItemCandidateResult{}, errors.New("codex item read cursor identity disagrees with response")
-		}
-	}
-	return ItemCandidateResult{
-		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates, OlderCursor: response.OlderCursor},
-		Identity:   identity,
-		Exhausted:  response.OlderCursor == "",
-	}, nil
-}
-
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
@@ -199,44 +157,6 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	}, nil
 }
 
-func (s *CodexSource) ReadItemCandidates(ctx context.Context, params appwire.ThreadReadParams) (ItemCandidateResult, error) {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	window, identity, err := s.latestItemWindow(ctx, threadID, params.ItemLimit, params.ItemsView)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	return ItemCandidateResult{
-		Candidates: window,
-		Identity:   identity,
-		Exhausted:  window.OlderCursor == "",
-	}, nil
-}
-
-func (s *CodexSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
-	threadID, err := s.threadID(params.Ref, params.ThreadID)
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	var window appitempaging.TranscriptItemWindow
-	var identity appitempaging.CursorIdentity
-	if params.Cursor == "" {
-		window, identity, err = s.latestItemWindow(ctx, threadID, params.ItemLimit, params.ItemsView)
-	} else {
-		window, identity, err = s.previousItemWindow(ctx, threadID, params.Cursor, params.ItemLimit, params.ItemsView)
-	}
-	if err != nil {
-		return ItemCandidateResult{}, err
-	}
-	return ItemCandidateResult{
-		Candidates: window,
-		Identity:   identity,
-		Exhausted:  window.OlderCursor == "",
-	}, nil
-}
-
 const localDaemonItemCursorProjectionVersion uint16 = 1
 
 var localDaemonItemIncarnationSequence atomic.Uint64
@@ -248,7 +168,7 @@ type localDaemonItemSnapshot struct {
 }
 
 // ReadItemCandidates materializes the daemon's authenticated legacy turn view
-// and projects it into the same positioned candidate contract used by Codex.
+// and projects it into the private positioned-candidate source contract.
 // The daemon's native item cursor is intentionally never exposed to the hub:
 // the source owns the identity and validates every continuation against its
 // current snapshot.
@@ -649,9 +569,8 @@ func localDaemonInitialItemCandidates(response appwire.ThreadReadResponse) ([]ap
 	return localDaemonItemCandidates(response.Thread.Turns)
 }
 
-// RelaySessionSource is implemented by sources that can preserve one ordered
-// upstream snapshot-to-live stream. Codex deliberately does not implement this
-// interface because it converges through authoritative full-state replacement.
+// RelaySessionSource is implemented by the retained local-daemon source, which
+// preserves one ordered upstream snapshot-to-live stream.
 type RelaySessionSource interface {
 	ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
 	AcquireRelaySession(appwire.Ref) (RelaySessionRoutePublicationLease, error)
