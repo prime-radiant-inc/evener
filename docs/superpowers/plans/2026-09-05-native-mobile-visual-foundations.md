@@ -22,25 +22,31 @@
 
 - [x] Rebase on current main, preserve signing edits and retain a pre-rebase branch.
 - [x] Create docs/design/mobile/screen-studies.html: session list, reading, decision and keyboard-open composition; light/dark and platform treatments.
-- [ ] Inspect at narrow widths and larger text; correct clipping and misleading controls.
-- [ ] Link the study from the lookbook and record that fictional controls are not implemented capabilities.
+- [x] Inspect at narrow widths and larger text; correct clipping and misleading controls.
+- [x] Link the study from the lookbook and record that fictional controls are not implemented capabilities.
 
 ### Task 2: Native visual hierarchy
 
 Files: mobile-native/src/ui.tsx, screens.tsx, TimelineItem.tsx, App.tsx.
 Interfaces: retain useColors(), Action props, TimelineItem({item}), existing route and store contracts.
 
-- [ ] Establish semantic palette and consistent native typography; make Action support a primary treatment while preserving accessibility state.
-- [ ] Replace bordered session cards with aligned rows: title then one supporting context line; retain needs-you status and disclose roster limit.
-- [ ] Render assistant content directly on the canvas, user content on a restrained inset surface, and failures/questions with meaningful emphasis. Keep activity disclosure complete.
-- [ ] Unify composer input and actions, choose Send or Steer as primary according to capabilities, keep Queue and Stop reachable. Bound growing input; retain uncertain-send recovery.
-- [ ] Apply palette to native stack navigation; preserve native back gestures.
-- [ ] Run native typecheck and existing behavior tests. Styling is verified through rendering, not tests that assert style literals.
-- [ ] Commit this independently reviewable slice.
+- [x] Establish semantic palette and consistent native typography; make Action support a primary treatment while preserving accessibility state.
+- [x] Replace bordered session cards with aligned rows: title then one supporting context line; retain needs-you status and disclose roster limit.
+- [x] Render assistant content directly on the canvas, user content on a restrained inset surface, and failures/questions with meaningful emphasis. Keep activity disclosure complete.
+- [x] Unify composer input and actions, choose Send or Steer as primary according to capabilities, keep Queue and Stop reachable. Bound growing input; retain uncertain-send recovery.
+- [x] Apply palette to native stack navigation; preserve native back gestures.
+- [x] Run native typecheck and existing behavior tests. Styling is verified through rendering, not tests that assert style literals.
+- [x] Commit this independently reviewable slice.
 
 ### Task 3: Runtime evidence
 
-- [ ] Export both platforms, build/install the native apps on available simulators.
-- [ ] Use the isolated playground to inspect list, disclosure, keyboard-open long draft and capability-gated send/steer/queue/stop on both platforms.
-- [ ] Inspect light/dark and large text; record actual evidence and remaining limitations in docs/design/mobile.
-- [ ] Run focused hub roster/protocol checks after rebase and review the final diff before committing evidence.
+- [x] Export both platforms, build/install the native apps on available simulators.
+- [x] Use the isolated playground to inspect list, disclosure, keyboard-open long draft and capability-gated send/steer/queue/stop on both platforms.
+- [x] Inspect light/dark and large text; record actual evidence and remaining limitations in docs/design/mobile.
+- [x] Run focused hub roster/protocol checks after rebase and review the final diff before committing evidence.
+
+## Execution record
+
+Completed the scoped visual implementation and runtime inspection; evidence and open defects are in [visual-slice-evidence.md](../../design/mobile/visual-slice-evidence.md). Completed inspection does not mean every accessibility case passed: live iOS text-size changes remain defective and Android activity recreation exposes the existing draft-persistence gap. Full native functionality remains active work.
+
+Ruling: keep Latest always reachable rather than infer bottom proximity from scroll events alone; content can grow while the reader is stationary. Normal status and detailed recovery scroll, with recovery access retained next to the composer.
