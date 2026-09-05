@@ -319,7 +319,104 @@ describe("ConnectProviderDialog", () => {
     });
 
     expect(onConnected).not.toHaveBeenCalled();
-    expect(within(chooser).getByRole("button", { name: "Test connection" })).toBeTruthy();
+    expect(
+      within(chooser).getByText("Provider configuration refreshed while testing. Test the connection again."),
+    ).toBeTruthy();
+    expect(within(chooser).getByRole("button", { name: "Retry test" })).toBeTruthy();
+  });
+
+  test("an identical instance refresh gives a pending test an explicit retry state", async () => {
+    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+    const firstTest = deferred<{ provider: string; status: string; message: string }>();
+    let testCalls = 0;
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({ instances: [{ ...api }], availableProviders: [] }));
+    fake.on("evener/auth/test", () => {
+      testCalls += 1;
+      return testCalls === 1 ? firstTest.promise : { provider: "work", status: "success", message: "ignored" };
+    });
+    connectionStore.getState().connect(fake);
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
+    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
+
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    expect(
+      within(chooser).getByText("Provider configuration refreshed while testing. Test the connection again."),
+    ).toBeTruthy();
+    firstTest.resolve({ provider: "work", status: "success", message: "ignored" });
+    await act(async () => {
+      await firstTest.promise;
+    });
+    expect(onConnected).not.toHaveBeenCalled();
+
+    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Retry test" }));
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+  });
+
+  test("a late OAuth start cannot replace a subsequently chosen API-key editor", async () => {
+    const both = instance({
+      name: "work",
+      providerId: "custom",
+      auth: "optional-bearer",
+      authModes: ["apiKey", "oauth"],
+    });
+    const start = deferred<{
+      provider: string;
+      flowId: string;
+      userCode: string;
+      verificationUrl: string;
+      intervalSeconds: number;
+    }>();
+    const fake = connectFakeClient({ instances: [both], availableProviders: [] });
+    fake.on("evener/auth/device/start", () => start.promise);
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
+    const user = userEvent.setup();
+    await user.click(within(chooser).getByRole("button", { name: "Sign in" }));
+    await user.click(within(chooser).getByRole("button", { name: "Set API key" }));
+    await user.type(screen.getByLabelText("API key for work"), "unfinished-secret");
+
+    start.resolve({
+      provider: "work",
+      flowId: "late-device-flow",
+      userCode: "LATE-CODE",
+      verificationUrl: "https://verify.example",
+      intervalSeconds: 5,
+    });
+    await act(async () => {
+      await start.promise;
+    });
+
+    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
+    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "unfinished-secret");
+    expect(screen.queryByText("LATE-CODE")).toBeNull();
+  });
+
+  test("a late successful test cannot close a subsequently chosen API-key editor", async () => {
+    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+    const response = deferred<{ provider: string; status: string; message: string }>();
+    const fake = connectFakeClient({ instances: [api], availableProviders: [] });
+    fake.on("evener/auth/test", () => response.promise);
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
+    const user = userEvent.setup();
+    await user.click(within(chooser).getByRole("button", { name: "Test connection" }));
+    await user.click(within(chooser).getByRole("button", { name: "Set API key" }));
+    await user.type(screen.getByLabelText("API key for work"), "unfinished-secret");
+
+    response.resolve({ provider: "work", status: "success", message: "ignored" });
+    await act(async () => {
+      await response.promise;
+    });
+
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
+    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "unfinished-secret");
   });
 
   test("an OAuth start that finishes after unmount cannot open a browser or complete the flow", async () => {

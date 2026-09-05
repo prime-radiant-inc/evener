@@ -28,6 +28,8 @@ const CLASS = {
 
 type OpenEditor = { kind: "add" } | { kind: "apiKey"; name: string } | OAuthEditor | null;
 
+const TEST_INTERRUPTED_MESSAGE = "Provider configuration refreshed while testing. Test the connection again.";
+
 export interface ConnectProviderDialogProps {
   onClose(): void;
   onConnected(): void;
@@ -41,12 +43,13 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     version: number;
     pending: boolean;
     result?: AuthTestResponse;
+    notice?: string;
   } | null>(null);
   const toast = useToasts();
   const mounted = useRef(true);
   const previousInstances = useRef(instances);
   const instanceVersion = useRef(0);
-  const oauthRequest = useRef(0);
+  const operationVersion = useRef(0);
   if (previousInstances.current !== instances) {
     previousInstances.current = instances;
     instanceVersion.current += 1;
@@ -61,36 +64,60 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     };
   }, []);
 
-  // A refreshed registry row may represent different credentials or an
-  // endpoint edit under the same instance name. Results from the old row do
-  // not apply to the new one.
+  // A refresh can represent a secret rotation even when every public row
+  // field is unchanged, so an in-flight test cannot safely survive it. Keep
+  // the conservative invalidation visible as a retry state instead of making
+  // the test silently look as though it never ran.
   // biome-ignore lint/correctness/useExhaustiveDependencies: instances is a deliberate trigger-only dependency
-  useEffect(() => setTestState(null), [instances]);
+  useEffect(() => {
+    setTestState((current) =>
+      current?.pending
+        ? {
+            name: current.name,
+            version: instanceVersion.current,
+            pending: false,
+            notice: TEST_INTERRUPTED_MESSAGE,
+          }
+        : null,
+    );
+  }, [instances]);
 
   const closeEditor = useCallback(() => {
-    oauthRequest.current += 1;
+    operationVersion.current += 1;
+    setTestState(null);
     setOpenEditor(null);
   }, []);
 
   function closeDialog(): void {
-    oauthRequest.current += 1;
+    operationVersion.current += 1;
     onClose();
   }
 
+  function beginOperation(): number {
+    const version = ++operationVersion.current;
+    setTestState(null);
+    return version;
+  }
+
+  function chooseEditor(editor: Exclude<OpenEditor, OAuthEditor | null>): void {
+    beginOperation();
+    setOpenEditor(editor);
+  }
+
   async function testConnection(name: string): Promise<void> {
+    const operation = beginOperation();
     const version = instanceVersion.current;
-    if (testState?.name === name && testState.version === version && testState.pending) return;
     setTestState({ name, version, pending: true });
     try {
       const result = safeCredentialTestResult(name, await credentialsStore.getState().testCredentials(name));
-      if (!mounted.current || instanceVersion.current !== version) return;
+      if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
       if (result.status === "success") {
         onConnected();
         return;
       }
       setTestState({ name, version, pending: false, result });
     } catch {
-      if (!mounted.current || instanceVersion.current !== version) return;
+      if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
       setTestState({
         name,
         version,
@@ -101,9 +128,10 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
   }
 
   async function startSignIn(name: string): Promise<void> {
-    const request = ++oauthRequest.current;
+    const operation = beginOperation();
     const version = instanceVersion.current;
-    const isCurrent = () => mounted.current && oauthRequest.current === request && instanceVersion.current === version;
+    const isCurrent = () =>
+      mounted.current && operationVersion.current === operation && instanceVersion.current === version;
     try {
       const editor = await startOAuthFlow(name, isCurrent);
       if (editor && isCurrent()) setOpenEditor(editor);
@@ -189,24 +217,25 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
                 testState?.name === instance.name && testState.version === instanceVersion.current
                   ? testState.result
                   : undefined;
+              const notice =
+                testState?.name === instance.name && testState.version === instanceVersion.current
+                  ? testState.notice
+                  : undefined;
               return (
                 <li key={instance.name} className={CLASS.providerRow}>
                   <div className={CLASS.providerIdentity}>
                     <span className={CLASS.providerName}>{providerName}</span>
                     <span className={CLASS.providerInstance}>{instance.name}</span>
                     <span className={CLASS.status}>{activeSourceLabel(instance)}</span>
-                    {result && (
+                    {(result || notice) && (
                       <span className={CLASS.status} role="status">
-                        {result.message}
+                        {notice ?? result?.message}
                       </span>
                     )}
                   </div>
                   <div className={CLASS.actions}>
                     {supportsApiKey && (
-                      <Button
-                        variant="secondary"
-                        onClick={() => setOpenEditor({ kind: "apiKey", name: instance.name })}
-                      >
+                      <Button variant="secondary" onClick={() => chooseEditor({ kind: "apiKey", name: instance.name })}>
                         {instance.hasStoredFile ? "Replace API key" : "Set API key"}
                       </Button>
                     )}
@@ -216,7 +245,7 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
                       </Button>
                     )}
                     <Button onClick={() => void testConnection(instance.name)} disabled={pending}>
-                      {pending ? "Testing connection…" : result ? "Retry test" : "Test connection"}
+                      {pending ? "Testing connection…" : result || notice ? "Retry test" : "Test connection"}
                     </Button>
                   </div>
                 </li>
@@ -227,7 +256,7 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
         <div className={CLASS.actions}>
           <Button
             variant="secondary"
-            onClick={() => setOpenEditor({ kind: "add" })}
+            onClick={() => chooseEditor({ kind: "add" })}
             disabled={writesRefused || availableProviders.length === 0}
           >
             Add provider instance
