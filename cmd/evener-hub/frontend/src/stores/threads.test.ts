@@ -4852,6 +4852,27 @@ describe("useThreadsStore.listModels", () => {
   });
 });
 
+test.each([false, true])(
+  "a failed enqueue preserves only durable pins (existing mutation: %s)",
+  async (existingMutation) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
+    const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+      throw new DOMException("storage full", "QuotaExceededError");
+    });
+    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+    expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
+    await unsubscribed;
+  },
+);
+
 test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

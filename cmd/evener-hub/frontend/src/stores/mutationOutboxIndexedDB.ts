@@ -492,7 +492,7 @@ export class MutationOutboxIndexedDB {
             // until its complete/abort event establishes its outcome.
             stalledWrite = true;
             this.#stalledWrites += 1;
-            if (this.#stalledWrites === 1) this.#onWriteStalled?.(true);
+            if (this.#stalledWrites === 1) this.#notifyWriteStalled(true);
             return;
           }
         }
@@ -519,8 +519,16 @@ export class MutationOutboxIndexedDB {
       clearTimeout(timer);
       if (stalledWrite) {
         this.#stalledWrites -= 1;
-        if (this.#stalledWrites === 0) this.#onWriteStalled?.(false);
+        if (this.#stalledWrites === 0) this.#notifyWriteStalled(false);
       }
+    }
+  }
+
+  #notifyWriteStalled(waiting: boolean): void {
+    try {
+      this.#onWriteStalled?.(waiting);
+    } catch {
+      // Status subscribers cannot change the durable transaction outcome.
     }
   }
 

@@ -5,7 +5,11 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import type { InputAttachment } from "../../../stores/threads";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import type { PendingMethod } from "../composer/queue/pendingReconcile";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
+import {
+  flushPendingTurnsProjectionForTests,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../composer/queue/pendingTurnsStore";
 import { PendingChips } from "./PendingChips";
 
 beforeEach(() => {
@@ -64,6 +68,7 @@ async function seedPending(method: PendingMethod, text: string, ref = "ref_a", a
   });
   storage.close();
   await refreshPendingTurnsProjection(ref);
+  await flushPendingTurnsProjectionForTests();
 }
 
 test("renders nothing when there are no pending entries", () => {

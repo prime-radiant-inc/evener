@@ -56,7 +56,8 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
 }));
 
 let refreshGeneration = 0;
-const appliedRefreshGenerations = new Map<string, number>();
+let allTargetsRefreshGeneration = 0;
+const refreshGenerations = new Map<string, number>();
 let refreshEpoch = 0;
 
 function replaceTargetRecords<T extends { clientMutationId: string; targetRef: string }>(
@@ -165,6 +166,9 @@ function recordSubmittedHere(snapshot: {
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
   const generation = ++refreshGeneration;
+  // Starting a newer read supersedes older snapshots even if that read fails.
+  if (ref === undefined) allTargetsRefreshGeneration = generation;
+  else refreshGenerations.set(ref, generation);
   try {
     const snapshot = await readMutationPersistence(ref);
     if (refreshEpoch !== epoch) return false;
@@ -180,7 +184,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
     const targets = new Set(
       ref === undefined
         ? [
-            ...appliedRefreshGenerations.keys(),
+            ...refreshGenerations.keys(),
             ...snapshot.outbox.map((record) => record.targetRef),
             ...snapshot.optimistic.map((record) => record.targetRef),
             ...snapshot.recovery.map((record) => record.targetRef),
@@ -188,8 +192,9 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
         : [ref],
     );
     for (const target of targets) {
-      if (generation < (appliedRefreshGenerations.get(target) ?? 0)) targets.delete(target);
-      else appliedRefreshGenerations.set(target, generation);
+      if (generation < Math.max(allTargetsRefreshGeneration, refreshGenerations.get(target) ?? 0))
+        targets.delete(target);
+      else refreshGenerations.set(target, generation);
     }
     pendingTurnsStore.setState((state) => ({
       outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
@@ -207,7 +212,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
 subscribeMutationPersistence((targetRefs, committed) => {
   if (committed) {
     const { record, recoveryId } = committed;
-    appliedRefreshGenerations.set(record.targetRef, ++refreshGeneration);
+    refreshGenerations.set(record.targetRef, ++refreshGeneration);
     recordSubmittedHere({ outbox: [record], optimistic: [] });
     pendingTurnsStore.setState((state) => {
       const recovery = new Map(state.recovery);
@@ -445,7 +450,8 @@ export function resendRecoveryPendingTurn(
 export function resetPendingTurnsStoreForTests(): void {
   refreshEpoch += 1;
   refreshGeneration = 0;
-  appliedRefreshGenerations.clear();
+  allTargetsRefreshGeneration = 0;
+  refreshGenerations.clear();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   inFlightProjectionWork.clear();

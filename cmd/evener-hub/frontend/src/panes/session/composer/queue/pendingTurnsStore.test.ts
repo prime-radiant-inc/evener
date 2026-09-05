@@ -166,6 +166,59 @@ test("a committed submission releases its caller while recovery projection reads
   }
 });
 
+test.each([
+  [undefined, undefined],
+  [undefined, "ref_a"],
+  ["ref_a", undefined],
+  ["ref_a", "ref_a"],
+])("a failed newer refresh fences an older pending snapshot (%s then %s)", async (olderRef, ref) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "settled send" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "settled send" }] },
+  });
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let reached: () => void = () => {};
+  const reading = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(reached);
+    }
+    return request;
+  });
+  const older = refreshPendingTurnsProjection(olderRef);
+  try {
+    await reading;
+    await storage.settleApplied(record.clientMutationId);
+    spy.mockImplementationOnce(() => {
+      throw new Error("storage read failed");
+    });
+    expect(await refreshPendingTurnsProjection(ref)).toBe(false);
+    await act(async () => {
+      hold?.release();
+      await older;
+    });
+    expect(pending.result.current).toEqual([]);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await older;
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
 test("an older all-target projection cannot erase a newly committed send", async () => {
   const fake = await connect();
   fake.on("turn/start", () => new Promise<never>(() => undefined));

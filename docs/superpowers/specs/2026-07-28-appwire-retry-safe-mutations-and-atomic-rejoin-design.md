@@ -764,7 +764,8 @@ permits reporting a local failure and leaving the draft available to retry.
 If the browser refuses abort because the transaction is committing or finished,
 the original submission remains pending until its complete or abort event arrives.
 The composer displays that uncertainty without offering a fresh submission of
-the same draft. The watchdog never deletes the database or bypasses the outbox.
+the same draft. Storage-status listener failures cannot change the write outcome.
+The watchdog never deletes the database or bypasses the outbox.
 
 Discovery and projection refresh are background work after a successful commit.
 Their delays or failures cannot turn a saved message into a failed submission.
@@ -775,7 +776,10 @@ without waiting for the scan. A new submission can commit while that read stalls
 
 Local commits publish their record and provenance before releasing the composer.
 Projection reads, whether for one target or all targets, cannot overwrite a newer
-commit with an older snapshot. Recovery resend also publishes the atomic handoff
+commit with an older snapshot. A newer read fences older snapshots when it starts,
+even if it fails; failure retains the current projection for a later retry.
+Only durable mutations pin a thread after its pane closes; failed enqueues do not
+retain models or subscriptions. Recovery resend also publishes the atomic handoff
 from its recovery record to its new outbox record directly.
 Recovery edits remain serialized through write completion, without waiting for
 display refresh. Notification listener failures are reported separately and

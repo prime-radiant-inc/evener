@@ -1138,12 +1138,20 @@ async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
   await runtime.start;
-  pinnedMutationRefs.add(ref);
+  // Enqueue schedules discovery before returning; preserve the hydrated replay
+  // gate now, but only a durable commit may pin this ref after its pane closes.
   const pending = pendingThreadHydrations.get(ref);
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  const record = await runtime.outbox.enqueueIntent(intent);
+  let record: MutationOutboxRecord;
+  try {
+    record = await runtime.outbox.enqueueIntent(intent);
+  } catch (error) {
+    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+    throw error;
+  }
+  pinnedMutationRefs.add(ref);
   notifyMutationPersistence([ref], { record });
 }
 

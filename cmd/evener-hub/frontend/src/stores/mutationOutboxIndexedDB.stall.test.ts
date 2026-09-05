@@ -112,37 +112,43 @@ test("a timed-out upgrade releases its lock so the adapter can reopen", async ()
   }
 });
 
-test("a write past cancellation stays pending until its original commit is observed", async () => {
-  const stalled: boolean[] = [];
-  const storage = new MutationOutboxIndexedDB({
-    indexedDB: new IDBFactory(),
-    onWriteStalled: (waiting) => stalled.push(waiting),
-  });
-  await storage.listOutbox();
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementationOnce(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    hold = holdIndexedDBEvent(transaction, "complete");
-    return transaction;
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  let settled = false;
-  const enqueue = storage.enqueueIntent(intent).finally(() => {
-    settled = true;
-  });
-  await Promise.resolve();
-  if (!hold) throw new Error("write did not reach IndexedDB");
-  await hold.reached;
-  await vi.runOnlyPendingTimersAsync();
-  expect(stalled).toEqual([true]);
-  expect(settled).toBe(false);
-  hold.release();
-  const record = await enqueue;
-  expect(stalled).toEqual([true, false]);
-  expect(await storage.listOutbox()).toEqual([record]);
-  storage.close();
-});
+test.each([undefined, true, false])(
+  "a write past cancellation preserves its commit when the status listener throws on %s",
+  async (throwOn) => {
+    const stalled: boolean[] = [];
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB: new IDBFactory(),
+      onWriteStalled: (waiting) => {
+        stalled.push(waiting);
+        if (waiting === throwOn) throw new Error("status listener failed");
+      },
+    });
+    await storage.listOutbox();
+    const transact = IDBDatabase.prototype.transaction;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementationOnce(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      hold = holdIndexedDBEvent(transaction, "complete");
+      return transaction;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let settled = false;
+    const enqueue = storage.enqueueIntent(intent).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    if (!hold) throw new Error("write did not reach IndexedDB");
+    await hold.reached;
+    await vi.runOnlyPendingTimersAsync();
+    expect(stalled).toEqual([true]);
+    expect(settled).toBe(false);
+    hold.release();
+    const record = await enqueue;
+    expect(stalled).toEqual([true, false]);
+    expect(await storage.listOutbox()).toEqual([record]);
+    storage.close();
+  },
+);
 
 test("cancelling a stalled write rolls it back before the draft can be retried", async () => {
   const storage = new MutationOutboxIndexedDB({ indexedDB: new IDBFactory() });

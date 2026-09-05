@@ -7,6 +7,7 @@ import type { MutationIntent } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../../stores/threads";
 import {
+  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   useBlockedMutationEntries,
@@ -55,6 +56,9 @@ test("an all-target refresh replaces the complete blocked projection", async () 
   await act(async () => {
     expect(await refreshPendingTurnsProjection()).toBe(true);
   });
+
+  // Startup discovery can start a newer projection while the explicit read runs.
+  await flushPendingTurnsProjectionForTests();
 
   const refA = renderHook(() => useBlockedMutationEntries("ref-a"));
   const refB = renderHook(() => useBlockedMutationEntries("ref-b"));
