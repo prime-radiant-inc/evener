@@ -38,6 +38,13 @@ const protocolError = (message: string) => new Error(`navigation protocol: ${mes
 export function isGenerationMismatch(error: unknown): boolean {
   return error instanceof Error && error.message.includes("generation mismatch");
 }
+
+/** True when error is a disposal rejection from this revalidator (client
+ * replacement tore down the waiter mid-flight). The replacement client
+ * reboots navigation from scratch, which converges the caller's change. */
+export function isRevalidatorDisposed(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("revalidator disposed");
+}
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
   if (typeof structuredClone === "function") return structuredClone(value);

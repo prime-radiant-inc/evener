@@ -1757,6 +1757,22 @@ test("shutdown convergence re-arms past unrelated receipts until its session set
   expect(navigationStore.getState().lastSequence).toBe(2);
 });
 
+test("shutdown convergence treats revalidator disposal as converged", async () => {
+  await init((params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+  });
+  await navigationStore.getState().loadSection("live");
+  const waiter = navigationStore.getState().awaitNavigationInvalidation(() => true);
+  const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], { timeoutMs: 10_000 });
+  // Client replacement tears down the revalidator mid-wait: the waiter
+  // rejects, but the replacement reboots navigation, so convergence must
+  // resolve instead of reporting a shutdown failure.
+  resetNavigationStoreForTests();
+  await converged;
+  expect(navigationStore.getState().protocolError).toBeNull();
+});
+
 test("shutdown convergence is a no-op when navigation is not initialized", async () => {
   resetNavigationStoreForTests();
   let settled = false;

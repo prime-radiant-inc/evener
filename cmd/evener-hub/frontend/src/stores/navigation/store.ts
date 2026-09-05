@@ -29,7 +29,12 @@ import {
   normalizedGraphFromSnapshot,
 } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
-import { isGenerationMismatch, type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
+import {
+  isGenerationMismatch,
+  isRevalidatorDisposed,
+  type NavigationInvalidationWaiter,
+  NavigationRevalidator,
+} from "./revalidator";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
@@ -94,8 +99,10 @@ export async function awaitNavigationConvergence(
         ]);
       } catch (error) {
         // Generation reset rejects outstanding waiters: the reboot refetches
-        // every loaded resource, which converges the caller's change.
-        if (isGenerationMismatch(error)) return;
+        // every loaded resource, which converges the caller's change. Client
+        // replacement disposes the revalidator outright; the replacement
+        // client reboots from scratch with the same effect.
+        if (isGenerationMismatch(error) || isRevalidatorDisposed(error)) return;
         throw error;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
@@ -109,6 +116,10 @@ export async function awaitNavigationConvergence(
       invalidation.cancel();
       invalidation = opts.rearm();
     }
+    // The wait may have outlived navigation itself (teardown mid-shutdown):
+    // without an initialized v2 store the fallback has nothing to converge
+    // and its rejection would be a false failure for a committed mutation.
+    if (navigationStore.getState().mode !== "v2") return;
     await navigationStore.getState().applyNavigationMutation({
       generation_id: navigationStore.getState().clientGenerationID,
       targets,
