@@ -413,6 +413,8 @@ type NormalizedSessionContext = Readonly<Pick<RailSession, "tier" | "project_key
 
 function normalizedSessionContext(key: ResourceKey): NormalizedSessionContext {
   switch (key.kind) {
+    case "section":
+      return { tier: key.section };
     case "project":
       return { project_key: key.projectKey };
     case "project_page":

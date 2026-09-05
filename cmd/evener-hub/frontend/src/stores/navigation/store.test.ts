@@ -26,7 +26,7 @@ import {
   selectRailModel,
   selectSectionRemaining,
 } from "./selectors";
-import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
+import { awaitNavigationConvergence, initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
 import { capability, completeSession, manifest, wireV2 } from "./testing";
 import {
   isNavigationUnavailable,
@@ -1682,6 +1682,42 @@ test("same-generation equal-sequence reconnect retries one settled error with it
   ]);
   expect(authorityDuringRetry).toBe(initialSection.normalized.version);
   expect(navigationStore.getState().manifest).toBe(initial.manifest);
+});
+
+test("shutdown convergence follows the invalidation receipt when one arrives", async () => {
+  let revision = 1;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    return wireV2(params, { sessions: [], remaining: 0, truncated: false }, `"section-${revision}"`, revision);
+  });
+  await navigationStore.getState().loadSection("live");
+  const waiter = navigationStore.getState().awaitNavigationInvalidation(() => true);
+  const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 10_000);
+  revision = 2;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await converged;
+  expect(navigationStore.getState().lastSequence).toBe(1);
+});
+
+test("shutdown convergence refreshes targets directly when no invalidation arrives", async () => {
+  const calls: NavigationReadParams[] = [];
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+  });
+  await navigationStore.getState().loadSection("live");
+  const waiter = navigationStore.getState().awaitNavigationInvalidation(() => true);
+  // No invalidation is ever delivered: a short timeout must bound the wait
+  // and the fallback refresh must still converge the section.
+  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 20);
+  expect(calls.filter((params) => params.resource === "section")).toHaveLength(2);
 });
 
 test("same-generation lower-sequence reconnect preserves installed v2 authority and identities without a read", async () => {

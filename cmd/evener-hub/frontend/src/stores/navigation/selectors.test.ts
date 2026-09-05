@@ -62,6 +62,12 @@ test("normalized selector preserves unchanged entity and node identity", () => {
   expect(after.nodes.get(secondEntityKey)).toBe(before.nodes.get(secondEntityKey));
 });
 
+test("normalized section sessions preserve the section tier like the legacy adapter", () => {
+  const model = selectRailModel(resource("one"));
+  expect(model.sessions.get(firstEntityKey)?.tier).toBe("live");
+  expect(model.sessions.get(secondEntityKey)?.tier).toBe("live");
+});
+
 test("normalized rail sessions derive display age from updated_at", () => {
   const updatedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
   const snapshot = {

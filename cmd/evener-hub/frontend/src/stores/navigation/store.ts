@@ -42,6 +42,39 @@ import {
 } from "./types";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
+
+/** Bound for waiting on a post-mutation invalidation before falling back to a
+ * targeted refresh. Invalidations are local hub notifications and normally
+ * arrive in milliseconds; the bound only fires when the hub legitimately
+ * emits nothing (e.g. shutting down an already-exited session is a success
+ * no-op), so the action still converges instead of hanging forever. */
+export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
+
+/** Await a matching invalidation, but fall back to converging `targets`
+ * directly when none arrives within the timeout. Resolves once the affected
+ * resources are settled either way. */
+export async function awaitNavigationConvergence(
+  invalidation: NavigationInvalidationWaiter,
+  targets: NavigationInvalidationTarget[],
+  timeoutMs = NAVIGATION_INVALIDATION_TIMEOUT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const payload = await Promise.race([
+      invalidation.promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ]);
+    await navigationStore.getState().applyNavigationMutation({
+      generation_id: payload?.generationId ?? navigationStore.getState().clientGenerationID,
+      targets: payload?.targets ?? targets,
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    invalidation.cancel();
+  }
+}
 export interface NavigationStoreState {
   capability: NavigationCapability | null;
   clientGenerationID: string;

@@ -1339,13 +1339,13 @@ describe("resource-backed Rail", () => {
     const deliverInvalidation = (payload: NavigationInvalidatedPayload) => {
       if (invalidationPredicate?.(payload)) event.resolve(payload);
     };
-    const awaitNavigationTargets = vi.fn(() => targetAuthority.promise);
+    const applyNavigationMutation = vi.fn(() => targetAuthority.promise);
     const shutdown = vi.fn().mockResolvedValue(undefined);
     installState([
       catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
       projectResource("p", [summary({ title: "Shutdown me", live: true })]),
     ]);
-    navigationStore.setState({ awaitNavigationInvalidation, awaitNavigationTargets });
+    navigationStore.setState({ awaitNavigationInvalidation, applyNavigationMutation });
     threadsStore.setState({ shutdown });
     render(<Rail />);
     fireEvent.click(screen.getByText("Project"));
@@ -1361,7 +1361,7 @@ describe("resource-backed Rail", () => {
       targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
     });
     await act(async () => undefined);
-    expect(awaitNavigationTargets).not.toHaveBeenCalled();
+    expect(applyNavigationMutation).not.toHaveBeenCalled();
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
 
@@ -1371,7 +1371,10 @@ describe("resource-backed Rail", () => {
       targets: [{ kind: "project", projectKey: "p", revision: 2 }],
     });
     await act(async () => undefined);
-    expect(awaitNavigationTargets).toHaveBeenCalledWith([{ kind: "project", projectKey: "p", revision: 2 }], "g1");
+    expect(applyNavigationMutation).toHaveBeenCalledWith({
+      generation_id: "g1",
+      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
+    });
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
 
     await act(async () => {

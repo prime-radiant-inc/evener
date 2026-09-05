@@ -238,9 +238,9 @@ test("v1 navigation mode still renames through AppWire", async () => {
   });
 });
 
-// --- v1 shutdown convergence (R49 finding 1) ---
+// --- v2 shutdown convergence (R49 finding 1) ---
 
-test("v1 shutdown installs an invalidation waiter and converges after the RPC", async () => {
+test("v2 shutdown installs an invalidation waiter and converges after the RPC", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_v1sd"));
@@ -266,10 +266,12 @@ test("v1 shutdown installs an invalidation waiter and converges after the RPC", 
     },
   );
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
+  const applyNavigationMutation = vi.fn(() => Promise.resolve());
   navigationStore.setState({
     mode: "v2",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
+    applyNavigationMutation: applyNavigationMutation as never,
   });
 
   renderWithToast(<SessionChrome ref="ref_v1sd" />);
@@ -291,12 +293,16 @@ test("v1 shutdown installs an invalidation waiter and converges after the RPC", 
   expect(
     waiterPredicate!({ targets: [{ kind: "pin_section", sectionId: "other" }], generationId: "generation_test" }),
   ).toBe(false);
-  // A matching invalidation resolves it, and awaitNavigationTargets is called.
+  // A matching invalidation resolves it, and the receipt targets converge.
   resolveWaiter();
-  await waitFor(() => expect(awaitNavigationTargets).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(applyNavigationMutation).toHaveBeenCalledTimes(1));
+  expect(applyNavigationMutation).toHaveBeenCalledWith({
+    generation_id: "generation_test",
+    targets: [{ kind: "section", section: "live" }],
+  });
 });
 
-test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
+test("v2 shutdown cancels the invalidation waiter on RPC failure", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_v1sdf"));
@@ -312,10 +318,12 @@ test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
     cancel,
   }));
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
+  const applyNavigationMutation = vi.fn(() => Promise.resolve());
   navigationStore.setState({
     mode: "v2",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
+    applyNavigationMutation: applyNavigationMutation as never,
   });
 
   renderWithToast(<SessionChrome ref="ref_v1sdf" />);
@@ -333,6 +341,7 @@ test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
   expect(await screen.findByText("Couldn't shut down session: v1 shutdown failed")).toBeTruthy();
   await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
   expect(awaitNavigationTargets).not.toHaveBeenCalled();
+  expect(applyNavigationMutation).not.toHaveBeenCalled();
 });
 
 // --- onToggleArchive error (lines 207-208) ---

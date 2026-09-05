@@ -24,7 +24,7 @@
 // goal chip + clear popover only.
 import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
+import type { NavigationInvalidationTarget, NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -34,7 +34,7 @@ import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
-import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { awaitNavigationConvergence, navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
@@ -212,6 +212,14 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 }
               },
               onShutdown: async () => {
+                const targets: NavigationInvalidationTarget[] = [
+                  { kind: "section", section: "live" },
+                  { kind: "section", section: "needs_you" },
+                  ...(menuSession?.pin_section_id
+                    ? [{ kind: "pin_section", sectionId: menuSession.pin_section_id } as const]
+                    : []),
+                  ...(location?.project_key ? [{ kind: "project", projectKey: location.project_key } as const] : []),
+                ];
                 const invalidation = navigationStore
                   .getState()
                   .awaitNavigationInvalidation((payload) =>
@@ -223,11 +231,9 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                         (target.kind === "project" && target.projectKey === location?.project_key),
                     ),
                   );
-                void invalidation.promise.catch(() => undefined);
                 try {
                   await threadsStore.getState().shutdown(sessionRef);
-                  const payload = await invalidation.promise;
-                  await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+                  await awaitNavigationConvergence(invalidation, targets);
                 } catch (err) {
                   invalidation.cancel();
                   toasts.push("error", sessionActionError("Couldn't shut down session", err));

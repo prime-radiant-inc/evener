@@ -13,6 +13,7 @@ import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import type {
   NavigationCatalogs,
+  NavigationInvalidationTarget,
   NavigationProjectPage,
   NavigationProjectResource,
   NavigationProjectSummary,
@@ -27,7 +28,7 @@ import {
   selectPinSections,
   selectRailModel,
 } from "../../stores/navigation/selectors";
-import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { awaitNavigationConvergence, navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import {
   keyID,
   navigationOwnedContainerKey,
@@ -1124,6 +1125,12 @@ function NavigationRail({
           true,
         ),
       onShutdownSession: async (session) => {
+        const targets: NavigationInvalidationTarget[] = [
+          { kind: "section", section: "live" },
+          { kind: "section", section: "needs_you" },
+          ...(session.pin_section_id ? [{ kind: "pin_section", sectionId: session.pin_section_id } as const] : []),
+          ...(session.project_key ? [{ kind: "project", projectKey: session.project_key } as const] : []),
+        ];
         const invalidation = navigationStore
           .getState()
           .awaitNavigationInvalidation((payload) =>
@@ -1135,7 +1142,6 @@ function NavigationRail({
                 (target.kind === "project" && target.projectKey === session.project_key),
             ),
           );
-        void invalidation.promise.catch(() => undefined);
         try {
           await runAction(
             () => threadsStore.getState().shutdown(session.ref),
@@ -1143,8 +1149,7 @@ function NavigationRail({
             undefined,
             true,
           );
-          const payload = await invalidation.promise;
-          await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+          await awaitNavigationConvergence(invalidation, targets);
         } catch (error) {
           invalidation.cancel();
           throw error;
