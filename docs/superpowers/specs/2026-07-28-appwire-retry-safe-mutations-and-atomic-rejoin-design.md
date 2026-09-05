@@ -757,6 +757,51 @@ restores the submitted payload into the main composer because the durable
 outbox or recovery tray already owns it. Clicking Send again therefore cannot
 create a second mutation merely because the first response was lost.
 
+Browser storage waits have a bounded watchdog. A stalled open or read retires
+its connection; a late open cannot replace the recovered connection. For a
+write, the watchdog attempts transaction abort. Only successful cancellation
+permits reporting a local failure and leaving the draft available to retry.
+If the browser refuses abort because the transaction is committing or finished,
+the original submission remains pending until its complete or abort event arrives.
+The composer displays that uncertainty without offering a fresh submission of
+the same draft. The watchdog never deletes the database or bypasses the outbox.
+
+Discovery and projection refresh are background work after a successful commit.
+Their delays or failures cannot turn a saved message into a failed submission.
+A failed startup scan remains retryable, and repeated lifecycle scans of the
+same kind share outstanding work rather than accumulating behind stalled storage.
+Runtime initialization registers its listeners and schedules startup discovery
+without waiting for the scan. A new submission can commit while that read stalls.
+
+Local commits publish their record and provenance before releasing the composer.
+Projection reads, whether for one target or all targets, cannot overwrite a newer
+commit with an older snapshot. Recovery resend also publishes the atomic handoff
+from its recovery record to its new outbox record directly.
+Recovery edits remain serialized through write completion, without waiting for
+display refresh. Notification listener failures are reported separately and
+cannot change a committed submission into a failed send.
+
+Within a page, pending composer submission ownership is shared per target from
+the initial click through completion. Switching dock tabs cannot create a fresh
+send of the same pending draft. Successful completion clears sticky text only if
+its revision and text still match the submitted draft. Edits advance the revision
+even when they produce identical text or reuse image markers; remounts preserve
+it. A retired composer cannot clear a newer mount's draft or attachments.
+Mounted composers also capture an edit revision for text cleanup, including
+recovery drafts. Submitted attachments are removed independently of text edits;
+newly staged items and explicit replacements survive even if they reuse markers.
+Recovery completion carries its consumed recovery ID to the current mount, which
+exits that recovery owner and preserves newer text as an ordinary draft.
+Persistence updates, recovery restoration, and commit display notifications do
+not count as shared draft edits; editing away and back to identical text does.
+
+This page-lifetime guard is not a durable draft-to-mutation identity. Sticky
+composer drafts currently persist text separately from the outbox; a full reload
+can recover a committed outbox record while also restoring that text. Strict
+duplicate prevention for resubmitting the restored draft requires an atomic or
+otherwise recoverable draft-to-mutation handoff. That architectural work is
+separate from the storage watchdog; matching text cannot safely identify a send.
+
 An outbox record moves through:
 
 1. `submitting`: locally recorded, no authoritative outcome observed;

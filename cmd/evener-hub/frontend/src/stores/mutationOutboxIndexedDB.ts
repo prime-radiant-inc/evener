@@ -24,6 +24,7 @@ export interface MutationOutboxIndexedDBOptions {
   createMutationId?: () => string;
   createPresentationId?: () => string;
   now?: () => number;
+  onWriteStalled?: (waiting: boolean) => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
 }
@@ -35,6 +36,14 @@ const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
+const STORAGE_WAIT_MS = 10_000;
+
+export class MutationStorageTimeoutError extends Error {
+  constructor() {
+    super("Browser message storage is not responding. Your draft has been kept. Try again when storage recovers.");
+    this.name = "MutationStorageTimeoutError";
+  }
+}
 
 interface TargetSequence {
   targetRef: string;
@@ -76,6 +85,8 @@ export class MutationOutboxIndexedDB {
   readonly #createPresentationId: () => string;
   readonly #now: () => number;
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
+  readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
+  #stalledWrites = 0;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
 
@@ -88,6 +99,7 @@ export class MutationOutboxIndexedDB {
     this.#createPresentationId = options.createPresentationId ?? createSecureUUID;
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
+    this.#onWriteStalled = options.onWriteStalled;
   }
 
   close(): void {
@@ -361,11 +373,31 @@ export class MutationOutboxIndexedDB {
 
   async #open(): Promise<IDBDatabase> {
     if (this.#database) return this.#database;
-    this.#databasePromise ??= new Promise((resolve, reject) => {
+    if (this.#databasePromise) return this.#databasePromise;
+    const opening = new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.#indexedDB.open(this.#databaseName, DATABASE_VERSION);
+      let abandoned = false;
+      let upgradeTransaction: IDBTransaction | null = null;
+      const fail = (error: unknown) => {
+        abandoned = true;
+        clearTimeout(timer);
+        try {
+          // Release the database open lock if its schema upgrade is still active.
+          upgradeTransaction?.abort();
+        } catch {
+          // A completed upgrade cannot be aborted; late success closes its connection.
+        }
+        reject(error);
+      };
+      const timer = setTimeout(() => fail(new MutationStorageTimeoutError()), STORAGE_WAIT_MS);
       request.addEventListener(
         "upgradeneeded",
         () => {
+          upgradeTransaction = request.transaction;
+          if (abandoned || this.#databasePromise !== opening) {
+            upgradeTransaction?.abort();
+            return;
+          }
           const database = request.result;
           if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
             const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
@@ -388,29 +420,45 @@ export class MutationOutboxIndexedDB {
       request.addEventListener(
         "success",
         () => {
-          this.#database = request.result;
-          this.#database.addEventListener("versionchange", () => this.close());
-          resolve(this.#database);
+          clearTimeout(timer);
+          const database = request.result;
+          if (abandoned || this.#databasePromise !== opening) {
+            database.close();
+            reject(new Error("Mutation outbox connection was closed"));
+            return;
+          }
+          this.#database = database;
+          database.addEventListener("versionchange", () => this.#retire(database));
+          database.addEventListener("close", () => this.#retire(database));
+          resolve(database);
         },
         { once: true },
       );
-      request.addEventListener("error", () => reject(request.error ?? new Error("Unable to open mutation outbox")), {
+      request.addEventListener("error", () => fail(request.error ?? new Error("Unable to open mutation outbox")), {
         once: true,
       });
-      request.addEventListener("blocked", () => reject(new Error("Mutation outbox upgrade is blocked")), {
+      request.addEventListener("blocked", () => fail(new Error("Mutation outbox upgrade is blocked")), {
         once: true,
       });
     });
-    return this.#databasePromise;
+    this.#databasePromise = opening;
+    try {
+      return await opening;
+    } catch (error) {
+      if (this.#databasePromise === opening) this.#databasePromise = undefined;
+      throw error;
+    }
+  }
+
+  #retire(database: IDBDatabase): void {
+    database.close();
+    if (this.#database !== database) return;
+    this.#database = undefined;
+    this.#databasePromise = undefined;
   }
 
   async #read<T>(stores: string | string[], body: (transaction: IDBTransaction) => Promise<T>): Promise<T> {
-    const database = await this.#open();
-    const transaction = database.transaction(stores, "readonly");
-    const completed = transactionCompletion(transaction);
-    const result = await body(transaction);
-    await completed;
-    return result;
+    return this.#transaction(stores, "readonly", undefined, body);
   }
 
   async #write<T>(
@@ -418,13 +466,47 @@ export class MutationOutboxIndexedDB {
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
+    return this.#transaction(stores, "readwrite", operation, body);
+  }
+
+  async #transaction<T>(
+    stores: string | string[],
+    mode: "readonly" | "readwrite",
+    operation: MutationOutboxOperation | undefined,
+    body: (transaction: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
     const database = await this.#open();
-    const transaction = database.transaction(stores, "readwrite");
+    const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stalledWrite = false;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        this.#retire(database);
+        try {
+          transaction.abort();
+        } catch {
+          if (mode === "readwrite") {
+            // abort() refuses a committing/finished transaction. A deadline
+            // cannot prove rollback: keep the original submission pending
+            // until its complete/abort event establishes its outcome.
+            stalledWrite = true;
+            this.#stalledWrites += 1;
+            if (this.#stalledWrites === 1) this.#onWriteStalled?.(true);
+            return;
+          }
+        }
+        reject(new MutationStorageTimeoutError());
+      }, STORAGE_WAIT_MS);
+    });
     try {
-      const result = await body(transaction);
-      if (operation) this.#beforeCommit?.(operation);
-      await completed;
+      const work = body(transaction).then((result) => {
+        if (operation) this.#beforeCommit?.(operation);
+        return result;
+      });
+      // Observe request and transaction failures together. An abort must
+      // release the caller even when a request callback never arrives.
+      const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
       return result;
     } catch (error) {
       try {
@@ -432,8 +514,13 @@ export class MutationOutboxIndexedDB {
       } catch {
         // The transaction already completed; preserve the original failure.
       }
-      await completed.catch(() => undefined);
       throw error;
+    } finally {
+      clearTimeout(timer);
+      if (stalledWrite) {
+        this.#stalledWrites -= 1;
+        if (this.#stalledWrites === 0) this.#onWriteStalled?.(false);
+      }
     }
   }
 

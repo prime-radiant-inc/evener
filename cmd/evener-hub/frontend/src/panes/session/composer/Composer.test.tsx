@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -15,6 +15,7 @@ import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -25,7 +26,7 @@ import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
@@ -2130,6 +2131,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await waitFor(() => expect(textarea().value).toBe(""));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
   otherTab.close();
 });
 
@@ -2212,6 +2214,69 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   // report "gone" for an attachment still sitting there - and a query naming
   // the file would report the same if only the label changed.
   expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
+});
+
+test.each([
+  { edit: "unchanged", image: false },
+  { edit: "edited", image: false },
+  { edit: "same text", image: false },
+  { edit: "unchanged", image: true },
+  { edit: "edited", image: true },
+  { edit: "same text", image: true },
+])("a recovery resend releases its remounted owner ($edit, image=$image)", async ({ edit, image }) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = image
+    ? await seedRejectedRecoveryWithAttachment(storage, "ref_a")
+    : await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  const submittedText = image ? "edit me [image 1]" : "retry me";
+  expect(textarea().value).toBe(submittedText);
+
+  const transact = IDBDatabase.prototype.transaction;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceWrite: (() => void) | undefined;
+  const written = new Promise<void>((resolve) => {
+    announceWrite = resolve;
+  });
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+    const transaction = transact.apply(this, args);
+    if (
+      !hold &&
+      transaction.mode === "readwrite" &&
+      transaction.objectStoreNames.length === 1 &&
+      transaction.objectStoreNames.contains("recovery")
+    ) {
+      hold = holdIndexedDBEvent(transaction, "complete");
+      void hold.reached.then(() => announceWrite?.());
+    }
+    return transaction;
+  });
+  try {
+    fireEvent.click(submitButton());
+    await written;
+    cleanup();
+    render(<Composer ref="ref_a" />);
+    await waitFor(() => expect(textarea().value).toBe(submittedText));
+    if (edit !== "unchanged") {
+      fireEvent.change(textarea(), { target: { value: "new draft" } });
+      if (edit === "same text") fireEvent.change(textarea(), { target: { value: submittedText } });
+    }
+  } finally {
+    await act(async () => hold?.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+  const expected = edit === "unchanged" ? "" : edit === "edited" ? "new draft" : image ? "edit me " : "retry me";
+  expect(textarea().value).toBe(expected);
+  expect(readDraft("ref_a")).toBe(expected);
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "Remove proof.png" })).toBeNull();
+  fireEvent.change(textarea(), { target: { value: "follow up" } });
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(await storage.listOutbox("ref_a")).toHaveLength(2);
 });
 
 test("blanking an attachment-free recovered draft discards it durably", async () => {
@@ -2549,6 +2614,160 @@ test("pasting an image renders a removable attachment tile and inserts its marke
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
+
+test.each([
+  { remount: true, edited: true, recovery: false, drain: false },
+  { remount: false, edited: true, recovery: false, drain: false },
+  { remount: false, edited: false, recovery: false, drain: false },
+  { remount: false, edited: true, recovery: true, drain: false },
+  { remount: false, edited: false, recovery: true, drain: false },
+  { remount: false, edited: true, recovery: false, drain: true },
+  { remount: false, edited: false, recovery: false, drain: true },
+])(
+  "committing respects attachment draft ownership ($remount, $edited, $recovery, $drain)",
+  async ({ remount, edited, recovery, drain }) => {
+    installCanvasStubs();
+    if (recovery) {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+    }
+    const fake = await mountComposer(
+      "ref_a",
+      drain
+        ? {
+            status: { type: "active" },
+            evener: {
+              ref: "ref_a",
+              activeTurnId: "turn_1",
+              capabilities: FULL_CAPABILITIES,
+              queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+            },
+          }
+        : {},
+    );
+    const method = drain ? "turn/drainAsSteer" : "turn/start";
+    fake.on(method, () => new Promise<never>(() => undefined));
+    const actionButton = () =>
+      drain ? screen.getByRole<HTMLButtonElement>("button", { name: "Steer queue now" }) : submitButton();
+    const user = userEvent.setup();
+    if (!recovery) pastePngInto(textarea(), "original.png");
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(actionButton().disabled).toBe(false));
+    const submittedText = textarea().value;
+    const originalAttachment = recovery ? "proof.png" : "original.png";
+
+    const transact = IDBDatabase.prototype.transaction;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let announceCommit: (() => void) | undefined;
+    const committed = new Promise<void>((resolve) => {
+      announceCommit = resolve;
+    });
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+        hold = holdIndexedDBEvent(transaction, "complete");
+        void hold.reached.then(() => announceCommit?.());
+      }
+      return transaction;
+    });
+    try {
+      await user.click(actionButton());
+      await committed;
+      if (remount) {
+        cleanup();
+        render(<Composer ref="ref_a" />);
+        fireEvent.change(textarea(), { target: { value: "" } });
+        pastePngInto(textarea(), "replacement.png");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
+      } else if (edited) {
+        fireEvent.change(textarea(), { target: { value: `${submittedText} edited` } });
+        fireEvent.change(textarea(), { target: { value: submittedText } });
+      }
+      expect(textarea().value).toBe(submittedText);
+    } finally {
+      await act(async () => hold?.release());
+      await flushPendingTurnsProjectionForTests();
+    }
+    const remainingText = remount ? submittedText : edited && recovery ? "edit me " : "";
+    expect(textarea().value).toBe(remainingText);
+    expect(readDraft("ref_a")).toBe(remainingText);
+    const retainedAttachment = remount ? "replacement.png" : originalAttachment;
+    expect(screen.queryByRole("button", { name: `Remove ${retainedAttachment}` }) !== null).toBe(remount);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+  },
+);
+
+test.each(["keep marker", "delete marker", "add attachment", "replace attachment", "merge recovery"])(
+  "a pending send retires only its submitted attachment (%s)",
+  async (edit) => {
+    installCanvasStubs();
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    pastePngInto(textarea(), "original.png");
+    await screen.findByRole("button", { name: "View original.png" });
+
+    const transact = IDBDatabase.prototype.transaction;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let announceCommit: (() => void) | undefined;
+    const committed = new Promise<void>((resolve) => {
+      announceCommit = resolve;
+    });
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+        hold = holdIndexedDBEvent(transaction, "complete");
+        void hold.reached.then(() => announceCommit?.());
+      }
+      return transaction;
+    });
+    try {
+      fireEvent.click(submitButton());
+      await committed;
+      if (edit === "replace attachment") {
+        fireEvent.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+        fireEvent.click(screen.getByRole("button", { name: "Replace draft" }));
+      }
+      fireEvent.change(textarea(), {
+        target: { value: edit === "keep marker" ? "follow up [image 1]" : "follow up " },
+      });
+      if (edit === "add attachment" || edit === "replace attachment") {
+        const name = edit === "replace attachment" ? "original.png" : "replacement.png";
+        pastePngInto(textarea(), name);
+        await screen.findByRole("button", { name: `View ${name}` });
+      }
+      if (edit === "merge recovery") {
+        await seedRejectedRecovery(storage, "ref_a", "merge me");
+        await act(async () => {
+          await refreshPendingTurnsProjection("ref_a");
+        });
+        const row = screen.getByText("merge me").closest("li");
+        if (!row) throw new Error("missing rejected queue row");
+        fireEvent.click(within(row).getByRole("button", { name: "Edit message" }));
+      }
+    } finally {
+      await act(async () => hold?.release());
+      await flushPendingTurnsProjectionForTests();
+    }
+    expect(screen.queryByRole("button", { name: "Remove original.png" }) !== null).toBe(edit === "replace attachment");
+    expect(screen.queryByRole("button", { name: "Remove replacement.png" }) !== null).toBe(edit === "add attachment");
+    expect(textarea().value).toContain("follow up");
+    if (edit === "merge recovery") {
+      expect((await storage.listRecovery("ref_a"))[0]?.composerText).toBe(textarea().value);
+    } else {
+      expect(readDraft("ref_a")).toBe(textarea().value);
+    }
+    fireEvent.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    const records = await storage.listOutbox("ref_a");
+    expect(records).toHaveLength(2);
+    expect(records[1]?.attachments.map((item) => item.name)).toEqual(
+      edit === "replace attachment" ? ["original.png"] : edit === "add attachment" ? ["replacement.png"] : [],
+    );
+  },
+);
 
 test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();

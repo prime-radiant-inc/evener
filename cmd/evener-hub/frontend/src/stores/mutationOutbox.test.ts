@@ -1,9 +1,10 @@
 // @vitest-environment node
 
-import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 const TARGET = "local:thread-1";
 
@@ -541,11 +542,175 @@ describe("MutationOutbox discovery", () => {
     discoveries.length = 0;
 
     await tabA.enqueueIntent(intent("broadcast wake"));
-    await Promise.resolve();
-
-    expect(discoveries).toContainEqual({ targets: [TARGET], reason: "broadcast" });
     await tabA.stop();
     await tabB.stop();
+    expect(discoveries).toContainEqual({ targets: [TARGET], reason: "broadcast" });
+  });
+
+  test("a discovery failure cannot report a committed message as a failed submission", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover() {
+        throw new Error("discovery unavailable");
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    await outbox.start();
+    try {
+      const accepted = await outbox.enqueueIntent(intent("already saved"));
+      expect(await storage.listOutbox()).toEqual([accepted]);
+    } finally {
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("submission does not wait for background discovery to finish", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    let announceDiscovery: (() => void) | undefined;
+    let releaseDiscovery: (() => void) | undefined;
+    const discovered = new Promise<void>((resolve) => {
+      announceDiscovery = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover() {
+        announceDiscovery?.();
+        return gate;
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    await outbox.start();
+    let accepted = false;
+    const submit = outbox.enqueueIntent(intent("saved while discovery waits")).then(() => {
+      accepted = true;
+    });
+    try {
+      await discovered;
+      expect(await storage.listOutbox()).toHaveLength(1);
+      expect(accepted).toBe(true);
+    } finally {
+      releaseDiscovery?.();
+      await submit;
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("a failed startup scan does not poison later delivery", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const record = await storage.enqueueIntent(intent("recover at startup"));
+    const discovered: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(targets, reason) {
+        if (reason === "startup") throw new Error("storage was unavailable during startup");
+        discovered.push(...targets);
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+    });
+    try {
+      await outbox.start();
+      await outbox.connectionReady();
+      expect(discovered).toEqual([TARGET]);
+      expect(await storage.listOutbox()).toEqual([record]);
+    } finally {
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("a timed-out ready scan resolves and a later focus retries discovery", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const record = await storage.enqueueIntent(intent("discover after storage recovers"));
+    const lifecycleWindow = new EventTarget();
+    const discoveries: string[] = [];
+    let announceStartup: (() => void) | undefined;
+    const startupDiscovered = new Promise<void>((resolve) => {
+      announceStartup = resolve;
+    });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(_targets, reason) {
+        discoveries.push(reason);
+        if (reason === "startup") announceStartup?.();
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+      lifecycleWindow,
+      setInterval: () => 0,
+      clearInterval() {},
+    });
+    await outbox.start();
+    await startupDiscovered;
+
+    const getAll = IDBObjectStore.prototype.getAll;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let announceRead: (() => void) | undefined;
+    const readHeld = new Promise<void>((resolve) => {
+      announceRead = resolve;
+    });
+    const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      const request = getAll.apply(this, args);
+      if (this.name === "outbox" && !hold) {
+        hold = holdIndexedDBEvent(request, "success");
+        void hold.reached.then(() => announceRead?.());
+      }
+      return request;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let failure: unknown;
+    const ready = outbox.connectionReady().catch((error) => {
+      failure = error;
+    });
+    try {
+      await readHeld;
+      await vi.runOnlyPendingTimersAsync();
+      await ready;
+      expect(failure).toBeUndefined();
+      expect(discoveries).toEqual(["startup"]);
+      hold?.release();
+      lifecycleWindow.dispatchEvent(new Event("focus"));
+      await outbox.stop();
+      expect(discoveries).toEqual(["startup", "focus"]);
+      expect(await storage.getOutbox(record.clientMutationId)).toEqual(record);
+    } finally {
+      spy.mockRestore();
+      hold?.release();
+      vi.useRealTimers();
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("repeated liveness ticks share an outstanding scan instead of building a backlog", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    await storage.enqueueIntent(intent("already saved"));
+    let tick: (() => void) | undefined;
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(_targets, reason) {
+        discoveries.push(reason);
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+      setInterval(callback) {
+        tick = callback;
+        return 1;
+      },
+      clearInterval() {},
+    });
+    await outbox.start();
+    for (let index = 0; index < 20; index += 1) tick?.();
+    await outbox.stop();
+    expect(discoveries).toEqual(["startup", "interval"]);
+    storage.close();
   });
 
   test("the ready-state timer discovers a commit whose origin crashed before broadcasting", async () => {
@@ -569,6 +734,7 @@ describe("MutationOutbox discovery", () => {
       clearInterval() {},
     });
     await survivingTab.start();
+    await survivingTab.connectionReady();
     expect(discoveries).toEqual([]);
 
     await new MutationOutboxIndexedDB({
@@ -597,10 +763,15 @@ describe("MutationOutbox discovery", () => {
     const lifecycleDocument = Object.assign(new EventTarget(), { visibilityState: "visible" });
     const intervals: Array<{ callback: () => void; milliseconds: number }> = [];
     const discoveries: Array<{ targets: string[]; reason: string }> = [];
+    let announceStartup: (() => void) | undefined;
+    const startupDiscovered = new Promise<void>((resolve) => {
+      announceStartup = resolve;
+    });
     const outbox = new MutationOutbox(storage, {
       isReady: () => ready,
       onDiscover: (targets, reason) => {
         discoveries.push({ targets, reason });
+        if (reason === "startup") announceStartup?.();
       },
       createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
       lifecycleWindow,
@@ -613,6 +784,7 @@ describe("MutationOutbox discovery", () => {
     });
 
     await outbox.start();
+    await startupDiscovered;
     expect(discoveries).toEqual([{ targets: ["local:thread-1", "local:thread-2"], reason: "startup" }]);
     expect(intervals).toHaveLength(1);
     expect(intervals[0]?.milliseconds).toBe(2000);

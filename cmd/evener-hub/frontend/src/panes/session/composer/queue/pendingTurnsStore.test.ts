@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import {
@@ -19,6 +20,7 @@ import {
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
   usePendingTurnEntries,
+  useRecoveryEntries,
 } from "./pendingTurnsStore";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -123,6 +125,83 @@ test("an action becomes pending only after its durable enqueue commits", async (
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
 });
 
+test("a committed submission releases its caller while recovery projection reads are stalled", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = await connect();
+  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  const getAll = IDBObjectStore.prototype.getAll;
+  const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let firstRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    firstRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      const hold = holdIndexedDBEvent(request, "success");
+      held.push(hold);
+      void hold.reached.then(() => firstRead?.());
+    }
+    return request;
+  });
+  let accepted = false;
+  const onFailure = vi.fn();
+  const submit = submitWithPendingTracking({ ref: "ref_a", method: "steer", text: "one send", onFailure }, () =>
+    threadsStore.getState().steer("ref_a", "one send"),
+  ).then(() => {
+    accepted = true;
+  });
+  try {
+    await readStarted;
+    expect(await storage.listOutbox()).toHaveLength(1);
+    expect(accepted).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+    for (const hold of held) hold.release();
+    await submit;
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
+test("an older all-target projection cannot erase a newly committed send", async () => {
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const oldRead = refreshPendingTurnsProjection();
+  try {
+    await readHeld;
+    await act(async () => threadsStore.getState().send("ref_a", "keep the committed send"));
+    expect(pending.result.current).toHaveLength(1);
+    await act(async () => {
+      hold?.release();
+      await oldRead;
+    });
+    expect(pending.result.current).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
+    hold?.release();
+    await flushPendingTurnsProjectionForTests();
+  }
+});
+
 test("a local commit failure reports the exact error and never creates optimistic state", async () => {
   const failure = new Error("IndexedDB commit failed");
   const onFailure = vi.fn();
@@ -208,6 +287,61 @@ test("recovery action wrappers refresh the durable projection", async () => {
   ]);
   expect(await storage.getRecovery(records[1]!.clientMutationId)).toBeUndefined();
   expect(await storage.getRecovery(records[2]!.clientMutationId)).toBeUndefined();
+});
+
+test("a recovery resend publishes its handoff without waiting for recovery projection reads", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "retry this" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry this" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const recovery = renderHook(() => useRecoveryEntries("ref_a"));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await flushPendingTurnsProjectionForTests();
+  expect(recovery.result.current).toHaveLength(1);
+
+  const getAll = IDBObjectStore.prototype.getAll;
+  const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery") {
+      const hold = holdIndexedDBEvent(request, "success");
+      held.push(hold);
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  let accepted = false;
+  const resend = resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "retry this", []).then(
+    (result) => {
+      accepted = result;
+    },
+  );
+  try {
+    await act(async () => {
+      await readHeld;
+      await storage.listOutbox();
+    });
+    expect(accepted).toBe(true);
+    expect(recovery.result.current).toHaveLength(0);
+    expect(pending.result.current).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
+    for (const hold of held) hold.release();
+    await resend;
+    await flushPendingTurnsProjectionForTests();
+  }
 });
 
 test("authoritative pendingMutations reconstruct accepted steering without a browser registry", async () => {

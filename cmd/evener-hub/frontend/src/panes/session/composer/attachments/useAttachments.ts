@@ -139,7 +139,9 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
 
   const replaceWithSettled = useCallback((nextItems: PendingAttachment[]) => {
     nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
-    setItems(nextItems.map((item) => ({ ...item })));
+    // A recovery merge carries existing staged objects alongside new items.
+    // Preserve those identities so an in-flight send can still retire them.
+    setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
   }, []);
 
   const reset = useCallback(() => {
