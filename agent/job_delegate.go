@@ -32,6 +32,7 @@ type delegateArgs struct {
 	ReasoningEffort     string
 	DelegationAllowance *int
 	WatchParent         bool
+	ForkContext         bool
 	Isolation           string
 	Sandbox             string
 	SandboxNet          *bool
