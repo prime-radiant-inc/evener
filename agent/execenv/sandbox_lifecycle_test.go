@@ -567,6 +567,27 @@ func readConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment
 	return env
 }
 
+// wrapperConfinedEnvAt builds a file-tool-confined env with a kernel wrapper
+// (a bwrap-capable host, resolved hermetically; the binary is never spawned)
+// rooted at worktree, the shape whose scratch path reads through the wrapper.
+func wrapperConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
+	t.Helper()
+	host := sandbox.HostFacts{OS: "linux", Home: filepath.Dir(worktree), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	if env.KernelWrapper() == nil {
+		t.Fatal("EnableSandbox attached no kernel wrapper")
+	}
+	return env
+}
+
 // assertFileToolsShareTheShellScratch has a shell command write into the env's
 // $EVENER_SCRATCH_DIR and checks the file tools read that file back and can
 // write beside it: the two must name the same directory.
@@ -765,6 +786,10 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 			return env
 		},
 		"confined without a wrapper": readConfinedEnvAt,
+		// The bwrap/seatbelt shape reads its scratch path through the wrapper,
+		// which a re-root copies verbatim: nothing about that path changes when
+		// ownership moves, so only the move itself can say the layer is stale.
+		"confined with a wrapper": wrapperConfinedEnvAt,
 	}
 	for name, build := range shapes {
 		t.Run(name, func(t *testing.T) {
@@ -773,6 +798,9 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 			var discarded []*LocalExecutionEnvironment
 			for range 200 {
 				clone := owner.WithWorkingDirectory(lane)
+				if err := clone.SandboxReRootError(); err != nil {
+					t.Fatalf("re-root to the lane: %v", err)
+				}
 				clone.AdoptSessionScratch(owner)
 				if _, err := clone.WriteFile(filepath.Join(clone.SessionScratchDir(), "cycle.txt"), "x\n"); err != nil {
 					t.Fatalf("write_file on the entered clone: %v", err)

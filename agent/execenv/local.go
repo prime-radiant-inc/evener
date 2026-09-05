@@ -769,11 +769,15 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	e.scratchMu.Unlock()
 	_ = owned.Retain()
 	_ = unsandboxed.Retain()
-	// The file-tool layers each env built around the scratch it held are stale
-	// now; retire them through the same drain a rebuild uses. The source may
-	// never be touched again (a clone discarded on exit), so without this its
-	// root descriptors would stay open for the daemon's uptime.
-	from.retireStaleFileToolLayers()
+	// The file-tool layers each env built around the scratch it held go through
+	// the same drain a rebuild uses. The source's go unconditionally: it no
+	// longer owns the scratch whatever root its layers recorded (a wrapper
+	// reports the same session tmp before and after the move), and it may never
+	// be touched again (a clone discarded on exit), so without this its root
+	// descriptors would stay open for the daemon's uptime. The target's go only
+	// if its effective path changed; it is the environment the session now
+	// works in.
+	from.invalidateSandboxFS()
 	e.retireStaleFileToolLayers()
 }
 
