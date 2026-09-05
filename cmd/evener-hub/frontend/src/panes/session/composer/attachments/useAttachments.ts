@@ -57,7 +57,7 @@ export interface PendingAttachment {
 // class - Composer.test.tsx's own regression test is what has to.
 export interface TextEditor {
   read(): { text: string; cursor: number };
-  write(text: string, cursor: number): void;
+  write(text: string, cursor: number, source?: "edit" | "submission"): void;
 }
 
 export interface UseAttachmentsResult {
@@ -252,7 +252,7 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
           const stripped = stripMarker(current.text, current.cursor, marker);
           current = { text: stripped.value, cursor: stripped.cursor ?? current.cursor };
         }
-        editor.write(current.text, current.cursor);
+        editor.write(current.text, current.cursor, "submission");
       }
       setItems((prev) => {
         const next = prev.filter((item) => !submittedMarkers.has(item.marker));

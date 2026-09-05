@@ -2298,6 +2298,96 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   expect(screen.queryByText("discard me")).toBeNull();
 });
 
+test("draining an active recovery consumes its owner before the next submission", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovery = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: {
+      ref: "ref_a",
+      activeTurnId: "turn_1",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  fake.on("turn/drainAsSteer", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().value).toBe("retry me");
+  const transact = IDBDatabase.prototype.transaction;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const committed = deferred<void>();
+  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+    const transaction = transact.apply(this, args);
+    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+      hold = holdIndexedDBEvent(transaction, "complete");
+      void hold.reached.then(() => committed.resolve());
+    }
+    return transaction;
+  });
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+    await committed.promise;
+    // Recovery ownership must be consumed by the same durable write, before
+    // the mounted composer's success callback can clear or autosave its draft.
+    expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
+  } finally {
+    await act(async () => hold?.release());
+    await flushPendingTurnsProjectionForTests();
+  }
+  expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
+  expect(textarea().value).toBe("");
+  fireEvent.change(textarea(), { target: { value: "follow up" } });
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect((await storage.listOutbox("ref_a")).map((record) => record.method)).toEqual([
+    "turn/drainAsSteer",
+    "turn/queue",
+  ]);
+});
+
+test.each([false, true])(
+  "a pending submission cannot clear a draft edited by another mounted Composer (image=%s)",
+  async (image) => {
+    const fake = await mountComposer("ref_a");
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    fireEvent.change(textarea(), { target: { value: "send me" } });
+    if (image) {
+      installCanvasStubs();
+      pastePngInto(textarea());
+      await waitFor(() => expect(submitButton().disabled).toBe(false));
+      expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+    }
+    const firstInput = textarea();
+    const firstButton = submitButton();
+    const second = render(<Composer ref="ref_a" />);
+    const secondInput = within(second.container).getByRole<HTMLTextAreaElement>("textbox");
+    await flushPendingTurnsProjectionForTests();
+    const transact = IDBDatabase.prototype.transaction;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    const committed = deferred<void>();
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
+        hold = holdIndexedDBEvent(transaction, "complete");
+        void hold.reached.then(() => committed.resolve());
+      }
+      return transaction;
+    });
+    try {
+      fireEvent.click(firstButton);
+      await committed.promise;
+      fireEvent.change(secondInput, { target: { value: "newer shared draft" } });
+    } finally {
+      await act(async () => hold?.release());
+      await flushPendingTurnsProjectionForTests();
+    }
+    expect(firstInput.value).toBe("");
+    expect(secondInput.value).toBe("newer shared draft");
+    expect(readDraft("ref_a")).toBe("newer shared draft");
+  },
+);
+
 test("a remounted Composer does not activate a stale recovery projection", async () => {
   const storage = new PausedRecoveryReadStorage();
   setMutationStorageForTests(storage);

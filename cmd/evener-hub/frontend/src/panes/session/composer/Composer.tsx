@@ -175,13 +175,17 @@ export function Composer({ ref }: ComposerProps) {
   // still clear the composer (only if unchanged since THAT read, mirroring
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
-  const lastDrainSnapshotRef = useRef<{ text: string; attachments: PendingAttachment[]; revision: number } | null>(
-    null,
-  );
+  const lastDrainSnapshotRef = useRef<{
+    text: string;
+    attachments: PendingAttachment[];
+    revision: number;
+    draftRevision: number;
+  } | null>(null);
   // Tracks edits within this mount, including recovery drafts whose persistence
   // writes can finish without an edit. Commit notifications only update the
   // display; they must still let this mount remove its submitted attachments.
   const draftEditRevisionRef = useRef(0);
+  const ownedDraftRevisionRef = useRef(readDraftRevision(ref));
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -312,10 +316,21 @@ export function Composer({ ref }: ComposerProps) {
   const editText = useCallback(
     (nextText: string): void => {
       draftEditRevisionRef.current += 1;
-      if (activeRecoveryIdRef.current !== null) markDraftEdited(ref);
+      if (activeRecoveryIdRef.current !== null) {
+        markDraftEdited(ref);
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+      }
       updateText(nextText);
     },
     [ref, updateText],
+  );
+
+  const persistDraft = useCallback(
+    (nextText: string): void => {
+      writeDraft(ref, nextText);
+      ownedDraftRevisionRef.current = readDraftRevision(ref);
+    },
+    [ref],
   );
 
   useLayoutEffect(() => {
@@ -323,9 +338,12 @@ export function Composer({ ref }: ComposerProps) {
     // Re-read at subscription time so a commit between render and mount
     // cannot leave an already-cleared sticky draft in a fresh composer.
     updateText(readDraft(ref));
+    ownedDraftRevisionRef.current = readDraftRevision(ref);
     const unsubscribe = subscribeComposerSubmissionCommitted((targetRef, submittedText, recovery) => {
       if (targetRef !== ref) return;
       if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
+        if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
+        const ownsDraft = ownedDraftRevisionRef.current === readDraftRevision(ref);
         recoveryOwnsLocalDraftRef.current = false;
         recoveryWriteVersionRef.current += 1;
         recoveryReplacementEpochRef.current += 1;
@@ -348,8 +366,9 @@ export function Composer({ ref }: ComposerProps) {
             .map((item) => item.marker),
         );
         clearSubmittedAttachmentsRef.current(markers);
-        writeDraft(ref, textRef.current);
+        if (ownsDraft) persistDraft(textRef.current);
       } else if (!recovery && activeRecoveryIdRef.current === null && textRef.current === submittedText) {
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
         updateText("");
       }
     });
@@ -357,7 +376,7 @@ export function Composer({ ref }: ComposerProps) {
       mountedRef.current = false;
       unsubscribe();
     };
-  }, [ref, setActiveRecoveryId, updateText]);
+  }, [ref, setActiveRecoveryId, updateText, persistDraft]);
 
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
@@ -390,9 +409,13 @@ export function Composer({ ref }: ComposerProps) {
       text: textRef.current,
       cursor: cursorToRestoreRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
     }),
-    write: (nextText, cursor) => {
-      editText(nextText);
-      if (activeRecoveryIdRef.current === null) writeDraft(ref, nextText);
+    write: (nextText, cursor, source) => {
+      // Submission cleanup retires this mount's markers without claiming a
+      // shared draft that another composer has edited in the meantime.
+      const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
+      if (source === "submission") updateText(nextText);
+      else editText(nextText);
+      if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
       cursorToRestoreRef.current = cursor;
     },
   };
@@ -788,7 +811,7 @@ export function Composer({ ref }: ComposerProps) {
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     editText(event.target.value);
-    if (activeRecoveryIdRef.current === null) writeDraft(ref, event.target.value);
+    if (activeRecoveryIdRef.current === null) persistDraft(event.target.value);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
@@ -821,11 +844,14 @@ export function Composer({ ref }: ComposerProps) {
   // Equal text can belong to a newer edit, including a reused image marker.
   // A commit notification may already have cleared the display without editing
   // the draft; its original attachment cleanup still belongs to this revision.
-  function clearIfUnchanged(submittedText: string, submittedRevision: number): boolean {
+  function clearIfUnchanged(submittedText: string, submittedRevision: number, submittedDraftRevision: number): boolean {
     if (!mountedRef.current || draftEditRevisionRef.current !== submittedRevision) return false;
     if (textRef.current === submittedText) {
       updateText("");
-      clearDraft(ref);
+      if (readDraftRevision(ref) === submittedDraftRevision) {
+        clearDraft(ref);
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+      }
     }
     return true;
   }
@@ -835,7 +861,7 @@ export function Composer({ ref }: ComposerProps) {
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
     if (!snapshot || !mountedRef.current) return;
-    clearIfUnchanged(snapshot.text, snapshot.revision);
+    clearIfUnchanged(snapshot.text, snapshot.revision, snapshot.draftRevision);
     clearSubmittedAttachments(snapshot.attachments);
   }
 
@@ -928,6 +954,7 @@ export function Composer({ ref }: ComposerProps) {
       text: textRef.current,
       attachments: attachments.items,
       revision: draftEditRevisionRef.current,
+      draftRevision: readDraftRevision(ref),
     };
     return {
       text: textRef.current,
@@ -957,6 +984,7 @@ export function Composer({ ref }: ComposerProps) {
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedRevision = draftEditRevisionRef.current;
+    const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
@@ -988,7 +1016,7 @@ export function Composer({ ref }: ComposerProps) {
       );
       if (!mountedRef.current) return;
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-      clearIfUnchanged(submittedText, submittedRevision);
+      clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision);
       clearSubmittedAttachments(submittedAttachments);
     } catch {
       // The local durable write failed. The submitted composer payload stays
@@ -1013,6 +1041,7 @@ export function Composer({ ref }: ComposerProps) {
   async function handleBuiltinSubmit(match: BuiltinMatch): Promise<void> {
     const submittedText = textRef.current;
     const submittedRevision = draftEditRevisionRef.current;
+    const submittedDraftRevision = readDraftRevision(ref);
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
@@ -1025,7 +1054,7 @@ export function Composer({ ref }: ComposerProps) {
     };
     const outcome = await runBuiltinCommand(match, ctx);
     setBusyAction(null);
-    if (outcome.ok) clearIfUnchanged(submittedText, submittedRevision);
+    if (outcome.ok) clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision);
     // On failure: the draft is left exactly as typed (clearIfUnchanged is
     // simply never called) - runBuiltinCommand has already toasted why.
   }
