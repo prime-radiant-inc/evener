@@ -1,8 +1,8 @@
 # Evener native mobile
 
 A small Expo / React Native client for iOS and Android. The initial app saves
-multiple named hubs, lists recent sessions, reads a plain-text conversation,
-and exposes capability-gated send/stop. The existing AppWire client and mobile
+multiple named hubs, lists recent sessions, creates sessions, reads a plain-text
+conversation, and exposes capability-gated send/stop. The existing AppWire client and mobile
 services/state are reused directly. The Tauri app remains in `../mobile` as a
 reference; it is not loaded by the native bundle.
 
@@ -53,7 +53,11 @@ No script in the default tests calls a real hub or LLM provider.
 - The roster requests 51 rows and shows at most 50 distinct session refs.
   There is no search or expanded roster yet; the footer discloses the limit.
 - Conversation text is selectable plain text; tool/activity details expand.
-  Rich Markdown, attachments, session creation, QR pairing, and voice are later.
+  Rich Markdown, attachments, QR pairing, and voice are later.
+- New session opens on the selected hub with recent project directories,
+  harnesses, searchable models and compatible reasoning effort. Defaults defer
+  to hub configuration. Opening text is preserved exactly; uncertain creation
+  is never automatically repeated. Check the session list before trying again.
 - Backgrounding closes the socket; returning reconnects and reloads the open
   conversation. Pending text with uncertain delivery is shown separately for
   manual recovery, never automatically resent.
@@ -69,14 +73,15 @@ build/signing or physical-device behavior.
 
 ## Safe playground
 
-For interactive send/stop checks without touching production sessions:
+For interactive creation and send/stop checks without touching production sessions:
 
 ```sh
 npm exec -- tsx scripts/demo-hub.mts
 ```
 
 Add a second hub named Playground at port9196 (iOS127.0.0.1, Android10.0.2.2),
-with no token. The single session replies with explicitly labeled demonstration
-text and remains active until Stop. This is a scripted WebSocket boundary, not
+with no token. The playground supports recent projects, harness/model selection,
+and independent new sessions. Sessions with an opening prompt reply with explicitly
+labeled demonstration text and remain active until Stop. This is a scripted WebSocket boundary, not
 an Evener daemon or a model run. Its integration tests exercise the real shared
 client, services, stores, and notification handling.
