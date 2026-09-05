@@ -14,6 +14,19 @@
   composes: value from "../internal/fieldTrigger.module.css";
 }
 
+/* Directory fields keep the complete selected path readable. */
+.directoryTrigger {
+  height: auto;
+  min-height: 32px;
+  padding-block: var(--space-2);
+}
+
+.directoryValue {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
 .triggerDefault {
   composes: default from "../internal/fieldTrigger.module.css";
 }

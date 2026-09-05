@@ -46,8 +46,9 @@ function connectPathLister(table: Record<string, string[]>): { calls: Array<[str
   const calls: Array<[string, boolean]> = [];
   fake.on("evener/paths/complete", (params) => {
     calls.push([params.prefix, params.includeFiles === true]);
-    return { data: table[params.prefix] ?? [] };
+    return { data: table[params.prefix] ?? (params.prefix === "/opt/" ? table[""] : undefined) ?? [] };
   });
+  fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/opt" : path }));
   connectionStore.getState().connect(fake);
   return { calls };
 }
@@ -66,9 +67,14 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, displayName: 
  * value selected. */
 async function typePath(user: ReturnType<typeof userEvent.setup>, path: string) {
   await user.click(screen.getByRole("button", { name: /browse/i }));
-  await screen.findByRole("combobox", { name: "Path" });
-  await user.keyboard(path);
-  await user.keyboard("{Enter}");
+  const input = await screen.findByLabelText("Path", { selector: "input" });
+  await user.clear(input);
+  await user.type(input, `${path}{Enter}`);
+  const confirm = screen.queryByRole("button", { name: "Use this folder" });
+  if (confirm) {
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+    await user.click(confirm);
+  }
 }
 
 function pathListOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
@@ -155,8 +161,8 @@ describe("PathListField", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /browse/i }));
-    expect(await screen.findByRole("option", { name: /plugins/ })).toBeTruthy();
-    expect(lister.calls).toEqual([["", false]]);
+    expect(await screen.findByRole("button", { name: "Open /opt/plugins" })).toBeTruthy();
+    expect(lister.calls).toEqual([["/opt/", false]]);
   });
 
   test("a file pathKind (mcpConfigs) browses files too, and a file row lands in the draft", async () => {
@@ -199,12 +205,7 @@ describe("PathListField", () => {
     expect(validatePath).toHaveBeenCalledWith("/opt/plugins", "dir");
   });
 
-  // Enter in the picker must not ALSO submit the add row. Two independent
-  // things stop it: Popover portals the panel to document.body, so the input
-  // is not in CollectionEditor's add <form> at all, and the panel's own keydown
-  // handler preventDefaults Enter. Descending into a directory row is the case
-  // that can observe a regression in either, since the panel stays OPEN - after
-  // a commit the panel unmounts and there's no input left to submit from.
+  // The shared picker stops its submit events; navigation cannot add a row.
   test("Enter on a directory row descends without submitting the add row", async () => {
     const user = userEvent.setup();
     connectPathLister({ "": ["/opt/plugins"] });
@@ -212,16 +213,16 @@ describe("PathListField", () => {
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
     await user.click(screen.getByRole("button", { name: /browse/i }));
-    await screen.findByRole("combobox", { name: "Path" });
-    await user.click(await screen.findByRole("option", { name: /plugins/ }));
+    await screen.findByRole("textbox", { name: "Path" });
+    await user.click(await screen.findByRole("button", { name: "Open /opt/plugins" }));
     // Still browsing: nothing has been added, and no path has been validated.
-    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Path" })).toBeTruthy();
     expect(validatePath).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
 
-    await user.keyboard("{ArrowDown}");
+    screen.getByRole("button", { name: "Go" }).focus();
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Path" })).toBeTruthy();
     expect(validatePath).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });

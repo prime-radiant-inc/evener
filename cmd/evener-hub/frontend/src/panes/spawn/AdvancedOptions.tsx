@@ -47,6 +47,7 @@ export interface AdvancedOptionsProps {
    * pathList add rows go through it; `path` (the server-canonicalized spelling)
    * is used by an add when the caller's closure forwards it. */
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  createDirectory: (path: string) => Promise<void>;
   resolveConfig: (overrides: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   /** Loads the model catalog for this panel's model-valued fields, scoped the
    * same way the top-level Model field is (harness + cwd). */
@@ -69,6 +70,7 @@ export function AdvancedOptions({
   options,
   onOverridesChange,
   validatePath,
+  createDirectory,
   resolveConfig,
   loadCatalog,
   complete,
@@ -138,6 +140,7 @@ export function AdvancedOptions({
               loadCatalog={loadCatalog}
               complete={complete}
               validatePath={validatePath}
+              createDirectory={createDirectory}
               resolvedDefaults={resolvedDefaults}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
@@ -173,6 +176,7 @@ interface ControlProps {
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   /** Gates a pathList add (the scalar path kinds validate through onScalar). */
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  createDirectory: (path: string) => Promise<void>;
   resolvedDefaults?: LaunchConfigLayer;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
@@ -256,6 +260,7 @@ function Control({
   loadCatalog,
   complete,
   validatePath,
+  createDirectory,
   resolvedDefaults,
   onScalar,
   onValue,
@@ -348,6 +353,7 @@ function Control({
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
           <PathField
+            directory={{ validatePath, createDirectory }}
             id={controlId}
             value={current}
             onChange={onScalar}
@@ -397,6 +403,7 @@ function Control({
             items={Array.isArray(value?.value) ? (value.value as string[]) : []}
             complete={complete}
             validatePath={validatePath}
+            createDirectory={createDirectory}
             resolvedDefaults={resolvedDefaults}
             onValue={onValue}
           />
@@ -464,6 +471,7 @@ function PathListControl({
   items,
   complete,
   validatePath,
+  createDirectory,
   resolvedDefaults,
   onValue,
 }: {
@@ -471,6 +479,7 @@ function PathListControl({
   items: string[];
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  createDirectory: (path: string) => Promise<void>;
   resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
@@ -500,6 +509,7 @@ function PathListControl({
               <div className={CLASS.pickerAddRow}>
                 <span className={CLASS.pickerAddField}>
                   <PathField
+                    directory={{ validatePath, createDirectory }}
                     value={value}
                     onChange={onChange}
                     kind={pathKind}

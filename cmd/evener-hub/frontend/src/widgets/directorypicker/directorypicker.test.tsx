@@ -1,12 +1,12 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import { WorkingDirectoryPicker, type WorkingDirectoryPickerProps } from "./WorkingDirectoryPicker";
+import { DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 afterEach(cleanup);
 
-function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}) {
-  const props: WorkingDirectoryPickerProps = {
+function setup(overrides: Partial<DirectoryPickerProps> = {}) {
+  const props: DirectoryPickerProps = {
     value: "/work",
     onClose: vi.fn(),
     onPick: vi.fn(),
@@ -16,7 +16,7 @@ function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}) {
     createDirectory: async () => {},
     ...overrides,
   };
-  render(<WorkingDirectoryPicker {...props} />);
+  render(<DirectoryPicker {...props} />);
   return { ...props, user: userEvent.setup() };
 }
 

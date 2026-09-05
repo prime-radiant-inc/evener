@@ -52,9 +52,11 @@ test("saving a new entry writes it to the pluginDirs field, not skillsDirs", asy
   render(<PluginsDirsSection />);
   await screen.findByText("No plugin directories. Add one below.");
   await user.click(screen.getByRole("button", { name: "New directory" }));
-  await screen.findByRole("combobox", { name: "Path" });
-  await user.keyboard("/opt/new");
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/opt/new");
   await user.keyboard("{Enter}");
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
   await user.click(screen.getByRole("button", { name: "Add" }));
   expect(await screen.findByText("/opt/new")).toBeTruthy();
 });

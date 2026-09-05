@@ -110,12 +110,12 @@ test("browsing a directory and cancelling preserves the session directory", asyn
   const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
   const row = rowButton.parentElement!;
   await user.click(rowButton);
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
   await user.click(await within(dialog).findByText("child"));
   expect(onCwdChange).not.toHaveBeenCalled();
   await user.keyboard("{Escape}");
 
-  expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
 });
 
@@ -131,7 +131,7 @@ test("selecting a recent working directory stamps the committed value, not the p
   });
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
   await user.click(await within(dialog).findByRole("button", { name: "Open recent /new/project" }));
 
   expect(onCwdChange).not.toHaveBeenCalled();
@@ -152,7 +152,7 @@ test("confirming a typed working directory stamps the committed value, not the p
   });
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
-  const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
+  const dialog = await screen.findByRole("dialog", { name: "Choose directory" });
   const pathInput = within(dialog).getByRole("textbox", { name: "Path" });
   await user.clear(pathInput);
   await user.type(pathInput, "/new/typed/project{Enter}");

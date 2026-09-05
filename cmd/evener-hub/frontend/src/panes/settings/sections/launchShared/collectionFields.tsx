@@ -28,7 +28,7 @@
 
 import { type ReactNode, useId } from "react";
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
-import { extensionsStore } from "../../../../stores/extensions";
+import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { Button, CollectionEditor, Input, ModelCatalog, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -187,11 +187,9 @@ export function PathListField({ option, items, onChange, validatePath, inherited
  * `listRecents`, since a skills- or config-file list has no meaningful
  * "recent" of its own (that belongs to the spawn working directory alone).
  *
- * The browsed path lands in CollectionEditor's `draft`; the Add button submits
- * it, which is where evener/path/validate still gates it (the picker's own panel
- * is portaled outside this <form>, so Enter inside the picker picks a path
- * rather than submitting the row - asserted by collectionFields.test.tsx's
- * "Enter on a directory row descends without submitting the add row").
+ * A confirmed directory lands in CollectionEditor's draft. Add separately
+ * validates and submits it. The directory picker stops its own submit events
+ * so navigation and creation cannot submit this enclosing form.
  *
  * `ariaLabel` carries the option's own label into the trigger's accessible
  * name: CollectionEditor skips its own visually-hidden label wrapper in
@@ -218,6 +216,7 @@ function PathAddField({
     <>
       <span className={CLASS.pathAddField}>
         <PathField
+          directory={directoryActions}
           value={value}
           onChange={onChange}
           kind={kind}

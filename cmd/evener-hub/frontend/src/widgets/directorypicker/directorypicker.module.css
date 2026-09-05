@@ -1,5 +1,5 @@
 .panel {
-  composes: panel from "../../widgets/dialog/dialog.module.css";
+  composes: panel from "../dialog/dialog.module.css";
   width: min(760px, calc(100vw - var(--space-8)));
   max-height: calc(100dvh - var(--space-8));
   border-radius: var(--radius-pane);
@@ -69,7 +69,7 @@
   gap: var(--space-2);
 }
 .input {
-  composes: input from "../../widgets/input/input.module.css";
+  composes: input from "../input/input.module.css";
   min-width: 0;
   flex: 1;
   font-family: var(--font-mono);

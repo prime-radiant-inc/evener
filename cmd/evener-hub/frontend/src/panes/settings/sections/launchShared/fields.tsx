@@ -27,7 +27,7 @@
 // no native browser validation bubble.
 
 import type { LaunchConfigLayer, LaunchOption } from "../../../../protocol/types.gen";
-import { extensionsStore } from "../../../../stores/extensions";
+import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
   FormRow,
@@ -119,6 +119,7 @@ function PathFieldRow({
   return (
     <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
       <PathField
+        directory={directoryActions}
         id={fieldId}
         value={value}
         onChange={onChange}

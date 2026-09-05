@@ -33,6 +33,8 @@ beforeAll(() => {
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/home" : path }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -69,7 +71,7 @@ describe("initial load", () => {
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByLabelText(/working dir/i)).toHaveProperty("value", "/repo");
+    expect(screen.getByLabelText(/working dir/i).textContent).toContain("/repo");
     await screen.findByText(findsNoFileMessage("/repo"));
   });
 
@@ -113,9 +115,11 @@ describe("initial load", () => {
   // rationale), the user edits the field DURING that wait, and the
   // eventually-deferred initial resolve must reflect what they're now
   // looking at, not the value the effect closed over at mount.
-  test("editing the cwd field while the connection is still not ready resolves against the latest value at fire-time, not the stale mount-time one", async () => {
+  test("a directory draft does not replace the initial directory when the connection becomes ready", async () => {
     localStorage.setItem("lastCwd", "/initial");
     const fake = new FakeClient("idle"); // NOT ready yet - the deferred-fire path
+    fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/home" : path }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
     connectionStore.getState().connect(fake);
     const resolvedCwds: string[] = [];
     fake.on("evener/launch/resolve", (params) => {
@@ -123,11 +127,12 @@ describe("initial load", () => {
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
     render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByLabelText(/working dir/i)).toHaveProperty("value", "/initial");
+    expect(screen.getByLabelText(/working dir/i).textContent).toContain("/initial");
 
     // The user edits the field WHILE still waiting for the handshake.
     const user = userEvent.setup();
-    const input = screen.getByLabelText(/working dir/i);
+    await user.click(screen.getByRole("button", { name: /working dir/i }));
+    const input = await screen.findByRole("textbox", { name: "Path" });
     await user.clear(input);
     await user.type(input, "/edited");
     expect(resolvedCwds).toEqual([]); // not ready yet - nothing has fired
@@ -137,12 +142,15 @@ describe("initial load", () => {
       fake.emitReady();
     });
 
-    await waitFor(() => expect(resolvedCwds).toEqual(["/edited"]));
+    await waitFor(() => expect(resolvedCwds).toEqual(["/initial"]));
+    await user.type(input, "{Enter}");
+    await user.click(screen.getByRole("button", { name: "Use this folder" }));
+    await waitFor(() => expect(resolvedCwds).toEqual(["/initial", "/edited"]));
   });
 });
 
-describe("blur/Enter-triggered re-resolve (not per-keystroke)", () => {
-  test("typing alone does not refresh; blurring the field does", async () => {
+describe("confirmed-directory re-resolve", () => {
+  test("browsing and blur do not refresh; confirmation does", async () => {
     const fake = connectFakeClient();
     const calls: string[] = [];
     fake.on("evener/launch/resolve", (params) => {
@@ -151,10 +159,14 @@ describe("blur/Enter-triggered re-resolve (not per-keystroke)", () => {
     });
     render(<InRepoSection sectionId="inrepo" />);
     const user = userEvent.setup();
-    const input = screen.getByLabelText(/working dir/i);
-    await user.type(input, "/repo");
+    await user.click(screen.getByRole("button", { name: /working dir/i }));
+    const input = await screen.findByRole("textbox", { name: "Path" });
+    await user.clear(input);
+    await user.type(input, "/repo{Enter}");
     expect(calls).toEqual([]); // no RPC per keystroke
-    await user.tab(); // blur
+    await user.tab();
+    expect(calls).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Use this folder" }));
     await waitFor(() => expect(calls).toEqual(["/repo"]));
   });
 });

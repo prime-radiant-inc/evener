@@ -85,23 +85,22 @@ test("the local-path field browses real directories and sends the picked one", a
   extensionsStore.setState({ marketplaces: [] });
   fake.on("evener/paths/complete", (params) => {
     // Directories only, and the prefix goes over the wire verbatim.
-    expect(params).toEqual({ prefix: "", includeFiles: false });
-    return { data: ["/opt/marketplaces"] };
+    expect(params.includeFiles).toBe(false);
+    return { data: params.prefix === "/opt/" ? ["/opt/marketplaces"] : [] };
   });
   fake.on("evener/marketplace/add", (params) => {
     expect(params).toEqual({ name: "", source: { kind: "directory", path: "/opt/marketplaces" } });
     return { marketplaces: [] };
   });
+  fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/opt" : path }));
   render(<MarketplacesSection expandedMarketplaces={new Set()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   await user.click(screen.getByRole("radio", { name: "Local path" }));
 
   await user.click(screen.getByLabelText("Local path"));
-  // The picker's panel portals to document.body, so its rows come off screen,
-  // not from inside the add form. A directory row descends AND becomes the
-  // value, so the panel stays open - close it before reaching for Add.
-  await user.click(await screen.findByRole("option", { name: /marketplaces/ }));
-  await user.keyboard("{Escape}");
+  await user.click(await screen.findByRole("button", { name: "Open /opt/marketplaces" }));
+  expect(fake.calls.some((call) => call.method === "evener/marketplace/add")).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
 
   await user.click(screen.getByRole("button", { name: "Add" }));
   await waitFor(() =>

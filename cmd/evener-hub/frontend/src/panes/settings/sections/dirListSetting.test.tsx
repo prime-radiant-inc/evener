@@ -9,6 +9,7 @@ import { DirListSetting, PathListEditor } from "./dirListSetting";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/opt" : path }));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -35,11 +36,16 @@ function picker(): HTMLElement {
  * with Enter - which lands it in the add field and closes the panel, exactly
  * as clicking a row would. user.keyboard (not user.type) because the panel's
  * input already holds focus with its pre-filled value selected. */
-async function typePath(user: ReturnType<typeof userEvent.setup>, path: string) {
+async function typePath(user: ReturnType<typeof userEvent.setup>, path: string, confirmSelection = true) {
   await user.click(picker());
-  await screen.findByRole("combobox", { name: "Path" });
-  await user.keyboard(path);
-  await user.keyboard("{Enter}");
+  const input = await screen.findByLabelText("Path", { selector: "input" });
+  await user.clear(input);
+  await user.type(input, `${path}{Enter}`);
+  const confirm = screen.queryByRole("button", { name: "Use this folder" });
+  if (confirm && confirmSelection) {
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+    await user.click(confirm);
+  }
 }
 
 describe("PathListEditor", () => {
@@ -48,6 +54,10 @@ describe("PathListEditor", () => {
       label: "Plugin directories",
       addLabel: "New directory",
       kind: "dir" as const,
+      directory: {
+        validatePath: async (path: string) => ({ valid: true, path: path === "~" ? "/opt" : path }),
+        createDirectory: async () => {},
+      },
       items: ["/opt/plugins", "/home/user/.evener/plugins"],
       onAdd: vi.fn(async () => ({ ok: true }) as const),
       onRemove: vi.fn(),
@@ -137,24 +147,19 @@ describe("PathListEditor", () => {
     await waitFor(() => expect(picker().textContent).toMatch(/absolute\/path/));
   });
 
-  // Enter in the picker must not ALSO submit the add row. Two independent
-  // things stop it: Popover portals the panel to document.body, so the input
-  // is not in CollectionEditor's add <form> at all, and the panel's own keydown
-  // handler preventDefaults Enter. Descending into a directory row is the case
-  // that can observe a regression in either, since the panel stays OPEN - after
-  // a commit the panel unmounts and there's no input left to submit from.
+  // The shared picker stops its submit events; navigation cannot add a row.
   test("Enter on a directory row descends without submitting the add row", async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn(async () => ({ ok: true }) as const);
     const complete = vi.fn(async () => ["/opt/plugins/evener-lint"]);
     render(<PathListEditor {...baseProps({ onAdd, complete })} />);
     await user.click(picker());
-    await screen.findByRole("combobox", { name: "Path" });
-    await screen.findByRole("option", { name: /evener-lint/ });
+    await screen.findByRole("textbox", { name: "Path" });
+    await screen.findByRole("button", { name: "Open /opt/plugins/evener-lint" });
 
-    await user.keyboard("{ArrowDown}");
+    screen.getByRole("button", { name: "Open /opt/plugins/evener-lint" }).focus();
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Path" })).toBeTruthy();
     expect(onAdd).not.toHaveBeenCalled();
   });
 
@@ -186,8 +191,8 @@ describe("PathListEditor", () => {
     const complete = vi.fn(async () => ["/opt/plugins/evener-lint"]);
     render(<PathListEditor {...baseProps({ kind: "dir", complete })} />);
     await user.click(picker());
-    expect(await screen.findByRole("option", { name: /evener-lint/ })).toBeTruthy();
-    expect(complete).toHaveBeenCalledWith("", false);
+    expect(await screen.findByRole("button", { name: "Open /opt/plugins/evener-lint" })).toBeTruthy();
+    expect(complete).toHaveBeenCalledWith("/opt/", false);
   });
 
   // The MCP config-files list names files, not directories: its picker has to
@@ -289,6 +294,7 @@ describe("DirListSetting", () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
     fake.on("evener/path/validate", (params) => {
+      if (params.path === "~") return { valid: true, path: "/opt" };
       expect(params).toEqual({ path: "/opt/new", kind: "dir" });
       return { path: "/opt/new", valid: true };
     });
@@ -309,13 +315,13 @@ describe("DirListSetting", () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
     fake.on("evener/paths/complete", (params) => {
-      expect(params).toEqual({ prefix: "", includeFiles: false });
+      expect(params).toEqual({ prefix: "/opt/", includeFiles: false });
       return { data: ["/opt/plugins"] };
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("No plugin directories. Add one below.");
     await user.click(picker());
-    expect(await screen.findByRole("option", { name: /plugins/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Open /opt/plugins" })).toBeTruthy();
   });
 
   test("adding an invalid path shows the server's error inline and never calls setLayer", async () => {
@@ -328,8 +334,8 @@ describe("DirListSetting", () => {
     fake.on("evener/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("No plugin directories. Add one below.");
-    await typePath(user, "/nope");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await typePath(user, "/nope", false);
+    expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
     expect(await screen.findByText("path does not exist")).toBeTruthy();
     expect(setLayer).not.toHaveBeenCalled();
   });
@@ -368,4 +374,30 @@ describe("DirListSetting", () => {
     expect(getToasts().some((t) => t.text.includes("disk full"))).toBe(false);
     expect(screen.getByText("/opt/plugins")).toBeTruthy();
   });
+});
+
+test("creating a directory in settings calls the hub but saves only after confirmation and Add", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  const create = vi.fn(({ path }: { path: string }) => ({ path, created: true }));
+  const save = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/dirs/create", create);
+  fake.on("evener/launch/setLayer", save);
+  render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+  await screen.findByText("No plugin directories. Add one below.");
+  await user.click(picker());
+  const newFolder = await screen.findByRole("button", { name: "New folder" });
+  await waitFor(() => expect((newFolder as HTMLButtonElement).disabled).toBe(false));
+  await user.click(newFolder);
+  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "plugins{Enter}");
+  await waitFor(() => expect(create).toHaveBeenCalledWith({ path: "/opt/plugins" }));
+  expect(save).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  expect(save).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({ cwd: "/", layer: "global", config: { pluginDirs: ["/opt/plugins"] } }),
+  );
 });
