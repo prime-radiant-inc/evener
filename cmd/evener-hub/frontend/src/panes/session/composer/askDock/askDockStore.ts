@@ -212,12 +212,23 @@ function advancesOnAnswer(questionMultiSelect: boolean, resolution: AskResolutio
   return resolution.kind === "option" && !questionMultiSelect;
 }
 
+// isSendingQuestion answers whether the question key belongs to a batch
+// mid-send. setAnswer/setNote refuse those writes: the card's editing
+// controls are already disabled (AskQuestionCard's disabled prop), and this
+// is the store-level half of the same contract - an edit landing mid-flight
+// would be silently discarded when the send resolves and removes the batch
+// (roborev PR #884 round 10).
+function isSendingQuestion(refState: AskDockRefState, key: string): boolean {
+  return refState.batches.some((b) => b.sending && b.questions.some((q) => q.key === key));
+}
+
 export const askDockStore = createStore<AskDockState>(() => ({
   byRef: new Map(),
 
   setAnswer(ref, key, resolution) {
     askDockStore.setState((s) => {
       const refState = s.byRef.get(ref) ?? EMPTY_REF_STATE;
+      if (isSendingQuestion(refState, key)) return s;
       const nextAnswers = { ...refState.answers, [key]: { resolution, note: answerFor(refState, key).note } };
       // Auto-advance (kata 99yf): a one-click resolution landing on the tab
       // the reader is currently on moves the dock to the next unanswered
@@ -256,6 +267,7 @@ export const askDockStore = createStore<AskDockState>(() => ({
   setNote(ref, key, note) {
     askDockStore.setState((s) => {
       const refState = s.byRef.get(ref) ?? EMPTY_REF_STATE;
+      if (isSendingQuestion(refState, key)) return s;
       const nextByRef = new Map(s.byRef);
       nextByRef.set(ref, {
         ...refState,

@@ -46,6 +46,7 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
   const [answer, setAnswer] = useState<AskAnswerState>(initial);
   return (
     <AskQuestionCard
+      disabled={false}
       question={q}
       number={1}
       answer={answer}
@@ -160,6 +161,7 @@ test("clicking a regular option (single-select) resolves to that option alone", 
   const onResolutionChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={UNTOUCHED}
@@ -223,6 +225,7 @@ test("while Something else is active, the shared text field edits the free resol
   const onNoteChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={{ resolution: { kind: "free", text: "" }, note: "" }}
@@ -264,6 +267,7 @@ test("the note field is visible with no disclosure toggle and calls onNoteChange
   const onNoteChange = vi.fn();
   render(
     <AskQuestionCard
+      disabled={false}
       question={question()}
       number={1}
       answer={UNTOUCHED}

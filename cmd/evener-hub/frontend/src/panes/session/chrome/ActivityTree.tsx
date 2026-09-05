@@ -341,6 +341,13 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void {
     const index = indexByID.get(row.id);
     if (index === undefined) return;
+    // Alt/Ctrl/Meta mean the key belongs elsewhere: Alt+ArrowUp/Down and
+    // Alt+Home/End are the global transcript scroll/jump chords, and the
+    // dispatcher's editable test does not shield them from these row divs -
+    // a blanket preventDefault here would swallow them (roborev PR #884
+    // round 3). Shift stays: coarse-step and range conventions aside, the
+    // tree's own behavior is unchanged by it.
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     switch (event.key) {
       case "ArrowDown": {
         event.preventDefault();
