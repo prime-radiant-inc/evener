@@ -114,7 +114,7 @@ function defaultIdFactory(): string {
   return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
-// The 11 required capability fields that must be present and boolean in
+// The 12 required capability fields that must be present and boolean in
 // every ThreadCapabilities. Extra keys from future protocol versions are
 // allowed but never retained in the extracted copy.
 const REQUIRED_CAPABILITY_FIELDS = [
@@ -126,13 +126,14 @@ const REQUIRED_CAPABILITY_FIELDS = [
   "forkFromTurn",
   "shutdown",
   "changeModel",
+  "changeVisionModel",
   "queue",
   "goal",
   "rename",
 ] as const;
 
 // Extract and runtime-validate capabilities into a complete plain local
-// ThreadCapabilities copy. All 11 required fields must be present and
+// ThreadCapabilities copy. All 12 required fields must be present and
 // boolean; extra keys are allowed but not retained. Null, non-object,
 // wrong-type, or throwing-getter inputs throw before any state write,
 // leaving the ref+capabilities pair null/fail-closed. The returned copy
@@ -151,6 +152,7 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
     forkFromTurn: false,
     shutdown: false,
     changeModel: false,
+    changeVisionModel: false,
     queue: false,
     goal: false,
     rename: false,
@@ -212,6 +214,7 @@ function decodeMutationResult(
   kind: MutationKind,
   raw: unknown,
   clientMutationId: string,
+  expectedInstanceId: string,
 ): MutationReceipt {
   const resultKeys = kind === "send" ? ["receipt", "turn"] : ["receipt"];
   const result = exactObject(raw, resultKeys, `${kind} result`);
@@ -232,6 +235,13 @@ function decodeMutationResult(
   if (kind === "send" || kind === "steer" || kind === "interrupt")
     requiredReceiptKeys.push("turnId");
   if (kind === "queue") requiredReceiptKeys.push("queueEntryIds");
+  if (
+    result.receipt !== null &&
+    typeof result.receipt === "object" &&
+    "instanceId" in result.receipt
+  ) {
+    requiredReceiptKeys.push("instanceId");
+  }
   const receipt = exactObject(
     result.receipt,
     requiredReceiptKeys,
@@ -262,6 +272,12 @@ function decodeMutationResult(
       `${kind} projection state`,
     ),
   };
+  if ("instanceId" in receipt) {
+    if (receipt.instanceId !== expectedInstanceId) {
+      throw new Error(`ConversationService: ${kind} receipt instance mismatch`);
+    }
+    decoded.instanceId = expectedInstanceId;
+  }
   if (kind === "send" || kind === "steer" || kind === "interrupt") {
     decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
   }
@@ -299,6 +315,9 @@ export function createConversationService(
   // null, so requireRef-only operations (setReasoningEffort, cancelQueued,
   // loadOlder) also fail before any wire call.
   let ref: string | null = null;
+  // Retain the instance shown by the full read; a capability-only refresh
+  // must not redirect a draft to a replacement session.
+  let instanceId: string | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
 
@@ -319,6 +338,7 @@ export function createConversationService(
     openEpoch += 1;
     const epoch = openEpoch;
     ref = null;
+    instanceId = null;
     capabilities = null;
     return epoch;
   }
@@ -402,7 +422,12 @@ export function createConversationService(
       // current; a stale successful result returns without committing.
       const conversation = projectThread(response.thread);
       const caps = extractCapabilities(response.thread.evener.capabilities);
+      const readInstanceId = nonemptyString(
+        response.thread.evener.instanceId ?? response.thread.id,
+        "thread instance id",
+      );
       if (openEpoch === epoch) {
+        instanceId = readInstanceId;
         ref = threadRef;
         capabilities = caps;
       }
@@ -427,7 +452,12 @@ export function createConversationService(
       const activity = activityService.projectActivity(response.thread);
       const olderCursor = response.olderCursor ?? null;
       const caps = extractCapabilities(response.thread.evener.capabilities);
+      const readInstanceId = nonemptyString(
+        response.thread.evener.instanceId ?? response.thread.id,
+        "thread instance id",
+      );
       if (openEpoch === epoch) {
+        instanceId = readInstanceId;
         ref = threadRef;
         capabilities = caps;
       }
@@ -470,56 +500,96 @@ export function createConversationService(
     async send(input) {
       requireCap("send", "send");
       const threadRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
       const clientMutationId = idFactory();
       const result = await withCapabilityRefresh("send", () =>
         client.request("turn/start", {
           ref: threadRef,
           clientMutationId,
+          expectedInstanceId,
           input,
         }),
       );
-      return decodeMutationResult("send", result, clientMutationId);
+      return decodeMutationResult(
+        "send",
+        result,
+        clientMutationId,
+        expectedInstanceId,
+      );
     },
 
     async steer(input) {
       requireCap("steer", "steer");
       const threadRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
       const clientMutationId = idFactory();
       const result = await withCapabilityRefresh("steer", () =>
         client.request("turn/steer", {
           ref: threadRef,
           clientMutationId,
+          expectedInstanceId,
           input,
         }),
       );
-      return decodeMutationResult("steer", result, clientMutationId);
+      return decodeMutationResult(
+        "steer",
+        result,
+        clientMutationId,
+        expectedInstanceId,
+      );
     },
 
     async queue(input) {
       requireCap("queue", "queue");
       const threadRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
       const clientMutationId = idFactory();
       const result = await withCapabilityRefresh("queue", () =>
         client.request("turn/queue", {
           ref: threadRef,
           clientMutationId,
+          expectedInstanceId,
           input,
         }),
       );
-      return decodeMutationResult("queue", result, clientMutationId);
+      return decodeMutationResult(
+        "queue",
+        result,
+        clientMutationId,
+        expectedInstanceId,
+      );
     },
 
     async interrupt() {
       requireCap("interrupt", "interrupt");
       const threadRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
       const clientMutationId = idFactory();
       const result = await withCapabilityRefresh("interrupt", () =>
         client.request("turn/interrupt", {
           ref: threadRef,
           clientMutationId,
+          expectedInstanceId,
         }),
       );
-      return decodeMutationResult("interrupt", result, clientMutationId);
+      return decodeMutationResult(
+        "interrupt",
+        result,
+        clientMutationId,
+        expectedInstanceId,
+      );
     },
 
     async compact() {
@@ -570,6 +640,10 @@ export function createConversationService(
 
     async cancelQueued(index, expectedEntryId) {
       const threadRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
       const clientMutationId = idFactory();
       return withCapabilityRefresh("cancelQueued", () =>
         client.request("turn/cancelQueued", {
@@ -577,6 +651,7 @@ export function createConversationService(
           index,
           clientMutationId,
           expectedEntryId,
+          expectedInstanceId,
         }),
       );
     },
@@ -590,6 +665,7 @@ export function createConversationService(
       // flight before close cannot republish into the closed service.
       openEpoch += 1;
       ref = null;
+      instanceId = null;
       capabilities = null;
     },
   };
@@ -626,6 +702,7 @@ function projectOlderTurns(
         forkFromTurn: false,
         shutdown: false,
         changeModel: false,
+        changeVisionModel: false,
         queue: false,
         goal: false,
         rename: false,
