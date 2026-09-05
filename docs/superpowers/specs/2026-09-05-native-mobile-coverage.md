@@ -18,7 +18,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Browse conversations | First 50 distinct sessions, refresh, native navigation | Pagination, search, archived sessions, project organization, favorites and pin sections |
 | Read conversation | Shared canonical projection, older history, expandable activity | Rich Markdown/code, attachments, long-transcript performance and accessible disclosure |
 | Compose | Text send, stop, uncertainty recovery while mounted | Persistent hub-scoped drafts, attachments, command selection, queue and steering |
-| Create session | In progress in native-session-creation plan | Native project/harness/model/prompt flow and both-platform verification |
+| Create session | Native project/harness/model/prompt flow; playground creation verified on both platforms | Real Evener E2E, large catalogs, physical keyboard/accessibility coverage |
 | Manage session | Not exposed | Rename, fork, resume, clear, compact, shutdown; honor capabilities and identity |
 | Model and launch settings | Not exposed | Model, vision model, reasoning, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
