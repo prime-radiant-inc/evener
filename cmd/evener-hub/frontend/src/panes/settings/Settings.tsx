@@ -9,12 +9,13 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
+import { prefsStore, usePrefsStore } from "../../stores/prefs";
 import { useSettingsOverviewStore } from "../../stores/settingsOverview";
 import { IconButton, PaneScaffold } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
-import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
+import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
@@ -111,8 +112,12 @@ function showSettingsList(): void {
  * each level is addressable (routing.ts already resolves both forms;
  * AppShell's replacePrimary glue updates this singleton pane's params in
  * place on every popstate). Desktop is unchanged: nav and content sit side
- * by side, and a bare /settings still resolves its content to
- * DEFAULT_SECTION_ID.
+ * by side, and a bare /settings resolves its content to the section the
+ * user last visited (prefs.ts's lastSettingsSection), falling back to
+ * DEFAULT_SECTION_ID when there is no remembered section or the remembered
+ * id is no longer a known section. Mobile keeps the bare URL as the section
+ * LIST (the drill-down root) - the remembered section only picks the
+ * desktop content, never the mobile view.
  *
  * Back on mobile lives in the shell's top bar, not in the content: a
  * focused section publishes showSettingsList to the chrome store's paneBack
@@ -130,7 +135,10 @@ function showSettingsList(): void {
  * text and scroll position survive the drill-down round trip.
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
-  const activeId = params.section ?? DEFAULT_SECTION_ID;
+  const rememberedSection = usePrefsStore((s) => s.lastSettingsSection);
+  const activeId =
+    params.section ??
+    (rememberedSection !== null && isKnownSettingsSection(rememberedSection) ? rememberedSection : DEFAULT_SECTION_ID);
   const isMobile = useIsMobile();
   const SectionComponent = SECTION_COMPONENTS[activeId] ?? PlaceholderSection;
   // Mobile list view: bare /settings on a phone. No row is "active" - there
@@ -142,6 +150,16 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
     const url = paneToURL("settings", { section: sectionId });
     if (url !== null) navigate(url);
   }
+
+  // Record the visited section so the next bare /settings reopens here.
+  // Only KNOWN nav sections are remembered: "project" is a valid dispatch
+  // target (SECTION_COMPONENTS) but no nav row and needs its ?cwd= context,
+  // so restoring it would land on a meaningless page.
+  useEffect(() => {
+    if (params.section !== undefined && isKnownSettingsSection(params.section)) {
+      prefsStore.getState().setLastSettingsSection(params.section);
+    }
+  }, [params.section]);
 
   // paneBack is published whenever a section is focused, in EITHER host -
   // host-agnostic like the title channel. The effect (not render) owns the
