@@ -544,11 +544,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			if s.appDescendantTranscriptPathFunc != nil {
 				if path := strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID)); path != "" {
 					if turns, entries, err := appTurnsFromTranscriptFile(path); err == nil {
-						nextEntry := uint64(entries)
-						if len(turns) > 0 && turns[0].ID == appwire.SystemPreludeTurnID {
-							nextEntry++
-						}
-						projection.turns.Seed(appTurnSeed{Turns: turns, NextEntry: nextEntry})
+						projection.turns.Seed(appTurnSeed{Turns: turns, NextEntry: uint64(len(turns))})
 						projection.projector.SeedPersistedTurns(entries)
 					}
 				}

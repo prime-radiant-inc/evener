@@ -1045,65 +1045,114 @@ func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *test
 	}
 }
 
-func TestDescendantRestorePreservesAbsoluteEntryAuthorityAcrossSkippedEntries(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
-	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "child", SystemPrompt: "system"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	// These checkpoint/summary entries are decoded transcript entries but emit no
-	// browser items. The visible entry must still consume its absolute ordinal.
-	for _, entry := range []schema.Turn{
-		{Kind: schema.TurnCheckpoint},
-		schema.NewTurn(schema.TurnUserInput, llm.User("persisted")),
-		{Kind: schema.TurnSummary},
+func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		systemPrompt        string
+		skipZeroItemEntries bool
+		wantEntry           uint64
+	}{
+		{name: "without prelude", wantEntry: 1},
+		{name: "with prelude", systemPrompt: "system", wantEntry: 2},
+		{name: "with skipped zero-item entries", skipZeroItemEntries: true, wantEntry: 1},
 	} {
-		if err := tw.Append(entry); err != nil {
-			t.Fatalf("Append: %v", err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
+			tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "child", SystemPrompt: tc.systemPrompt})
+			if err != nil {
+				t.Fatalf("NewWriter: %v", err)
+			}
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
+			}
+			if tc.skipZeroItemEntries {
+				history = append([]schema.Turn{{Kind: schema.TurnCheckpoint}}, history...)
+				history = append(history, schema.Turn{Kind: schema.TurnSummary})
+			}
+			for _, turn := range history {
+				if err := tw.Append(turn); err != nil {
+					t.Fatalf("Append history: %v", err)
+				}
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("Close history: %v", err)
+			}
 
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
-	srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
-		if threadID == "child" {
-			return path
-		}
-		return ""
-	})
-	srv.RecordDescendantAppEvent("root", events.SessionEvent{
-		Kind:      events.EventUserInput,
-		SessionID: "child",
-		Data:      events.UserInputData{Text: "live"},
-	})
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "root")
+			srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
+				if threadID == "child" {
+					return path
+				}
+				return ""
+			})
+			srv.RecordDescendantAppEvent("root", events.SessionEvent{
+				Kind:      events.EventUserInput,
+				SessionID: "child",
+				Data:      events.UserInputData{Text: "live"},
+			})
 
-	projection := srv.appDescendants["child"]
-	if projection == nil {
-		t.Fatal("descendant projection was not created")
-	}
-	window, _, err := projection.turns.LatestItemCandidates(40)
-	if err != nil {
-		t.Fatalf("LatestItemCandidates: %v", err)
-	}
-	var live *appwire.ThreadItem
-	for i := range window.Candidates {
-		if window.Candidates[i].Item.Text == "live" {
-			live = &window.Candidates[i].Item
-			break
-		}
-	}
-	if live == nil || live.Position == nil {
-		t.Fatalf("live descendant item = %+v, want positioned item", live)
-	}
-	wantPosition := appwire.ThreadItemPosition{Entry: 4, Item: 0}
-	if *live.Position != wantPosition {
-		t.Fatalf("live descendant position=%+v, want %+v after 3 decoded entries and prelude", *live.Position, wantPosition)
-	}
-	if got, want := live.TranscriptKey, appitempaging.TranscriptItemKey(live.TurnID, wantPosition); got != want {
-		t.Fatalf("live descendant transcript key=%q, want %q", got, want)
+			read, err := srv.appThreadReadSnapshotChecked(appwire.ThreadReadParams{
+				Ref:          "local:child",
+				IncludeTurns: true,
+				PageUnit:     appwire.TranscriptPageUnitItem,
+				ItemLimit:    40,
+			})
+			if err != nil {
+				t.Fatalf("item-mode thread/read: %v", err)
+			}
+			var live appwire.ThreadItem
+			for _, turn := range read.Thread.Turns {
+				for _, item := range turn.Items {
+					if item.Text == "live" {
+						live = item
+					}
+				}
+			}
+			if live.Position == nil {
+				t.Fatalf("live descendant item = %+v, want positioned item", live)
+			}
+
+			writer, _, err := transcript.OpenWriterForSession(path, "child")
+			if err != nil {
+				t.Fatalf("OpenWriterForSession: %v", err)
+			}
+			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
+				_ = writer.Close()
+				t.Fatalf("Append live: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("Close live: %v", err)
+			}
+
+			window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+				ThreadRef: "local:child",
+				Limit:     40,
+			}, preparedItemProjector)
+			if err != nil {
+				t.Fatalf("LatestItemWindowFromFile: %v", err)
+			}
+			var persisted appwire.ThreadItem
+			for _, candidate := range window.Candidates {
+				if candidate.Item.Text == "live" {
+					persisted = candidate.Item
+				}
+			}
+			if persisted.Position == nil {
+				t.Fatalf("persisted item candidates = %+v, want positioned live item", window.Candidates)
+			}
+			wantPosition := appwire.ThreadItemPosition{Entry: tc.wantEntry, Item: 0}
+			if *live.Position != wantPosition || *persisted.Position != wantPosition {
+				t.Fatalf("live position=%+v, persisted position=%+v, want shared %+v", *live.Position, *persisted.Position, wantPosition)
+			}
+			if live.TranscriptKey != persisted.TranscriptKey {
+				t.Fatalf("live key=%q, persisted key=%q, want identical resumed item identity", live.TranscriptKey, persisted.TranscriptKey)
+			}
+			if got, want := live.TranscriptKey, appitempaging.TranscriptItemKey(live.TurnID, wantPosition); got != want {
+				t.Fatalf("live descendant transcript key=%q, want %q", got, want)
+			}
+		})
 	}
 }
 
