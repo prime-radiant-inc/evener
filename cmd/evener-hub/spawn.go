@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -662,12 +661,15 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
-		// gcp-adc reads no key either: a Vertex instance exists once
-		// application-default credentials or a stored credential JSON resolve
-		// and its base URL variables are set (spec §5.1). Point at those.
+		// gcp-adc reads no key either, and it can be unconfigured two ways
+		// (spec §5.1). Hidden means the base URL's variables are unset — the
+		// registry names the ones this environment still owes it. Otherwise
+		// the URL resolves and it is the credential that did not.
 		if p.Transport.Auth == registry.AuthGCPADC {
-			vars := slices.Sorted(maps.Values(p.Transport.VarsEnv))
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set), and %s set", name, strings.Join(vars, ", ")))
+			if p.Hidden {
+				return appwire.HubLaunchError(fmt.Sprintf("provider %s is not configured: set %s", name, strings.Join(r.MissingVars(name), ", ")))
+			}
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set)", name))
 		}
 		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}

@@ -1013,6 +1013,36 @@ func (r *Registry) computeHidden(rec *record) {
 	rec.head.Hidden = hidden
 }
 
+// MissingVars names the environment variables a curated provider's base
+// URL still needs in this environment, in the names the hub and the docs
+// use (VarsEnv's env name, or the placeholder itself when there is none);
+// nil when the URL resolves. A placeholder the transport's host rule
+// derives is reported as its input: vertex-location derives
+// GOOGLE_VERTEX_HOST from GOOGLE_VERTEX_LOCATION, so only the location
+// is named.
+func (r *Registry) MissingVars(id string) []string {
+	rec, ok := r.curated[id]
+	if !ok {
+		return nil
+	}
+	_, missing, _ := r.resolveBaseURL(rec, rec.head.Transport)
+	if len(missing) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(missing))
+	for _, name := range missing {
+		if rec.head.Transport.HostRule == HostRuleVertexLocation && name == "GOOGLE_VERTEX_HOST" {
+			name = "GOOGLE_VERTEX_LOCATION"
+		}
+		if env, ok := rec.head.Transport.VarsEnv[name]; ok {
+			name = env
+		}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
 // ProviderIDs lists the curated registry ids, sorted.
 func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
 

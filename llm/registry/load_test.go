@@ -650,6 +650,33 @@ func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
 	}
 }
 
+// TestMissingVars covers the names a caller shows for a curated provider whose
+// base URL does not resolve here. GOOGLE_VERTEX_HOST is derived from the
+// location by the vertex-location host rule, so only the location is named,
+// and the credential's variable is none of the URL's business (roborev round
+// 6, F2).
+func TestMissingVars(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		env  map[string]string
+		id   string
+		want []string
+	}{
+		{name: "no variables set", env: map[string]string{}, id: "google-vertex", want: []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}},
+		{name: "location set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global"}, id: "google-vertex", want: []string{"GOOGLE_VERTEX_PROJECT"}},
+		{name: "both set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}, id: "google-vertex", want: nil},
+		{name: "curated default", env: map[string]string{}, id: "openai", want: nil},
+		{name: "unknown id", env: map[string]string{}, id: "no-such-provider", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, tt.env, "")
+			if got := r.MissingVars(tt.id); !slices.Equal(got, tt.want) {
+				t.Fatalf("MissingVars(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoad_UserVarsBeatEnvBeatCurated(t *testing.T) {
 	cfg := "[providers.bedrock]\nbase = \"amazon-bedrock\"\n[providers.bedrock.vars]\n\"AWS_REGION\" = \"eu-west-1\"\n[providers.mine]\nbase = \"openai\"\n"
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "OPENAI_BASE_URL": "https://proxy.example/v1"}, cfg)

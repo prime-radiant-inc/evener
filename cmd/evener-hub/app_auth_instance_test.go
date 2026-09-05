@@ -487,31 +487,56 @@ func TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads(t *testing.T) {
 // google-vertex-anthropic): it must point at application-default
 // credentials or a stored credential JSON, not evener/auth/apiKey/set — that
 // endpoint refuses a gcp-adc credential, and these providers' api_key_env is
-// empty anyway (roborev round 3, F2).
+// empty anyway (roborev round 3, F2). The two ways it can be unconfigured
+// get their own message: an unresolvable base URL names the variables it
+// still needs, a resolvable one names the credential sources (round 6, F2).
 func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-	// An environment with no ADC (an empty HOME) and none of the instance's
-	// base-URL variables set.
-	env := map[string]string{"HOME": t.TempDir()}
-	ctrl := newTestAuthController(t, dir, stateDir, "", env)
+	newController := func(t *testing.T, env map[string]string) *hubAuthController {
+		t.Helper()
+		oaitest.IsolateOpenAIAuth(t)
+		return newTestAuthController(t, t.TempDir(), t.TempDir(), "", env)
+	}
 
-	err := validateProviderCredentials("google-vertex", ctrl.reg)
-	if err == nil {
-		t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "credentialJson/set") || !strings.Contains(msg, "application-default login") {
-		t.Fatalf("err = %q, want it to name credentialJson/set and application-default login", msg)
-	}
-	if strings.Contains(msg, "apiKey/set") {
-		t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
-	}
-	if !strings.Contains(msg, "(run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)") {
-		t.Fatalf("err = %q, want the ADC alternatives parenthesised together", msg)
-	}
-	if strings.Contains(msg, ", set GOOGLE_APPLICATION_CREDENTIALS,") {
-		t.Fatalf("err = %q, must not read as if GOOGLE_APPLICATION_CREDENTIALS were a required middle step", msg)
-	}
+	t.Run("unset variables", func(t *testing.T) {
+		// No ADC (an empty HOME) and none of the base-URL variables set.
+		ctrl := newController(t, map[string]string{"HOME": t.TempDir()})
+		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		if err == nil {
+			t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "not configured: set GOOGLE_VERTEX_LOCATION, GOOGLE_VERTEX_PROJECT") {
+			t.Fatalf("err = %q, want it to name the unset base-URL variables", msg)
+		}
+		if strings.Contains(msg, "GOOGLE_APPLICATION_CREDENTIALS") {
+			t.Fatalf("err = %q, must not name the credential variable while the base URL is unresolvable", msg)
+		}
+		if strings.Contains(msg, "apiKey/set") {
+			t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
+		}
+	})
+
+	t.Run("no credential", func(t *testing.T) {
+		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"})
+		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		if err == nil {
+			t.Fatal("the spawn gate accepted a google-vertex provider with no credential")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "credentialJson/set") || !strings.Contains(msg, "application-default login") {
+			t.Fatalf("err = %q, want it to name credentialJson/set and application-default login", msg)
+		}
+		if strings.Contains(msg, "apiKey/set") {
+			t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
+		}
+		if !strings.Contains(msg, "(run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)") {
+			t.Fatalf("err = %q, want the ADC alternatives parenthesised together", msg)
+		}
+		if strings.Contains(msg, ", set GOOGLE_APPLICATION_CREDENTIALS,") {
+			t.Fatalf("err = %q, must not read as if GOOGLE_APPLICATION_CREDENTIALS were a required middle step", msg)
+		}
+		if strings.Contains(msg, "GOOGLE_VERTEX_PROJECT") || strings.HasSuffix(msg, " set") {
+			t.Fatalf("err = %q, must not list the base-URL variables once they are set", msg)
+		}
+	})
 }
