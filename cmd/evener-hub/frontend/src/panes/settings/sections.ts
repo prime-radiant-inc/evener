@@ -2,9 +2,11 @@
 // SettingsNav's link list/grouping, the pane's own title() (paneRegistry),
 // and (via DEFAULT_SECTION_ID) what a bare /settings resolves to. Verified
 // against templates/partials/settings.html:13-31 (16 exact - "16 nav
-// sections" per the wave-7 plan's own Goal line) PLUS one section with no
-// legacy counterpart: "about" (design-language credits) and "mobile"
-// (browser-only dedicated-app pairing), added after that
+// sections" per the wave-7 plan's own Goal line) PLUS three sections with no
+// legacy counterpart: "keybindings" (the Phase 2b read-only effective-
+// shortcuts list, appended to the ungrouped top links), "about"
+// (design-language credits) and "mobile"
+// (browser-only dedicated-app pairing), the latter two added after that
 // baseline and deliberately placed last, in the Daemon cluster. The 16
 // legacy-parity sections are 5 ungrouped top links (General/Theme/
 // Transcript display/Display/Notifications) plus 3 labeled clusters ("Agents &
@@ -42,6 +44,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "transcript", label: "Transcript display" },
   { id: "display", label: "Display" },
   { id: "notifications", label: "Notifications" },
+  { id: "keybindings", label: "Keybindings" },
   // --- Agents & models -----------------------------------------------
   { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
   { id: "agents", label: "Agents", cluster: "agents-models" },

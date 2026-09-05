@@ -49,6 +49,7 @@ type WebServer struct {
 	frontendHash              string
 	deletionStoreErr          error
 	transcriptDisplayStoreErr error
+	keybindingsStoreErr       error
 }
 
 var manifestMarshal = json.Marshal
@@ -66,6 +67,10 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	transcriptDisplayStoreErr := cfg.TranscriptDisplayStoreErr
 	if cfg.TranscriptDisplayStore == nil {
 		cfg.TranscriptDisplayStore, transcriptDisplayStoreErr = hubcore.NewTranscriptDisplayStore(cfg.HubStateRoot)
+	}
+	keybindingsStoreErr := cfg.KeybindingsStoreErr
+	if cfg.KeybindingsStore == nil {
+		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -89,6 +94,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
+		keybindingsStoreErr:       keybindingsStoreErr,
 	}
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels

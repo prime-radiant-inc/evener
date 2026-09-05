@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { type Chord, formatChord, formatSequence, parseChord, serializeChord } from "./chord";
+import { type Chord, chordsOverlap, formatChord, formatSequence, parseChord, serializeChord } from "./chord";
 
 function singleChord(input: string): Chord {
   const sequence = parseChord(input);
@@ -98,5 +98,42 @@ describe("formatChord", () => {
 describe("formatSequence", () => {
   test("joins presses with a space", () => {
     expect(formatSequence(parseChord("Shift+A b"))).toBe("Shift+A b");
+  });
+});
+
+describe("chordsOverlap", () => {
+  test("identical single-press chords overlap", () => {
+    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+K"))).toBe(true);
+  });
+
+  test("keys match case-insensitively", () => {
+    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+k"))).toBe(true);
+  });
+
+  test("an exact-required chord overlaps a chord that lists the rest as OPTIONAL", () => {
+    // The dispatch-time shadowing the whole-branch review flagged: Control+K
+    // matches palette.open's Control+[Meta]+[Shift]+[Alt]+K default.
+    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+[Meta]+[Shift]+[Alt]+K"))).toBe(true);
+    // Symmetrically, the fully-loaded press also overlaps the plain one.
+    expect(chordsOverlap(parseChord("Control+[Meta]+[Shift]+[Alt]+K"), parseChord("Control+K"))).toBe(true);
+  });
+
+  test("an extra REQUIRED modifier escapes the overlap when the other side does not allow it", () => {
+    expect(chordsOverlap(parseChord("Control+Alt+B"), parseChord("Control+B"))).toBe(false);
+    expect(chordsOverlap(parseChord("Control+B"), parseChord("Control+Alt+B"))).toBe(false);
+  });
+
+  test("an extra required modifier still overlaps when the other side lists it as optional", () => {
+    expect(chordsOverlap(parseChord("Control+Alt+K"), parseChord("Control+[Alt]+K"))).toBe(true);
+  });
+
+  test("different keys never overlap", () => {
+    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+J"))).toBe(false);
+  });
+
+  test("multi-press sequences fall back to serialization equality", () => {
+    expect(chordsOverlap(parseChord("Control+K Control+W"), parseChord("Control+K Control+W"))).toBe(true);
+    expect(chordsOverlap(parseChord("Control+K Control+W"), parseChord("Control+K Control+V"))).toBe(false);
+    expect(chordsOverlap(parseChord("Control+K Control+W"), parseChord("Control+K"))).toBe(false);
   });
 });

@@ -44,13 +44,19 @@
 
 import { ACTIONS } from "./actions";
 import { type KeySequence, parseChord, serializeChord, withOptionalModifier } from "./chord";
-import type { Binding, BindingInput, KeybindingsRegistry } from "./registry";
+import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 export const SETTINGS_SCOPE = "settings";
 
 /** A default-map entry: a BindingInput plus the module-internal
  * legacyEitherMod marker (stripped before registerBinding - see modPair). */
 interface DefaultBindingInput extends BindingInput {
+  /** The action's user-facing title, shown by the Settings keybindings
+   * section. Kept on the default-map entry itself so the section's action
+   * list is sourced live from this map - a new action appears there
+   * automatically, and no second hand-maintained list can go stale (the
+   * survey's stale-HELP_ROWS lesson). */
+  title: string;
   /** Legacy "either or both of Meta/Ctrl" permissiveness: the AppShell
    * ⌘K/⌘I/⌘J, RailHost ⌘B and SelectionQuote ⌘' listeners all checked
    * metaKey||ctrlKey with no regard for the OTHER modifier's state (their
@@ -64,6 +70,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.paletteOpen,
     actionId: ACTIONS.paletteOpen,
+    title: "Open the command palette",
     chord: "$mod+[Shift]+[Alt]+K",
     allowInEditable: true,
     allowInModal: true,
@@ -75,6 +82,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.railToggle,
     actionId: ACTIONS.railToggle,
+    title: "Toggle the sidebar",
     chord: "$mod+B",
     allowInEditable: false,
     allowInModal: true,
@@ -84,6 +92,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.composerFocus,
     actionId: ACTIONS.composerFocus,
+    title: "Focus the composer",
     chord: "$mod+[Shift]+[Alt]+I",
     allowInEditable: true,
     legacyEitherMod: true,
@@ -91,6 +100,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.nextNeedsYou,
     actionId: ACTIONS.nextNeedsYou,
+    title: "Go to the next session needing you",
     chord: "$mod+[Shift]+[Alt]+J",
     allowInEditable: true,
     legacyEitherMod: true,
@@ -101,6 +111,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.selectionQuote,
     actionId: ACTIONS.selectionQuote,
+    title: "Quote the selection into the composer",
     chord: "$mod+[Shift]+'",
     allowInEditable: true,
     allowInModal: true,
@@ -109,6 +120,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   {
     id: ACTIONS.settingsClose,
     actionId: ACTIONS.settingsClose,
+    title: "Close settings",
     chord: "[Control]+[Alt]+[Shift]+[Meta]+Escape",
     scope: SETTINGS_SCOPE,
     allowInEditable: true,
@@ -137,7 +149,7 @@ function modPair(input: DefaultBindingInput): [BindingInput, BindingInput] | nul
     if (serializeChord(parseChord(candidate)) !== resolved) twinString = candidate;
   }
   if (twinString === null) return null;
-  const { legacyEitherMod: _legacyEitherMod, ...base } = input;
+  const { legacyEitherMod: _legacyEitherMod, title: _title, ...base } = input;
   const twin: BindingInput = { ...base, id: `${base.id}#mod-twin`, chord: twinString };
   if (!input.legacyEitherMod) return [base, twin];
   return [
@@ -169,4 +181,60 @@ export function registerDefaultBindings(registry: KeybindingsRegistry): Binding[
     }
   }
   return registered;
+}
+
+/** Registers only the given action's default entries (plus the $mod twin),
+ * the per-action equivalent of registerDefaultBindings the overrides store
+ * uses to restore one action's defaults. Throws on an unknown action id. */
+export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, actionId: string): Binding[] {
+  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
+  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
+  const registered: Binding[] = [];
+  for (const input of inputs) {
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      registered.push(registry.getState().registerBinding(entry));
+    }
+  }
+  return registered;
+}
+
+export interface DefaultBindingShape {
+  scope: string;
+  sequence: KeySequence;
+}
+
+/** The (scope, parsed chord) pairs registerDefaultBindingsForAction would
+ * register for the action, WITHOUT registering them: the validation layer
+ * simulates dropped-override restorations against these. Throws on an
+ * unknown action id. */
+export function defaultBindingShapesForAction(actionId: string): DefaultBindingShape[] {
+  const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
+  if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
+  const shapes: DefaultBindingShape[] = [];
+  for (const input of inputs) {
+    const pair = modPair(input);
+    for (const entry of pair ?? [input]) {
+      shapes.push({
+        scope: entry.scope ?? GLOBAL_SCOPE,
+        sequence: typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord,
+      });
+    }
+  }
+  return shapes;
+}
+
+export interface DefaultChordInfo {
+  scope: string;
+  serialized: string;
+}
+
+/** The display-oriented (scope, serialized chord) form of
+ * defaultBindingShapesForAction, for the read-only settings section's
+ * customized-marker comparison. */
+export function defaultBindingChordsForAction(actionId: string): DefaultChordInfo[] {
+  return defaultBindingShapesForAction(actionId).map((shape) => ({
+    scope: shape.scope,
+    serialized: serializeChord(shape.sequence),
+  }));
 }

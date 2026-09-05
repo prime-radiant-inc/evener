@@ -359,6 +359,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if transcriptDisplayStoreErr != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
 	}
+	keybindingsStore, keybindingsStoreErr := hubcore.NewKeybindingsStore(hubStateRoot)
+	if keybindingsStoreErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] keybindings state: %v\n", keybindingsStoreErr)
+	}
 
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
@@ -375,6 +379,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PluginRoot:                pluginRoot,
 		TranscriptDisplayStore:    transcriptDisplayStore,
 		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
+		KeybindingsStore:          keybindingsStore,
+		KeybindingsStoreErr:       keybindingsStoreErr,
 		RunDir:                    runDir,
 		PastIndexPath:             pastIndexDB,
 		Roster:                    roster,
