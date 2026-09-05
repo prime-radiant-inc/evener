@@ -879,6 +879,10 @@ describe("keybindings store: patch gating", () => {
       keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
     ).rejects.toThrow(/unavailable/);
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+    // The rejection applies to the CURRENT generation (the loading-window
+    // race), so hubError still surfaces: the fence's throw-only posture is
+    // only for writes whose generation has ended (finding 22).
+    expect(keybindingsStore.getState().hubError).toBe("Hub keybindings settings are unavailable.");
 
     resolvePending?.(overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
     await refresh;
@@ -1105,6 +1109,49 @@ describe("keybindings store: support flap discards hub state", () => {
       `${ACTIONS.paletteOpen}#mod-twin`,
     ]);
   });
+
+  test("a refresh rejecting after support loss leaves the state clean (no hubError)", async () => {
+    // The FIRST get lands normally; the second hangs so support can drop
+    // while the refresh is in flight.
+    const client = new FakeClient("ready");
+    let rejectGet: ((error: Error) => void) | undefined;
+    let hang = false;
+    client.on("evener/settings/keybindings/get", () => {
+      if (!hang) return overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+      return new Promise<KeybindingsOverrides>((_, reject) => {
+        rejectGet = reject;
+      });
+    });
+    await wireClient(client, true);
+    expect(keybindingsStore.getState().loaded).toBe(true);
+
+    hang = true;
+    const refresh = keybindingsStore.getState().refreshOverrides();
+    await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+
+    // Support drops mid-flight: the cleanup un-applies and resets the hub
+    // state (hubLoading false, hubError null).
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    expect(keybindingsStore.getState().hubSupport).toBe("unsupported");
+    expect(keybindingsStore.getState().hubLoading).toBe(false);
+
+    // The in-flight refresh now rejects: the catch/finally must not
+    // overwrite the support-drop cleanup with a stale "could not load"
+    // hubError - the section claims the built-in defaults are in effect
+    // (finding 23).
+    rejectGet?.(new Error("socket went away"));
+    await refresh;
+
+    const state = keybindingsStore.getState();
+    expect(state.hubError).toBeNull();
+    expect(state.hubLoading).toBe(false);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
 });
 
 describe("keybindings store: write serialization", () => {
@@ -1252,6 +1299,62 @@ describe("keybindings store: write generation fence", () => {
     expect(keybindingsStore.getState().revision).toBe(1);
     expect(bindingsFor(ACTIONS.composerFocus)).toHaveLength(2);
     expect(bindingsFor(ACTIONS.paletteOpen)).toHaveLength(2);
+  });
+
+  test("the fence rejection leaves the NEW hub's clean state untouched: no hubError, still editable", async () => {
+    // Same setup as the fence test: write #2 queues behind A's hanging
+    // PATCH, the client is replaced mid-flight, hub B loads cleanly.
+    const clientA = new FakeClient("ready");
+    clientA.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let resolvePatchA: ((value: KeybindingsOverrides) => void) | undefined;
+    clientA.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatchA = resolve;
+        }),
+    );
+    await wireClient(clientA, true);
+
+    const first = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    await waitFor(() =>
+      expect(clientA.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1),
+    );
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+
+    const clientB = new FakeClient("ready");
+    clientB.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    clientB.on("evener/settings/keybindings/patch", (params) =>
+      overridesPayload(params.expectedRevision + 1, params.config.rules),
+    );
+    connectionStore.getState().connect(clientB);
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+
+    resolvePatchA?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await first;
+    await expect(second).rejects.toThrow(/unavailable/);
+
+    // The rejection belonged to the DEAD generation: setting hubError would
+    // land "settings are unavailable" on hub B's freshly-loaded state, and
+    // the round-3 editing gate would read the clean new hub read-only until
+    // something cleared it (finding 22). hubError stays null ...
+    const state = keybindingsStore.getState();
+    expect(state.hubError).toBeNull();
+    expect(state.loaded).toBe(true);
+    // ... and the new hub stays editable: a fresh write under B's generation
+    // composes and lands.
+    const result = await keybindingsStore
+      .getState()
+      .patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    expect(result.revision).toBe(2);
   });
 
   // The same-generation half is pinned by "concurrent patches serialize"

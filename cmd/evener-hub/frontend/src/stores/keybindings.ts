@@ -377,11 +377,16 @@ async function refreshFor(client: AppwireClientLike, epoch: number): Promise<voi
     if (payload === undefined) throw new Error("Hub returned malformed keybindings overrides");
     applyHubOverrides(payload);
   } catch (error) {
-    if (isCurrentReady(client, epoch) && serial === refreshSerial) {
+    // currentSupport() is rechecked here as on the success path: a refresh
+    // rejecting after support was lost would otherwise overwrite the
+    // support-drop cleanup with a stale "could not load" hubError while the
+    // section claims the built-in defaults are in effect (finding 23).
+    if (isCurrentReady(client, epoch) && serial === refreshSerial && currentSupport() === "supported") {
       keybindingsStore.setState({ hubError: error instanceof Error ? error.message : String(error) });
     }
   } finally {
-    if (isCurrentReady(client, epoch) && serial === refreshSerial) keybindingsStore.setState({ hubLoading: false });
+    if (isCurrentReady(client, epoch) && serial === refreshSerial && currentSupport() === "supported")
+      keybindingsStore.setState({ hubLoading: false });
   }
 }
 
@@ -487,6 +492,16 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       const state = keybindingsStore.getState();
       const client = currentClient();
       const generation = client === activeReadyClient ? activeReadyEpoch : -1;
+      // The call-time fence is checked SEPARATELY from the current-state
+      // guard below (finding 22): this write was created under a ready
+      // generation that has since ended, so the rejection belongs to a DEAD
+      // generation. Setting hubError here would land on the LIVING hub's
+      // freshly-loaded clean state - "Hub keybindings settings are
+      // unavailable" plus the round-3 editing gate would read the new hub
+      // read-only until something cleared it. Throw only.
+      if (callClient === null || callGeneration < 0 || !isCurrentReady(callClient, callGeneration)) {
+        throw new Error("Hub keybindings settings are unavailable.");
+      }
       if (
         state.hubSupport !== "supported" ||
         state.loaded !== true ||
@@ -495,10 +510,7 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
         client === null ||
         client !== wiredClient ||
         generation < 0 ||
-        client.state !== "ready" ||
-        callClient === null ||
-        callGeneration < 0 ||
-        !isCurrentReady(callClient, callGeneration)
+        client.state !== "ready"
       ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
@@ -507,8 +519,6 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
         // `hubLoading` is the same race WITHIN one generation: an in-flight
         // refresh is about to land a payload whose revision may differ from
         // the one a concurrent PATCH would send as expectedRevision.
-        // The call-time fence is the same staleness across the QUEUE: this
-        // write was created under a generation that has since ended.
         const error = "Hub keybindings settings are unavailable.";
         keybindingsStore.setState({ hubError: error });
         throw new Error(error);
