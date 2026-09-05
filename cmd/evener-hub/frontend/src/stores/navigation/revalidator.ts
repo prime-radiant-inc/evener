@@ -258,7 +258,7 @@ export class NavigationRevalidator {
     this.emit(e.state);
     let run!: Promise<ResourceState>;
     run = e
-      .request(controller.signal, e.state.etag, usableNavigationBase(e.state))
+      .request(controller.signal, usableNavigationBase(e.state))
       .then((response) => {
         if (this.disposed || epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch)
           return e.state;

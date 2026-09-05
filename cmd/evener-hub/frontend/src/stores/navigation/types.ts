@@ -125,7 +125,6 @@ export interface NavigationResponse<T = unknown> {
 }
 export type NavigationRequest<T = unknown> = (
   signal: AbortSignal,
-  etag: string | null,
   base?: NavigationReadBase,
 ) => Promise<NavigationResponse<T>>;
 export type ResourceListener = (state: ResourceState) => void;

@@ -86,7 +86,7 @@ function setLocation(ref: string): void {
     },
   };
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources: new Map([
       [
@@ -267,7 +267,7 @@ test("v1 shutdown installs an invalidation waiter and converges after the RPC", 
   );
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
   });
@@ -313,7 +313,7 @@ test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
   }));
   const awaitNavigationTargets = vi.fn(() => Promise.resolve());
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     awaitNavigationInvalidation: awaitNavigationInvalidation as never,
     awaitNavigationTargets: awaitNavigationTargets as never,
   });

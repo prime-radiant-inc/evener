@@ -11,6 +11,7 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { capability, manifest } from "../stores/navigation/testing";
+import { navigationRootContainerKey, type ResourceKey } from "../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
@@ -38,17 +39,29 @@ const navigationInitialize = (generationId = "generation_test"): InitializeRespo
   navigation: navigationCapability(generationId),
 });
 
+const manifestKey: ResourceKey = { kind: "manifest" };
 const navigationReadResponse = (generationId = "generation_test"): NavigationReadResponse => ({
   status: "ok",
+  representation: "snapshot",
   generationId,
   revision: 1,
   etag: '"manifest"',
-  data: navigationManifest(generationId),
+  data: {
+    metadata: navigationManifest(generationId),
+    entities: [],
+    containers: [
+      {
+        key: navigationRootContainerKey(manifestKey, "manifest"),
+        owner: { kind: "resource_root", slot: "manifest" },
+        children: [],
+      },
+    ],
+  },
 });
 
 function scriptNavigationManifest(client: FakeClient, generationId: string | (() => string) = "generation_test"): void {
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
-    expect(params).toEqual({ resource: "manifest" });
+    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
     return navigationReadResponse(typeof generationId === "function" ? generationId() : generationId);
   });
 }
@@ -194,7 +207,7 @@ function armPrefs(loudScope: "asks" | "all" = "all"): void {
 // so that snapshot is the established baseline (electLeader ⇒ leader = true).
 // The navigation store must reach a supported mode (a capability-advertising
 // client + a valid manifest fetch) before the baseline is delivered, because
-// onNavigationAttention returns early outside v1/v2 — so the baseline is
+// onNavigationAttention returns early outside v2 — so the baseline is
 // delivered through the client's attention notification after the manifest
 // settles, establishing prevNavigationAttention for later transition detection.
 //
@@ -239,7 +252,7 @@ async function boot(baseline: {
 }
 
 describe("initNotifications lifecycle", () => {
-  test("supported v1 boots navigation through the typed AppWire read", async () => {
+  test("supported v2 boots navigation through the typed AppWire read", async () => {
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
@@ -253,8 +266,10 @@ describe("initNotifications lifecycle", () => {
     initNotifications();
     await flushMicrotasks();
 
-    expect(navigationStore.getState().mode).toBe("v1");
-    expect(client.calls).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
+    expect(navigationStore.getState().mode).toBe("v2");
+    expect(client.calls).toEqual([
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+    ]);
   });
 
   test("absent capability is an error state, never fetches navigation", async () => {
@@ -300,10 +315,13 @@ describe("initNotifications lifecycle", () => {
   // makes the manifest arrive on every host. Kata bbsv mis-read its absence as
   // the cause of mobile deep links being discarded; it is present, and the
   // shell relies on it.
-  test("reads the manifest after the handshake selects v1 mode", async () => {
+  test("reads the manifest after the handshake selects v2 mode", async () => {
     const client = await boot(attentionFromNodes([]));
 
-    expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
+    expect(client.calls).toContainEqual({
+      method: "evener/navigation/read",
+      params: { resource: "manifest", representationVersion: 2 },
+    });
     expect(navigationStore.getState().manifest?.data).not.toBeNull();
   });
 
@@ -323,7 +341,7 @@ describe("initNotifications lifecycle", () => {
 });
 
 describe("counts apply unconditionally", () => {
-  test("v1 attention owns counts and edge fires without tree or extra navigation reads", async () => {
+  test("v2 attention owns counts and edge fires without tree or extra navigation reads", async () => {
     armPrefs("all");
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -351,12 +369,12 @@ describe("counts apply unconditionally", () => {
 
     expect(document.title).toBe("(2) evener hub");
     expect(fires()).toEqual({ os: 1, sound: 1 });
-    navigationStore.setState({ attention: attentionFromNodes([node("v1-extra", "errored")]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("v2-extra", "errored")]) });
     expect(document.title).toBe("(1) evener hub");
     expect(client.calls).toEqual([]);
   });
 
-  test("losing the capability clears v1 attention and enters error mode", async () => {
+  test("losing the capability clears v2 attention and enters error mode", async () => {
     prefsStore.getState().setNotification("title", true);
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -383,7 +401,7 @@ describe("counts apply unconditionally", () => {
     expect(document.title).toBe("evener hub");
   });
 
-  test("v1 attention removes downgraded entries so a later escalation is a new edge", async () => {
+  test("v2 attention removes downgraded entries so a later escalation is a new edge", async () => {
     armPrefs("all");
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -543,7 +561,9 @@ describe("reconnect re-baselines silently", () => {
     client.emitReady(navigationInitialize(generation));
     await flushMicrotasks();
     expect(client.calls).toHaveLength(2); // one reset reload, not reset plus another read
-    expect(client.calls.slice(1)).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
+    expect(client.calls.slice(1)).toEqual([
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+    ]);
     expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
     expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
   });

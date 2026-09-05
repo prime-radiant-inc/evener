@@ -27,7 +27,7 @@ import {
   selectSectionRemaining,
 } from "./selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
-import { capability, manifest } from "./testing";
+import { capability, completeSession, manifest, wireV2 } from "./testing";
 import {
   isNavigationUnavailable,
   keyID,
@@ -38,63 +38,6 @@ import {
 } from "./types";
 
 const generation = "generation_test";
-const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
-  host_id: "local",
-  session_id: String(value.ref ?? "session"),
-  title: String(value.ref ?? "Session"),
-  project: "",
-  state: "idle",
-  kind: "session",
-  live: false,
-  ...value,
-  children: Array.isArray(value.children)
-    ? value.children.map((child) => completeSession(child as Record<string, unknown>))
-    : [],
-});
-const completeBody = (data: unknown, revision: number, gen: string): unknown => {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-  const body: Record<string, unknown> = { ...(data as Record<string, unknown>), generation_id: gen, revision };
-  if (Array.isArray(body.sessions)) {
-    body.sessions = body.sessions.map((item) => completeSession(item as Record<string, unknown>));
-    body.truncated ??= false;
-  }
-  if (body.session && typeof body.session === "object") {
-    body.session = completeSession(body.session as Record<string, unknown>);
-    body.ref ??= (body.session as Record<string, unknown>).ref;
-    body.top_level_ref ??= body.ref;
-    body.top_level ??= true;
-  }
-  if (Array.isArray(body.pin_sections))
-    body.pin_sections = body.pin_sections.map((item) => ({ name: String(item.id), ...item }));
-  if (Array.isArray(body.projects))
-    body.projects = body.projects.map((item) => ({ name: String(item.key), session_count: 0, ...item }));
-  for (const tier of ["current", "recent", "archived"] as const) {
-    const value = body[tier];
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const typed = value as Record<string, unknown>;
-    body[tier] = {
-      ...typed,
-      sessions: Array.isArray(typed.sessions)
-        ? typed.sessions.map((item) => completeSession(item as Record<string, unknown>))
-        : [],
-    };
-    body.truncated ??= false;
-  }
-  return body;
-};
-const wire = (
-  data: unknown,
-  status: "ok" | "not_modified" = "ok",
-  etag = '"one"',
-  revision = 1,
-  gen = generation,
-): NavigationReadResponse => ({
-  status,
-  generationId: gen,
-  revision,
-  etag,
-  ...(status === "ok" ? { data: completeBody(data, revision, gen) } : {}),
-});
 const flush = async () => {
   for (let i = 0; i < 64; i++) await Promise.resolve();
 };
@@ -231,8 +174,8 @@ const reconnectV2Response = (params: NavigationReadParams): NavigationReadRespon
 test("navigation reads use the typed AppWire method and structured resource params", async () => {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    expect(params).toEqual({ resource: "manifest" });
-    return wire(emptyManifest());
+    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
+    return wireV2(params, emptyManifest());
   });
   vi.stubGlobal(
     "fetch",
@@ -244,7 +187,9 @@ test("navigation reads use the typed AppWire method and structured resource para
   initNavigation(client, capability());
   await flush();
 
-  expect(client.calls).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
+  expect(client.calls).toEqual([
+    { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+  ]);
   expect(navigationStore.getState().manifest?.data).toMatchObject(emptyManifest());
 });
 
@@ -255,7 +200,8 @@ afterEach(() => {
 
 test.each([
   ["absent", null, "error"],
-  ["v1", capability(), "v1"],
+  ["v1", { version: 1, generationId: generation, sequence: 0 }, "error"],
+  ["v2", capability(), "v2"],
   ["unsupported", capability(generation, 2), "error"],
 ] as const)("capability %s selects mode", async (_name, cap, mode) => {
   initNavigation(new FakeClient("ready"), cap);
@@ -271,13 +217,25 @@ test("manifest is read first, count-zero resources are skipped, and defaults are
   });
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wire(m);
-    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
-    return wire({ projects: [], remaining: 0 });
+    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    return wireV2(params, { projects: [], remaining: 0 });
   });
-  expect(calls[0]).toEqual({ resource: "manifest" });
-  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
-  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
+  expect(calls[0]).toEqual({ resource: "manifest", representationVersion: 2 });
+  expect(calls).toContainEqual({
+    resource: "section",
+    section: "live",
+    offset: 0,
+    limit: 50,
+    representationVersion: 2,
+  });
+  expect(calls).toContainEqual({
+    resource: "catalog",
+    catalog: "projects",
+    offset: 0,
+    limit: 100,
+    representationVersion: 2,
+  });
   expect(
     calls.some((x) => x.section === "needs_you" || x.catalog === "archived_projects" || x.catalog === "test_runs"),
   ).toBe(false);
@@ -295,19 +253,24 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
   const client = await init((params) => {
     calls.push(params);
     if (params.resource === "manifest")
-      return wire(populated ? nextManifest : emptyManifest(), "ok", populated ? '"two"' : '"one"', populated ? 2 : 1);
+      return wireV2(
+        params,
+        populated ? nextManifest : emptyManifest(),
+        populated ? '"two"' : '"one"',
+        populated ? 2 : 1,
+      );
     if (params.resource === "section") {
       sectionRequested.resolve();
-      return wire({ sessions: [], remaining: 0, truncated: false });
+      return wireV2(params, { sessions: [], remaining: 0, truncated: false });
     }
     if (params.resource === "catalog") {
       catalogRequested.resolve();
-      return wire({ projects: [{ key: "project", default_expanded: false }], remaining: 0 });
+      return wireV2(params, { projects: [{ key: "project", default_expanded: false }], remaining: 0 });
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
 
-  expect(calls).toEqual([{ resource: "manifest" }]);
+  expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
   populated = true;
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -318,15 +281,27 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
   );
   await Promise.all([sectionRequested.promise, catalogRequested.promise]);
 
-  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
-  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
+  expect(calls).toContainEqual({
+    resource: "section",
+    section: "live",
+    offset: 0,
+    limit: 50,
+    representationVersion: 2,
+  });
+  expect(calls).toContainEqual({
+    resource: "catalog",
+    catalog: "projects",
+    offset: 0,
+    limit: 100,
+    representationVersion: 2,
+  });
 });
 
-test("validated manifest attention seeds the v1 summary before notifications", async () => {
+test("validated manifest attention seeds the v2 summary before notifications", async () => {
   await init((params) =>
     params.resource === "manifest"
-      ? wire(emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
-      : wire({ sessions: [], remaining: 0 }),
+      ? wireV2(params, emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
+      : wireV2(params, { sessions: [], remaining: 0 }),
   );
   expect(navigationStore.getState().attention.summary).toEqual({ needsYou: 2, error: 1, working: 3 });
 });
@@ -390,7 +365,7 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
     ],
   ]);
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     manifest: {
       key: { kind: "manifest" },
       data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
@@ -428,7 +403,7 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
   const narrow = { kind: "section", section: "needs_you", offset: 10, limit: 10 } as const;
   const wide = { kind: "section", section: "needs_you", offset: 10, limit: 20 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     resources: new Map([
       [
         keyID(narrow),
@@ -470,22 +445,22 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
 
 test("resource keys map to exact AppWire params and preserve decoded identifiers", async () => {
   const client = await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
-    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "pin_catalog") return wire({ pin_sections: [], remaining: 0 });
-    if (params.resource === "pin_section") return wire({ sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "catalog") return wire({ projects: [], remaining: 0 });
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "pin_catalog") return wireV2(params, { pin_sections: [], remaining: 0 });
+    if (params.resource === "pin_section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "catalog") return wireV2(params, { projects: [], remaining: 0 });
     if (params.resource === "project_page")
-      return wire({ key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
+      return wireV2(params, { key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
     if (params.resource === "project")
-      return wire({
+      return wireV2(params, {
         key: "p/a ?",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
         truncated: false,
       });
-    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
+    return wireV2(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
   });
   const s = navigationStore.getState();
   await s.loadSection("needs_you", 3, 7);
@@ -496,14 +471,14 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   await s.loadProjectPage("p/a ?", "recent", 6, 11);
   await s.lookupLocation("r/a ?");
   expect(client.calls.map((call) => call.params)).toEqual([
-    { resource: "manifest" },
-    { resource: "section", section: "needs_you", offset: 3, limit: 7 },
-    { resource: "pin_catalog", offset: 4, limit: 8 },
-    { resource: "pin_section", sectionId: "a/b ?", offset: 2, limit: 9 },
-    { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10 },
-    { resource: "project", projectKey: "p/a ?" },
-    { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11 },
-    { resource: "location", ref: "local:r/a ?" },
+    { resource: "manifest", representationVersion: 2 },
+    { resource: "section", section: "needs_you", offset: 3, limit: 7, representationVersion: 2 },
+    { resource: "pin_catalog", offset: 4, limit: 8, representationVersion: 2 },
+    { resource: "pin_section", sectionId: "a/b ?", offset: 2, limit: 9, representationVersion: 2 },
+    { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10, representationVersion: 2 },
+    { resource: "project", projectKey: "p/a ?", representationVersion: 2 },
+    { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11, representationVersion: 2 },
+    { resource: "location", ref: "local:r/a ?", representationVersion: 2 },
   ]);
   const callCount = client.calls.length;
   await s.loadSection("needs_you", 3, 7);
@@ -511,38 +486,14 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   s.setExpanded("p", false);
 });
 
-test("bare and canonical local location aliases coalesce through canonical v1 requests and selection", async () => {
-  const locationRefs: string[] = [];
-  const client = await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
-    if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
-    if (params.ref !== "local:session") throw new Error(`uncanonical location ref ${params.ref}`);
-    locationRefs.push(params.ref);
-    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
-  });
-
-  const bare = await navigationStore.getState().lookupLocation("session");
-  const canonical = await navigationStore.getState().lookupLocation("local:session");
-  const state = navigationStore.getState();
-
-  expect(locationRefs).toEqual(["local:session"]);
-  expect(bare).toBe(canonical);
-  expect(bare).toMatchObject({ key: { kind: "location", ref: "local:session" }, error: null });
-  expect(selectLocation("session")(state)).toBe(bare);
-  expect(selectLocation("local:session")(state)).toBe(bare);
-  expect(
-    client.calls.map((call) => call.params as NavigationReadParams).filter((params) => params.resource === "location"),
-  ).toHaveLength(1);
-});
-
 test("qualified remote and local location refs remain unchanged", async () => {
   const locationRefs: string[] = [];
   await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource !== "location") throw new Error(`unexpected resource ${params.resource}`);
     if (typeof params.ref !== "string") throw new Error("qualified location request omitted ref");
     locationRefs.push(params.ref);
-    return wire({ ref: params.ref, top_level_ref: params.ref, top_level: true });
+    return wireV2(params, { ref: params.ref, top_level_ref: params.ref, top_level: true });
   });
 
   await navigationStore.getState().lookupLocation("remote:session");
@@ -618,7 +569,7 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
       },
     };
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
 
   const bare = await navigationStore.getState().lookupLocation("v2-session");
@@ -634,10 +585,12 @@ test("bare and canonical local location aliases coalesce through canonical v2 re
 
 test("pin catalog page loading preserves every assignment target", async () => {
   const client = await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource !== "pin_catalog") throw new Error(`unexpected resource ${params.resource}`);
-    if (params.offset === 0) return wire({ pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
-    if (params.offset === 1) return wire({ pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
+    if (params.offset === 0)
+      return wireV2(params, { pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
+    if (params.offset === 1)
+      return wireV2(params, { pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
     throw new Error(`unexpected pin catalog offset ${params.offset}`);
   });
 
@@ -648,8 +601,8 @@ test("pin catalog page loading preserves every assignment target", async () => {
       .map((call) => call.params as NavigationReadParams)
       .filter((params) => params.resource === "pin_catalog"),
   ).toEqual([
-    { resource: "pin_catalog", offset: 0, limit: 100 },
-    { resource: "pin_catalog", offset: 1, limit: 100 },
+    { resource: "pin_catalog", offset: 0, limit: 100, representationVersion: 2 },
+    { resource: "pin_catalog", offset: 1, limit: 100, representationVersion: 2 },
   ]);
   expect(selectPinSectionSummaries()).toEqual([
     { id: "first", name: "First", member_count: 0 },
@@ -660,15 +613,15 @@ test("pin catalog page loading preserves every assignment target", async () => {
 test("forced pin catalog page loading replaces every fresh cached page", async () => {
   let refreshed = false;
   const client = await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource === "pin_catalog" && params.offset === 0)
       return refreshed
-        ? wire({ pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
-        : wire({ pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
+        ? wireV2(params, { pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
+        : wireV2(params, { pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
     if (params.resource === "pin_catalog" && params.offset === 1)
       return refreshed
-        ? wire({ pin_sections: [], remaining: 0 })
-        : wire({ pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
+        ? wireV2(params, { pin_sections: [], remaining: 0 })
+        : wireV2(params, { pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
     throw new Error(`unexpected resource ${params.resource}`);
   });
 
@@ -689,16 +642,16 @@ test("AppWire envelope status and conditional reads preserve cached navigation",
   const client = await init((params) => {
     if (params.resource === "manifest") {
       manifestCalls++;
-      return wire(emptyManifest(), "ok", '"a"', 3);
+      return wireV2(params, emptyManifest(), '"a"', 3);
     }
-    return wire({ sessions: [], remaining: 0 }, "ok", '"section"', 3);
+    return wireV2(params, { sessions: [], remaining: 0 }, '"section"', 3);
   });
   expect(navigationStore.getState().manifest?.etag).toBe('"a"');
   await navigationStore.getState().loadSection("live");
   client.on("evener/navigation/read", (params) =>
     params.resource === "section"
-      ? wire(undefined, "not_modified", '"section"', 4)
-      : wire(emptyManifest(), "ok", '"a"', 3),
+      ? wireV2(params, { sessions: [], remaining: 0 }, '"section"', 4)
+      : wireV2(params, emptyManifest(), '"a"', 3),
   );
   client.emitNotification({
     method: "evener/navigation/invalidated",
@@ -713,7 +666,8 @@ test("AppWire envelope status and conditional reads preserve cached navigation",
     section: "live",
     offset: 0,
     limit: 50,
-    etag: '"section"',
+    representationVersion: 2,
+    base: { generationId: generation, revision: 3, etag: '"section"' },
   });
   expect(
     [...navigationStore.getState().resources.values()].find(
@@ -769,7 +723,7 @@ test("v2 manifest deltas apply against the retained manifest snapshot", async ()
       },
     } as NavigationReadResponse;
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
 
   client.emitNotification(
@@ -873,7 +827,7 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
       data: sectionSnapshot("Reappeared", 3),
     } as NavigationReadResponse;
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
 
   const initial = await navigationStore.getState().loadSection("live");
@@ -931,13 +885,13 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
 test("invalid AppWire envelopes and resource bodies become resource errors", async () => {
   let mode = "status";
   const client = await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
-    const response = wire({ sessions: [], remaining: 0, truncated: false }, "ok", '"x"');
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    const response = wireV2(params, { sessions: [], remaining: 0, truncated: false }, '"x"');
     if (mode === "status") return { ...response, status: "partial" } as NavigationReadResponse;
     if (mode === "generation") return { ...response, generationId: "" };
     if (mode === "etag") return { ...response, etag: "" };
     if (mode === "not_modified") return { ...response, status: "not_modified" };
-    return wire({});
+    return wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 });
   });
   const status = await navigationStore.getState().loadSection("live");
   expect(status.error).toBeTruthy();
@@ -957,8 +911,8 @@ test("invalid AppWire envelopes and resource bodies become resource errors", asy
 test("rejects malformed job collections in navigation session summaries", async () => {
   await init((params) =>
     params.resource === "manifest"
-      ? wire(emptyManifest())
-      : wire({ sessions: [{ ref: "local:bad", running_jobs: {} }], remaining: 0, truncated: false }),
+      ? wireV2(params, emptyManifest())
+      : wireV2(params, { sessions: [{ ref: "local:bad", running_jobs: {} }], remaining: 0, truncated: false }),
   );
   const resource = await navigationStore.getState().loadSection("live");
   expect(resource.error).toBeTruthy();
@@ -971,10 +925,10 @@ test("stale client completion cannot overwrite newer client", async () => {
   initNavigation(first, capability("old"));
   await flush();
   const second = new FakeClient("ready");
-  second.on("evener/navigation/read", () => wire(emptyManifest({}), "ok", '"new"', 1, "new"));
+  second.on("evener/navigation/read", (params) => wireV2(params, emptyManifest({}), '"new"', 1, "new"));
   initNavigation(second, capability("new"));
   await flush();
-  old.resolve(wire(emptyManifest(), "ok", '"old"', 1, "old"));
+  old.resolve(wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"old"', 1, "old"));
   await flush();
   expect(navigationStore.getState().clientGenerationID).toBe("new");
   expect(navigationStore.getState().manifest?.generationID).not.toBe("old");
@@ -984,19 +938,19 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   const oldClient = new FakeClient("ready");
   oldClient.on("evener/navigation/read", (params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
         }),
-        "ok",
         '"old-manifest"',
         1,
         "old",
       );
     if (params.resource === "section")
-      return wire(
+      return wireV2(
+        params,
         { sessions: [{ ref: "local:old-client", children: [] }], remaining: 0, truncated: false },
-        "ok",
         '"old-section"',
         1,
         "old",
@@ -1043,7 +997,9 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   expect(bootstrapping.expanded.get("remembered-project")).toBe(true);
   expect(disposalError).toEqual(expect.objectContaining({ message: "navigation protocol: revalidator disposed" }));
 
-  newManifest.resolve(wire(emptyManifest(), "ok", '"new-manifest"', 1, "new"));
+  newManifest.resolve(
+    wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"new-manifest"', 1, "new"),
+  );
   await flush();
   const installed = navigationStore.getState();
   expect(installed.manifest?.generationID).toBe("new");
@@ -1066,10 +1022,10 @@ test("same-generation reconnect during manifest load continues booting resources
     calls.push(params);
     if (params.resource === "manifest") {
       manifestCalls++;
-      return manifestCalls === 1 ? firstManifest.promise : wire(m);
+      return manifestCalls === 1 ? firstManifest.promise : wireV2(params, m);
     }
-    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
-    return wire({ projects: [], remaining: 0 });
+    if (params.resource === "section") return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    return wireV2(params, { projects: [], remaining: 0 });
   });
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
@@ -1084,11 +1040,23 @@ test("same-generation reconnect during manifest load continues booting resources
   client.emitStateChange("reconnecting");
   client.emitReady();
   await flush();
-  firstManifest.resolve(wire(m));
+  firstManifest.resolve(wireV2({ resource: "manifest", representationVersion: 2 }, m));
   await flush();
 
-  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
-  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
+  expect(calls).toContainEqual({
+    resource: "section",
+    section: "live",
+    offset: 0,
+    limit: 50,
+    representationVersion: 2,
+  });
+  expect(calls).toContainEqual({
+    resource: "catalog",
+    catalog: "projects",
+    offset: 0,
+    limit: 100,
+    representationVersion: 2,
+  });
 });
 
 test("a stale malformed response cannot poison or force the active client", async () => {
@@ -1098,11 +1066,11 @@ test("a stale malformed response cannot poison or force the active client", asyn
   initNavigation(oldClient, capability("old"));
   await flush();
   const newClient = new FakeClient("ready");
-  newClient.on("evener/navigation/read", () => wire(emptyManifest(), "ok", '"new"', 1, "new"));
+  newClient.on("evener/navigation/read", (params) => wireV2(params, emptyManifest(), '"new"', 1, "new"));
   initNavigation(newClient, capability("new"));
   await flush();
 
-  old.resolve(wire({}, "ok", '"old"', 1, "old"));
+  old.resolve({ status: "not_modified", generationId: "old", revision: 1, etag: '"old"' });
   await flush();
 
   expect(navigationStore.getState().protocolError).toBeNull();
@@ -1124,13 +1092,13 @@ test("expanded and default projects hydrate complete tiers and post-action expan
   });
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wire(m);
+    if (params.resource === "manifest") return wireV2(params, m);
     if (params.resource === "catalog" && params.catalog === "projects")
-      return wire({ projects: [project("default"), project("closed")], remaining: 0 });
+      return wireV2(params, { projects: [project("default"), project("closed")], remaining: 0 });
     if (params.resource === "project_page" && params.projectKey === "default")
-      return wire({ sessions: [], remaining: 0, truncated: false });
-    if (params.resource === "project" && params.projectKey === "default") return wire(project("default"));
-    return wire({ sessions: [], remaining: 0 });
+      return wireV2(params, { sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "project" && params.projectKey === "default") return wireV2(params, project("default"));
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   expect(calls.some((params) => params.resource === "project_page")).toBe(false);
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "closed")).toBe(false);
@@ -1145,6 +1113,7 @@ test("expanded and default projects hydrate complete tiers and post-action expan
     tier: "current",
     offset: 0,
     limit: 50,
+    representationVersion: 2,
   });
 });
 
@@ -1157,7 +1126,7 @@ test("setExpanded hydrates a raw v2 project key with representation version 2", 
     if (params.resource === "manifest") return reconnectV2Response(params);
     throw new Error(`scripted project read ${params.resource}`);
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
 
   try {
@@ -1176,7 +1145,9 @@ test("setExpanded hydrates a raw v2 project key with representation version 2", 
 test("notification fencing rejects duplicate, wrong generation, and gaps while locations stay retained", async () => {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) =>
-    params.resource === "manifest" ? wire(emptyManifest()) : wire({ session: { ref: "x", children: [] } }),
+    params.resource === "manifest"
+      ? wireV2(params, emptyManifest())
+      : wireV2(params, { session: { ref: "x", children: [] } }),
   );
   initNavigation(client, capability());
   await flush();
@@ -1199,7 +1170,7 @@ test("terminal location failures are retained without an automatic retry or proj
   const client = new FakeClient("ready");
   let locationCalls = 0;
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     locationCalls++;
     throw new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
@@ -1236,9 +1207,9 @@ test("sequence gaps revalidate demanded locations", async () => {
   }));
   let locationCalls = 0;
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     locationCalls++;
-    return wire({ ref: "x", top_level_ref: "x", top_level: true });
+    return wireV2(params, { ref: "x", top_level_ref: "x", top_level: true });
   });
   initNavigation(client);
   await flush();
@@ -1255,10 +1226,10 @@ test("sequence gaps revalidate demanded locations", async () => {
 
 test("same-generation equal-sequence reconnect updates capability without broad reload", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
-  const reconnectCapability = { ...initialCapability, readVersions: [1, 2] };
+  const reconnectCapability = { ...initialCapability };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
-  client.on("evener/navigation/read", () => wire(emptyManifest()));
+  client.on("evener/navigation/read", (params) => wireV2(params, emptyManifest()));
   initNavigation(client);
   await flush();
   const callsBeforeReconnect = client.calls.length;
@@ -1275,18 +1246,16 @@ test("same-generation equal-sequence reconnect updates capability without broad 
   expect(state.protocolError).toBeNull();
 });
 
-test("same-generation V1-to-V2 equal reconnect keeps V1 entries until invalidation, then snapshots without a base", async () => {
+test("same-generation v2-to-v2 equal reconnect keeps entries until invalidation, then deltas from the base", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
-  const reconnectCapability = { ...initialCapability, readVersions: [1, 2] };
+  const reconnectCapability = { ...initialCapability };
   const calls: NavigationReadParams[] = [];
   let sectionV2Reads = 0;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource !== "section") throw new Error(`unexpected resource ${params.resource}`);
-    if (params.representationVersion !== 2)
-      return wire({ sessions: [{ ref: "v1-section", children: [] }], remaining: 0, truncated: false });
     sectionV2Reads++;
     if (sectionV2Reads === 1) {
       expect(params.base).toBeUndefined();
@@ -1334,8 +1303,8 @@ test("same-generation V1-to-V2 equal reconnect keeps V1 entries until invalidati
   client.emitNotification(
     navigationInvalidatedNotification({
       generationId: generation,
-      sequence: 3,
-      targets: [{ kind: "section", section: "live", revision: 3 }],
+      sequence: 4,
+      targets: [{ kind: "section", section: "live", revision: 4 }],
     }),
   );
   await navigationStore.getState().loadSection("live");
@@ -1346,22 +1315,8 @@ test("same-generation V1-to-V2 equal reconnect keeps V1 entries until invalidati
     offset: 0,
     limit: 50,
     representationVersion: 2,
+    base: { generationId: generation, revision: 3, etag: "section-v2-snapshot" },
   });
-  const afterSnapshot = navigationStore.getState().resources.get(keyID(reconnectSectionKey));
-  expect(afterSnapshot?.normalized?.version).toEqual({
-    generationId: generation,
-    revision: 3,
-    etag: "section-v2-snapshot",
-  });
-
-  client.emitNotification(
-    navigationInvalidatedNotification({
-      generationId: generation,
-      sequence: 4,
-      targets: [{ kind: "section", section: "live", revision: 4 }],
-    }),
-  );
-  await navigationStore.getState().loadSection("live");
   expect(navigationStore.getState().resources.get(keyID(reconnectSectionKey))?.normalized?.version).toEqual({
     generationId: generation,
     revision: 4,
@@ -1370,19 +1325,13 @@ test("same-generation V1-to-V2 equal reconnect keeps V1 entries until invalidati
   expect(navigationStore.getState().protocolError).toBeNull();
 });
 
-test("same-generation higher-sequence V1-to-V2 reconnect forces loaded entries without unusable bases", async () => {
+test("same-generation higher-sequence v2-to-v2 reconnect forces loaded entries with fresh snapshots", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
-  const reconnectCapability = { ...initialCapability, readVersions: [1, 2], sequence: 5 };
+  const reconnectCapability = { ...initialCapability, sequence: 5 };
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.representationVersion === 2) {
-      expect(params.base).toBeUndefined();
-      return reconnectV2Response(params);
-    }
-    if (params.resource === "manifest") return wire(emptyManifest());
-    if (params.resource === "section")
-      return wire({ sessions: [{ ref: "v1-section", children: [] }], remaining: 0, truncated: false });
-    throw new Error(`unexpected resource ${params.resource}`);
+    expect(params.representationVersion).toBe(2);
+    return reconnectV2Response(params);
   });
   initNavigation(client, initialCapability);
   await flush();
@@ -1394,21 +1343,30 @@ test("same-generation higher-sequence V1-to-V2 reconnect forces loaded entries w
   await flush();
 
   expect(client.calls.slice(callsBeforeReconnect).map((call) => call.params)).toEqual([
-    { resource: "manifest", representationVersion: 2 },
-    { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+    {
+      resource: "manifest",
+      representationVersion: 2,
+      base: { generationId: generation, revision: 11, etag: '"manifest-v2"' },
+    },
+    {
+      resource: "section",
+      section: "live",
+      offset: 0,
+      limit: 50,
+      representationVersion: 2,
+      base: { generationId: generation, revision: 22, etag: '"section-v2"' },
+    },
   ]);
   expect(navigationStore.getState().protocolError).toBeNull();
 });
 
-test("pending read stays bound to the representation sent across a same-generation mode switch", async () => {
+test("pending v2 read stays bound across a same-generation reconnect", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
-  const reconnectCapability = { ...initialCapability, readVersions: [1, 2] };
+  const reconnectCapability = { ...initialCapability };
   const pendingSection = deferred<NavigationReadResponse>();
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") {
-      return params.representationVersion === 2 ? reconnectV2Response(params) : wire(emptyManifest());
-    }
+    if (params.resource === "manifest") return reconnectV2Response(params);
     if (params.resource === "section") return pendingSection.promise;
     throw new Error(`unexpected resource ${params.resource}`);
   });
@@ -1418,7 +1376,7 @@ test("pending read stays bound to the representation sent across a same-generati
   const pendingLoad = navigationStore.getState().loadSection("live");
   expect(client.calls.at(-1)).toEqual({
     method: "evener/navigation/read",
-    params: { resource: "section", section: "live", offset: 0, limit: 50 },
+    params: { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
   });
 
   client.emitStateChange("reconnecting");
@@ -1427,7 +1385,10 @@ test("pending read stays bound to the representation sent across a same-generati
   expect(navigationStore.getState().mode).toBe("v2");
 
   pendingSection.resolve(
-    wire({ sessions: [{ ref: "local:representation-bound", children: [] }], remaining: 0, truncated: false }),
+    wireV2(
+      { resource: "section", section: "live", offset: 0, limit: 50, representationVersion: 2 },
+      { sessions: [{ ref: "local:representation-bound", children: [] }], remaining: 0, truncated: false },
+    ),
   );
   const loaded = await pendingLoad;
   await flush();
@@ -1441,80 +1402,41 @@ test("pending read stays bound to the representation sent across a same-generati
   expect(navigationStore.getState().mode).toBe("v2");
 });
 
-test("different-generation downgrade restarts every loaded resource in v1 and publishes the v1 result", async () => {
-  const nextGeneration = "generation_v1_reconnect";
-  const initialCapability = { ...capability(), readVersions: [1, 2] };
-  const reconnectCapability = capability(nextGeneration);
-  let reconnecting = false;
+test("different-generation capability without v2 enters error mode without reading", async () => {
+  const nextGeneration = "generation_nov2_reconnect";
+  const initialCapability = capability();
+  const reconnectCapability = { version: 1, generationId: nextGeneration, sequence: 0 };
   const client = new FakeClient("ready");
-  client.on("evener/navigation/read", (params) => {
-    if (!reconnecting) return reconnectV2Response(params);
-    if (params.resource === "manifest")
-      return wire(emptyManifest({ generation_id: nextGeneration }), "ok", '"manifest-v1-next"', 1, nextGeneration);
-    if (params.resource === "section")
-      return wire(
-        { sessions: [{ ref: "local:downgraded", children: [] }], remaining: 0, truncated: false },
-        "ok",
-        '"section-v1-next"',
-        2,
-        nextGeneration,
-      );
-    throw new Error(`unexpected reconnect resource ${params.resource}`);
-  });
+  client.on("evener/navigation/read", (params) => reconnectV2Response(params));
   initNavigation(client, initialCapability);
   await flush();
   await navigationStore.getState().loadSection("live");
   const callsBeforeReconnect = client.calls.length;
 
-  reconnecting = true;
   client.emitStateChange("reconnecting");
   client.emitReady(initialize(reconnectCapability));
   await flush();
 
-  expect(client.calls.slice(callsBeforeReconnect)).toEqual([
-    { method: "evener/navigation/read", params: { resource: "manifest" } },
-    {
-      method: "evener/navigation/read",
-      params: { resource: "section", section: "live", offset: 0, limit: 50 },
-    },
-  ]);
   const state = navigationStore.getState();
-  const section = state.resources.get(keyID(reconnectSectionKey));
+  expect(client.calls).toHaveLength(callsBeforeReconnect);
   expect(state.capability).toEqual(reconnectCapability);
-  expect(state.mode).toBe("v1");
-  expect(state.clientGenerationID).toBe(nextGeneration);
-  expect(state.lastSequence).toBe(0);
-  expect(state.manifest).toMatchObject({
-    generationID: nextGeneration,
-    loadedRevision: 1,
-    stale: false,
-    error: null,
-  });
-  expect(section).toMatchObject({
-    generationID: nextGeneration,
-    loadedRevision: 2,
-    stale: false,
-    error: null,
-  });
-  expect(section?.version).toEqual({ generationId: nextGeneration, revision: 2, etag: '"section-v1-next"' });
-  expect(selectGlobalRows(state).map((session) => session.ref)).toEqual(["local:downgraded"]);
-  await flush();
-  expect(client.calls).toHaveLength(callsBeforeReconnect + 2);
+  expect(state.mode).toBe("error");
+  expect(state.protocolError?.message).toContain("representation v2");
 });
 
 test("different-generation upgrade restarts every loaded resource in v2 and keeps last-good data provisional", async () => {
   const nextGeneration = "generation_v2_reconnect";
   const initialCapability = capability();
-  const reconnectCapability = { ...capability(nextGeneration), readVersions: [1, 2] };
+  const reconnectCapability = capability(nextGeneration);
   const nextManifest = deferred<NavigationReadResponse>();
   const nextSection = deferred<NavigationReadResponse>();
   let reconnecting = false;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     if (!reconnecting) {
-      if (params.resource === "manifest") return wire(emptyManifest());
+      if (params.resource === "manifest") return wireV2(params, emptyManifest());
       if (params.resource === "section")
-        return wire({ sessions: [{ ref: "local:last-good", children: [] }], remaining: 0, truncated: false });
+        return wireV2(params, { sessions: [{ ref: "local:last-good", children: [] }], remaining: 0, truncated: false });
     }
     if (params.resource === "manifest") return nextManifest.promise;
     if (params.resource === "section") return nextSection.promise;
@@ -1631,7 +1553,7 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
 });
 
 test("same-generation higher-sequence reconnect advances and forces every loaded v2 base exactly once", async () => {
-  const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
+  const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 5 };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
@@ -1684,7 +1606,7 @@ test("same-generation higher-sequence reconnect advances and forces every loaded
 });
 
 test("same-generation equal-sequence reconnect retries one settled error with its installed v2 base", async () => {
-  const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
+  const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 3 };
   const sectionBases: unknown[] = [];
   let refreshing = false;
@@ -1763,7 +1685,7 @@ test("same-generation equal-sequence reconnect retries one settled error with it
 });
 
 test("same-generation lower-sequence reconnect preserves installed v2 authority and identities without a read", async () => {
-  const initialCapability = { ...capability(), sequence: 2, readVersions: [1, 2] };
+  const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...capability(), sequence: 1 };
   const client = new FakeClient("ready");
   client.scriptConnect(() => initialize(initialCapability));
@@ -1819,18 +1741,18 @@ test("same-generation lower-sequence reconnect preserves installed v2 authority 
 
 test("selectors expose every loaded global/pin page, location, project/page resources and expansion", async () => {
   await init((params) => {
-    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource === "section")
-      return wire({
+      return wireV2(params, {
         sessions: [{ ref: params.offset === 50 ? "s2" : "s", children: [] }],
         remaining: 0,
       });
     if (params.resource === "pin_catalog")
-      return wire({ pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
+      return wireV2(params, { pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
     if (params.resource === "pin_section")
-      return wire({ sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }], remaining: 0 });
-    if (params.resource === "location") return wire({ session: { ref: params.ref, children: [] } });
-    return wire({ sessions: [], remaining: 0 });
+      return wireV2(params, { sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }], remaining: 0 });
+    if (params.resource === "location") return wireV2(params, { session: { ref: params.ref, children: [] } });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
   await navigationStore.getState().loadSection("live", 50, 50);
@@ -1855,9 +1777,6 @@ test("boot keeps one global four-request budget through first resources, pin sec
   const projects = ["p1", "p2", "p3", "p4"].map((key) => ({
     key,
     default_expanded: true,
-    current: { sessions: [], remaining: 1 },
-    recent: { sessions: [], remaining: 1 },
-    archived: { sessions: [], remaining: 1 },
   }));
   const pinSections = Array.from({ length: 6 }, (_, i) => ({ id: `pin-${i}`, count: 1 }));
   const m = emptyManifest({
@@ -1874,25 +1793,25 @@ test("boot keeps one global four-request budget through first resources, pin sec
       active--;
       request.resolve(
         request.params.resource === "catalog" && request.params.catalog === "projects"
-          ? wire({ projects, remaining: 0 })
+          ? wireV2(request.params, { projects, remaining: 0 })
           : request.params.resource === "catalog"
-            ? wire({ projects: [], remaining: 0 })
+            ? wireV2(request.params, { projects: [], remaining: 0 })
             : request.params.resource === "pin_catalog"
-              ? wire({ pin_sections: pinSections, remaining: 0 })
+              ? wireV2(request.params, { pin_sections: pinSections, remaining: 0 })
               : request.params.resource === "project"
-                ? wire({
+                ? wireV2(request.params, {
                     key: request.params.projectKey,
                     current: { sessions: [], remaining: 1 },
                     recent: { sessions: [], remaining: 1 },
                     archived: { sessions: [], remaining: 1 },
                   })
-                : wire({ sessions: [], remaining: 0 }),
+                : wireV2(request.params, { sessions: [], remaining: 0 }),
       );
     }
   };
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wire(m);
+    if (params.resource === "manifest") return wireV2(params, m);
     let resolve!: (value: NavigationReadResponse) => void;
     const promise = new Promise<NavigationReadResponse>((r) => {
       resolve = r;
@@ -1929,9 +1848,10 @@ test("zero-count pin descriptors and collapsed projects do not issue requests", 
   const calls: NavigationReadParams[] = [];
   await init((params) => {
     calls.push(params);
-    if (params.resource === "manifest") return wire(m);
-    if (params.resource === "pin_catalog") return wire({ pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
-    return wire({ projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
+    if (params.resource === "manifest") return wireV2(params, m);
+    if (params.resource === "pin_catalog")
+      return wireV2(params, { pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
+    return wireV2(params, { projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
   });
   expect(calls.some((params) => params.resource === "pin_section")).toBe(false);
   expect(calls.some((params) => params.resource === "project" && params.projectKey === "collapsed")).toBe(false);
@@ -1943,20 +1863,21 @@ test("tracking an unseen empty pin section lets its first assignment converge in
   await init((params) => {
     calls.push(params);
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } } }),
       );
     if (params.resource === "pin_catalog")
-      return wire(
+      return wireV2(
+        params,
         { pin_sections: [{ id: "empty", count: assigned ? 1 : 0 }], remaining: 0 },
-        "ok",
         assigned ? '"catalog-two"' : '"catalog-one"',
         assigned ? 2 : 1,
       );
     if (params.resource === "pin_section")
-      return wire(
+      return wireV2(
+        params,
         { sessions: assigned ? [{ ref: "local:a", children: [] }] : [], remaining: 0 },
-        "ok",
         '"section-two"',
         2,
       );
@@ -1987,25 +1908,26 @@ test("unavailable project recovery refreshes its owning loaded catalog once and 
     recent: { sessions: [], remaining: 0 },
     archived: { sessions: [], remaining: 0 },
   };
-  const catalog = { projects: [project], remaining: 0 };
+  const catalog = { projects: [{ key: "p" }], remaining: 0 };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return wire(catalog, "ok", catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
+      return wireV2(params, catalog, catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wire(project);
+      return wireV2(params, project);
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   const result = await navigationStore.getState().loadProject("p");
   expect(result.data).toMatchObject(project);
@@ -2022,7 +1944,8 @@ test("unavailable project recovery refreshes its owning loaded catalog once and 
     catalog: "projects",
     offset: 0,
     limit: 100,
-    etag: '"catalog-1"',
+    representationVersion: 2,
+    base: { generationId: generation, revision: 1, etag: '"catalog-1"' },
   });
 });
 
@@ -2040,26 +1963,27 @@ test("uncertain project membership refreshes every loaded catalog before retry",
   };
   await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogs.set("projects", catalogs.get("projects")! + 1);
-      return wire({ projects: catalogs.get("projects") === 1 ? [] : [project], remaining: 0 });
+      return wireV2(params, { projects: catalogs.get("projects") === 1 ? [] : [{ key: "p" }], remaining: 0 });
     }
     if (params.resource === "catalog" && params.catalog === "archived_projects") {
       catalogs.set("archived-projects", catalogs.get("archived-projects")! + 1);
-      return wire({ projects: [], remaining: 0 });
+      return wireV2(params, { projects: [], remaining: 0 });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wire(project);
+      return wireV2(params, project);
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   expect(projectCalls).toBe(2);
@@ -2080,7 +2004,8 @@ test("unavailable project recovery discovers nonempty catalogs after a forced ma
   await init((params) => {
     if (params.resource === "manifest") {
       manifestCalls++;
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: {
             projects: { count: manifestCalls === 1 ? 0 : 1 },
@@ -2088,22 +2013,21 @@ test("unavailable project recovery discovers nonempty catalogs after a forced ma
             test_runs: { count: 0 },
           },
         }),
-        "ok",
         `"manifest-${manifestCalls}"`,
         manifestCalls,
       );
     }
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return wire({ projects: [project], remaining: 0 });
+      return wireV2(params, { projects: [{ key: "late" }], remaining: 0 });
     }
     if (params.resource === "project" && params.projectKey === "late") {
       projectCalls++;
       if (projectCalls === 1)
         throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
-      return wire(project);
+      return wireV2(params, project);
     }
-    return wire({ projects: [], remaining: 0 });
+    return wireV2(params, { projects: [], remaining: 0 });
   });
 
   expect((await navigationStore.getState().loadProject("late")).data).toMatchObject(project);
@@ -2120,23 +2044,29 @@ test.each([
   ["project", () => navigationStore.getState().loadProject("p")],
   ["project page", () => navigationStore.getState().loadProjectPage("p", "current")],
   ["location", () => navigationStore.getState().lookupLocation("p")],
-] as const)("malformed %s bodies fail closed without selecting legacy mode", async (_name, operation) => {
-  await init((params) => (params.resource === "manifest" ? wire(emptyManifest()) : wire({})));
+] as const)("malformed %s bodies fail closed without leaving v2 mode", async (_name, operation) => {
+  await init((params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource === "pin_catalog") return wireV2(params, { pin_sections: [{ id: 123 }], remaining: 0 });
+    if (params.resource === "catalog") return wireV2(params, { projects: [{ key: 123 }], remaining: 0 });
+    if (params.resource === "project") return wireV2(params, { current: { sessions: [{ ref: 123 }] }, remaining: 0 });
+    if (params.resource === "location") return wireV2(params, { session: { ref: 123 } });
+    return wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 });
+  });
   const result = await operation();
   expect(result.error).toBeInstanceOf(Error);
   expect(result.data).toBeNull();
-  expect(navigationStore.getState().mode).toBe("v1");
+  expect(navigationStore.getState().mode).toBe("v2");
   expect(navigationStore.getState().protocolError).toBeInstanceOf(Error);
 });
 
-test.each(["v1", "v2"] as const)("%s successful pages must advance when remaining is positive", async (mode) => {
+test("v2 successful pages must advance when remaining is positive", async () => {
   const manifestKey = { kind: "manifest" } as const;
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   let sectionCalls = 0;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "manifest") {
-      if (mode === "v1") return wire(emptyManifest());
       return {
         status: "ok",
         representation: "snapshot",
@@ -2158,7 +2088,6 @@ test.each(["v1", "v2"] as const)("%s successful pages must advance when remainin
     }
     if (params.resource !== "section") throw new Error("unexpected navigation resource");
     sectionCalls++;
-    if (mode === "v1") return wire({ sessions: [], remaining: 3 }, "ok", `"section-${sectionCalls}"`, sectionCalls);
     return {
       status: "ok",
       representation: "snapshot",
@@ -2185,7 +2114,7 @@ test.each(["v1", "v2"] as const)("%s successful pages must advance when remainin
       },
     } as NavigationReadResponse;
   });
-  initNavigation(client, { ...capability(), readVersions: mode === "v2" ? [1, 2] : [1] });
+  initNavigation(client, capability());
   await flush();
 
   const first = await navigationStore.getState().loadSection("live");
@@ -2199,10 +2128,10 @@ test.each(["v1", "v2"] as const)("%s successful pages must advance when remainin
 });
 
 test("a malformed manifest body is never committed", async () => {
-  await init(() => wire({}));
+  await init((params) => wireV2(params, { sessions: [{ ref: 123 }], remaining: 0 }));
   expect(navigationStore.getState().manifest?.data).toBeNull();
   expect(navigationStore.getState().manifest?.error).toBeInstanceOf(Error);
-  expect(navigationStore.getState().mode).toBe("v1");
+  expect(navigationStore.getState().mode).toBe("v2");
 });
 
 test("authoritative project unavailability preserves last-good state without retry loops", async () => {
@@ -2216,22 +2145,23 @@ test("authoritative project unavailability preserves last-good state without ret
   };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      if (catalogCalls === 1) return wire({ projects: [project], remaining: 0 });
+      if (catalogCalls === 1) return wireV2(params, { projects: [{ key: "p" }], remaining: 0 });
       throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      if (projectCalls === 1) return wire(project);
+      if (projectCalls === 1) return wireV2(params, project);
       throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   client.emitNotification({
@@ -2256,22 +2186,23 @@ test("catalog refresh failure preserves stale catalog and project data", async (
   };
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      if (catalogCalls === 1) return wire({ projects: [project], remaining: 0 });
+      if (catalogCalls === 1) return wireV2(params, { projects: [{ key: "p" }], remaining: 0 });
       throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      if (projectCalls === 1) return wire(project);
+      if (projectCalls === 1) return wireV2(params, project);
       throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   const first = await navigationStore.getState().loadProject("p");
   expect(first.data).toMatchObject(project);
@@ -2283,7 +2214,7 @@ test("catalog refresh failure preserves stale catalog and project data", async (
   expect(result.data).toMatchObject(project);
   expect(
     [...navigationStore.getState().resources.values()].find((resource) => resource.key.kind === "catalog")?.data,
-  ).toMatchObject({ projects: [project], remaining: 0 });
+  ).toMatchObject({ projects: [{ key: "p" }], remaining: 0 });
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
 });
@@ -2294,23 +2225,24 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
   let projectCalls = 0;
   await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "catalog" && params.catalog === "projects")
-      return wire({ projects: [{ key: "p", default_expanded: true }], remaining: 0 });
+      return wireV2(params, { projects: [{ key: "p", default_expanded: true }], remaining: 0 });
     if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return wire({
+      return wireV2(params, {
         key: "p",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
       });
     }
-    return wire({ sessions: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   expect(selectExpanded("p")(navigationStore.getState())).toBe(false);
   navigationStore.getState().setExpanded("p", true);
@@ -2386,7 +2318,7 @@ test("a canonical persisted project-node key hydrates one v2 project root during
   });
 
   try {
-    initNavigation(client, { ...capability(), readVersions: [1, 2] });
+    initNavigation(client, capability());
     await flush();
 
     expect(calls.filter((params) => params.resource === "project")).toEqual([
@@ -2401,21 +2333,23 @@ test("targeted updates are immutable and preserve unrelated resource identity", 
   let sectionRevision = 1;
   const client = await init((params) => {
     if (params.resource === "manifest")
-      return wire(
+      return wireV2(
+        params,
         emptyManifest({
           sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
     if (params.resource === "section" && params.section === "live")
-      return wire(
+      return wireV2(
+        params,
         { sessions: [{ ref: `s${sectionRevision}`, children: [] }], remaining: 0 },
-        "ok",
         `"section-${sectionRevision}"`,
         sectionRevision,
       );
-    if (params.resource === "catalog" && params.catalog === "projects") return wire({ projects: [], remaining: 0 });
-    return wire({ sessions: [], remaining: 0 });
+    if (params.resource === "catalog" && params.catalog === "projects")
+      return wireV2(params, { projects: [], remaining: 0 });
+    return wireV2(params, { sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
   await navigationStore.getState().loadCatalog("projects");
@@ -2547,7 +2481,7 @@ test("strict invalid delta recovery retains the installed graph and converges th
       data: sectionSnapshot(2),
     } as NavigationReadResponse;
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
   const installed = navigationStore.getState().resources.get(keyID(sectionKey));
   const installedNormalized = installed?.normalized;
@@ -2662,7 +2596,7 @@ test("loading and malformed-response error state preserve selected graph and rai
       data: sectionSnapshot,
     } as NavigationReadResponse;
   });
-  initNavigation(client, { ...capability(), readVersions: [1, 2] });
+  initNavigation(client, capability());
   await flush();
   const installed = await navigationStore.getState().loadSection("live");
   if (!installed.normalized) throw new Error("normalized section did not install");

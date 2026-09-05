@@ -8,6 +8,7 @@ import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
+import { wireV2 } from "./stores/navigation/testing";
 import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
@@ -108,13 +109,13 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationReadResponse(generationId: string): NavigationReadResponse {
-  return {
-    status: "ok",
+  return wireV2(
+    { resource: "manifest", representationVersion: 2 },
+    { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
+    '"test"',
+    1,
     generationId,
-    revision: 1,
-    etag: '"test"',
-    data: { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
-  };
+  );
 }
 
 function stubDeferredNavigationRead(client: FakeClient): { requested: Promise<void>; release: () => void } {
@@ -293,7 +294,7 @@ test("initiates and settles the welcome navigation load without an error", async
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
   }));
   const navRead = stubDeferredNavigationRead(client);
   render(<AppShell client={client} />);
@@ -305,14 +306,14 @@ test("initiates and settles the welcome navigation load without an error", async
   expect(manifest?.error).toBeNull();
 });
 
-test("AppShell's injected v1 handshake selects navigation through AppWire", async () => {
+test("AppShell's injected v2 handshake selects navigation through AppWire", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "app-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "app-generation", sequence: 0, readVersions: [2] },
   }));
   const calls: NavigationReadParams[] = [];
   client.on("evener/navigation/read", (params) => {
@@ -322,10 +323,10 @@ test("AppShell's injected v1 handshake selects navigation through AppWire", asyn
   });
 
   render(<AppShell client={client} />);
-  await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest" }]));
+  await vi.waitFor(() => expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]));
 
-  expect(navigationStore.getState().mode).toBe("v1");
-  expect(calls).toEqual([{ resource: "manifest" }]);
+  expect(navigationStore.getState().mode).toBe("v2");
+  expect(calls).toEqual([{ resource: "manifest", representationVersion: 2 }]);
 });
 
 test("does not escape a navigation request before the test fake is installed", () => {

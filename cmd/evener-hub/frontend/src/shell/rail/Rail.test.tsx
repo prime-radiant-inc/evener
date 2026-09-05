@@ -86,8 +86,8 @@ function deferred<T>() {
 }
 function installState(resources: ResourceState[] = [], m = manifest()) {
   navigationStore.setState({
-    mode: "v1",
-    capability: { version: 1, generationId: "g1", sequence: 1 },
+    mode: "v2",
+    capability: { version: 1, generationId: "g1", sequence: 1, readVersions: [2] },
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
@@ -272,17 +272,16 @@ describe("resource-backed Rail", () => {
     expect(railStyles.parentScrollBody).toBeTruthy();
     expect(body?.className.split(/\s+/)).toContain(railStyles.parentScrollBody);
   });
-  test.each(["v1", "v2"] as const)("shows the settled empty state in %s mode", (mode) => {
+  test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
     installState([], empty);
-    navigationStore.setState({ mode });
 
     render(<Rail />);
 
     expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
   });
-  test.each(["v1", "v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
+  test.each(["v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
     const empty = emptyManifest();
     const pendingManifest = {
       ...resource({ kind: "manifest" }, empty),

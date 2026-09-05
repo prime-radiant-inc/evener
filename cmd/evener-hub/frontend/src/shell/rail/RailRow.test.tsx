@@ -63,7 +63,7 @@ function seedPinCatalogForPicker(): void {
     error: null,
     generationID: generation,
   };
-  navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
+  navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 

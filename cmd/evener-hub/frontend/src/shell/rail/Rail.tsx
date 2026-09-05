@@ -867,7 +867,7 @@ function NavigationRail({
   }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
-    if (navigationMode !== "v1") return;
+    if (navigationMode !== "v2") return;
     if (!manifest)
       void navigationStore
         .getState()
@@ -923,7 +923,7 @@ function NavigationRail({
     }
   }, [loadProjectRoot, resources]);
   useEffect(() => {
-    if (navigationMode !== "v1" && navigationMode !== "v2") return;
+    if (navigationMode !== "v2") return;
     const generation = navigationStore.getState().clientGenerationID;
     if (generation !== rootGeneration.current) {
       rootLoadsInFlight.current.clear();
@@ -1133,21 +1133,18 @@ function NavigationRail({
           true,
         ),
       onShutdownSession: async (session) => {
-        const invalidation =
-          navigationMode === "v1"
-            ? navigationStore
-                .getState()
-                .awaitNavigationInvalidation((payload) =>
-                  payload.targets.some(
-                    (target) =>
-                      target.kind === "all_loaded_projects" ||
-                      (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
-                      (target.kind === "pin_section" && target.sectionId === session.pin_section_id) ||
-                      (target.kind === "project" && target.projectKey === session.project_key),
-                  ),
-                )
-            : null;
-        void invalidation?.promise.catch(() => undefined);
+        const invalidation = navigationStore
+          .getState()
+          .awaitNavigationInvalidation((payload) =>
+            payload.targets.some(
+              (target) =>
+                target.kind === "all_loaded_projects" ||
+                (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
+                (target.kind === "pin_section" && target.sectionId === session.pin_section_id) ||
+                (target.kind === "project" && target.projectKey === session.project_key),
+            ),
+          );
+        void invalidation.promise.catch(() => undefined);
         try {
           await runAction(
             () => threadsStore.getState().shutdown(session.ref),
@@ -1155,12 +1152,10 @@ function NavigationRail({
             undefined,
             true,
           );
-          if (invalidation) {
-            const payload = await invalidation.promise;
-            await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
-          }
+          const payload = await invalidation.promise;
+          await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
         } catch (error) {
-          invalidation?.cancel();
+          invalidation.cancel();
           throw error;
         }
       },
@@ -1241,7 +1236,7 @@ function NavigationRail({
       },
       onDeleteProjectRequest: (project) => setDeleteTarget(project),
     }),
-    [client, navigationMode, runAction, toasts.push],
+    [client, runAction, toasts.push],
   );
   function closeDeleteDialog() {
     setDeleteTarget(null);
@@ -1396,8 +1391,7 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    navigationMode === "unknown" ||
-    ((navigationMode === "v1" || navigationMode === "v2") && (!manifest || manifest.loading || resourceLoading));
+    navigationMode === "unknown" || (navigationMode === "v2" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =

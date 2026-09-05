@@ -424,7 +424,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
         const refs = needsYouRefs(rows);
         const current = focusedSessionRef();
         if (
-          (state.mode === "v1" || state.mode === "v2") &&
+          state.mode === "v2" &&
           (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
         ) {
           const page = nextPageFor(state);
@@ -494,7 +494,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
       ? null
       : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
   useEffect(() => {
-    if (locationRef === null || (navigationMode !== "v1" && navigationMode !== "v2")) return;
+    if (locationRef === null || navigationMode !== "v2") return;
     if (locationFailed || locationGone || locationResource?.loading || (locationResource && !locationResource.stale))
       return;
     void navigationStore

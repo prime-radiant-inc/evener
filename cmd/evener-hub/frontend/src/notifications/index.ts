@@ -40,7 +40,7 @@ function currentSummary() {
 function onNavigationAttention(): void {
   const state = navigationStore.getState();
   applyCounts();
-  if (state.mode !== "v1" && state.mode !== "v2") return;
+  if (state.mode !== "v2") return;
   if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
   const next = new Map(prevNavigationAttention);
   for (const changed of state.attention.changed) {
@@ -111,8 +111,7 @@ export function initNotifications(): void {
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
       if (state.resources !== prev.resources) applyTitleNow();
-      if ((prev.mode === "v1" || prev.mode === "v2") && state.mode !== "v1" && state.mode !== "v2")
-        prevNavigationAttention = null;
+      if (prev.mode === "v2" && state.mode !== "v2") prevNavigationAttention = null;
     }),
   );
 

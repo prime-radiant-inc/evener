@@ -212,30 +212,24 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 }
               },
               onShutdown: async () => {
-                const invalidation =
-                  navigation.mode === "v1"
-                    ? navigationStore
-                        .getState()
-                        .awaitNavigationInvalidation((payload) =>
-                          payload.targets.some(
-                            (target) =>
-                              target.kind === "all_loaded_projects" ||
-                              (target.kind === "section" &&
-                                (target.section === "live" || target.section === "needs_you")) ||
-                              (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
-                              (target.kind === "project" && target.projectKey === location?.project_key),
-                          ),
-                        )
-                    : null;
-                void invalidation?.promise.catch(() => undefined);
+                const invalidation = navigationStore
+                  .getState()
+                  .awaitNavigationInvalidation((payload) =>
+                    payload.targets.some(
+                      (target) =>
+                        target.kind === "all_loaded_projects" ||
+                        (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
+                        (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
+                        (target.kind === "project" && target.projectKey === location?.project_key),
+                    ),
+                  );
+                void invalidation.promise.catch(() => undefined);
                 try {
                   await threadsStore.getState().shutdown(sessionRef);
-                  if (invalidation) {
-                    const payload = await invalidation.promise;
-                    await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
-                  }
+                  const payload = await invalidation.promise;
+                  await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
                 } catch (err) {
-                  invalidation?.cancel();
+                  invalidation.cancel();
                   toasts.push("error", sessionActionError("Couldn't shut down session", err));
                   throw err;
                 }

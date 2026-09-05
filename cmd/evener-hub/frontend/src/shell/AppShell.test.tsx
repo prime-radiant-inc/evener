@@ -23,6 +23,7 @@ import {
   navigationStore,
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
+import { wireV2 } from "../stores/navigation/testing";
 import { keyID } from "../stores/navigation/types";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
@@ -85,81 +86,86 @@ const EMPTY_NAV_RESPONSE = {
 };
 
 function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const envelope = (data: unknown): NavigationReadResponse => ({
-    status: "ok",
-    generationId: "generation_test",
-    revision: 1,
-    etag: '"test"',
-    data,
-  });
   switch (params.resource) {
     case "manifest":
-      return envelope(EMPTY_NAV_RESPONSE);
+      return wireV2(params, EMPTY_NAV_RESPONSE, '"test"');
     case "section":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        sessions: params.section === "live" ? [TREE_SESSION] : [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          sessions: params.section === "live" ? [TREE_SESSION] : [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "pin_catalog":
-      return envelope({ generation_id: "generation_test", revision: 1, pin_sections: [], remaining: 0 });
+      return wireV2(params, { pin_sections: [], remaining: 0 }, '"test"');
     case "pin_section":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        sessions: [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          sessions: [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "catalog":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        projects:
-          params.catalog === "projects"
-            ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
-            : [],
-        remaining: 0,
-      });
+      return wireV2(
+        params,
+        {
+          projects:
+            params.catalog === "projects"
+              ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
+              : [],
+          remaining: 0,
+        },
+        '"test"',
+      );
     case "project":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        key: "proj1",
-        current: { sessions: [TREE_SESSION], remaining: 0 },
-        recent: { sessions: [], remaining: 0 },
-        archived: { sessions: [], remaining: 0 },
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          key: "proj1",
+          current: { sessions: [TREE_SESSION], remaining: 0 },
+          recent: { sessions: [], remaining: 0 },
+          archived: { sessions: [], remaining: 0 },
+          truncated: false,
+        },
+        '"test"',
+      );
     case "project_page":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        key: params.projectKey,
-        tier: params.tier,
-        offset: params.offset,
-        sessions: [],
-        remaining: 0,
-        truncated: false,
-      });
+      return wireV2(
+        params,
+        {
+          key: params.projectKey,
+          tier: params.tier,
+          offset: params.offset,
+          sessions: [],
+          remaining: 0,
+          truncated: false,
+        },
+        '"test"',
+      );
     case "location":
-      return envelope({
-        generation_id: "generation_test",
-        revision: 1,
-        ref: params.ref,
-        top_level_ref: params.ref,
-        top_level: true,
-        session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
-      });
+      return wireV2(
+        params,
+        {
+          ref: params.ref,
+          top_level_ref: params.ref,
+          top_level: true,
+          session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
+        },
+        '"test"',
+      );
   }
   throw new Error(`unsupported navigation resource: ${params.resource}`);
 }
 
-// A FakeClient whose connect() advertises a v1 navigation capability with a
+// A FakeClient whose connect() advertises a v2 navigation capability with a
 // generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
-// depend on the navigation store being in mode "v1" (rather than "error")
+// depend on the navigation store being in mode "v2" (rather than "error")
 // must use this instead of a bare `new FakeClient("ready")`, whose default
 // InitializeResponse has no navigation capability.
 function navClient(initialState: ConnectionState = "ready"): FakeClient {
@@ -170,7 +176,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
   }));
   return client;
 }
@@ -229,7 +235,7 @@ function installLocation(location: NavigationSessionLocation): void {
     generationID: location.generation_id,
   });
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: location.generation_id,
     resources,
   });
@@ -277,7 +283,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v1", resources });
+  navigationStore.setState({ mode: "v2", resources });
 }
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -425,7 +431,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
@@ -746,7 +752,7 @@ test("v1 Mod+J cold-demand requests page zero once and opens its first ref", asy
   });
   act(() =>
     navigationStore.setState({
-      mode: "v1",
+      mode: "v2",
       manifest: {
         data: {
           generation_id: "generation_test",
@@ -879,7 +885,7 @@ function seedColdModJPage(ref = "local:late") {
 
 function setColdModJState(loadSection: NavigationStoreState["loadSection"]) {
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     manifest: {
       data: {
         generation_id: "generation_test",
@@ -1192,7 +1198,7 @@ test("a nested location opens its explicit owner without loading a project", asy
 test("retained unavailable location data does not retry or lose its owner", async () => {
   const child = "local:retained-child";
   const client = navClient();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
   installLocation({
     generation_id: "generation_test",
@@ -1644,7 +1650,7 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
 
 test("repairs a nested session restored as main when the root route's tree arrives", async () => {
   await saveLegacyNestedMainLayout();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
 
   window.history.pushState({}, "", "/");
   render(<AppShell client={navClient()} />);
@@ -1752,7 +1758,7 @@ test("a focused session panel does not invalidate a settled nested route", async
 test("a deferred deep link beats a restored active session panel", async () => {
   await saveRealSessionPanelLayout();
   resetNavigationStoreForTests();
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
 
   window.history.pushState({}, "", "/s/local:child");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -1949,7 +1955,7 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
 });
 
 test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -1966,7 +1972,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v1",
+      mode: "v2",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -2003,7 +2009,7 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
 });
 
 test("nested deep-link remains closed for a missing location until a later location arrives", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   const client = navClient();
   client.on("evener/navigation/read", (params) => {
     if (params.resource === "location" && params.ref === "local:sub1") {
@@ -2020,7 +2026,7 @@ test("nested deep-link remains closed for a missing location until a later locat
       resources: new Map(
         [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
       ),
-      mode: "v1",
+      mode: "v2",
     }),
   );
   await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
@@ -2318,7 +2324,7 @@ function installSwitchableViewport(): (mobile: boolean) => void {
 // beat: the deep link was gone before the location arrived, and no later
 // evener/changed push could name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
-  navigationStore.setState({ mode: "v1" });
+  navigationStore.setState({ mode: "v2" });
   installMobileViewport();
 
   window.history.pushState({}, "", "/s/local:s1");
@@ -2423,7 +2429,10 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
   expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
-  expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
+  expect(client.calls).toContainEqual({
+    method: "evener/navigation/read",
+    params: { resource: "manifest", representationVersion: 2 },
+  });
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call

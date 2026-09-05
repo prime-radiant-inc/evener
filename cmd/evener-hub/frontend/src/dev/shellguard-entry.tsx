@@ -378,7 +378,7 @@ async function boot(): Promise<void> {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, readVersions: [1, 2], generationId: "shellguard-generation", sequence: 0 },
+    navigation: { version: 1, readVersions: [2], generationId: "shellguard-generation", sequence: 0 },
   }));
   createRoot(root).render(
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>

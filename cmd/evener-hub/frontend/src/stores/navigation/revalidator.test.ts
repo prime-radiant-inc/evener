@@ -45,7 +45,7 @@ test("generation reset retains the graph provisionally but restarts without old 
     version: Object.freeze({ generationId: "g", revision: 1, etag: "a" }),
     presence: "present",
   });
-  const request = vi.fn((_signal: AbortSignal, _etag: string | null, _base?: unknown) =>
+  const request = vi.fn((_signal: AbortSignal, _base?: unknown) =>
     request.mock.calls.length === 1
       ? Promise.resolve({
           status: 200 as const,
@@ -63,8 +63,8 @@ test("generation reset retains the graph provisionally but restarts without old 
   const restarted = r.get(key);
 
   expect(request).toHaveBeenCalledTimes(2);
-  expect(request.mock.calls[0]).toEqual([expect.any(AbortSignal), null, undefined]);
-  expect(request.mock.calls[1]).toEqual([expect.any(AbortSignal), null, undefined]);
+  expect(request.mock.calls[0]).toEqual([expect.any(AbortSignal), undefined]);
+  expect(request.mock.calls[1]).toEqual([expect.any(AbortSignal), undefined]);
   expect(restarted?.data).toBe(retained?.data);
   expect(restarted?.normalized).toBe(normalized);
   expect(restarted?.normalized?.graph).toBe(graph);
@@ -99,7 +99,7 @@ test("invalid delta clears only the unusable base and performs one forced snapsh
   const forcedStarted = d<void>();
   const bases: unknown[] = [];
   let calls = 0;
-  const request = vi.fn(async (_signal: AbortSignal, _etag: string | null, baseValue?: unknown) => {
+  const request = vi.fn(async (_signal: AbortSignal, baseValue?: unknown) => {
     bases.push(baseValue);
     calls++;
     if (calls === 1)
@@ -309,13 +309,13 @@ test.each([
 test("force during a same-revision deferred request queues exactly one conditional trailing read", async () => {
   const first = d<NavigationResponse>();
   const second = d<NavigationResponse>();
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const r = new NavigationRevalidator("g");
-  const request = vi.fn((_: AbortSignal, etag: string | null) => {
-    etags.push(etag);
-    if (etags.length === 1)
+  const request = vi.fn((_: AbortSignal, base?: unknown) => {
+    bases.push(base);
+    if (bases.length === 1)
       return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "seed" });
-    return (etags.length === 2 ? first : second).promise;
+    return (bases.length === 2 ? first : second).promise;
   });
   await r.load(key, request);
   r.invalidate({ kind: "project", projectKey: "p", revision: 1 });
@@ -325,7 +325,7 @@ test("force during a same-revision deferred request queues exactly one condition
   first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
   for (let i = 0; i < 5; i++) await Promise.resolve();
   expect(request).toHaveBeenCalledTimes(3);
-  expect(etags).toEqual([null, "a", "a"]);
+  expect(bases).toEqual([undefined, undefined, undefined]);
   second.resolve({ status: 304, generationID: "g", revision: 1, etag: "a" });
   await original;
   expect(r.get(key)?.stale).toBe(false);
@@ -358,9 +358,9 @@ test("generation-mismatched payload resets and still applies its targets", async
 test("sequence duplicates and reordering do not force, but a gap forces retained callbacks", async () => {
   const r = new NavigationRevalidator("g");
   let calls = 0;
-  await r.load(key, async (_, etag) => {
+  await r.load(key, async () => {
     calls++;
-    return { status: 200, generationID: "g", revision: 1, etag: etag ?? "a", data: "x" };
+    return { status: 200, generationID: "g", revision: 1, etag: "a", data: "x" };
   });
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
@@ -482,17 +482,17 @@ test("reset aborts old signal once and keeps fresh loading/error/ETag ownership"
 });
 
 test("valid 304 sends stored validator and retains last-good state", async () => {
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const data = { value: 1 };
   const r = new NavigationRevalidator("g");
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data }));
   const retained = r.get(key)?.data;
   r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
-  await r.load(key, async (_, etag) => {
-    etags.push(etag);
+  await r.load(key, async (_, base) => {
+    bases.push(base);
     return { status: 304, generationID: "g", revision: 2, etag: "a" };
   });
-  expect(etags).toEqual(["a"]);
+  expect(bases).toEqual([undefined]);
   expect(r.get(key)).toMatchObject({
     data: retained,
     loadedRevision: 2,
@@ -533,33 +533,29 @@ test("wildcard and sequence gaps request their exact loaded scopes, including de
   const section: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 10 };
   const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 10 };
   const location: ResourceKey = { kind: "location", ref: "here" };
-  const calls: { key: ResourceKey; etag: string | null }[] = [];
+  const calls: { key: ResourceKey; base: unknown }[] = [];
   const r = new NavigationRevalidator("g");
   for (const loaded of [manifest, key, page, section, catalog, location]) {
-    await r.load(loaded, async (_, etag) => {
-      calls.push({ key: loaded, etag });
+    await r.load(loaded, async (_, base) => {
+      calls.push({ key: loaded, base });
       return { status: 200, generationID: "g", revision: calls.length, etag: keyID(loaded), data: loaded.kind };
     });
   }
   let start = calls.length;
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [{ kind: "all_loaded_projects" }] });
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
-    ["project", keyID(key)],
-    ["project_page", keyID(page)],
-    ["location", keyID(location)],
-  ]);
+  expect(calls.slice(start).map(({ key: loaded }) => loaded.kind)).toEqual(["project", "project_page", "location"]);
 
   start = calls.length;
   applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
-    ["manifest", keyID(manifest)],
-    ["project", keyID(key)],
-    ["project_page", keyID(page)],
-    ["section", keyID(section)],
-    ["catalog", keyID(catalog)],
-    ["location", keyID(location)],
+  expect(calls.slice(start).map(({ key: loaded }) => loaded.kind)).toEqual([
+    "manifest",
+    "project",
+    "project_page",
+    "section",
+    "catalog",
+    "location",
   ]);
   expect(r.get(location)?.stale).toBe(false);
 });
@@ -567,11 +563,11 @@ test("wildcard and sequence gaps request their exact loaded scopes, including de
 test("generation reset applies targets and a satisfying fresh response needs no trailing read", async () => {
   const old = d<NavigationResponse>();
   const fresh = d<NavigationResponse>();
-  const etags: (string | null)[] = [];
+  const bases: unknown[] = [];
   const r = new NavigationRevalidator("old");
-  const request = vi.fn((_: AbortSignal, etag: string | null) => {
-    etags.push(etag);
-    return (etags.length === 1 ? old : fresh).promise;
+  const request = vi.fn((_: AbortSignal, base?: unknown) => {
+    bases.push(base);
+    return (bases.length === 1 ? old : fresh).promise;
   });
   const oldLoad = r.load(key, request);
   applyNavigationInvalidation(r, {
@@ -580,12 +576,12 @@ test("generation reset applies targets and a satisfying fresh response needs no 
     targets: [{ kind: "project", projectKey: "p", revision: 5 }],
   });
   expect(request).toHaveBeenCalledTimes(2);
-  expect(etags).toEqual([null, null]);
+  expect(bases).toEqual([undefined, undefined]);
   fresh.resolve({ status: 200, generationID: "new", revision: 5, etag: "fresh", data: "fresh" });
   old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "old" });
   for (let i = 0; i < 7; i++) await Promise.resolve();
   expect(request).toHaveBeenCalledTimes(2);
-  expect(etags).toEqual([null, null]);
+  expect(bases).toEqual([undefined, undefined]);
   await oldLoad;
   for (let i = 0; i < 4; i++) await Promise.resolve();
   expect(r.get(key)).toMatchObject({

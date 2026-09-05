@@ -1086,7 +1086,6 @@ export interface NavigationReadParams {
   ref?: string;
   offset?: number;
   limit?: number;
-  etag?: string;
   base?: NavigationReadBase;
 }
 
