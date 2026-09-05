@@ -19,9 +19,9 @@ import (
 //
 // The grouping rule reproduces the live allocation from the file alone:
 //
-//   - OPENERS start a logical turn: USER_INPUT and STEERING. Live, both open
-//     a turn with a caller-supplied id. A persisted STEERING entry carries
-//     its own StableTurnID namespace, so a steer always opens its own group.
+//   - USER_INPUT opens a logical turn. STEERING joins that open turn because
+//     live steering is attached to the active turn; only a steer with no open
+//     group starts a group of its own.
 //   - CONTINUATIONS extend the open logical turn: ASSISTANT, TOOL,
 //     TOOL_RESULTS, and TURN_FAILURE (a failure closes nothing — the daemon
 //     may retry after a failure, and grouping it into the opener's turn keeps
@@ -34,19 +34,18 @@ import (
 //
 // Turn ids are exact for client-mutation turns (the opener's persisted
 // StableTurnID or its entry-index fallback) and stable-but-not-live-identical
-// for daemon-minted/continuation/steer turns — the file does not record which
-// turn was active when a steer landed.
+// for daemon-minted/continuation turns.
 
 // opensLogicalTurn reports whether a turn kind starts a new logical turn.
 func opensLogicalTurn(kind schema.TurnKind) bool {
-	return kind == schema.TurnUserInput || kind == schema.TurnSteering
+	return kind == schema.TurnUserInput
 }
 
 // continuesLogicalTurn reports whether a turn kind extends the open logical
 // turn (the entry the group's opener started).
 func continuesLogicalTurn(kind schema.TurnKind) bool {
 	switch kind {
-	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure:
+	case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults, schema.TurnFailure, schema.TurnSteering:
 		return true
 	default:
 		return false
@@ -90,10 +89,10 @@ type groupedTurn struct {
 
 // logicalTurnAccumulator buffers entries across a scan and emits grouped
 // logical turns. It is the two-phase engine of the full read
-// (TurnsFromFile/TurnsFromEntries): entries are appended in file order, then
-// groupedAppTurns produces the logical turns. The bounded index build mirrors
-// this state machine over persisted records (TurnKind/GroupItems/GroupCalls)
-// so both paths agree by construction.
+// (ItemTurnsFromFile/ItemTurnsFromEntries): entries are appended in file order,
+// then groupedAppTurns produces the logical turns. The bounded index build
+// mirrors this state machine over persisted records
+// (TurnKind/GroupItems/GroupCalls) so both paths agree by construction.
 type logicalTurnAccumulator struct {
 	turns []groupedTurn
 	open  bool
@@ -140,9 +139,9 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // logical-turn ordinals: with no prelude the first emitted group is entry
 // ordinal 0; a prelude turn occupies ordinal 0 and shifts every group by one.
 // Groups whose merged items are empty emit no turn and consume no ordinal.
-// Items get their Position/TranscriptKey here — the full read, the bounded
-// readers, and the item-window path must all agree on these keys (PR #822
-// F3).
+// Items get their Position/TranscriptKey here — the full item read, the
+// bounded readers, and the item-window path must all agree on these keys (PR
+// #822 F3).
 func groupedAppTurns(acc *logicalTurnAccumulator, header transcript.Header) ([]appwire.Turn, error) {
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)

@@ -955,6 +955,96 @@ func TestPrepareAppIdentityWithPreludeReservesLiveEntryCoordinate(t *testing.T) 
 	}
 }
 
+func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		systemPrompt string
+		wantEntry    uint64
+	}{
+		{name: "without prelude", wantEntry: 1},
+		{name: "with prelude", systemPrompt: "system", wantEntry: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resume-identity.transcript.jsonl")
+			header := transcript.Header{SessionID: "th_resume_identity", SystemPrompt: tc.systemPrompt}
+			tw, err := transcript.NewWriter(path, header)
+			if err != nil {
+				t.Fatalf("NewWriter: %v", err)
+			}
+			for _, turn := range []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
+				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
+			} {
+				if err := tw.Append(turn); err != nil {
+					t.Fatalf("Append history: %v", err)
+				}
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("Close history: %v", err)
+			}
+
+			prepared, err := PrepareAppIdentity("local", "th_resume_identity", path)
+			if err != nil {
+				t.Fatalf("PrepareAppIdentity: %v", err)
+			}
+			srv := NewServer(ServerConfig{})
+			srv.ReplaceAppIdentity(prepared, nil)
+			srv.RecordAppEvent(events.SessionEvent{
+				Kind:      events.EventUserInput,
+				SessionID: "th_resume_identity",
+				Data:      events.UserInputData{Text: "live"},
+			})
+			var live appwire.ThreadItem
+			for _, turn := range srv.appAllTurns("th_resume_identity") {
+				for _, item := range turn.Items {
+					if item.Text == "live" {
+						live = item
+					}
+				}
+			}
+			if live.Position == nil {
+				t.Fatalf("live item = %+v, want positioned item", live)
+			}
+
+			writer, _, err := transcript.OpenWriterForSession(path, "th_resume_identity")
+			if err != nil {
+				t.Fatalf("OpenWriterForSession: %v", err)
+			}
+			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
+				_ = writer.Close()
+				t.Fatalf("Append live: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("Close live: %v", err)
+			}
+
+			window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(path, appTranscriptMaxLineBytes, apptranscript.ItemWindowOptions{
+				ThreadRef: "local:th_resume_identity",
+				Limit:     40,
+			}, preparedItemProjector)
+			if err != nil {
+				t.Fatalf("LatestItemWindowFromFile: %v", err)
+			}
+			var persisted appwire.ThreadItem
+			for _, candidate := range window.Candidates {
+				if candidate.Item.Text == "live" {
+					persisted = candidate.Item
+				}
+			}
+			if persisted.Position == nil {
+				t.Fatalf("persisted item candidates = %+v, want positioned live item", window.Candidates)
+			}
+			wantPosition := appwire.ThreadItemPosition{Entry: tc.wantEntry, Item: 0}
+			if *live.Position != wantPosition || *persisted.Position != wantPosition {
+				t.Fatalf("live position=%+v, persisted position=%+v, want shared %+v", *live.Position, *persisted.Position, wantPosition)
+			}
+			if live.TranscriptKey != persisted.TranscriptKey {
+				t.Fatalf("live key=%q, persisted key=%q, want identical resumed item identity", live.TranscriptKey, persisted.TranscriptKey)
+			}
+		})
+	}
+}
+
 func TestDescendantRestorePreservesAbsoluteEntryAuthorityAcrossSkippedEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
 	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "child", SystemPrompt: "system"})

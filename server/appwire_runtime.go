@@ -223,10 +223,10 @@ func finishPreparedAppIdentity(sourceID, threadID string, parsedRef appwire.Ref,
 		threadRef = parsedRef.String()
 	}
 	snapshot := &appTurnSnapshot{threadID: threadID}
-	nextEntry := uint64(source.persistedEntries)
-	if len(source.turns) > 0 && source.turns[0].ID == appwire.SystemPreludeTurnID {
-		nextEntry++
-	}
+	// Item positions advance by projected logical turn, not raw transcript
+	// record. source.turns already includes the prelude when present and omits
+	// groups with no projected items, exactly like the persisted item index.
+	nextEntry := uint64(len(source.turns))
 	snapshot.Seed(appTurnSeed{Turns: source.turns, ThreadRef: threadRef, TranscriptIncarnation: incarnation, NextEntry: nextEntry})
 	// Fence the live turn ids above the seeded ones HERE, where the seed count
 	// is known, rather than waiting for the session's own SessionStart to carry

@@ -101,9 +101,9 @@ func TestTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 // per-entry projection applies, proving the shared projector kept them.
 func TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	path := writeSinglePassFixture(t)
-	turns, err := TurnsFromFile(path, 1<<20, singlePassProjector)
+	turns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	var stamped *appwire.Turn
 	for i := range turns {

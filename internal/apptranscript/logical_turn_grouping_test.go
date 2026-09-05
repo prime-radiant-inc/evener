@@ -44,6 +44,35 @@ func logicalTurnFixture() []transcript.Entry {
 	}
 }
 
+// TestLegacyReadersKeepOneTurnPerDecodedEntry pins the pre-item-paging API
+// contract. Logical grouping is an additive item-mode projection; callers of
+// TurnsFromFile and TurnsFromEntries still receive one projected turn for each
+// visible decoded entry.
+func TestLegacyReadersKeepOneTurnPerDecodedEntry(t *testing.T) {
+	entries := []transcript.Entry{
+		userEntry(1, "question"),
+		assistantTextEntry(2, "answer"),
+	}
+	path := writeEntries(t, entries...)
+
+	fromFile := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	fromEntries, err := TurnsFromEntries(transcript.Header{}, entries, sequentialTestProjector())
+	if err != nil {
+		t.Fatalf("TurnsFromEntries: %v", err)
+	}
+	for _, read := range []struct {
+		name  string
+		turns []appwire.Turn
+	}{
+		{name: "file", turns: fromFile},
+		{name: "entries", turns: fromEntries},
+	} {
+		if got, want := turnIDs(read.turns), []string{"turn_1", "turn_2"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s legacy turn ids = %v, want one turn per decoded entry %v", read.name, got, want)
+		}
+	}
+}
+
 // TestFileProjectionReproducesLiveLogicalTurnKeys is the differential oracle
 // for F3: the file projection of a persisted logical turn must yield the same
 // turn id, entry ordinal, and item ordinals the live snapshot would have
@@ -57,7 +86,7 @@ func logicalTurnFixture() []transcript.Entry {
 func TestFileProjectionReproducesLiveLogicalTurnKeys(t *testing.T) {
 	path := writeEntries(t, logicalTurnFixture()...)
 
-	turns := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	turns := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 
 	// The persisted projection must group both logical turns under their
 	// reserved openers' ids, not fall back to per-entry turn ids.
@@ -99,7 +128,7 @@ func TestFileProjectionReproducesLiveLogicalTurnKeysWithoutStableIDs(t *testing.
 		assistantTextEntry(4, "second answer"),
 	)
 
-	turns := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	turns := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 
 	gotIDs := turnIDs(turns)
 	wantIDs := []string{"turn_1", "turn_3"}
@@ -125,7 +154,7 @@ func TestFileProjectionReproducesLiveLogicalTurnKeysWithoutStableIDs(t *testing.
 // transcript, windowed and paged reads must render exactly the same turns.
 func TestBoundedReadsMatchGroupedFileProjection(t *testing.T) {
 	path := writeEntries(t, logicalTurnFixture()...)
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 
 	cache := NewTurnCache()
 	latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
@@ -151,7 +180,7 @@ func TestBoundedReadsMatchGroupedFileProjection(t *testing.T) {
 // for the same items, or a cursor minted by one path stales in the other.
 func TestItemWindowKeysMatchGroupedFileProjection(t *testing.T) {
 	path := writeEntries(t, logicalTurnFixture()...)
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 
 	cache := NewTurnCache()
 	window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
@@ -183,4 +212,13 @@ func keysFor(turn appwire.Turn) []string {
 		keys = append(keys, item.TranscriptKey)
 	}
 	return keys
+}
+
+func requireItemTurnsFromFile(t testing.TB, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
+	t.Helper()
+	turns, err := ItemTurnsFromFile(path, maxLineBytes, project)
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	return turns
 }

@@ -45,7 +45,7 @@ var (
 func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 	toolNames := map[string]string{}
 	entries := 0
-	turns, err := apptranscript.TurnsFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := apptranscript.ItemTurnsFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
 			entries = entryIndex
 		}
@@ -69,7 +69,7 @@ func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, int, error) {
 func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) ([]appwire.Turn, int, error) {
 	toolNames := map[string]string{}
 	highest := 0
-	turns, err := apptranscript.TurnsFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := apptranscript.ItemTurnsFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > highest {
 			highest = entryIndex
 		}
