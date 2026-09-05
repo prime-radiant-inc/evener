@@ -1168,8 +1168,13 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
 	// A sandbox re-root the host cannot satisfy fails closed here rather than
-	// entering the new worktree unconfined.
+	// entering the new worktree unconfined. A swap the session's close refused
+	// takes steps 1-6 back: the lane was added and locked and its sidecar
+	// written for a session that will never enter it.
 	if err := s.enterWorktree(res.Path, true); err != nil {
+		if errors.Is(err, errSwapWhileClosing) {
+			s.rollbackFreshWorktree(res.Run, res.Path, res.Branch, metaDirForLane(res.Path), name)
+		}
 		return WorktreeResult{}, err
 	}
 
@@ -1234,11 +1239,21 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 		return // best-effort: skip when the control policy is unsatisfiable
 	}
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
+	s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
+}
+
+// rollbackFreshWorktree best-effort takes back a just-created, still-empty
+// managed worktree: its lock, the worktree itself, the branch cut for it, and
+// its metadata sidecar under metaDir. It is the git-level core
+// rollbackFreshDelegateWorktree wraps for an isolation lane and worktreeCreate
+// uses when the session's own close refuses the swap into the lane it just
+// added. Errors are swallowed for the reason rollbackFreshDelegateWorktree
+// gives.
+func (s *Session) rollbackFreshWorktree(run worktree.GitRunner, lanePath, branch, metaDir, sidecarName string) {
 	_, _ = run("worktree", "unlock", lanePath)
 	_, _ = run("worktree", "remove", "--force", "--", lanePath)
-	_, _ = run("branch", "-D", delegateID)
-	metaDir := metaDirForProject(filepath.Join(worktreeRoot, project.ID))
-	_ = s.deleteWorktreeSidecar(metaDir, delegateID)
+	_, _ = run("branch", "-D", branch)
+	_ = s.deleteWorktreeSidecar(metaDir, sidecarName)
 }
 
 // currentStateDir reads s.stateDir under s.mu.
