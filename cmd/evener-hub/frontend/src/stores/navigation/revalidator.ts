@@ -324,7 +324,11 @@ export class NavigationRevalidator {
           e.controller = undefined;
           if (e.rerun) {
             e.rerun = false;
-            void this.start(e);
+            // Chain the trailing run into this load promise instead of
+            // resolving stale/error first: the caller awaits recovery
+            // rather than failing while a retry it triggered is in flight
+            // (e.g. pagination surviving a superseded response).
+            return this.start(e);
           }
         }
         return state;

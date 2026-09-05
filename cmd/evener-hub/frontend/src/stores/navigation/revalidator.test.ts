@@ -11,6 +11,41 @@ const d = <T>() => {
   return { promise, resolve };
 };
 
+test("a superseded load awaits its trailing retry instead of failing", async () => {
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const pending = r.load(key, async () => {
+    calls++;
+    return (calls === 1 ? first : second).promise;
+  });
+  // A force during the flight supersedes the in-flight response: the first
+  // run fails its token check and flags a rerun.
+  r.force([key]);
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "stale" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(2);
+  // The original load promise must still be pending (not rejected with the
+  // superseded failure) while the trailing run is in flight.
+  let settled: string | null = null;
+  void pending.then(
+    () => {
+      settled = "resolved";
+    },
+    () => {
+      settled = "rejected";
+    },
+  );
+  await Promise.resolve();
+  expect(settled).toBeNull();
+  second.resolve({ status: 200, generationID: "g", revision: 1, etag: "b", data: "good" });
+  const result = await pending;
+  expect(settled).toBe("resolved");
+  expect(result.error).toBeNull();
+  expect(result.data).toBe("good");
+});
+
 test("coalesces and trails invalidation without aborting useful read", async () => {
   const one = d<NavigationResponse>();
   const two = d<NavigationResponse>();
@@ -712,12 +747,18 @@ test("initially loading registered target blocks until the trailing target revis
   const waiting = r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]).then(() => (resolved = true));
   r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
   initial.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
-  await loading;
+  // The original load promise now trails the retry instead of settling with
+  // the superseded revision, so awaiting it here would deadlock with the
+  // target resolution below; assert the waiter blocks first.
   for (let i = 0; i < 5; i++) await Promise.resolve();
   expect(resolved).toBe(false);
   target.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
   await waiting;
   expect(resolved).toBe(true);
+  // ...and the chained load resolves with the recovered state.
+  const loaded = await loading;
+  expect(loaded.error).toBeNull();
+  expect(loaded.data).toBe("new");
 });
 
 test("invalidation waiter is cancellable and ignores unrelated typed events", async () => {
