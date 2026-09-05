@@ -157,3 +157,44 @@ func TestVertexTextModelFilterRules(t *testing.T) {
 		t.Fatalf("filterVertexModels = %+v", rows)
 	}
 }
+
+// TestVertexListModelsOnACustomPresetProviderWithoutHostRule covers a user
+// provider built on the vertex-gemini preset with its own base URL: no host
+// rule, but the preset's publisher-model endpoints, so it must list the
+// Vertex way — host-relative on v1beta1 — rather than fall through to the
+// Gemini API listing.
+func TestVertexListModelsOnACustomPresetProviderWithoutHostRule(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-3.8-flash","launchStage":"GA"}]}`))
+	}))
+	defer srv.Close()
+	res := vertexRes(srv)
+	res.Instance = "myvertex"
+	res.Transport.HostRule = ""
+	res.Transport.BaseURL = srv.URL + "/v1/projects/p/locations/us-central1"
+	res.Transport.Vars = nil
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "/v1beta1/publishers/google/models?pageSize=200" {
+		t.Fatalf("paths = %v, want the host-relative v1beta1 publisher listing", paths)
+	}
+	if len(rows) != 1 || rows[0].ID != "gemini-3.8-flash" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestVertexTransportDiscriminator(t *testing.T) {
+	gemini := registry.Resolved{Transport: registry.Transport{Endpoint: "/models/{model}:generateContent"}}
+	if isVertexTransport(gemini) {
+		t.Error("the Gemini API serves models under /models/: that is not Vertex")
+	}
+	vertex := registry.Resolved{Transport: registry.Transport{Endpoint: "/publishers/google/models/{model}:generateContent"}}
+	if !isVertexTransport(vertex) {
+		t.Error("a publisher-model endpoint is Vertex even with no host rule")
+	}
+}

@@ -44,10 +44,13 @@ type vertexPublisherModelsPage struct {
 	NextPageToken   string                 `json:"nextPageToken"`
 }
 
-// isVertexTransport reports whether res reaches Vertex: the overlay's
-// vertex-location host rule is the discriminator, not the URL's shape.
+// isVertexTransport reports whether res reaches Vertex: Vertex serves Gemini
+// as publisher models, so the completion endpoint's path is the
+// discriminator (the Gemini API serves the same models under /models/). A
+// custom provider built on the vertex-gemini preset with its own base URL
+// and no host rule lists the Vertex way too.
 func isVertexTransport(res registry.Resolved) bool {
-	return res.Transport.HostRule == registry.HostRuleVertexLocation
+	return strings.HasPrefix(res.Transport.Endpoint, "/publishers/google/models/")
 }
 
 // vertexModelsURL is scheme://host of the resolved base URL + /v1beta1 +
