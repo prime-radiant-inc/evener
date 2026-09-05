@@ -628,8 +628,8 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		return turnIndexDisk{}, stats, err
 	}
 	if entry, ok := c.entries[path]; ok && entry.turnIndex != nil {
-		copy := *entry.turnIndex
-		candidate = &copy
+		indexCopy := *entry.turnIndex
+		candidate = &indexCopy
 		fromCache = true
 		identityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) &&
 			entry.fileIdentity == currentFileIdentity && entry.changeIdentity == currentChangeIdentity
