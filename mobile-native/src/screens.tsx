@@ -24,7 +24,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { useConnection } from "./ConnectionProvider";
 import {
-  captureUnconfirmedSend,
+  captureUnconfirmedInput,
   restoreUnconfirmedDraft,
 } from "./draftRecovery";
 import { TimelineItem } from "./TimelineItem";
@@ -397,7 +397,7 @@ export function ConversationScreen({
     store.getState().setDraft(draft);
     return () => {
       const closing = store.getState();
-      const submitted = captureUnconfirmedSend(closing.pendingMutation);
+      const submitted = captureUnconfirmedInput(closing.pendingMutation);
       if (submitted !== null) setUnconfirmedSend(submitted);
       const savedDraft = closing.draft;
       store.getState().close();
@@ -427,20 +427,20 @@ export function ConversationScreen({
   const pending = snapshot.pendingMutation?.status === "pending";
   const ready =
     connected && snapshot.status === "open" && !refreshing && !pending;
-  async function mutate(kind: "send" | "interrupt") {
+  async function mutate(kind: "send" | "steer" | "queue" | "interrupt") {
     if (
       !service ||
       !ready ||
-      (kind === "send" && unconfirmedSend !== null) ||
+      (kind !== "interrupt" && unconfirmedSend !== null) ||
       store.getState().pendingMutation?.status === "pending"
     )
       return;
     setActionError(null);
     try {
-      if (kind === "send")
+      if (kind !== "interrupt")
         await store
           .getState()
-          .send(service, [{ type: "text", text: store.getState().draft }]);
+          [kind](service, [{ type: "text", text: store.getState().draft }]);
       else await store.getState().interrupt(service);
     } catch {
       setActionError(
@@ -578,7 +578,11 @@ export function ConversationScreen({
           />
           <View style={styles.row}>
             <View style={styles.fill}>
-              {connected && conversation && !conversation.capabilities.send ? (
+              {connected &&
+              conversation &&
+              !conversation.capabilities.send &&
+              !conversation.capabilities.steer &&
+              !conversation.capabilities.queue ? (
                 <Copy muted>Sending is unavailable for this session.</Copy>
               ) : null}
             </View>
@@ -592,19 +596,25 @@ export function ConversationScreen({
                 Stop
               </Action>
             ) : null}
-            <Action
-              disabled={
-                !ready ||
-                !conversation?.capabilities.send ||
-                unconfirmedSend !== null ||
-                !snapshot.draft.trim()
-              }
-              onPress={() => {
-                void mutate("send");
-              }}
-            >
-              {pending ? "Sending…" : "Send"}
-            </Action>
+            {(["send", "steer", "queue"] as const).map((kind) =>
+              conversation?.capabilities[kind] ? (
+                <Action
+                  key={kind}
+                  disabled={
+                    !ready || unconfirmedSend !== null || !snapshot.draft.trim()
+                  }
+                  onPress={() => {
+                    void mutate(kind);
+                  }}
+                >
+                  {kind === "send"
+                    ? "Send"
+                    : kind === "steer"
+                      ? "Steer"
+                      : "Queue"}
+                </Action>
+              ) : null,
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>

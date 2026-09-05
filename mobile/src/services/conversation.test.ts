@@ -609,6 +609,120 @@ describe("ConversationService", () => {
     });
   });
 
+  describe("pushed capability transitions", () => {
+    it("keeps a pushed capability set when an older metadata read finishes", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      service.subscribeNotifications(() => {});
+      let resolve!: (response: ThreadReadResponse) => void;
+      client.on(
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((done) => {
+            resolve = done;
+          }),
+      );
+      const refresh = service.refreshCapabilities("ref-1");
+      await Promise.resolve();
+      client.emitNotification({
+        method: "thread/status/changed",
+        params: {
+          ref: "ref-1",
+          threadId: "thread-1",
+          status: { type: "active" },
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
+        },
+      });
+      resolve(makeReadResponse(makeThread()));
+      expect(await refresh).toBeNull();
+      await expect(
+        service.send([{ type: "text", text: "not idle" }]),
+      ).rejects.toThrow();
+      expect(
+        client.calls.filter((c) => c.method === "turn/start"),
+      ).toHaveLength(0);
+    });
+
+    it("preserves a same-thread capability push received during rehydration", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      service.subscribeNotifications(() => {});
+      let resolve!: (response: ThreadReadResponse) => void;
+      client.on(
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((done) => {
+            resolve = done;
+          }),
+      );
+      const hydration = service.readProjection("ref-1");
+      await Promise.resolve();
+      client.emitNotification({
+        method: "thread/status/changed",
+        params: {
+          ref: "ref-1",
+          threadId: "thread-1",
+          status: { type: "active" },
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
+        },
+      });
+      resolve(makeReadResponse(makeThread()));
+      const hydrated = await hydration;
+      expect(hydrated.conversation.capabilities.send).toBe(false);
+      expect(hydrated.activity.capabilities.send).toBe(false);
+      await expect(
+        service.send([{ type: "text", text: "not idle" }]),
+      ).rejects.toThrow();
+      expect(
+        client.calls.filter((c) => c.method === "turn/start"),
+      ).toHaveLength(0);
+    });
+
+    it("uses the active capability set for mutations and rejects other thread updates", async () => {
+      const { client, service } = setup({
+        thread: makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, steer: false },
+            queue: { revision: 0 },
+          },
+        }),
+      });
+      await service.open("ref-1");
+      service.subscribeNotifications(() => {});
+      client.on(
+        "turn/steer",
+        () => ({ receipt: makeReceipt("steer") }) as TurnSteerResponse,
+      );
+      const emit = (ref: string, threadId: string, caps: ThreadCapabilities) =>
+        client.emitNotification({
+          method: "thread/status/changed",
+          params: {
+            ref,
+            threadId,
+            status: { type: "active" },
+            capabilities: caps,
+          },
+        });
+      emit("other-ref", "thread-1", ALL_TRUE_CAPS);
+      emit("ref-1", "other-thread", ALL_TRUE_CAPS);
+      await expect(
+        service.steer([{ type: "text", text: "direction" }]),
+      ).rejects.toThrow();
+      expect(
+        client.calls.filter((c) => c.method === "turn/steer"),
+      ).toHaveLength(0);
+      emit("ref-1", "thread-1", { ...ALL_TRUE_CAPS, send: false });
+      await service.steer([{ type: "text", text: "direction" }]);
+      expect(
+        client.calls.filter((c) => c.method === "turn/steer"),
+      ).toHaveLength(1);
+      await expect(
+        service.send([{ type: "text", text: "wrong mode" }]),
+      ).rejects.toThrow();
+    });
+  });
+
   describe("capability gating", () => {
     it("send throws when capabilities.send is false", async () => {
       const thread = makeThread({
