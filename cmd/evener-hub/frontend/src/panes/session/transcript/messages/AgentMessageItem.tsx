@@ -18,9 +18,10 @@
 // messages.md, decisions 1-2): at exchange boundaries ONLY (opensExchange -
 // the same trigger the old caption eyebrow fired on, never mid-exchange) the
 // message takes the speaker header - avatar tile + "Agent" + meta (model
-// label and clock time, each only when defined). The opener is a flex row
-// [avatar][column(header, prose)]; mid-exchange fragments render bare (no
-// avatar, no header) and align under the run via TurnBlock's content-column
+// label and relative time, each only when defined). The opener is a flex
+// row [avatar][column(header, prose)]; mid-exchange fragments show their
+// timestamp without a speaker avatar or header and align under the run via
+// TurnBlock's content-column
 // indent, so no indent is added here. The header renders in BOTH the live
 // and settled branches, exactly where the eyebrow appeared, so a stream
 // that starts and settles within a frame keeps the same DOM shape.
@@ -34,7 +35,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SpeakerAvatar } from "../../../../widgets/speakeravatar";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./agentmessageitem.module.css";
-import { formatClockTime } from "./format";
+import { MessageTimestamp } from "./MessageTimestamp";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
@@ -48,15 +49,6 @@ const CLASS = {
   stream: requireClass(styles.stream, "agentmessageitem.module.css", "stream"),
 };
 
-// The header meta is "{model label} · {clock time}", each part only when
-// defined: a missing label or an absent/unparseable startedAt drops just
-// that part, never leaving a dangling "·", and with neither defined there
-// is no meta element at all.
-function metaText(agentLabel: string | undefined, startedAt: string | undefined): string | undefined {
-  const parts = [agentLabel, formatClockTime(startedAt)].filter((p): p is string => p !== undefined && p !== "");
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below), so a fresh turn object on every streaming delta targeting a
@@ -67,11 +59,21 @@ export const AgentMessageItem = memo(function AgentMessageItem({
   opensExchange,
   agentLabel,
 }: ItemRenderProps) {
-  const meta = opensExchange ? metaText(agentLabel, item.startedAt) : undefined;
+  const time = Date.parse(item.startedAt ?? "");
+  const hasTime = Number.isFinite(time);
+  const timestamp = hasTime ? <MessageTimestamp value={time} /> : null;
+  const meta =
+    agentLabel || hasTime ? (
+      <span className={CLASS.meta}>
+        {agentLabel}
+        {agentLabel && hasTime ? " · " : null}
+        {timestamp}
+      </span>
+    ) : null;
   const speaker = opensExchange ? (
     <div className={CLASS.header} data-testid="agent-speaker-header">
       <span className={CLASS.name}>Agent</span>
-      {meta !== undefined && <span className={CLASS.meta}>{meta}</span>}
+      {meta}
     </div>
   ) : null;
 
@@ -103,7 +105,14 @@ export const AgentMessageItem = memo(function AgentMessageItem({
         {children}
       </div>
     );
-    if (!opensExchange) return root(bubble, CLASS.message);
+    if (!opensExchange)
+      return root(
+        <>
+          {timestamp}
+          {bubble}
+        </>,
+        CLASS.message,
+      );
     return root(
       <>
         <SpeakerAvatar speaker="agent" />

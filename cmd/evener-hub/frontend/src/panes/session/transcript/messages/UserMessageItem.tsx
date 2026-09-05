@@ -1,7 +1,7 @@
 // The userMessage item renderer: the slack-lean speaker treatment
 // (docs/web-ui/specs/2026-07-29-transcript-slack-lean-messages.md, decisions
 // 1, 2, 5). Speaker identity is a one-line header - avatar tile, then "You"
-// at body size, then the message's clock time at caption - replacing the old
+// at body size, then the message's relative time at caption - replacing the old
 // stacked caption eyebrow, which was too faint to scan exchange boundaries
 // by. The whole message is one flex row (avatar + content column), so the
 // header and the text share the column the TurnBlock gutter aligns
@@ -25,7 +25,7 @@ import { SpeakerAvatar, type SpeakerAvatarSpeaker } from "../../../../widgets/sp
 import { writeDraft } from "../../composer/draft";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
-import { formatClockTime } from "./format";
+import { MessageTimestamp } from "./MessageTimestamp";
 import styles from "./usermessageitem.module.css";
 
 const CLASS = {
@@ -115,10 +115,8 @@ export function UserMessageView({
   name?: string;
   timeIso?: string;
 }) {
-  // No placeholder when the wire carries no startedAt: a header with no time
-  // shows no time rather than a guess (formatClockTime returns undefined for
-  // a missing or unparseable timestamp).
-  const time = formatClockTime(timeIso ?? item.startedAt);
+  // Missing or invalid server timestamps stay absent rather than showing a guess.
+  const time = Date.parse(timeIso ?? item.startedAt ?? "");
   return (
     <div
       className={CLASS.message}
@@ -131,7 +129,11 @@ export function UserMessageView({
       <div className={CLASS.content}>
         <div className={CLASS.header}>
           <span className={CLASS.name}>{name}</span>
-          {time !== undefined && <span className={CLASS.time}>{time}</span>}
+          {Number.isFinite(time) && (
+            <span className={CLASS.time}>
+              <MessageTimestamp value={time} />
+            </span>
+          )}
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
         <div className={CLASS.body} data-testid="user-bubble">

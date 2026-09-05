@@ -14,8 +14,8 @@ import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { readDraft } from "../../composer/draft";
+import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
-import { formatClockTime } from "./format";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
@@ -84,17 +84,16 @@ test("the avatar tile is decorative (aria-hidden) - the header already names the
   expect(avatar.getAttribute("aria-hidden")).toBe("true");
 });
 
-test("the clock time renders in the header when startedAt is present", () => {
-  const startedAt = "2026-07-29T14:05:00.000Z";
-  render(<UserMessageView item={item({ text: "hello", startedAt })} />);
-  // Local HH:MM projection of the instant, matching formatClockTime.
-  const d = new Date(startedAt);
-  const expected = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
-  const time = header.querySelector(`.${styles.time}`);
-  expect(time).not.toBeNull();
-  expect(time!.textContent).toBe(expected);
+test("message timestamp advances with the shared clock and preserves the exact instant", () => {
+  const message = <UserMessageView item={item({ text: "hello", startedAt: "2026-07-29T14:05:00.000Z" })} />;
+  const { container, rerender } = render(
+    <SessionNowContext value={Date.parse("2026-07-29T14:10:00Z")}>{message}</SessionNowContext>,
+  );
+  expect(container.querySelector("time")?.textContent).toBe("5m ago");
+  expect(container.querySelector("time")?.dateTime).toBe("2026-07-29T14:05:00.000Z");
+  expect(container.querySelector("time")?.title).toBeTruthy();
+  rerender(<SessionNowContext value={Date.parse("2026-07-29T14:11:00Z")}>{message}</SessionNowContext>);
+  expect(container.querySelector("time")?.textContent).toBe("6m ago");
 });
 
 test("no time node at all (no placeholder) when startedAt is absent", () => {
@@ -468,7 +467,7 @@ test("a user-sourced steer reuses the same view WITHOUT the exchange marker", ()
 test("UserMessageView accepts speaker/name/timeIso overrides for non-user speakers (delegate_send bubbles)", () => {
   render(
     <UserMessageView
-      item={item({ text: "status?", startedAt: "2026-08-06T10:05:00Z" })}
+      item={item({ text: "status?", startedAt: "2026-08-06T10:00:00Z" })}
       speaker="agent"
       name="Agent → dlg_abc123"
       timeIso="2026-08-06T10:05:00Z"
@@ -476,11 +475,7 @@ test("UserMessageView accepts speaker/name/timeIso overrides for non-user speake
   );
   expect(screen.getByText("Agent → dlg_abc123")).toBeTruthy();
   expect(screen.getByTestId("user-bubble").textContent).toBe("status?");
-  // The header time comes from timeIso, formatted by the same formatClockTime
-  // the default path uses - compute the expectation rather than hardcoding a
-  // timezone-dependent literal.
-  const expected = formatClockTime("2026-08-06T10:05:00Z");
-  if (expected !== undefined) expect(screen.getByText(expected)).toBeTruthy();
+  expect(screen.getByTestId("user-message-item").querySelector("time")?.dateTime).toBe("2026-08-06T10:05:00.000Z");
 });
 
 test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.startedAt time", () => {
