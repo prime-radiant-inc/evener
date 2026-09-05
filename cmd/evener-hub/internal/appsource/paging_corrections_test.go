@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -17,7 +17,8 @@ func correctionItems(count int) []appwire.ThreadItem {
 	items := make([]appwire.ThreadItem, count)
 	for i := range items {
 		p := appwire.ThreadItemPosition{Item: uint32(i)}
-		items[i] = appwire.ThreadItem{ID: fmt.Sprint(i), Type: "agentMessage", TurnID: "turn-1", TranscriptKey: fmt.Sprint("key-", i), Position: &p}
+		id := strconv.Itoa(i)
+		items[i] = appwire.ThreadItem{ID: id, Type: "agentMessage", TurnID: "turn-1", TranscriptKey: "key-" + id, Position: &p}
 	}
 	return items
 }
