@@ -667,7 +667,7 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		// and its base URL variables are set (spec §5.1). Point at those.
 		if p.Transport.Auth == registry.AuthGCPADC {
 			vars := slices.Sorted(maps.Values(p.Transport.VarsEnv))
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON via evener/auth/credentialJson/set; the instance also needs %s set", name, strings.Join(vars, ", ")))
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set), and %s set", name, strings.Join(vars, ", ")))
 		}
 		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}

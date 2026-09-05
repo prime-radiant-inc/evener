@@ -508,4 +508,10 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 	if strings.Contains(msg, "apiKey/set") {
 		t.Fatalf("err = %q, must not tell an unconfigured gcp-adc provider to use apiKey/set", msg)
 	}
+	if !strings.Contains(msg, "(run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)") {
+		t.Fatalf("err = %q, want the ADC alternatives parenthesised together", msg)
+	}
+	if strings.Contains(msg, ", set GOOGLE_APPLICATION_CREDENTIALS,") {
+		t.Fatalf("err = %q, must not read as if GOOGLE_APPLICATION_CREDENTIALS were a required middle step", msg)
+	}
 }
