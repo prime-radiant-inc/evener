@@ -53,13 +53,18 @@ test("directory trigger exposes its label, path and disabled state", () => {
 
 test("directory navigation stays draft until confirmation and restores trigger focus", async () => {
   const { user, onChange, onPanelClose } = setup({ complete: async () => ["/work/child"] });
+  const fieldTrigger = trigger();
+  expect(fieldTrigger.getAttribute("aria-haspopup")).toBe("dialog");
+  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
   await open(user);
+  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("true");
   await user.click(await screen.findByRole("button", { name: "Open /work/child" }));
   expect(onChange).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: "Use this folder" }));
   expect(onChange).toHaveBeenCalledExactlyOnceWith("/work/child");
   expect(onPanelClose).toHaveBeenCalledExactlyOnceWith("/work/child");
   await waitFor(() => expect(document.activeElement).toBe(trigger()));
+  expect(fieldTrigger.getAttribute("aria-expanded")).toBe("false");
 });
 
 test.each(["Cancel", "Escape"])("%s preserves a directory field's committed value", async (action) => {

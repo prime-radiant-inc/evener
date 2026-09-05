@@ -584,6 +584,8 @@ export function PathField({
       type="button"
       className={`${CLASS.trigger} ${kind === "dir" ? CLASS.directoryTrigger : ""}`}
       disabled={disabled}
+      aria-haspopup={kind === "dir" ? "dialog" : undefined}
+      aria-expanded={kind === "dir" ? open : undefined}
       // The label has to carry the value too: aria-label replaces the
       // button's own text, so naming it "Skill directories" alone would
       // hide the path it currently holds.
