@@ -2,7 +2,7 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
@@ -86,6 +86,10 @@ export interface AppShellProps {
   // built-in 10s reveal delay. Tests pass 0 to drive the banner synchronously
   // without fake-clock plumbing (see ConnectionBannerProps.delayMs).
   bannerDelayMs?: number;
+  // Test seam: production omits this, so the banner builds a real client on
+  // retry. Tests inject a FakeClient factory to exercise the retry swap
+  // without opening a socket.
+  bannerCreateClient?: () => AppwireClientLike;
 }
 
 interface ClientSlot {
@@ -271,8 +275,18 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
   openNestedSessionWithOwner(childRef, location.top_level_ref);
 }
 
-export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProps) {
-  const [{ client, owned }] = useState(() => createClientSlot(injectedClient));
+export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
+  const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
+  const { client, owned } = slot;
+  // A banner retry wires a fresh client into connectionStore; adopting it
+  // here keeps ClientProvider (shell-owned, fixed at mount otherwise)
+  // pointed at the live client instead of a closed orphan. connect() is
+  // idempotent on an already-connected client, so the mount effect below
+  // safely re-runs for the adopted instance.
+  const handleClientReplaced = useCallback(
+    (fresh: AppwireClientLike) => setSlot({ client: fresh, owned: fresh instanceof AppwireClient ? fresh : null }),
+    [],
+  );
 
   useEffect(() => {
     connectionStore.getState().connect(client);
@@ -651,7 +665,12 @@ export function AppShell({ client: injectedClient, bannerDelayMs }: AppShellProp
   return (
     <ClientProvider client={client}>
       <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
-        <ConnectionBanner state={connectionState} delayMs={bannerDelayMs} />
+        <ConnectionBanner
+          state={connectionState}
+          delayMs={bannerDelayMs}
+          createClient={bannerCreateClient}
+          onClientReplaced={handleClientReplaced}
+        />
         <ToastRegion />
         <CommandPalette />
         <div className={styles.content}>

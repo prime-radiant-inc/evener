@@ -554,6 +554,26 @@ test("shows no banner while the injected client is ready", async () => {
   expect(screen.queryByText(/connection closed/i)).toBeNull();
 });
 
+test("a banner retry swaps the client useClient consumers call", async () => {
+  const user = userEvent.setup();
+  const stale = new FakeClient("closed");
+  const fresh = new FakeClient("ready");
+  fresh.on("evener/search", () => ({ live: [], past: [] }));
+  render(<AppShell client={stale} bannerDelayMs={0} bannerCreateClient={() => fresh} />);
+  await screen.findByText("No session open");
+
+  // The banner is visible for the closed client; retry wires and adopts fresh.
+  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
+
+  // A useClient consumer (the palette search) must reach the fresh client,
+  // not the closed original.
+  await user.keyboard("{Meta>}k{/Meta}");
+  await user.type(await screen.findByRole("combobox"), "hello");
+  await waitFor(() => expect(fresh.calls.some((call) => call.method === "evener/search")).toBe(true));
+  expect(stale.calls.some((call) => call.method === "evener/search")).toBe(false);
+});
+
 test("banner reflects reconnecting state when injected", async () => {
   const fake = new FakeClient("ready");
   // bannerDelayMs={0} drives the banner synchronously so the test doesn't

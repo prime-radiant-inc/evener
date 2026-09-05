@@ -175,6 +175,11 @@ export class NavigationRevalidator {
     if (this.disposed || generationID === this.generationIDValue) return;
     for (const waiter of this.targetWaiters) waiter.reject(protocolError("generation mismatch"));
     this.targetWaiters.clear();
+    // Invalidation waiters belong to the old generation too: a notification
+    // from the new generation must not resolve a wait armed for the old one.
+    // Callers treat generation mismatch as converged-by-reboot and re-arm.
+    for (const waiter of this.invalidationWaiters) waiter.reject(protocolError("generation mismatch"));
+    this.invalidationWaiters.clear();
     this.generationIDValue = generationID;
     this.epoch++;
     this.lastSequence = 0;

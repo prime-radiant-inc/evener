@@ -51,34 +51,69 @@ type ResourceMap = ReadonlyMap<string, ResourceState>;
 export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
 
 /** Await a matching invalidation, but fall back to converging `targets`
- * directly when none arrives within the timeout. Resolves once the affected
- * resources are settled either way. When navigation is not initialized or in
- * error, convergence is impossible and the caller's mutation already
- * committed, so this resolves immediately as a successful no-op instead of
- * surfacing a false failure. */
+ * directly when none arrives within the timeout. A receipt only ends the
+ * wait once `settled` confirms the caller's own change is reflected: the
+ * hub commits shutdowns on its own refresh cycle, so an unrelated
+ * invalidation can arrive first, and converging on it would return before
+ * the session disappears. When `settled` is absent the first receipt wins,
+ * preserving the old behavior for callers with nothing observable to check.
+ * Resolves once the affected resources are settled either way. When
+ * navigation is not initialized or in error, convergence is impossible and
+ * the caller's mutation already committed, so this resolves immediately as
+ * a successful no-op instead of surfacing a false failure. A generation
+ * change also resolves: the reboot refetches everything. */
 export async function awaitNavigationConvergence(
   invalidation: NavigationInvalidationWaiter,
   targets: NavigationInvalidationTarget[],
-  timeoutMs = NAVIGATION_INVALIDATION_TIMEOUT_MS,
+  opts: {
+    timeoutMs?: number;
+    settled?: () => boolean;
+    /** Re-arm the waiter after an unrelated receipt (same predicate the
+     * caller used for the initial waiter). Omit to keep first-receipt wins. */
+    rearm?: () => NavigationInvalidationWaiter;
+  } = {},
 ): Promise<void> {
   if (navigationStore.getState().mode !== "v2") {
     invalidation.cancel();
     return;
   }
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutMs = opts.timeoutMs ?? NAVIGATION_INVALIDATION_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   try {
-    const payload = await Promise.race([
-      invalidation.promise,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), timeoutMs);
-      }),
-    ]);
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let payload: NavigationInvalidatedPayload | undefined;
+      try {
+        payload = await Promise.race([
+          invalidation.promise,
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), remaining);
+          }),
+        ]);
+      } catch (error) {
+        // Generation reset rejects outstanding waiters: the reboot refetches
+        // every loaded resource, which converges the caller's change.
+        if (error instanceof Error && error.message.includes("generation mismatch")) return;
+        throw error;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      if (payload === undefined) break;
+      await navigationStore.getState().applyNavigationMutation({
+        generation_id: payload.generationId,
+        targets: payload.targets,
+      });
+      if (!opts.settled || !opts.rearm || opts.settled()) return;
+      invalidation.cancel();
+      invalidation = opts.rearm();
+    }
     await navigationStore.getState().applyNavigationMutation({
-      generation_id: payload?.generationId ?? navigationStore.getState().clientGenerationID,
-      targets: payload?.targets ?? targets,
+      generation_id: navigationStore.getState().clientGenerationID,
+      targets,
     });
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
     invalidation.cancel();
   }
 }

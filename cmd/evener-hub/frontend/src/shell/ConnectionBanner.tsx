@@ -16,6 +16,11 @@ export interface ConnectionBannerProps {
   // socket - mirrors AppShellProps.client's own real-vs-injected split
   // (see AppShell.tsx).
   createClient?: () => AppwireClientLike;
+  // Called when a manual retry wires a fresh client that connected
+  // successfully. The shell adopts it into ClientProvider so useClient()
+  // consumers stop calling the closed original; without this the context
+  // client is a dead orphan after every retry.
+  onClientReplaced?: (client: AppwireClientLike) => void;
   // How long to stay hidden after the state first needs a human's attention
   // (reconnecting/closed) before the banner is revealed. A recovery before
   // this elapses means the banner never appears at all - the connection
@@ -91,6 +96,7 @@ export function ConnectionBanner({
   state,
   createClient = defaultCreateClient,
   delayMs = DEFAULT_DELAY_MS,
+  onClientReplaced,
 }: ConnectionBannerProps) {
   const client = useConnectionStore((s) => s.client);
   const [retrying, setRetrying] = useState(false);
@@ -168,6 +174,7 @@ export function ConnectionBanner({
           const info = await fresh.connect();
           if (connectionStore.getState().client !== fresh || fresh.state === "closed") return;
           connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
+          onClientReplaced?.(fresh);
         } catch {
           // Reflected via the client's own state, mirrored into
           // connectionStore by connect() above either way - nothing further

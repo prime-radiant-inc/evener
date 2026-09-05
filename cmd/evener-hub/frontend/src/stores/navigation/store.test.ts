@@ -1692,7 +1692,7 @@ test("shutdown convergence follows the invalidation receipt when one arrives", a
   });
   await navigationStore.getState().loadSection("live");
   const waiter = navigationStore.getState().awaitNavigationInvalidation(() => true);
-  const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 10_000);
+  const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], { timeoutMs: 10_000 });
   revision = 2;
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -1705,6 +1705,58 @@ test("shutdown convergence follows the invalidation receipt when one arrives", a
   expect(navigationStore.getState().lastSequence).toBe(1);
 });
 
+test("shutdown convergence re-arms past unrelated receipts until its session settles", async () => {
+  let revision = 1;
+  let listed = true;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    return wireV2(
+      params,
+      { sessions: listed ? [{ ref: "local:doomed", children: [] }] : [], remaining: 0, truncated: false },
+      `"section-${revision}"`,
+      revision,
+    );
+  });
+  await navigationStore.getState().loadSection("live");
+  const matches = () => true;
+  const waiter = navigationStore.getState().awaitNavigationInvalidation(matches);
+  const rearmed: unknown[] = [];
+  const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], {
+    timeoutMs: 10_000,
+    settled: () => !selectGlobalRows().some((row) => row.ref === "local:doomed"),
+    rearm: () => {
+      const next = navigationStore.getState().awaitNavigationInvalidation(matches);
+      rearmed.push(next);
+      return next;
+    },
+  });
+  // An unrelated change lands first: the session is still listed, so the
+  // helper must re-arm instead of returning early.
+  revision = 2;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await flush();
+  expect(rearmed).toHaveLength(1);
+  // The shutdown's own change lands next: the row is gone, so convergence
+  // completes.
+  revision = 3;
+  listed = false;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 2,
+      targets: [{ kind: "section", section: "live", revision: 3 }],
+    }),
+  );
+  await converged;
+  expect(navigationStore.getState().lastSequence).toBe(2);
+});
+
 test("shutdown convergence is a no-op when navigation is not initialized", async () => {
   resetNavigationStoreForTests();
   let settled = false;
@@ -1712,7 +1764,7 @@ test("shutdown convergence is a no-op when navigation is not initialized", async
     promise: new Promise<never>(() => undefined),
     cancel: () => {},
   };
-  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 20).then(() => {
+  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], { timeoutMs: 20 }).then(() => {
     settled = true;
   });
   expect(settled).toBe(true);
@@ -1730,7 +1782,7 @@ test("shutdown convergence refreshes targets directly when no invalidation arriv
   const waiter = navigationStore.getState().awaitNavigationInvalidation(() => true);
   // No invalidation is ever delivered: a short timeout must bound the wait
   // and the fallback refresh must still converge the section.
-  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], 20);
+  await awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], { timeoutMs: 20 });
   expect(calls.filter((params) => params.resource === "section")).toHaveLength(2);
 });
 

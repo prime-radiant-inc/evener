@@ -255,6 +255,17 @@ test("deep snapshots resist nested mutation and listener failures do not poison 
   expect(retained?.loading).toBe(false);
 });
 
+test("resetGeneration rejects invalidation waiters so new-generation notifications cannot resolve them", async () => {
+  const r = new NavigationRevalidator("g");
+  const waiter = r.waitForInvalidation(() => true);
+  const settled = waiter.promise.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  r.resetGeneration("h");
+  expect(await settled).toMatch(/generation mismatch/);
+});
+
 test("reset ignores abort-resistant old response and starts one fresh generation request", async () => {
   const old = d<NavigationResponse>();
   const fresh = d<NavigationResponse>();
