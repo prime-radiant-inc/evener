@@ -1287,7 +1287,12 @@ func (s *Session) SetModel(model string) error {
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
 	// client) before the live-only EventModelChanged notification below.
-	s.appendTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker := schema.NewTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker.ModelSwitch = &schema.ModelSwitchInfo{
+		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
+		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
+	}
+	s.recordTurn(marker, marker)
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
