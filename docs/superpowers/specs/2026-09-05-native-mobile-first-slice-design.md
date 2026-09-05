@@ -10,7 +10,7 @@ both platforms; bare React Native would add native project maintenance before
 we need it. Two separate native apps would duplicate the session experience.
 
 The first slice connects to a hub using a manually entered origin and optional
-bearer token, lists existing sessions, opens a text transcript, and sends or
+bearer token, saves multiple named hubs with an explicit hub switcher, lists existing sessions, opens a text transcript, and sends or
 interrupts a turn according to the server capabilities. It shows loading,
 connection, empty, and error states. Tokens use Expo SecureStore and never
 appear in URLs or logs. Shared AppWire client, conversation projection,
