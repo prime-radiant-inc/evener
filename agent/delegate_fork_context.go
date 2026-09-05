@@ -29,10 +29,14 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 		// parent's delivery receipts, client mutation IDs, usage, or server
 		// continuation handles. Those belong to its execution, not the child.
 		entry.Turn = schema.Turn{
-			Kind: t.Kind, Message: t.Message, Timestamp: t.Timestamp,
-			SteeringSource:   t.SteeringSource,
-			ResponseProvider: t.ResponseProvider, ResponseModel: t.ResponseModel,
-			ResponseRequestModel: t.ResponseRequestModel, ResponseProtocol: t.ResponseProtocol,
+			Kind:                 t.Kind,
+			Message:              t.Message,
+			Timestamp:            t.Timestamp,
+			SteeringSource:       t.SteeringSource,
+			ResponseProvider:     t.ResponseProvider,
+			ResponseModel:        t.ResponseModel,
+			ResponseRequestModel: t.ResponseRequestModel,
+			ResponseProtocol:     t.ResponseProtocol,
 		}
 		out = append(out, entry)
 	}

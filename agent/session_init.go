@@ -696,6 +696,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
 	}
+	if meta.IsSubagent && meta.DivergenceTurn > 0 && cfg.spawn.subagentTask == "" {
+		// A direct resume has no live parent carrier. The assignment in meta
+		// belongs to this delegate; the first inherited input belongs to its parent.
+		cfg.spawn.subagentTask = meta.OriginalPrompt
+	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}

@@ -247,6 +247,39 @@ func TestDelegateForkContext_RejectsDifferentModelBeforeCreation(t *testing.T) {
 	}
 }
 
+// A direct resume has no live parent spawn config. It must still identify the
+// delegate by its assignment rather than the first inherited user message.
+func TestDelegateForkContext_DirectResumeKeepsAssignment(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	meta.IsSubagent = true
+	meta.ParentSessionID = identifier.MustNewSessionID()
+	meta.DivergenceTurn = 2
+	meta.OriginalPrompt = "assigned-unit-sentinel"
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, meta.ID), transcript.Header{SessionID: meta.ID, ParentSessionID: meta.ParentSessionID, Task: meta.OriginalPrompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range []string{"parent-request-sentinel", "assigned-unit-sentinel"} {
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(input))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if got := restored.Meta(); !got.IsSubagent || got.OriginalPrompt != "assigned-unit-sentinel" {
+		t.Fatalf("directly resumed delegate identity = %+v", got)
+	}
+}
+
 func TestDelegateForkContext_SchemaOffersOptionalBoolean(t *testing.T) {
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	definition := root.delegateToolDefinition()
