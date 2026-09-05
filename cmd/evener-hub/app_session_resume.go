@@ -53,7 +53,7 @@ func withSessionResume[R any](
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
 	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
-		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err
 		}
@@ -70,13 +70,13 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, "", func() (appwire.GoalSetResponse, error) {
-		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return appwire.GoalSetResponse{}, err
 		}
 		// Gate like every sibling thread action so goal/set is rejected uniformly
-		// on sources without the engine (e.g. codex) rather than only self-guarding
-		// inside the source after a managed launch (/par A6).
+		// on sources without the engine rather than only self-guarding inside the
+		// source implementation.
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "goal"); err != nil {
 			return appwire.GoalSetResponse{}, err
 		}

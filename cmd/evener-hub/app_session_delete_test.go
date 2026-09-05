@@ -344,7 +344,7 @@ func TestSessionDeleteRejectsRemoteSource(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "codex:" + webTestSessionID})
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "remote:" + webTestSessionID})
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 		t.Fatalf("remote-source delete error = %v, want invalid params", err)

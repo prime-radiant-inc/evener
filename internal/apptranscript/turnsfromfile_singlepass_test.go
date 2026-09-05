@@ -101,9 +101,9 @@ func TestTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 // per-entry projection applies, proving the shared projector kept them.
 func TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	path := writeSinglePassFixture(t)
-	turns, err := TurnsFromFile(path, 1<<20, singlePassProjector)
+	turns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	var stamped *appwire.Turn
 	for i := range turns {
@@ -114,11 +114,21 @@ func TestTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	if stamped == nil {
 		t.Fatalf("no turn carried usage; ids=%v", singlePassTurnIDs(turns))
 	}
+	// The whole round groups into ONE logical turn (user + call + result +
+	// final assistant), so the group accumulates the usage the final
+	// assistant entry recorded and stamps the group's turn start.
+	if len(turns) != 2 {
+		t.Fatalf("grouped turns=%d want 2 (prelude + the one logical turn); ids=%v", len(turns), singlePassTurnIDs(turns))
+	}
 	if stamped.Usage.TotalTokens != 7 {
 		t.Fatalf("usage total tokens=%d, want 7", stamped.Usage.TotalTokens)
 	}
-	if stamped.StartedAt == nil || *stamped.StartedAt != time.Unix(1_700_000_000, 0).UTC().UnixMilli() {
-		t.Fatalf("usage turn StartedAt=%v, want the entry timestamp", stamped.StartedAt)
+	// The grouped turn's start is its EARLIEST entry timestamp: the user
+	// input opens the group (written at "now", after the fixed ts was
+	// minted earlier in the test), so the group stamps that write time.
+	// Pin that it is set and later than the usage entry's fixed ts.
+	if stamped.StartedAt == nil || *stamped.StartedAt <= time.Unix(1_700_000_000, 0).UTC().UnixMilli() {
+		t.Fatalf("usage turn StartedAt=%v, want the group opener's own timestamp", stamped.StartedAt)
 	}
 }
 

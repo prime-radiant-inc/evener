@@ -75,10 +75,10 @@ describe("AgentsSection", () => {
   });
 
   test("renders every agent by name", () => {
-    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }, { name: "codex" }] };
+    const data: SettingsOverviewResponse = { agents: [{ name: "evener" }, { name: "explorer" }] };
     render(<AgentsSection sectionId="agents" useOverview={fixture({ data })} />);
     expect(screen.getByText("evener")).toBeTruthy();
-    expect(screen.getByText("codex")).toBeTruthy();
+    expect(screen.getByText("explorer")).toBeTruthy();
   });
 
   test("the open-in-editor anchor rides beside the agent name, not the row's far edge", () => {

@@ -13,7 +13,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/httpsec"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -68,9 +67,6 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		cfg.TranscriptDisplayStore, transcriptDisplayStoreErr = hubcore.NewTranscriptDisplayStore(cfg.HubStateRoot)
 	}
 	sources := newHubSourceRegistry(cfg)
-	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
-		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
-	}
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
 	// triggered on either transport serializes a racing resume on the other.

@@ -9,12 +9,13 @@ import {
 } from "./sections";
 
 // Section inventory verified against templates/partials/settings.html:13-31
-// (16 exact) - see the wave-7 floor doc's own citation of that range - plus
+// (15 exact after Codex launch controls were removed) - see the wave-7
+// floor doc's own citation of that range - plus
 // two sections with no legacy counterpart, "about" and "mobile" (see
 // sections.ts's own doc comment).
 
-test("has exactly 18 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(18);
+test("has exactly 17 sections", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(17);
 });
 
 test("every section id is unique", () => {
@@ -28,28 +29,22 @@ test("the 5 ungrouped sections are General/Theme/Transcript display/Display/Noti
   expect(SETTINGS_SECTIONS.slice(0, 5)).toEqual(ungrouped);
 });
 
-test('the "Agents & models" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
+test('the "Agents & models" cluster has exactly these 4 sections, in order, right after the ungrouped ones', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
-  expect(cluster.map((s) => s.label)).toEqual([
-    "Providers & credentials",
-    "Agents",
-    "Evener launch",
-    "Codex launch",
-    "In-repo config",
-  ]);
-  expect(SETTINGS_SECTIONS.slice(5, 10)).toEqual(cluster);
+  expect(cluster.map((s) => s.label)).toEqual(["Providers & credentials", "Agents", "Evener launch", "In-repo config"]);
+  expect(SETTINGS_SECTIONS.slice(5, 9)).toEqual(cluster);
 });
 
 test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agents & models"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
   expect(cluster.map((s) => s.label)).toEqual(["Marketplaces & Plugins", "Plugins", "Skills", "MCP servers"]);
-  expect(SETTINGS_SECTIONS.slice(10, 14)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(9, 13)).toEqual(cluster);
 });
 
 test('the "Daemon" cluster has exactly these 4 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
   expect(cluster.map((s) => s.label)).toEqual(["Hub", "Mobile app", "Storage", "About"]);
-  expect(SETTINGS_SECTIONS.slice(14, 18)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(13, 17)).toEqual(cluster);
 });
 
 test('"About" is the very last section overall', () => {

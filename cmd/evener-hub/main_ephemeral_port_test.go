@@ -67,7 +67,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(_ context.Context, srv hubHTTPServer, _ hubShutdowner) error {
+		serve: func(_ context.Context, srv hubHTTPServer) error {
 			gotSrv = srv
 			close(served)
 			// Run the real server so the test below can dial it. It's

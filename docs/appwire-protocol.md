@@ -5,7 +5,7 @@
 
 AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
 the browser and `evener tui` talk to `evener hub`, and `evener hub` talks to each
-`evener serve` daemon (and to Codex app-server sources). The same message shapes
+`evener serve` daemon. The same message shapes
 and method catalog ride every hop.
 
 ```
@@ -88,9 +88,9 @@ no router (reserved).
 | `initialize` | connection | `InitializeParams` | `InitializeResponse` | Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set. |
 | `ping` | connection | `EmptyParams` | `EmptyResponse` | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
-| `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
+| `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates; in item mode, thread/read with itemLimit seeds a cold load with the newest atomic projected items, and itemLimit caps items rather than turns, while omitted/turn mode retains legacy turnLimit behavior. |
 | `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
-| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit). |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; pageUnit item selects atomic projected-item paging while the omitted/turn mode retains numeric cursors and limit. The cold load seeds the latest window via thread/read(turnLimit). |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -169,7 +169,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
-| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
+| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
@@ -1395,7 +1395,6 @@ _(no fields)_
 | `hub` | `*appwire.SettingsHubOverview` | yes |  |
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
-| `codexLaunches` | `[]appwire.SettingsCodexLaunchEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
 
 
@@ -1581,6 +1580,8 @@ _(no fields)_
 | `itemsView` | `string` | yes |  |
 | `subscribe` | `bool` | yes |  |
 | `replaceSubscription` | `bool` | yes |  |
+| `pageUnit` | `appwire.TranscriptPageUnit` | yes |  |
+| `itemLimit` | `int` | yes |  |
 | `turnLimit` | `int` | yes |  |
 
 
@@ -1589,6 +1590,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
+| `pageUnit` | `appwire.TranscriptPageUnit` | yes |  |
 | `olderCursor` | `string` | yes |  |
 
 
@@ -1724,6 +1726,8 @@ _(no fields)_
 | `cursor` | `string` | yes |  |
 | `limit` | `int` | yes |  |
 | `itemsView` | `string` | yes |  |
+| `pageUnit` | `appwire.TranscriptPageUnit` | yes |  |
+| `itemLimit` | `int` | yes |  |
 
 
 ### `ThreadTurnsListResponse`
@@ -1732,6 +1736,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
+| `pageUnit` | `appwire.TranscriptPageUnit` | yes |  |
 
 
 ### `ThreadUnsubscribeParams`

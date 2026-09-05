@@ -40,6 +40,10 @@ export function isHubLaunchError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === "hubLaunch";
 }
 
+export function isStaleCursorError(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/
@@ -195,8 +199,8 @@ export function errorKind(error: unknown): ErrorKind {
 }
 
 // Within the hubLaunch family (appwire.HubLaunchError, stamped from
-// cmd/evener-hub/spawn.go, app_threadlifecycle.go, app_models.go, AND
-// internal/codexlaunch), almost every message carries its own diagnosis —
+// cmd/evener-hub/spawn.go, app_threadlifecycle.go, and app_models.go), almost
+// every message carries its own diagnosis —
 // config failures ("provider credentials missing for ..."), resume advice
 // (resumeFailureError's kill-the-old-daemon instructions), and crucially
 // the daemon's own redacted stderr ("evener launch-check failed: <stderr>",

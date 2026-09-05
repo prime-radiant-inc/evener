@@ -54,10 +54,12 @@ type relayKeyState struct {
 }
 
 type hubThreadReadResult struct {
-	response appwire.ThreadReadResponse
-	handoff  appsource.RelayHandoff
-	release  func()
-	once     sync.Once
+	response          appwire.ThreadReadResponse
+	itemCandidates    appsource.ItemCandidateResult
+	hasItemCandidates bool
+	handoff           appsource.RelayHandoff
+	release           func()
+	once              sync.Once
 }
 
 func (r *hubThreadReadResult) finish(commit bool) bool {
@@ -183,7 +185,7 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 //
 // Local threads only, which is every thread that reaches this relay: the past
 // index is the local source's, and a source the hub does NOT answer from it
-// (the Codex bridge) would be told a resume story that is not true.
+// (a non-local source) would be told a resume story that is not true.
 //
 // One key is replaced, the rest of the payload is passed through as raw JSON —
 // re-minting it from the fields this hub understands would silently drop
@@ -1124,6 +1126,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		needsRelay := params.Subscribe || relayOnThreadRead(source)
 		relaySource, atomic := source.(appsource.RelaySessionSource)
 		if !atomic || !needsRelay {
+			if combined, ok := source.(appsource.CombinedItemReadSource); ok &&
+				params.PageUnit == appwire.TranscriptPageUnitItem && params.IncludeTurns {
+				response, candidates, err := combined.ReadThreadWithItemCandidates(ctx, params)
+				return &hubThreadReadResult{
+					response: response, itemCandidates: candidates, hasItemCandidates: err == nil,
+				}, err
+			}
 			response, err := source.ReadThread(ctx, params)
 			return &hubThreadReadResult{response: response}, err
 		}
@@ -1710,7 +1719,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, thread.ID)
+		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, thread.ID)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}

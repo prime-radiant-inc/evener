@@ -706,7 +706,8 @@ func TestEvenerThreadMetricsJSONRoundTrip(t *testing.T) {
 // TestEvenerThreadMetricsOmitEmpty (WS2 A7) verifies that a zero-value
 // EvenerThread omits usage, workMillis, and activeTurnStartedAt entirely — a
 // nil Usage pointer (rather than a rendered zero EvenerUsage) and the omitempty
-// scalars both drop out, so fresh/old-daemon/codex threads don't render ↑0 ↓0.
+// scalars both drop out, so fresh threads, old daemons, and source-backed threads
+// that omit the fields don't render ↑0 ↓0.
 func TestEvenerThreadMetricsOmitEmpty(t *testing.T) {
 	raw, err := json.Marshal(EvenerThread{})
 	if err != nil {

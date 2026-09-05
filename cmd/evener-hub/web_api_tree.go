@@ -416,7 +416,6 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 	if s.sources == nil {
 		return remoteThreadFetch{complete: true, sources: map[string]hubcore.RemoteSourceSnapshot{}}
 	}
-	s.ensureManagedCodexSources(ctx)
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
@@ -550,10 +549,6 @@ func (s *WebServer) storeLastGoodThreads(sourceID string, threads []appwire.Thre
 		s.lastGoodThreads = map[string][]appwire.Thread{}
 	}
 	s.lastGoodThreads[sourceID] = append([]appwire.Thread(nil), threads...)
-}
-
-func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
-	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
 }
 
 func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
@@ -703,9 +698,7 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
+		_, err := sourceForThreadWithDeletionFence(s.cfg, s.sources, appRefFromRouteID(sessionID), "")
 		return err == nil
 	}
 	if s.cfg.Roster == nil {
@@ -1049,7 +1042,7 @@ func favoriteProjectSourceClaim(id string, snapshot navigationSnapshot) string {
 
 // rowRenameable reports whether a tree row exposes the rename menu item. Local
 // rows are always renameable (ended via the hub meta-edit path, live via the
-// daemon method); Codex-bridged rows are not. Derived from the ref's host, not
+// daemon method); non-local rows are not. Derived from the ref's host, not
 // a per-thread probe.
 func (s *WebServer) rowRenameable(id string) bool { return isLocalRouteID(id) }
 

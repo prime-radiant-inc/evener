@@ -21,14 +21,20 @@ import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { NavigationSessionLocation, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type {
+  NavigationSessionLocation,
+  ThreadCapabilities,
+  ThreadReadResponse,
+  ThreadTurnsListParams,
+  ThreadTurnsListResponse,
+} from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { navigationStore } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
-import { putThreadModel } from "../stores/threads";
+import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import "../styles/tokens.css";
@@ -46,6 +52,7 @@ window.addEventListener("unhandledrejection", (event) => {
 const width = Number(params.get("w") ?? "1400");
 const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
+const pagingMode = params.get("paging") === "1";
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
@@ -223,26 +230,109 @@ ${RAW_UNBROKEN_PAYLOAD}
   },
 };
 
+const PAGING_REF = "overflowpaging";
+const PAGING_ITEM_IDS = Array.from({ length: 45 }, (_, index) => `paging-item-${index}`);
+PAGING_ITEM_IDS[4] = "item_tool_paging";
+PAGING_ITEM_IDS[5] = "item_tool_result_paging";
+// This is the independent fixture projection used by the browser assertion;
+// it must not be obtained from the reducer's loaded model or rendered anchors.
+const PAGING_EXPECTED_IDS = [
+  "paging-item-0",
+  "paging-item-1",
+  "paging-item-2",
+  "paging-item-3",
+  "item_tool_paging",
+  "item_tool_result_paging",
+  ...Array.from({ length: 39 }, (_, index) => `paging-item-${index + 6}`),
+];
+const pagingTurnItems = PAGING_ITEM_IDS.map((id, index) => {
+  if (index === 4) {
+    return {
+      type: "commandExecution",
+      id: "item_tool_paging",
+      turnId: "paging-turn",
+      toolName: "paging_tool",
+      callId: "paging-call",
+      argumentsJson: JSON.stringify({ command: "printf paging" }),
+      status: "completed",
+    };
+  }
+  if (index === 5) {
+    return {
+      type: "commandExecution",
+      id: "item_tool_result_paging",
+      turnId: "paging-turn",
+      toolName: "paging_tool",
+      callId: "paging-call",
+      output: "paging result",
+      status: "completed",
+    };
+  }
+  return {
+    type: index === 0 ? "userMessage" : "agentMessage",
+    id,
+    turnId: "paging-turn",
+    text: index === 0 ? "paging earlier fragment" : `paging item ${index}`,
+    status: "completed",
+  };
+});
+const pagingSnapshot: ThreadReadResponse = {
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_paging",
+    sessionId: "sess_overflow_paging",
+    evener: { ...snapshot.thread.evener, ref: PAGING_REF },
+    turns: [
+      {
+        id: "paging-turn",
+        itemsView: "fragment",
+        hasEarlierItems: true,
+        status: "completed",
+        items: pagingTurnItems.slice(5),
+      },
+    ],
+  },
+  pageUnit: "item",
+  olderCursor: "opaque-paging-cursor",
+};
+
 const fake = new FakeClient("ready");
-fake.on("thread/read", () => snapshot);
+fake.on("thread/read", () => (pagingMode ? pagingSnapshot : snapshot));
+fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListResponse => {
+  if (!pagingMode || request.ref !== PAGING_REF) return { data: [] };
+  return {
+    pageUnit: "item",
+    data: [
+      {
+        id: "paging-turn",
+        itemsView: "fragment",
+        hasLaterItems: true,
+        status: "completed",
+        items: pagingTurnItems.slice(0, 5),
+      },
+    ],
+  };
+});
 fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 // putThreadModel keeps the routing index in step with the seeded map
 // entry (the store's membership path for threads).
-putThreadModel(REF, hydrateThread(snapshot, REF, 1000));
+const activeRef = pagingMode ? PAGING_REF : REF;
+const activeSnapshot = pagingMode ? pagingSnapshot : snapshot;
+putThreadModel(activeRef, hydrateThread(activeSnapshot, activeRef, 1000));
 const locationKey = { kind: "location", ref: REF } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",
   revision: 1,
-  ref: REF,
+  ref: activeRef,
   top_level_ref: REF,
   top_level: true,
   tier: "current",
   session: {
     ref: REF,
     host_id: "local",
-    session_id: snapshot.thread.sessionId,
-    title: snapshot.thread.name ?? REF,
+    session_id: activeSnapshot.thread.sessionId,
+    title: activeSnapshot.thread.name ?? activeRef,
     project: "",
     state: "active",
     kind: "session",
@@ -316,7 +406,7 @@ if (settingsMode) {
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height: 900 }}>
-        <Session params={{ ref: REF }} paneId="oh" focused />
+        <Session params={{ ref: activeRef }} paneId="oh" focused />
       </div>
     </ClientProvider>,
   );
@@ -1460,6 +1550,72 @@ const settled = new Promise<true>((resolve) => {
   );
 });
 
+function pagingAnchorRows(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>("[data-view-anchor-id]"));
+}
+
+async function verifyItemPaging(): Promise<{
+  duplicateItemIds: string[];
+  missingItemIds: string[];
+  toolRows: number;
+  anchorDelta: number;
+}> {
+  if (!pagingMode) throw new Error("verifyItemPaging requires ?paging=1");
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("paging harness pane never mounted");
+  const first = pagingAnchorRows()[0];
+  if (!first) throw new Error("paging harness has no visible transcript anchor");
+  const firstID = first.dataset.viewAnchorId ?? "";
+  const firstTop = first.getBoundingClientRect().top;
+  await threadsStore.getState().loadOlderTurns(PAGING_REF);
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+  let previous = "";
+  let stableFrames = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const signature = pagingAnchorRows()
+      .map((element) => `${element.dataset.viewAnchorId}:${element.getBoundingClientRect().top.toFixed(3)}`)
+      .join("|");
+    if (signature === previous) stableFrames += 1;
+    else stableFrames = 0;
+    if (stableFrames >= 2) break;
+    previous = signature;
+    if (frame === 119) throw new Error("paging virtualizer did not settle");
+  }
+
+  const rows = pagingAnchorRows();
+  const ids = rows.map((element) => element.dataset.viewAnchorId ?? "");
+  const counts = new Map<string, number>();
+  for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const duplicateItemIds = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => id)
+    .sort();
+  const model = threadsStore.getState().threads.get(PAGING_REF);
+  const loaded = new Set(model?.turns.flatMap((turn) => turn.items.map((item) => item.id)) ?? []);
+  const toolRows = Array.from(pane.querySelectorAll<HTMLElement>('[data-testid="tool-call-item"]'));
+  const settledTool = model?.turns
+    .flatMap((turn) => turn.items)
+    .find((item) => item.id === "item_tool_paging" && item.callId === "paging-call" && item.output === "paging result");
+  const foldedResultObserved =
+    settledTool !== undefined && toolRows.length === 1 && toolRows[0]?.dataset.toolName === "paging_tool";
+  // A folded result has no separate DOM/store ID by design. Account for that
+  // fixture ID only when the observed settled model and the observed rendered
+  // tool row prove the result was represented; never infer it from a call's
+  // mere presence or output field alone.
+  const missingItemIds = PAGING_EXPECTED_IDS.filter(
+    (id) => !loaded.has(id) && !(id === "item_tool_result_paging" && foldedResultObserved),
+  );
+  const current = rows.find((element) => element.dataset.viewAnchorId === firstID);
+  return {
+    duplicateItemIds,
+    missingItemIds,
+    toolRows: toolRows.length,
+    anchorDelta: current ? current.getBoundingClientRect().top - firstTop : Number.POSITIVE_INFINITY,
+  };
+}
+
 declare global {
   interface Window {
     measure: typeof measure;
@@ -1467,6 +1623,7 @@ declare global {
     inspectDetail: typeof inspectDetail;
     inspectChatFocus: typeof inspectChatFocus;
     settled: Promise<true>;
+    verifyItemPaging: typeof verifyItemPaging;
   }
 }
 window.measure = measure;
@@ -1474,3 +1631,4 @@ window.dump = dump;
 window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
 window.settled = settled;
+window.verifyItemPaging = verifyItemPaging;

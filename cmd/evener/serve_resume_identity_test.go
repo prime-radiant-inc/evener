@@ -75,11 +75,11 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		return next, stop
 	}
 	entriesForm := deps.prepareAppIdentityFromEntries
-	deps.prepareAppIdentityFromEntries = func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error) {
+	deps.prepareAppIdentityFromEntries = func(sourceID, threadID, ref, transcriptPath string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error) {
 		probe.entriesFormUsed = true
 		probe.gotThreadID = threadID
 		probe.gotEntryCount = len(entries)
-		return entriesForm(sourceID, threadID, ref, header, entries)
+		return entriesForm(sourceID, threadID, ref, transcriptPath, header, entries)
 	}
 	fileForm := deps.prepareAppIdentity
 	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {

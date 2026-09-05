@@ -105,7 +105,7 @@ func mutationInstanceID(ref appwire.Ref, expectedInstanceIDs ...string) string {
 // buildAttachmentItems reads each PastedImage's temp file at submit time
 // and produces wire-ready []appwire.InputItem entries. Reading on submit
 // (rather than caching bytes at paste time) keeps memory low while
-// composer drafts live, and matches the codex reference impl. An error on
+// composer drafts live, and matches the reference clients. An error on
 // any file aborts the build — the caller surfaces it through the usual
 // hubSendMsg/hubQueueMsg error path so the user can retry.
 func buildAttachmentItems(attachments []*clipboard.PastedImage) ([]appwire.InputItem, error) {

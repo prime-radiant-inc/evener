@@ -15,7 +15,7 @@ import (
 // persisted jobs.jsonl through agent.LoadSessionJobActivityTree, behind the
 // same past-index gate pastTasksListResponse uses.
 func hubJobsList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, "")
 	var resp appwire.JobsListResponse
 	if err == nil {
 		resp, err = source.ListJobs(ctx, params)
@@ -60,7 +60,7 @@ func pastJobsListResponse(ctx context.Context, cfg hubcore.WebConfig, params app
 // dead-session-fallback split. A job id absent from the persisted store is
 // invalid params — the caller guessed.
 func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, "")
 	var resp appwire.JobsOutputResponse
 	if err == nil {
 		resp, err = source.JobOutput(ctx, params)

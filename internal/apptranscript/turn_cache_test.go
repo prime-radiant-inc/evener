@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestTurnCacheReusesParseUntilFileChanges(t *testing.T) {
@@ -80,5 +83,36 @@ func TestTurnCacheEvictsBeyondBound(t *testing.T) {
 	}
 	if _, ok := cache.entries[paths[len(paths)-1]]; !ok {
 		t.Fatalf("newest path should still be cached but was evicted")
+	}
+}
+
+func TestTurnCacheKeepsLegacyAndGroupedFullProjectionsIndependent(t *testing.T) {
+	for _, order := range []string{"legacy-first", "grouped-first"} {
+		t.Run(order, func(t *testing.T) {
+			path := writeEntries(t,
+				userEntry(1, "question"),
+				transcript.Entry{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")}},
+			)
+			cache := NewTurnCache()
+			var legacy, grouped []appwire.Turn
+			var err error
+			if order == "legacy-first" {
+				legacy, err = cache.TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+				if err == nil {
+					grouped, err = cache.ItemTurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+				}
+			} else {
+				grouped, err = cache.ItemTurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+				if err == nil {
+					legacy, err = cache.TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(legacy) != 2 || len(grouped) != 1 {
+				t.Fatalf("legacy turns=%d grouped turns=%d, want 2 and 1", len(legacy), len(grouped))
+			}
+		})
 	}
 }

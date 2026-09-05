@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -62,15 +60,6 @@ func pass6Past(t *testing.T) *hubcore.PastIndex {
 		t.Fatal(err)
 	}
 	return idx
-}
-
-func pass6ManagedLauncher(source appsource.Source) *codexlaunch.CodexLauncher {
-	l := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed"}, {ID: "codex"}})
-	for _, id := range []string{"managed", "codex"} {
-		l.Sources[id] = source
-		l.Running[id] = &codexlaunch.LaunchedCodex{Cmd: &exec.Cmd{}, Exited: make(chan struct{})}
-	}
-	return l
 }
 
 // FuzzThreadLifecycleListPass6 drives lifecycle and list branches directly;
@@ -131,11 +120,6 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		remote.startErr = errors.New("start")
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{}, remoteReg, appwire.ThreadStartParams{Harness: "remote"})
 		remote.startErr = nil
-		launcher := pass6ManagedLauncher(remote)
-		managedCfg := hubcore.WebConfig{CodexLauncher: launcher, CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "managed"}, {}}}
-		_, _ = hubThreadStart(ctx, managedCfg, remoteReg, appwire.ThreadStartParams{Harness: "managed"})
-		_, _ = hubThreadStart(ctx, managedCfg, remoteReg, appwire.ThreadStartParams{Harness: "missing"})
-
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{}, registry, appwire.ThreadResumeParams{})
 		_, _ = hubThreadResume(ctx, cfg, registry, appwire.ThreadResumeParams{})
 		_, _ = hubThreadResume(ctx, cfg, registry, appwire.ThreadResumeParams{Ref: "bad"})
@@ -145,7 +129,6 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		source.readErr = errors.New("resume read")
 		_, _ = hubThreadResume(ctx, cfg, registry, appwire.ThreadResumeParams{Session: "past"})
 		source.readErr = nil
-		_, _ = hubThreadResume(ctx, managedCfg, remoteReg, appwire.ThreadResumeParams{Ref: "managed:r"})
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{}, remoteReg, appwire.ThreadResumeParams{Ref: "remote:r"})
 		_, _ = resumeRequestForConfig(hubcore.WebConfig{}, "none")
 		_, _ = resumeRequestForConfig(cfg, "past")
@@ -172,12 +155,6 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		extra.listErr = errors.New("list")
 		_, _ = hubThreadList(ctx, cfg, registry, appwire.ThreadListParams{})
 		_, _ = hubThreadList(ctx, cfg, registry, appwire.ThreadListParams{SourceIDs: []string{"remote"}})
-		_, _ = hubThreadList(ctx, managedCfg, remoteReg, appwire.ThreadListParams{SourceIDs: []string{"managed"}})
-		_ = ensureManagedCodexSources(ctx, hubcore.WebConfig{}, nil, appwire.ThreadListParams{})
-		badManaged := hubcore.WebConfig{CodexLauncher: codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "bad", Binary: "/does/not/exist"}}), CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "bad"}}}
-		_ = ensureManagedCodexSources(ctx, badManaged, remoteReg, appwire.ThreadListParams{})
-		_ = ensureManagedCodexSources(ctx, badManaged, remoteReg, appwire.ThreadListParams{SourceIDs: []string{"bad"}})
-
 		for _, th := range []appwire.Thread{{}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "remote:x"}}, {ID: "past", Preview: "past", Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}} {
 			_ = threadListSourceID("local", th)
 			_, _ = mergePastMetadataForList(context.Background(), cfg, "local", th)

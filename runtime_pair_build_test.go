@@ -867,6 +867,90 @@ kill() {
 	}
 }
 
+// webWaitShell can reach the first wait before the scheduled fake npm child
+// publishes its PID. Synchronize that test-only identity handoff before
+// intercepting the exact wait; otherwise the fixture can miss its only seam.
+const webWaitShell = `wait() {
+  tracked_pid=
+  while [ -z "$tracked_pid" ]; do
+    tracked_pid=$(cat "$EVENER_TEST_NPM_PID" 2>/dev/null) || tracked_pid=
+    [ -n "$tracked_pid" ] || sleep 0.01
+  done
+  if [ "${1:-}" = "$tracked_pid" ] && [ "${EVENER_TEST_WEB_WAIT_USED:-0}" -eq 0 ]; then
+    EVENER_TEST_WEB_WAIT_USED=1
+    printf '%s\n' "$$" > "$EVENER_TEST_WEB_WAIT_READY"
+    exec 9<> "$EVENER_TEST_WEB_WAIT_RELEASE"
+    read -r _ <&9
+  fi
+  command wait "$@"
+  wait_status=$?
+  : > "$EVENER_TEST_WEB_WAIT_REAPED"
+  if [ "${1:-}" = "$tracked_pid" ] && [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
+    return 127
+  fi
+  return "$wait_status"
+}
+jobs() {
+  if [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
+    cat "$EVENER_TEST_NPM_PID"
+    return
+  fi
+  command jobs "$@"
+}
+`
+
+func TestWebWaitSeamRetriesTrackedPIDPublication(t *testing.T) {
+	root := t.TempDir()
+	bashEnv := filepath.Join(root, "wait-shell")
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.Mkdir(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, bashEnv, []byte(webWaitShell), 0o644)
+
+	publishedPID := filepath.Join(root, "held-typecheck.pid")
+	expectedPID := filepath.Join(root, "expected.pid")
+	catTripped := filepath.Join(root, "cat.tripped")
+	waitReady := filepath.Join(root, "wait.ready")
+	waitRelease := filepath.Join(root, "wait.release")
+	waitReaped := filepath.Join(root, "wait.reaped")
+	writeTestFile(t, waitRelease, []byte("release\n"), 0o600)
+	writeTestFile(t, filepath.Join(fakeBin, "cat"), []byte(`#!/bin/sh
+if [ "$1" = "$EVENER_TEST_NPM_PID" ] && [ ! -e "$EVENER_TEST_CAT_TRIPPED" ]; then
+  : > "$EVENER_TEST_CAT_TRIPPED"
+  IFS= read -r pid < "$EVENER_TEST_EXPECTED_PID"
+  printf '%s\n' "$pid" > "$EVENER_TEST_NPM_PID"
+  exit 1
+fi
+while IFS= read -r line; do printf '%s\n' "$line"; done < "$1"
+`), 0o755)
+
+	command := exec.Command("bash", "-c", `bash -c 'exit 0' &
+printf '%s\n' "$!" > "$EVENER_TEST_EXPECTED_PID"
+wait "$!"
+`)
+	command.Env = []string{
+		"BASH_ENV=" + bashEnv,
+		"EVENER_TEST_CAT_TRIPPED=" + catTripped,
+		"EVENER_TEST_EXPECTED_PID=" + expectedPID,
+		"EVENER_TEST_NPM_PID=" + publishedPID,
+		"EVENER_TEST_WEB_WAIT_READY=" + waitReady,
+		"EVENER_TEST_WEB_WAIT_RELEASE=" + waitRelease,
+		"EVENER_TEST_WEB_WAIT_REAPED=" + waitReaped,
+		"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("exercise wait seam: %v; output = %s", err, output)
+	}
+	if _, err := os.Stat(waitReady); err != nil {
+		t.Fatalf("wait seam missed the tracked PID after its first read raced publication: %v; output = %s", err, output)
+	}
+	if _, err := os.Stat(waitReaped); err != nil {
+		t.Fatalf("wait seam did not reap the tracked child: %v; output = %s", err, output)
+	}
+}
+
 func TestMakeTestWebInterruptAtWaitHandoff(t *testing.T) {
 	for _, signal := range []string{"TERM", "INT"} {
 		t.Run(signal, func(t *testing.T) {
@@ -920,30 +1004,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		}
 	}
 	bashEnv := filepath.Join(fixture.root, "wait-shell")
-	writeTestFile(t, bashEnv, []byte(`wait() {
-  tracked_pid=$(cat "$EVENER_TEST_NPM_PID")
-  if [ "${1:-}" = "$tracked_pid" ] && [ "${EVENER_TEST_WEB_WAIT_USED:-0}" -eq 0 ]; then
-    EVENER_TEST_WEB_WAIT_USED=1
-    printf '%s\n' "$$" > "$EVENER_TEST_WEB_WAIT_READY"
-    exec 9<> "$EVENER_TEST_WEB_WAIT_RELEASE"
-    read -r _ <&9
-  fi
-  command wait "$@"
-  wait_status=$?
-  : > "$EVENER_TEST_WEB_WAIT_REAPED"
-  if [ "${1:-}" = "$tracked_pid" ] && [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
-    return 127
-  fi
-  return "$wait_status"
-}
-jobs() {
-  if [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
-    cat "$EVENER_TEST_NPM_PID"
-    return
-  fi
-  command jobs "$@"
-}
-`), 0o644)
+	writeTestFile(t, bashEnv, []byte(webWaitShell), 0o644)
 
 	childRelease, err := os.OpenFile(npmReleasePath, os.O_RDWR, 0)
 	if err != nil {

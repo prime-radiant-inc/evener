@@ -131,19 +131,19 @@ func sampleDashboardTree() hubTreeResponse {
 		Age:         "1h",
 		Live:        false,
 	}
-	codexLive := hubTreeNode{
-		Ref:         "codex-local:01CODEX",
-		SessionID:   "01CODEX",
-		SourceLabel: "codex-local",
-		Title:       "Codex app-server smoke",
-		Project:     "codex-src",
+	daemonLive := hubTreeNode{
+		Ref:         "local-daemon:01READONLY",
+		SessionID:   "01READONLY",
+		SourceLabel: "local-daemon",
+		Title:       "Local daemon read-only session",
+		Project:     "daemon-src",
 		State:       "idle",
-		Model:       "gpt-5.3-codex",
+		Model:       "openai/gpt-5.5",
 		Age:         "9m",
 		Live:        true,
 	}
 	return hubTreeResponse{
-		Live: []hubTreeNode{evenerLive, evenerBusy, codexLive},
+		Live: []hubTreeNode{evenerLive, evenerBusy, daemonLive},
 		Projects: []hubTreeProject{
 			{
 				Key:         "evener",
@@ -153,11 +153,11 @@ func sampleDashboardTree() hubTreeResponse {
 				Sessions:    []hubTreeNode{evenerLive, evenerBusy, evenerEnded},
 			},
 			{
-				Key:         "codex-src",
-				Name:        "codex-src",
-				WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener/inspo/codex",
+				Key:         "daemon-src",
+				Name:        "daemon-src",
+				WorkingDir:  "/repo/daemon",
 				RollupState: "idle",
-				Sessions:    []hubTreeNode{codexLive},
+				Sessions:    []hubTreeNode{daemonLive},
 			},
 		},
 	}
@@ -180,15 +180,15 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 				Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true, Fork: true, Resume: true, Shutdown: true, ChangeModel: true,
 			},
 		},
-		"codex-readonly": {
-			Ref:         "codex-local:01CODEX",
-			SessionID:   "01CODEX",
-			SourceLabel: "codex-local",
-			Title:       "Codex app-server smoke",
+		"source-readonly": {
+			Ref:         "local-daemon:01READONLY",
+			SessionID:   "01READONLY",
+			SourceLabel: "local-daemon",
+			Title:       "Local daemon read-only session",
 			State:       "idle",
-			Model:       "gpt-5.3-codex",
-			WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener/inspo/codex",
-			Project:     "codex-src",
+			Model:       "openai/gpt-5.5",
+			WorkingDir:  "/repo/daemon",
+			Project:     "daemon-src",
 			TurnCount:   1,
 			Live:        true,
 			Capabilities: hubSessionCapabilities{
@@ -219,13 +219,13 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 			},
 		},
 		"busy-readonly": {
-			Ref:         "codex-local:01BUSY",
-			SessionID:   "01BUSYCODEX",
-			SourceLabel: "codex-local",
-			Title:       "Codex busy read-only sample",
+			Ref:         "local-daemon:01BUSY",
+			SessionID:   "01BUSY",
+			SourceLabel: "local-daemon",
+			Title:       "Local daemon busy read-only sample",
 			State:       "active",
-			Model:       "gpt-5.3-codex",
-			Project:     "codex-src",
+			Model:       "openai/gpt-5.5",
+			Project:     "daemon-src",
 			Live:        true,
 			Capabilities: hubSessionCapabilities{
 				Interrupt: true,
@@ -346,10 +346,10 @@ func sampleDiagnostics() []tuiNoticeSample {
 		{
 			Name:       "action-unavailable",
 			Kind:       "unavailable",
-			Summary:    "Clear is not available for Codex app-server sessions",
-			Cause:      "codex-local did not advertise thread/clear",
+			Summary:    "Clear is not available for this source",
+			Cause:      "local-daemon did not advertise thread/clear",
 			NextAction: "open /help to see source-supported actions",
-			Source:     "codex-local",
+			Source:     "local-daemon",
 		},
 	}
 }
@@ -378,7 +378,6 @@ func samplePickerStates() []tuiPickerSample {
 func sampleSpawnOptions() []tuiSpawnSample {
 	return []tuiSpawnSample{
 		{Name: "evener-openai", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-5.5", WorkingDir: "/repo/evener"},
-		{Name: "codex-local", Harness: "codex-local", HarnessKind: "codex", Model: "gpt-5.3-codex", WorkingDir: "/repo/evener/inspo/codex"},
 		{Name: "auth-required", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-4.1", WorkingDir: "/repo/evener", AuthReason: "OpenAI login required"},
 		{Name: "launch-error", Harness: "evener", HarnessKind: "evener", Model: "openai/gpt-5.5", WorkingDir: "/repo/evener", AuthReason: "harness did not report provider openai"},
 	}
@@ -391,8 +390,8 @@ func sampleRenders() []tuiSampleRender {
 		contains []string
 	}{
 		{name: "dashboard-narrow", width: 60, contains: []string{"EVENER LIVE", "─", "┄", "new", "filter"}},
-		{name: "dashboard-normal", width: 100, contains: []string{"EVENER LIVE", "codex-local", "Restore hub TUI widgets"}},
-		{name: "dashboard-wide", width: 140, contains: []string{"EVENER LIVE", "─", "┄", "Codex app-server smoke"}},
+		{name: "dashboard-normal", width: 100, contains: []string{"EVENER LIVE", "local-daemon", "Restore hub TUI widgets"}},
+		{name: "dashboard-wide", width: 140, contains: []string{"EVENER LIVE", "─", "┄", "Local daemon read-only session"}},
 		{name: "session-idle", width: 100, contains: []string{"EVENER / SESSION", "IDLE", "draft stays visible"}},
 		{name: "session-streaming", width: 100, contains: []string{"EVENER / SESSION", "The running agent harness", "all task steps completed"}},
 		{name: "session-busy-steer", width: 100, contains: []string{"EVENER / SESSION", "queue", "ctrl+s", "steer", "Please also check", "work 3m", "tok ↑46k ↓12k"}},
@@ -412,7 +411,6 @@ func sampleRenders() []tuiSampleRender {
 			"submit with 1 unanswered → it resolves as skipped", "review answers",
 		}},
 		{name: "spawn-evener", width: 100, contains: []string{"Harness:  evener", "openai/gpt-5.5"}},
-		{name: "spawn-codex", width: 100, contains: []string{"Harness:  codex-local", "codex-local/gpt-5.3-codex"}},
 		{name: "spawn-auth-required", width: 100, contains: []string{"OpenAI login required", "openai/gpt-4.1"}},
 		{name: "model-picker", width: 100, contains: []string{"Select model", "openai/gpt-5.5"}},
 		{name: "theme-picker", width: 80, contains: []string{"Select theme", "dark", "light"}},
@@ -449,7 +447,7 @@ func sampleInteractions() []tuiInteractionSample {
 		{Name: "composer-draft-survives-overlay", Keys: []string{"type draft", "/model", "esc"}, Expected: "composer still contains draft"},
 		{Name: "busy-enter-queues-message", Keys: []string{"enter"}, Expected: "busy enter enqueues the composer text via turn/queue and clears the draft"},
 		{Name: "busy-ctrl-s-drains-as-steer", Keys: []string{"ctrl+s"}, Expected: "ctrl+s drains the queue (plus any composer text) as a single STEERING message"},
-		{Name: "unsupported-codex-actions-hidden-or-disabled", Keys: []string{"/help"}, Expected: "Codex clear/shutdown actions are absent or disabled with reasons"},
+		{Name: "unsupported-source-actions-hidden-or-disabled", Keys: []string{"/help"}, Expected: "source clear/shutdown actions are absent or disabled with reasons"},
 	}
 }
 
@@ -527,11 +525,8 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		m := sampleSpawnModel(width, sampleSpawnOptions()[0])
 		m.session.setInputValue("Implement the next TUI task")
 		return renderSample(name, width, m.spawnView()), true
-	case "spawn-codex":
-		m := sampleSpawnModel(width, sampleSpawnOptions()[1])
-		return renderSample(name, width, m.spawnView()), true
 	case "spawn-auth-required":
-		m := sampleSpawnModel(width, sampleSpawnOptions()[2])
+		m := sampleSpawnModel(width, sampleSpawnOptions()[1])
 		m.err = stringsError("OpenAI login required")
 		return renderSample(name, width, m.spawnView()), true
 	case "model-picker":
@@ -577,7 +572,7 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 	case "appshell-normal":
 		return renderSample(name, width, tuiprim.AppShell{
 			TopBar: "evener live",
-			Body:   "Live now\n> idle evener session\n  codex smoke",
+			Body:   "Live now\n> idle evener session\n  local daemon session",
 			Footer: tuiprim.ActionBarForWidth(width, "enter open", "n new", "ctrl+o dashboard", "q quit"),
 		}.View()), true
 	case "appshell-loading":
@@ -649,15 +644,12 @@ func sampleSpawnModel(width int, sample tuiSpawnSample) hubModel {
 	m := sampleHubModel(width)
 	m.mode = hubModeSpawn
 	m.spawnHarness = sample.Harness
-	m.spawnHarnesses = []string{"evener", "codex-local"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex-local": "codex"}
+	m.spawnHarnesses = []string{"evener"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener"}
 	m.spawnModel = sample.Model
 	m.spawnDir = sample.WorkingDir
 	m.spawnProject = "evener"
 	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5.5", Display: "openai/gpt-5.5"}, {ID: "openai/gpt-4.1", Display: "openai/gpt-4.1"}}
-	m.spawnHarnessModels = map[string][]tuipick.ModelPickerItem{
-		"codex-local": {{ID: "gpt-5.3-codex", Display: "gpt-5.3-codex"}},
-	}
 	m.setSpawnFocus(hubSpawnFieldPrompt)
 	return m
 }

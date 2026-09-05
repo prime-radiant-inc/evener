@@ -360,45 +360,6 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	}
 }
 
-func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
-	t.Parallel()
-	requireTmux(t)
-	e2ecap.RequireLoopbackBind(t)
-	e2ecap.RequireProcessInspect(t)
-	bin := buildTUIBinary(t)
-	hub := newTUIE2EHub(t)
-	hub.SetHarnesses([]appwire.HarnessDescriptor{
-		{ID: "evener", Label: "evener", Kind: "evener"},
-		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
-	})
-	registerTUIE2EHubCleanup(t, hub)
-	app := startTUITmux(t, bin, hub)
-	defer app.Close()
-
-	app.WaitFor("EVENER LIVE", "live task")
-	app.SendKeys("n")
-	app.WaitFor("Harness:  evener", "Model:    openai/gpt-5")
-	app.SendKeys("Tab", "Enter")
-	app.WaitFor("Harness:  codex-local", "Model:    (harness default)")
-	app.SendKeys("Tab", "Enter")
-	// The picker groups by provider header ("CODEX-LOCAL") and shows the
-	// prettified bare display name ("Gpt 5.3 Codex"), not a "provider/model"
-	// string (Task 11).
-	app.WaitFor("Select codex-local model", "CODEX-LOCAL", "Gpt 5.3 Codex")
-	app.SendKeys("Enter")
-	app.WaitFor("Harness:  codex-local", "Model:    codex-local/gpt-5.3-codex")
-	app.SendKeys("Tab", "Enter")
-	app.TypeLine("spawn via codex")
-	app.WaitFor("spawned session 1")
-	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].Harness != "codex-local" {
-		t.Fatalf("harness=%q, want codex-local", spawns[0].Harness)
-	}
-	if spawns[0].ModelProvider != "" || spawns[0].Model != "gpt-5.3-codex" {
-		t.Fatalf("codex spawn model=%s/%s, want raw gpt-5.3-codex", spawns[0].ModelProvider, spawns[0].Model)
-	}
-}
-
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	t.Parallel()
 	requireTmux(t)
@@ -2406,14 +2367,11 @@ func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadR
 	return appwire.ThreadReadResponse{Thread: h.threadFromSessionLocked(s)}, nil
 }
 
-func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+func (h *tuiE2EHub) handleModelList(_ context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	defer h.notify()
 	h.mu.Lock()
 	authRequired := h.authRequired
 	h.mu.Unlock()
-	if params.Harness == "codex-local" {
-		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
-	}
 	if authRequired {
 		return appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{tuiE2EGPT5Descriptor()},

@@ -158,15 +158,30 @@ let mutationStorage: MutationOutboxIndexedDB;
 // enter/leave/blocked cases; this one only has to make the pane's own wiring
 // reachable.
 class StubIntersectionObserver {
-  constructor(private readonly callback: IntersectionObserverCallback) {}
+  static instances: StubIntersectionObserver[] = [];
+  static autoTrigger = true;
+  readonly observed: Element[] = [];
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    StubIntersectionObserver.instances.push(this);
+  }
   observe(target: Element): void {
-    this.callback(
-      [{ target, isIntersecting: true } as IntersectionObserverEntry],
-      this as unknown as IntersectionObserver,
-    );
+    this.observed.push(target);
+    if (StubIntersectionObserver.autoTrigger) this.enter();
   }
   unobserve(): void {}
   disconnect(): void {}
+  enter(): void {
+    this.callback(
+      this.observed.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+function latestStubIntersectionObserver(): StubIntersectionObserver {
+  const observer = StubIntersectionObserver.instances.at(-1);
+  if (!observer) throw new Error("no IntersectionObserver was constructed");
+  return observer;
 }
 
 beforeAll(() => {
@@ -185,6 +200,8 @@ beforeEach(() => {
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
   localStorage.clear();
+  StubIntersectionObserver.instances = [];
+  StubIntersectionObserver.autoTrigger = true;
   vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
@@ -1483,6 +1500,143 @@ test("older turns load with no click at all once the paging sentinel is in view"
   );
 
   expect(await screen.findByText("older history")).toBeTruthy();
+});
+
+test("folds a result-only partial turn with its older call and earlier fragment", async () => {
+  StubIntersectionObserver.autoTrigger = false;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_shared",
+          status: "completed",
+          itemsView: "fragment",
+          durationMs: 25,
+          items: [
+            {
+              id: "item_tool_result_paging",
+              turnId: "turn_shared",
+              type: "commandExecution",
+              toolName: "paging_tool",
+              callId: "paging-call",
+              output: "result output",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    }),
+    olderCursor: "opaque-page-cursor",
+  }));
+  fake.on("thread/turns/list", () => ({
+    data: [
+      {
+        id: "turn_shared",
+        status: "completed",
+        itemsView: "fragment",
+        hasLaterItems: true,
+        items: [
+          {
+            id: "item_earlier_paging",
+            turnId: "turn_shared",
+            type: "userMessage",
+            text: "earlier fragment",
+            status: "completed",
+          },
+          {
+            id: "item_tool_paging",
+            turnId: "turn_shared",
+            type: "commandExecution",
+            toolName: "paging_tool",
+            callId: "paging-call",
+            argumentsJson: '{"input":"call args"}',
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const sentinel = await screen.findByTestId("load-older-sentinel");
+  expect(latestStubIntersectionObserver().observed).toContain(sentinel);
+  expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+  await act(async () => {
+    latestStubIntersectionObserver().enter();
+  });
+  expect(await screen.findByText("earlier fragment")).toBeTruthy();
+  expect(screen.getAllByText("earlier fragment")).toHaveLength(1);
+  const foldedTool = threadsStore
+    .getState()
+    .threads.get("ref_a")
+    ?.turns.flatMap((turn) => turn.items)
+    .find((item) => item.id === "item_tool_paging");
+  expect(foldedTool?.argumentsJSON).toContain("call args");
+  expect(foldedTool?.output).toBe("result output");
+  expect(foldedTool?.status).toBe("completed");
+  expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
+  const toolTrigger = screen.getByTestId("tool-row-trigger");
+  if (toolTrigger.getAttribute("aria-expanded") !== "true") fireEvent.click(toolTrigger);
+  expect(toolTrigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText(/input.*call args/i)).toBeTruthy();
+  await waitFor(() => expect(screen.getAllByText("result output")).toHaveLength(1));
+  expect(screen.queryByTestId("turn-separator")).toBeNull();
+  expect(screen.queryByTestId("load-older-retry")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("replaces stale item cursor content with a fresh read without a retry row", async () => {
+  const fake = connectFakeClient();
+  let reads = 0;
+  fake.on("thread/turns/list", () => {
+    throw new WireError("cursor was replaced", -32001, { evenerErrorInfo: "transcriptItemCursorStale" });
+  });
+  fake.on("thread/read", () => {
+    reads += 1;
+    return {
+      ...readResponse("ref_a", {
+        turns: [
+          {
+            id: "turn_stale",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: reads === 1 ? "stale-item" : "fresh-item",
+                turnId: "turn_stale",
+                type: "userMessage",
+                text: reads === 1 ? "stale content" : "fresh content",
+                status: "completed",
+              },
+            ],
+          },
+        ],
+      }),
+      olderCursor: "opaque-stale-cursor",
+    };
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByText("fresh content")).toBeTruthy();
+  const staleLists = fake.calls.filter((call) => call.method === "thread/turns/list");
+  expect(staleLists).toHaveLength(1);
+  expect(reads).toBe(2);
+  expect(screen.getAllByText("fresh content")).toHaveLength(1);
+  expect(screen.queryByText("stale content")).toBeNull();
+  expect(screen.queryByTestId("load-older-retry")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // --- Composer / SessionChrome placement ----------------------------------

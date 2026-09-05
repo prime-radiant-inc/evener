@@ -328,8 +328,8 @@ func TestSpawnPlugins_HarnessSwitchInvalidatesInFlightPreview(t *testing.T) {
 
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSpawn
-	m.spawnHarnesses = []string{"evener", "codex"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex": "codex"}
+	m.spawnHarnesses = []string{"evener", "external"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener", "external": "external"}
 	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{EnabledPlugins: &values}
 	m.spawnHarness = "evener"
 	oldCmd := m.requestSpawnPluginPreview()
@@ -338,11 +338,11 @@ func TestSpawnPlugins_HarnessSwitchInvalidatesInFlightPreview(t *testing.T) {
 	m.setSpawnFocus(hubSpawnFieldHarness)
 	updated, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(hubModel)
-	if cmd != nil || m.spawnHarness != "codex" {
-		t.Fatalf("switch to Codex: harness=%q cmd=%v", m.spawnHarness, cmd != nil)
+	if cmd != nil || m.spawnHarness != "external" {
+		t.Fatalf("switch to external: harness=%q cmd=%v", m.spawnHarness, cmd != nil)
 	}
 	if m.spawnPluginPreviewLoaded || m.spawnPluginPreviewLoading || m.spawnPluginPreviewRequestKey != "" {
-		t.Fatalf("switch to Codex retained preview state: loaded=%v loading=%v key=%q", m.spawnPluginPreviewLoaded, m.spawnPluginPreviewLoading, m.spawnPluginPreviewRequestKey)
+		t.Fatalf("switch to external retained preview state: loaded=%v loading=%v key=%q", m.spawnPluginPreviewLoaded, m.spawnPluginPreviewLoading, m.spawnPluginPreviewRequestKey)
 	}
 
 	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{
@@ -351,7 +351,7 @@ func TestSpawnPlugins_HarnessSwitchInvalidatesInFlightPreview(t *testing.T) {
 	})
 	m = updated.(hubModel)
 	if m.spawnPluginPreviewLoaded || m.spawnPluginPreviewLoading || len(m.spawnPluginPreview.Plugins) != 0 {
-		t.Fatalf("late Evener preview changed Codex state: loaded=%v loading=%v preview=%+v", m.spawnPluginPreviewLoaded, m.spawnPluginPreviewLoading, m.spawnPluginPreview)
+		t.Fatalf("late Evener preview changed external state: loaded=%v loading=%v preview=%+v", m.spawnPluginPreviewLoaded, m.spawnPluginPreviewLoading, m.spawnPluginPreview)
 	}
 
 	m.setSpawnFocus(hubSpawnFieldHarness)
@@ -369,8 +369,8 @@ func TestSpawnPlugins_HarnessSwitchInvalidatesInFlightPreview(t *testing.T) {
 func TestSpawnPlugins_UnsupportedPreviewRequestClearsState(t *testing.T) {
 	m := newHubModel(&appwire.Client{}, "http://hub.test")
 	m.mode = hubModeSpawn
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
+	m.spawnHarness = "external"
+	m.spawnHarnessKinds = map[string]string{"external": "external"}
 	m.spawnPluginPreview = appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "stale"}}}
 	m.spawnPluginPreviewLoaded = true
 	m.spawnPluginPreviewLoading = true
@@ -406,12 +406,12 @@ func TestSpawnPlugins_SummaryCountsOnlyCurrentCandidates(t *testing.T) {
 	}
 }
 
-func TestSpawnPlugins_CodexIgnoresStaleSelectionForLaunch(t *testing.T) {
+func TestSpawnPlugins_NonEvenerIgnoresStaleSelectionForLaunch(t *testing.T) {
 	var started appwire.ThreadStartParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 			started = params
-			return appwire.ThreadStartResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "codex:01NEW"}}}, nil
+			return appwire.ThreadStartResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "external:01NEW"}}}, nil
 		})
 	})
 	defer cleanup()
@@ -419,32 +419,34 @@ func TestSpawnPlugins_CodexIgnoresStaleSelectionForLaunch(t *testing.T) {
 	selected := []string{"missing"}
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSpawn
-	m.spawnHarness = "codex"
-	m.spawnHarnesses = []string{"evener", "codex"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex": "codex"}
+	m.spawnHarness = "external"
+	m.spawnHarnesses = []string{"evener", "external"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener", "external": "external"}
+	m.spawnModel = "openai/gpt-5"
+	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5"}}
 	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{Sandbox: "read-only", EnabledPlugins: &selected}
 	m.spawnPluginPreviewLoaded = true
 	m.spawnPluginPreview = appwire.PluginPreviewResponse{SelectionErrors: []appwire.PluginSelectionError{{Name: "missing"}}}
 
 	if view := m.spawnView(); strings.Contains(view, "Plugins:") {
-		t.Fatalf("Codex spawn should hide plugin field:\n%s", view)
+		t.Fatalf("non-Evener spawn should hide plugin field:\n%s", view)
 	}
 	m.setSpawnFocus(hubSpawnFieldDir)
 	if cmd := m.advanceSpawnFocus(1); m.spawnFocus != hubSpawnFieldPrompt || cmd != nil {
-		t.Fatalf("Codex focus advanced to field=%v with cmd=%v, want prompt without preview", m.spawnFocus, cmd != nil)
+		t.Fatalf("non-Evener focus advanced to field=%v with cmd=%v, want prompt without preview", m.spawnFocus, cmd != nil)
 	}
 
 	m.session.setInputValue("launch")
 	updated, cmd := m.submitSpawnForm()
 	m = updated.(hubModel)
 	if m.err != nil || cmd == nil {
-		t.Fatalf("Codex launch blocked: err=%v cmd=%v", m.err, cmd != nil)
+		t.Fatalf("non-Evener launch blocked: err=%v cmd=%v", m.err, cmd != nil)
 	}
-	if msg := cmd().(hubSpawnMsg); msg.err != nil || msg.resp.Ref != "codex:01NEW" {
-		t.Fatalf("Codex launch result=%+v", msg)
+	if msg := cmd().(hubSpawnMsg); msg.err != nil || msg.resp.Ref != "external:01NEW" {
+		t.Fatalf("non-Evener launch result=%+v", msg)
 	}
 	if started.LaunchOverrides == nil || started.LaunchOverrides.Sandbox != "read-only" || started.LaunchOverrides.EnabledPlugins != nil {
-		t.Fatalf("Codex launch overrides=%+v, want unrelated override preserved and plugins omitted", started.LaunchOverrides)
+		t.Fatalf("non-Evener launch overrides=%+v, want unrelated override preserved and plugins omitted", started.LaunchOverrides)
 	}
 }
 

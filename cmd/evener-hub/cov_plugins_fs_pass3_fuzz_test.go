@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
@@ -112,11 +111,7 @@ func fuzzExerciseModels(data []byte) {
 	_ = providerHasLaunchDiagnostic(diags, "P")
 	_ = providerHasLaunchDiagnostic(nil, "P")
 	_ = launchInstanceExists(hubcore.WebConfig{}, "openrouter")
-	_ = launchHarnessDescriptors(hubcore.WebConfig{})
-	_ = launchHarnessDescriptors(hubcore.WebConfig{
-		CodexSources:  []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "remote"}},
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "remote"}, {ID: "other"}},
-	})
+	_ = launchHarnessDescriptors()
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest([]schema.SessionMeta{{ID: "a", ProfileID: "p", Model: name}, {ID: "b", ProfileID: "gone", Model: "gone"}})
 	_ = attachRecentModels(hubcore.WebConfig{Past: past}, appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "p", Model: name}}})

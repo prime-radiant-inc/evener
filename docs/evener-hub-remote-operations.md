@@ -217,36 +217,6 @@ Evener-owned OpenAI OAuth is user-scoped by default. With the service layout abo
 spawned sessions still store transcript/runtime state under per-project
 directories.
 
-## Codex App-Server Sources
-
-Hub can connect to already-running Codex app-server instances:
-
-```toml
-[[codex_sources]]
-id = "codex-local"
-endpoint = "ws://127.0.0.1:9900"
-bearer_token_file = "/run/secrets/codex-token"
-```
-
-Hub can also launch a Codex app-server on demand:
-
-```toml
-[[codex_launches]]
-id = "codex-managed"
-binary = "/usr/local/bin/codex"
-working_dir = "/srv/work"
-listen = "ws://127.0.0.1:0"
-timeout = "30s"
-
-[codex_launches.env]
-CODEX_HOME = "/var/lib/evener/codex-home"
-```
-
-If `binary` is the top-level `codex` CLI and `args` is omitted, Hub runs
-`codex app-server --listen <listen>`. If `binary` is a standalone
-`codex-app-server` binary, Hub omits the extra `app-server` subcommand. Hub-owned
-Codex app-servers currently require a WebSocket listen URL.
-
 ## Browser And TUI Access
 
 For an SSH tunnel:
@@ -287,8 +257,6 @@ Manual spawn/resume verification:
 6. Send another message to the ended session and confirm Hub resumes it.
 7. Open `evener tui --hub-addr ... --no-auto-start-hub` and confirm the same
    session appears with source label `evener`.
-8. If Codex is configured, spawn or open a Codex source and confirm unsupported
-   Evener-only actions are hidden or return structured action-unavailable errors.
 
 ## Logs, Restarts, And Backups
 
@@ -304,7 +272,6 @@ under the state directories matched by `state_glob`; back those up. The
 `run_dir` rendezvous files are runtime discovery data and can be recreated by
 running daemons or pruned after failed probes.
 
-Hub-launched Codex app-server processes are stopped when Hub shuts down.
 Hub-spawned Evener daemons are independent `evener serve` processes; they continue
 until the session is shut down or the process exits.
 
@@ -395,10 +362,10 @@ that's the log to preserve in step 4. If they resolve to a tty instead
 
 **4. Stop it, rebuild if needed, and relaunch preserving the log.**
 
-Plain `kill <pid>` (SIGTERM) triggers Hub's graceful shutdown — draining
-active connections and any Codex-launcher companion, for up to 5 seconds —
-before it releases the lock; with nothing actively streaming, the lock is in
-practice free again within milliseconds. `kill -9 <pid>` skips the drain and
+Plain `kill <pid>` (SIGTERM) triggers Hub's graceful shutdown — stopping active
+connections and the HTTP server, for up to 5 seconds — before it releases the
+lock; with nothing actively streaming, the lock is in practice free again within
+milliseconds. `kill -9 <pid>` skips the drain and
 frees the lock the instant the process is torn down. Either way, a relaunch
 that lands in the gap fails with:
 

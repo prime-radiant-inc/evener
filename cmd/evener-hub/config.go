@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
@@ -29,19 +27,17 @@ type ProviderConfig struct {
 // Config is the hub's runtime configuration loaded from hub.toml (see
 // DefaultConfigPath).
 type Config struct {
-	Addr               string                          `toml:"addr"`
-	MobileBaseURL      string                          `toml:"mobile_base_url"`
-	HubStateRoot       string                          `toml:"hub_state_root"`
-	StateGlob          string                          `toml:"state_glob"`
-	RunDir             string                          `toml:"run_dir"`
-	PastIndexDB        string                          `toml:"past_index_db"`
-	StatusPollInterval time.Duration                   `toml:"status_poll_interval"`
-	PastIndexRebuild   time.Duration                   `toml:"past_index_rebuild_interval"`
-	SpawnTimeout       time.Duration                   `toml:"spawn_timeout"`
-	PastResultsPerPage int                             `toml:"past_results_per_page"`
-	Providers          []ProviderConfig                `toml:"providers"`
-	CodexSources       []appsource.CodexSourceConfig   `toml:"codex_sources"`
-	CodexLaunches      []codexlaunch.CodexLaunchConfig `toml:"codex_launches"`
+	Addr               string           `toml:"addr"`
+	MobileBaseURL      string           `toml:"mobile_base_url"`
+	HubStateRoot       string           `toml:"hub_state_root"`
+	StateGlob          string           `toml:"state_glob"`
+	RunDir             string           `toml:"run_dir"`
+	PastIndexDB        string           `toml:"past_index_db"`
+	StatusPollInterval time.Duration    `toml:"status_poll_interval"`
+	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
+	PastResultsPerPage int              `toml:"past_results_per_page"`
+	Providers          []ProviderConfig `toml:"providers"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -117,8 +113,14 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
+	metadata, decodeErr := toml.Decode(string(data), &cfg)
+	for _, key := range []string{"codex_sources", "codex_launches"} {
+		if metadata.IsDefined(key) {
+			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
+		}
+	}
+	if decodeErr != nil {
+		return cfg, fmt.Errorf("parse config: %w", decodeErr)
 	}
 	applyConfigDefaults(&cfg)
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {

@@ -77,7 +77,7 @@ func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 }
 
 func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams) (threadNameMutation, error) {
-	source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+	source, err := sourceForThread(sources, params.Ref, "")
 	if err != nil {
 		return threadNameMutation{}, appwire.Unavailable(err.Error())
 	}

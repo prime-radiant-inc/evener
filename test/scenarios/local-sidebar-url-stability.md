@@ -1,11 +1,10 @@
 # local-sidebar-url-stability: a rail row opens its session at the one canonical ref URL
 
-**What this covers**: `docs/superpowers/specs/2026-07-13-codex-sidebar-session-navigation-design.md`,
-row `local-sidebar-url-stability`, retargeted onto the ref form that commit
-`8cea30ca6` ("One ref form") settled on. A local Evener session opened from the
-rail must land on `/s/local:<session-id>` — the same qualified form a Codex
-row uses, with a different host id — and clicking the same row again must not
-open a second copy of the session beside the first.
+**What this covers**: the ref form that commit `8cea30ca6` ("One ref form")
+settled on. A local Evener session opened from the rail must land on
+`/s/local:<session-id>` — the same qualified form as other source-qualified
+refs — and clicking the same row again must not open a second copy of the
+session beside the first.
 
 This card used to assert the opposite (that a local row keeps a *bare*
 `/s/<session-id>` route). That was the pre-`8cea30ca6` behaviour and is now

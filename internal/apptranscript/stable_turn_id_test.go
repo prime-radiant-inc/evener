@@ -33,8 +33,10 @@ func TestBoundedReadsHonorPersistedStableTurnIDs(t *testing.T) {
 		assistantTextEntry(8, "out-3"),
 	)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
-	wantIDs := []string{"turn_1", "turn_2", older, "turn_4", "turn_5", "turn_6", newer, "turn_8"}
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	// Logical grouping: each reserved user input opens one turn that swallows
+	// its assistant continuation, so the fallback entries renumber.
+	wantIDs := []string{"turn_1", older, "turn_5", newer}
 	if gotIDs := turnIDs(full); !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("full read turn IDs = %v, want %v", gotIDs, wantIDs)
 	}
@@ -79,7 +81,7 @@ func TestBoundedReadsMatchTheFullReadOnDuplicatePersistedTurnIDs(t *testing.T) {
 	}
 	path := writeEntries(t, entries...)
 
-	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	occurrences := 0
 	for _, id := range turnIDs(full) {
 		if id == "turn_11" {

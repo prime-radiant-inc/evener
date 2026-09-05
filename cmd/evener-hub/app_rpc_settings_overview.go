@@ -10,23 +10,20 @@ import (
 	"primeradiant.com/evener/agent/mcpprobe"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 )
 
 // hubSettingsOverview answers evener/settings/overview: the field bag behind
-// Settings → General/Hub/Storage/Agents/Codex launch/MCP servers (probed
-// half). See appwire.SettingsOverviewResponse's doc comment for the exact
-// web_settings.go field citations this mirrors — it is the JSON-RPC
-// replacement for that file's settingsData construction, for exactly those
-// six sections.
+// Settings → General/Hub/Storage/Agents/MCP servers (probed half). See
+// appwire.SettingsOverviewResponse's doc comment for the exact web_settings.go
+// field citations this mirrors — it is the JSON-RPC replacement for that file's
+// settingsData construction, for exactly those five sections.
 func hubSettingsOverview(ctx context.Context, cfg hubcore.WebConfig) (appwire.SettingsOverviewResponse, error) {
 	return appwire.SettingsOverviewResponse{
 		Hub:           settingsHubOverview(cfg),
 		Storage:       &appwire.SettingsStorageOverview{StateDir: cfg.StateDir},
 		Agents:        settingsAgentRoster(),
-		CodexLaunches: settingsCodexLaunchEntries(cfg.CodexLaunches),
 		McpDiscovered: settingsMCPOverview(ctx, cfg),
 	}, nil
 }
@@ -70,35 +67,6 @@ func settingsAgentRoster() []appwire.SettingsAgentEntry {
 		agents = append(agents, appwire.SettingsAgentEntry{Name: name})
 	}
 	return agents
-}
-
-// settingsCodexLaunchEntries maps configured codex launches to their wire
-// display form. See appwire.SettingsCodexLaunchEntry's doc comment for why
-// Args/BearerToken/BearerTokenFile are excluded.
-func settingsCodexLaunchEntries(configs []codexlaunch.CodexLaunchConfig) []appwire.SettingsCodexLaunchEntry {
-	if len(configs) == 0 {
-		return nil
-	}
-	out := make([]appwire.SettingsCodexLaunchEntry, 0, len(configs))
-	for _, c := range configs {
-		var envKeys []string
-		if len(c.Env) > 0 {
-			envKeys = make([]string, 0, len(c.Env))
-			for k := range c.Env {
-				envKeys = append(envKeys, k)
-			}
-			sort.Strings(envKeys)
-		}
-		out = append(out, appwire.SettingsCodexLaunchEntry{
-			ID:            c.ID,
-			Binary:        c.Binary,
-			WorkingDir:    c.WorkingDir,
-			Listen:        c.Listen,
-			TimeoutMillis: c.Timeout.Milliseconds(),
-			EnvKeys:       envKeys,
-		})
-	}
-	return out
 }
 
 // settingsMCPOverview probes the configured MCP servers, mirroring

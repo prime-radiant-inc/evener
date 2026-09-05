@@ -1567,7 +1567,8 @@ describe("useThreadsStore.ensureThread", () => {
         itemsView: "full",
         subscribe: true,
         replaceSubscription: false,
-        turnLimit: 40,
+        pageUnit: "item",
+        itemLimit: 40,
       });
       return readResponse("ref_a");
     });
@@ -3518,7 +3519,8 @@ describe("reconnect resubscribe", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
@@ -4643,8 +4645,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 // chrome stream): both are plain read-only wire calls with no turn-CAS
 // concept - verified against every server-side handler
 // (cmd/evener-hub/app_rpc.go's registerMiscHandlers, cmd/evener-hub/
-// internal/appsource/{local_daemon,codex_source}.go's ListTasks,
-// server/appwire_runtime.go's handleAppTasksList/handleAppModelList): none
+// app source ListTasks implementations, and server/appwire_runtime.go's
+// handleAppTasksList/handleAppModelList): none
 // of them ever construct appwire.Conflict(). Neither action maps errors -
 // a WireError (even one shaped like a Conflict, which cannot actually occur
 // here) passes through unchanged, same as resolveEscalation above.
@@ -4989,18 +4991,17 @@ describe("useThreadsStore.listTasks", () => {
     expect(result).toEqual(TASKS_DATA);
   });
 
-  test("propagates a Codex-source rejection (actionUnavailable) unchanged, not mapped to ConflictError", async () => {
+  test("propagates a source-backed rejection (actionUnavailable) unchanged, not mapped to ConflictError", async () => {
     const fake = connectFakeClient();
-    // Mirrors CodexSource.ListTasks verbatim (cmd/evener-hub/internal/
-    // appsource/codex_source.go:405-407): appwire.Unavailable(...), code
-    // -32014, evenerErrorInfo "actionUnavailable" - never a Conflict.
+    // Mirrors a source that omits the capability: appwire.Unavailable(...),
+    // code -32014, evenerErrorInfo "actionUnavailable" - never a Conflict.
     fake.on("evener/tasks/list", () => {
-      throw new WireError("codex source does not expose evener tasks", -32014, {
+      throw new WireError("remote source does not expose evener tasks", -32014, {
         evenerErrorInfo: "actionUnavailable",
       });
     });
 
-    const rejection = threadsStore.getState().listTasks("ref_codex");
+    const rejection = threadsStore.getState().listTasks("ref_remote");
     await expect(rejection).rejects.toBeInstanceOf(WireError);
     await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
     await expect(rejection).rejects.toMatchObject({ evenerErrorInfo: "actionUnavailable" });
@@ -5633,7 +5634,8 @@ describe("useThreadsStore.watchThread", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns[0]?.id).toBe("turn_b");
 
@@ -5695,7 +5697,8 @@ describe("useThreadsStore.watchThread", () => {
         itemsView: "full",
         subscribe: true,
         replaceSubscription: false,
-        turnLimit: 40,
+        pageUnit: "item",
+        itemLimit: 40,
       });
       return readResponse("ref_a");
     });
@@ -5916,7 +5919,8 @@ describe("useThreadsStore.watchThread", () => {
       itemsView: "full",
       subscribe: true,
       replaceSubscription: false,
-      turnLimit: 40,
+      pageUnit: "item",
+      itemLimit: 40,
     });
   });
 
@@ -6402,12 +6406,22 @@ describe("useThreadsStore.watchThread", () => {
 describe("useThreadsStore.loadOlderTurns", () => {
   test("fetches the older page via thread/turns/list using the model's olderCursor, prepends it, and advances the cursor", async () => {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => ({
-      thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
-      olderCursor: "cursor_1",
-    }));
+    fake.on("thread/read", (params) => {
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      expect(params).not.toHaveProperty("turnLimit");
+      return {
+        thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
+        olderCursor: "cursor_1",
+      };
+    });
     fake.on("thread/turns/list", (params) => {
-      expect(params).toEqual({ ref: "ref_a", cursor: "cursor_1", itemsView: "full", limit: 30 });
+      expect(params).toEqual({
+        ref: "ref_a",
+        cursor: "cursor_1",
+        itemsView: "full",
+        pageUnit: "item",
+        itemLimit: 40,
+      });
       return {
         data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
         nextCursor: "cursor_0",
@@ -6420,6 +6434,426 @@ describe("useThreadsStore.loadOlderTurns", () => {
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.turns.map((t) => t.id)).toEqual(["turn_1", "turn_2"]);
     expect(model?.olderCursor).toBe("cursor_0");
+  });
+
+  test("reacquires the ready client after waiting for a tracked hydration", async () => {
+    const oldClient = connectFakeClient();
+    oldClient.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    oldClient.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let resolveBlockingHydration!: (response: ThreadReadResponse) => void;
+    const blockingHydrationRequested = nextHandledRequest(
+      oldClient,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveBlockingHydration = resolve;
+        }),
+    );
+
+    oldClient.emitStateChange("reconnecting");
+    oldClient.emitReady();
+    await blockingHydrationRequested;
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await settleCallerContinuations();
+
+    const newClient = new FakeClient("ready");
+    newClient.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_2" }));
+    newClient.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }));
+    connectionStore.getState().connect(newClient);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.olderCursor === "cursor_2");
+    resolveBlockingHydration({ thread: testThread("ref_a"), olderCursor: "stale-cursor" });
+    await loading;
+
+    expect({
+      old: oldClient.calls.filter((call) => call.method === "thread/turns/list").length,
+      current: newClient.calls.filter((call) => call.method === "thread/turns/list").length,
+    }).toEqual({ old: 0, current: 1 });
+  });
+
+  test("a stale item cursor triggers one fresh subscribed read and does not surface an older-page error", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      return {
+        thread: testThread("ref_a", {
+          turns: [{ id: reads === 1 ? "old-turn" : "fresh-turn", status: "completed", itemsView: "full", items: [] }],
+        }),
+        olderCursor: reads === 1 ? "stale-cursor" : "fresh-cursor",
+      };
+    });
+    fake.on("thread/turns/list", () => {
+      throw new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await expect(threadsStore.getState().loadOlderTurns("ref_a")).resolves.toBeUndefined();
+
+    expect(reads).toBe(2);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["fresh-turn"]);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("fresh-cursor");
+  });
+
+  test("a stale cursor rejection from a replaced client leaves reconnect hydration authoritative", async () => {
+    const oldClient = connectFakeClient();
+    let oldReads = 0;
+    oldClient.on("thread/read", () => {
+      oldReads += 1;
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: oldReads === 1 ? "before-reconnect" : "old-client-recovery",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: "stale-cursor",
+      };
+    });
+    let rejectStalePage: ((error: Error) => void) | undefined;
+    const stalePageRequested = nextHandledRequest(
+      oldClient,
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          rejectStalePage = reject;
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await stalePageRequested;
+
+    const newClient = new FakeClient("ready");
+    let resolveReconnectHydration: ((response: ThreadReadResponse) => void) | undefined;
+    const reconnectHydrationRequested = nextHandledRequest(
+      newClient,
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveReconnectHydration = resolve;
+        }),
+    );
+    connectionStore.getState().connect(newClient);
+    await reconnectHydrationRequested;
+    const authoritativePublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-reconnect") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+
+    rejectStalePage?.(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await loading;
+
+    expect(oldReads).toBe(1);
+    resolveReconnectHydration?.({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-reconnect", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "authoritative-cursor",
+    });
+    await authoritativePublished;
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("authoritative-cursor");
+  });
+
+  test("a stale rejection from a superseded same-cursor page preserves the accepted page", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: reads === 1 ? "current-turn" : "unexpected-recovery",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: reads === 1 ? "shared-cursor" : "recovery-cursor",
+      };
+    });
+    type DeferredPage = {
+      resolve: (response: ThreadTurnsListResponse) => void;
+      reject: (error: Error) => void;
+    };
+    const requests: DeferredPage[] = [];
+    let announceFirstRequest!: () => void;
+    let announceSecondRequest!: () => void;
+    const firstRequested = new Promise<void>((resolve) => (announceFirstRequest = resolve));
+    const secondRequested = new Promise<void>((resolve) => (announceSecondRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((resolve, reject) => {
+          requests.push({ resolve, reject });
+          if (requests.length === 1) announceFirstRequest();
+          if (requests.length === 2) announceSecondRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const accepted = threadsStore.getState().loadOlderTurns("ref_a");
+    await firstRequested;
+    const stale = threadsStore.getState().loadOlderTurns("ref_a");
+    await secondRequested;
+    requests[0]?.resolve({
+      data: [{ id: "accepted-older", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "advanced-cursor",
+    });
+    await accepted;
+    requests[1]?.reject(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await stale;
+
+    expect(reads).toBe(1);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["accepted-older", "current-turn"]);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("advanced-cursor");
+  });
+
+  test("a stale page rejection does not replace a pending same-epoch targeted resync", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    let resolveResync!: (response: ThreadReadResponse) => void;
+    let announceResyncRequest!: () => void;
+    const resyncRequested = new Promise<void>((resolve) => (announceResyncRequest = resolve));
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) {
+        return {
+          thread: testThread("ref_a", {
+            turns: [{ id: "before-resync", status: "completed", itemsView: "full", items: [] }],
+          }),
+          olderCursor: "stale-cursor",
+        };
+      }
+      if (reads === 2) {
+        return new Promise<ThreadReadResponse>((resolve) => {
+          resolveResync = resolve;
+          announceResyncRequest();
+        });
+      }
+      return {
+        thread: testThread("ref_a", {
+          turns: [{ id: "unexpected-recovery", status: "completed", itemsView: "full", items: [] }],
+        }),
+        olderCursor: "recovery-cursor",
+      };
+    });
+    let rejectStalePage!: (error: Error) => void;
+    let announcePageRequest!: () => void;
+    const pageRequested = new Promise<void>((resolve) => (announcePageRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          rejectStalePage = reject;
+          announcePageRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await pageRequested;
+
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await resyncRequested;
+    const resyncPublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-resync") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    rejectStalePage(new WireError("cursor stale", -32013, { evenerErrorInfo: "transcriptItemCursorStale" }));
+    await loading;
+
+    expect(reads).toBe(2);
+    resolveResync({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-resync", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "resync-cursor",
+    });
+    await resyncPublished;
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("resync-cursor");
+  });
+
+  test("a successful pre-resync older page does not merge while a same-epoch targeted resync is pending", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    let resolveResync!: (response: ThreadReadResponse) => void;
+    let announceResyncRequest!: () => void;
+    const resyncRequested = new Promise<void>((resolve) => (announceResyncRequest = resolve));
+    fake.on("thread/read", () => {
+      reads += 1;
+      if (reads === 1) {
+        return {
+          thread: testThread("ref_a", {
+            turns: [{ id: "before-resync", status: "completed", itemsView: "full", items: [] }],
+          }),
+          olderCursor: "shared-cursor",
+        };
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveResync = resolve;
+        announceResyncRequest();
+      });
+    });
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    let announcePageRequest!: () => void;
+    const pageRequested = new Promise<void>((resolve) => (announcePageRequest = resolve));
+    fake.on(
+      "thread/turns/list",
+      () =>
+        new Promise<ThreadTurnsListResponse>((resolve) => {
+          resolvePage = resolve;
+          announcePageRequest();
+        }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await pageRequested;
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await resyncRequested;
+
+    resolvePage({
+      data: [{ id: "stale-older-page", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "page-cursor",
+      pageUnit: "item",
+    });
+    await loading;
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["before-resync"]);
+
+    const resyncPublished = new Promise<void>((resolve) => {
+      const unsubscribe = threadsStore.subscribe((state) => {
+        if (state.threads.get("ref_a")?.turns[0]?.id !== "after-resync") return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    resolveResync({
+      thread: testThread("ref_a", {
+        turns: [{ id: "after-resync", status: "completed", itemsView: "full", items: [] }],
+      }),
+      olderCursor: "resync-cursor",
+    });
+    await resyncPublished;
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.olderCursor).toBe("resync-cursor");
+  });
+
+  test("an ordinary older-page failure rejects so the inline retry UI can surface it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    const failure = new Error("list failed");
+    fake.on("thread/turns/list", () => {
+      throw failure;
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await expect(threadsStore.getState().loadOlderTurns("ref_a")).rejects.toBe(failure);
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  });
+
+  test("a live notification arriving while an older page is in flight survives the merge", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await flushUntil(() => resolvePage !== undefined);
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "live-turn", status: "inProgress", itemsView: "" },
+      },
+    });
+    resolvePage({
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "cursor_0",
+      pageUnit: "item",
+    });
+    await loading;
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["older-turn", "live-turn"]);
+  });
+
+  test("a reconnect hydration rejects a pre-cut older-page completion", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      expect(params).toMatchObject({ pageUnit: "item", itemLimit: 40 });
+      return {
+        thread: testThread("ref_a", {
+          turns: [
+            {
+              id: readCount === 1 ? "before-reconnect" : "after-reconnect",
+              status: "completed",
+              itemsView: "full",
+              items: [],
+            },
+          ],
+        }),
+        olderCursor: readCount === 1 ? "cursor_1" : "cursor_2",
+      };
+    });
+    let resolvePage!: (response: ThreadTurnsListResponse) => void;
+    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
+    await threadsStore.getState().ensureThread("ref_a");
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await flushUntil(() => resolvePage !== undefined);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(
+      () => readCount === 2 && threadsStore.getState().threads.get("ref_a")?.turns[0]?.id === "after-reconnect",
+    );
+    resolvePage({
+      data: [{ id: "stale-older", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: "cursor_0",
+    });
+    await loading;
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["after-reconnect"]);
   });
 
   test("is a no-op when the tracked model has no olderCursor (nothing more to load)", async () => {

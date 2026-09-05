@@ -359,6 +359,8 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
+  if (item.position !== undefined) model.position = { ...item.position };
   // Set only when the wire carried one (like clientMutationId below, and
   // unlike the always-copied fields above): an absent transcriptEntryIndex
   // means the item has no persisted transcript position at all, which a fork
@@ -484,9 +486,11 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
 // dropped so its TurnSeparator does not survive. (zrzr)
 function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
+  const callIds = new Set<string>();
   const resultByCallId = new Map<string, ItemModel>();
   for (const turn of turns) {
     for (const item of turn.items) {
+      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
       if (item.callId && isToolResultId(item.id)) resultByCallId.set(item.callId, item);
     }
   }
@@ -496,7 +500,7 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
-      if (item.callId && isToolResultId(item.id)) continue; // folded into its call
+      if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
       if (item.callId && isToolCallId(item.id)) {
         const result = resultByCallId.get(item.callId);
         if (result) {
@@ -519,6 +523,119 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
     if (items.length > 0) merged.push({ ...turn, items });
   }
   return merged;
+}
+
+const statusRank: Record<string, number> = {
+  inProgress: 0,
+  completed: 1,
+  failed: 1,
+};
+
+function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
+  return mergeItemIdentityMetadata(older, {
+    ...older,
+    ...newer,
+    text: newer.text ?? older.text,
+    toolName: newer.toolName ?? older.toolName,
+    callId: newer.callId ?? older.callId,
+    argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
+    description: newer.description ?? older.description,
+    eventKind: newer.eventKind ?? older.eventKind,
+    steeringKind: newer.steeringKind ?? older.steeringKind,
+    raw: newer.raw ?? older.raw,
+    output: newer.output ?? older.output,
+    error: newer.error ?? older.error,
+    prevalOnly: newer.prevalOnly ?? older.prevalOnly,
+    exitCode: newer.exitCode ?? older.exitCode,
+    images: newer.images ?? older.images,
+    outputImages: newer.outputImages ?? older.outputImages,
+    source: newer.source ?? older.source,
+    reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt ?? older.completedAt,
+    observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
+    observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
+    status:
+      newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+        ? older.status
+        : newer.status,
+  });
+}
+
+function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): ItemModel {
+  const transcriptKey = incoming.transcriptKey || existing.transcriptKey;
+  return {
+    ...incoming,
+    ...(transcriptKey ? { transcriptKey } : {}),
+    ...(incoming.position !== undefined || existing.position !== undefined
+      ? { position: incoming.position ?? existing.position }
+      : {}),
+  };
+}
+
+function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
+  if (left.transcriptKey && right.transcriptKey) {
+    return left.transcriptKey === right.transcriptKey;
+  }
+  return left.id === right.id;
+}
+
+function orderedItems(items: ItemModel[]): ItemModel[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      if (a.item.position && b.item.position) {
+        return (
+          a.item.position.entry - b.item.position.entry ||
+          a.item.position.item - b.item.position.item ||
+          a.index - b.index
+        );
+      }
+      if (a.item.position) return -1;
+      if (b.item.position) return 1;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
+function mergePageItems(older: ItemModel[], newer: ItemModel[]): ItemModel[] {
+  const merged = orderedItems(older);
+  for (const current of orderedItems(newer)) {
+    const index = merged.findIndex((item) => itemIdentityMatches(item, current));
+    if (index === -1) {
+      merged.push(current);
+    } else {
+      const existing = merged[index];
+      if (existing) merged[index] = mergePageItem(existing, current);
+    }
+  }
+  return orderedItems(merged);
+}
+
+function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {
+  return left.items.some((leftItem) => right.items.some((rightItem) => itemIdentityMatches(leftItem, rightItem)));
+}
+
+function turnsMatch(left: TurnModel, right: TurnModel): boolean {
+  return left.id === right.id || turnsShareItemIdentity(left, right);
+}
+
+function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
+  return {
+    ...older,
+    ...newer,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt ?? older.completedAt,
+    durationMs: newer.durationMs ?? older.durationMs,
+    usage: newer.usage ?? older.usage,
+    cost: newer.cost ?? older.cost,
+    error: newer.error ?? older.error,
+    status:
+      newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+        ? older.status
+        : newer.status,
+    items: mergePageItems(older.items, newer.items),
+  };
 }
 
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
@@ -593,10 +710,27 @@ export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<s
 }
 
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const older = mergeToolCallsByCallId((resp.data ?? []).map(wireToTurnModel));
+  return mergeOlderItemPage(model, resp);
+}
+
+export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  const olderTurns = (resp.data ?? []).map(wireToTurnModel);
+  const turns: TurnModel[] = [];
+
+  for (const older of olderTurns) {
+    const index = turns.findIndex((turn) => turnsMatch(turn, older));
+    if (index === -1) turns.push(older);
+    else if (turns[index]) turns[index] = mergePageTurn(turns[index], older);
+  }
+  for (const current of model.turns) {
+    const index = turns.findIndex((turn) => turnsMatch(turn, current));
+    if (index === -1) turns.push(current);
+    else if (turns[index]) turns[index] = mergePageTurn(turns[index], current);
+  }
+
   return {
     ...model,
-    turns: [...older, ...model.turns],
+    turns: mergeToolCallsByCallId(turns),
     olderCursor: resp.nextCursor,
   };
 }
@@ -648,12 +782,21 @@ function mapItem(items: ItemModel[], itemId: string, fn: (item: ItemModel) => It
   return items.map((it) => (it.id === itemId ? fn(it) : it));
 }
 
+function mapItemByIdentity(items: ItemModel[], incoming: ItemModel, fn: (item: ItemModel) => ItemModel): ItemModel[] {
+  return items.map((it) => (itemIdentityMatches(it, incoming) ? fn(it) : it));
+}
+
 // Finds which turn currently holds itemId, preferring the notification's own
 // turnId hint, then the model's active turn, then a full scan (defensive —
 // in practice the hint and activeTurnId always agree, since only one turn is
 // ever in flight at a time).
-function findItemTurnId(model: ThreadModel, turnIdHint: string | undefined, itemId: string): string | undefined {
-  const turnHasItem = (turn: TurnModel) => turn.items.some((it) => it.id === itemId);
+function findItemTurnId(
+  model: ThreadModel,
+  turnIdHint: string | undefined,
+  identity: string | ItemModel,
+): string | undefined {
+  const turnHasItem = (turn: TurnModel) =>
+    turn.items.some((it) => (typeof identity === "string" ? it.id === identity : itemIdentityMatches(it, identity)));
   if (turnIdHint) {
     const turn = model.turns.find((t) => t.id === turnIdHint);
     if (turn && turnHasItem(turn)) return turnIdHint;
@@ -710,12 +853,19 @@ function upsertTurnItems(items: ItemModel[], incoming: ThreadItem[], now: number
   let next = items;
   for (const wire of incoming) {
     const settled = wireItemToModel(wire);
-    const present = next.some((it) => it.id === settled.id);
-    next = present
-      ? mapItem(next, settled.id, (old) =>
-          mergeObservedTiming(mergeArguments(mergeReasoning(settled, old), old), old, now),
-        )
-      : [...next, settled];
+    const index = next.findIndex((it) => itemIdentityMatches(it, settled));
+    if (index === -1) {
+      next = [...next, settled];
+      continue;
+    }
+    const old = next[index];
+    if (!old) continue;
+    const updated = mergeObservedTiming(
+      mergeArguments(mergeReasoning(mergePageItem(old, settled), old), old),
+      old,
+      now,
+    );
+    next = next.map((item, itemIndex) => (itemIndex === index ? updated : item));
   }
   return next;
 }
@@ -891,8 +1041,9 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // items rather than item/completed's single one, so it maps instead
         // of a single mapItem call.
         settledTurn.items = settledTurn.items.map((item) => {
-          const old = oldTurn?.items.find((o) => o.id === item.id);
-          return mergeObservedTiming(mergeArguments(mergeReasoning(item, old), old), old, now);
+          const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
+          const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
+          return mergeObservedTiming(mergeArguments(mergeReasoning(identitySettled, old), old), old, now);
         });
       } else {
         // The live wire's settle stamp never carries items — every live
@@ -930,7 +1081,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: [...turn.items, wireItemToModel(item)],
+          items: upsertTurnItems(turn.items, [item], now),
         })),
         lastFrameAt: now,
       };
@@ -939,6 +1090,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
+      const incoming = wireItemToModel(item);
       // A live watcher on a long turn sees nothing move on thread/status/
       // changed until the turn ends, however many tool calls fail inside it
       // (kata 895d) — item/completed is the finer-grained carrier, stamped
@@ -946,14 +1098,18 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       // count. Applied exactly like thread/status/changed's: absent means
       // "no change", never "nobody counted".
       const failedToolCalls = n.params.failedToolCalls ?? model.failedToolCalls;
-      const existingTurnId = findItemTurnId(model, turnId, item.id);
+      const existingTurnId = findItemTurnId(model, turnId, incoming);
       if (existingTurnId) {
         return {
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) =>
-              mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
+            items: mapItemByIdentity(turn.items, incoming, (old) =>
+              mergeObservedTiming(
+                mergeArguments(mergeReasoning(mergeItemIdentityMetadata(old, incoming), old), old),
+                old,
+                now,
+              ),
             ),
           })),
           failedToolCalls,
@@ -972,7 +1128,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, insertTurnId, (turn) => ({
           ...turn,
-          items: [...turn.items, wireItemToModel(item)],
+          items: [...turn.items, incoming],
         })),
         failedToolCalls,
         lastFrameAt: now,
@@ -1081,8 +1237,8 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // reads it back, which is how a running session came to show no Steer,
         // no Stop and a dead Send until the page was reloaded (kata 06t8).
         // Same absent-means-no-update rule as the count above: a source that
-        // state-gates nothing (the Codex bridge) sends none, and clearing on
-        // absence would strip the session of every action it advertised.
+        // omits the capability sends none, and clearing on absence would strip
+        // the session of every action it advertised.
         capabilities: n.params.capabilities ?? model.capabilities,
         capabilitySource: n.params.capabilities ? "statusFrame" : model.capabilitySource,
         lastFrameAt: now,

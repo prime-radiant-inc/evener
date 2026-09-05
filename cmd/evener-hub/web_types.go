@@ -45,7 +45,7 @@ type WorkspaceData struct {
 	RunningFor            string
 	// WorkMillis, Usage, and ActiveTurnStartedAt mirror appwire.EvenerThread's
 	// working-state/token metrics (WS2). Usage is nil when no token data is
-	// available (fresh session, old daemon, or a Codex thread).
+	// available (fresh session, old daemon, or a source-backed thread).
 	WorkMillis          int64
 	Usage               *appwire.EvenerUsage
 	ActiveTurnStartedAt int64
@@ -77,8 +77,8 @@ type WorkspaceData struct {
 	// stamps them on the worker's meta at watch-install time (SessionMeta.
 	// ObservedBy); workspaceData filters that to the live set. The template
 	// renders them as data-observers on #conversation so the renderer can
-	// auto-open each observer beside this worker. Local sources only — remote/
-	// codex threads have no jobstore and so never carry observers.
+	// auto-open each observer beside this worker. Local sources only — non-local
+	// threads have no jobstore and so never carry observers.
 	ObserverRouteIDs []string
 }
 

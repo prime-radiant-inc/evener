@@ -127,8 +127,7 @@ export function ProjectSection(_props: ProjectSectionProps) {
       <h2>Project launch settings</h2>
       <p className={CLASS.help}>{cwd}</p>
       <p className={CLASS.help}>
-        Layered on top of the global Evener and Codex launch settings. Only fields set here override the global
-        defaults.
+        Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
       {load.phase === "error" && <p className={CLASS.error}>Failed to load project launch settings. {load.message}</p>}

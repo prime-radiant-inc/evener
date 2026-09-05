@@ -3,6 +3,8 @@ package apptranscript
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,8 +27,8 @@ import (
 )
 
 const (
-	turnIndexVersion        = 8
-	turnIndexJournalVersion = 2
+	turnIndexVersion        = 11
+	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
 	// Index records contain fixed metadata plus a bounded expansion of fields
@@ -48,6 +50,7 @@ type FilePage struct {
 type ReadStats struct {
 	IndexedBytes   int64
 	ProjectedTurns int
+	ProjectedItems int
 
 	// The remaining fields are intentionally unexported test/benchmark
 	// instrumentation. Production callers do not depend on them.
@@ -102,6 +105,7 @@ type turnIndexDisk struct {
 	IntegrityStamp          string            `json:"integrity_stamp"`
 	FirstAnchor             turnIndexAnchor   `json:"first_anchor"`
 	TailAnchor              turnIndexAnchor   `json:"tail_anchor"`
+	Incarnation             string            `json:"incarnation"`
 
 	// deltaRoot is an immutable persistent rope of records loaded from or
 	// destined for the append-only journal. Keeping suffixes out of Records
@@ -140,6 +144,7 @@ type turnIndexJournalFrame struct {
 	IntegrityStamp          string            `json:"integrity_stamp"`
 	FirstAnchor             turnIndexAnchor   `json:"first_anchor"`
 	TailAnchor              turnIndexAnchor   `json:"tail_anchor"`
+	Incarnation             string            `json:"incarnation"`
 }
 
 type indexedTurn struct {
@@ -149,8 +154,46 @@ type indexedTurn struct {
 	Kind         string            `json:"kind"`
 	Visible      bool              `json:"visible"`
 	VisibleIndex int               `json:"visible_index,omitempty"`
+	ItemCount    uint32            `json:"item_count"`
 	ToolSeed     map[string]string `json:"tool_seed,omitempty"`
 	ToolChanges  []toolNameChange  `json:"tool_changes,omitempty"`
+	// TurnKind is the entry's semantic turn kind ("USER_INPUT", "ASSISTANT",
+	// ...), the logical-grouping input (Kind above is the record kind
+	// "entry"). TurnID is the entry's resolved persistedTurnID at scan time
+	// — a group opener's record names the logical turn. GroupItems is the
+	// number of items this record contributes to its group's MERGED count
+	// and GroupCalls the call ids its merged items introduce (the counting
+	// form of mergeGroupedItems).
+	TurnKind   schema.TurnKind `json:"turn_kind,omitempty"`
+	TurnID     string          `json:"turn_id,omitempty"`
+	GroupItems uint32          `json:"group_items,omitempty"`
+	GroupCalls []string        `json:"group_calls,omitempty"`
+}
+
+// groupRole classifies a record within its logical turn group.
+type groupRole string
+
+const (
+	// groupOpener starts a logical turn (USER_INPUT).
+	groupOpener groupRole = "opener"
+	// groupContinuation extends the open logical turn (ASSISTANT, TOOL,
+	// TOOL_RESULTS, TURN_FAILURE, STEERING). With no open turn it starts one.
+	groupContinuation groupRole = "continuation"
+	// groupStandalone is its own logical turn, grouped with nothing
+	// (every other kind).
+	groupStandalone groupRole = "standalone"
+)
+
+// groupRoleFor classifies a turn kind's role in a logical turn.
+func groupRoleFor(kind schema.TurnKind) groupRole {
+	switch {
+	case opensLogicalTurn(kind):
+		return groupOpener
+	case continuesLogicalTurn(kind):
+		return groupContinuation
+	default:
+		return groupStandalone
+	}
 }
 
 type turnIndexAnchor struct {
@@ -167,76 +210,95 @@ type toolNameChange struct {
 }
 
 // LatestFromFile returns the newest bounded turn window without projecting the
-// historical prefix. A non-positive limit preserves the full-read behavior.
+// historical prefix. All limits use grouped logical turns, including the non-positive full fallback.
+// TurnsFromFile remains the separate legacy per-entry API.
 func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
+	return c.LatestFromFileContext(context.Background(), path, maxLineBytes, limit, project)
+}
+
+// LatestFromFileContext returns the newest bounded turn window while honoring
+// ctx cancellation.
+func (c *TurnCache) LatestFromFileContext(ctx context.Context, path string, maxLineBytes int, limit int, project BoundedEntryProjector) (turns []appwire.Turn, olderCursor string, err error) {
 	if limit <= 0 {
-		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
+		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
 			return nil, "", err
 		}
 		turns, cursor := appwire.WindowTurns(all, limit)
 		return turns, cursor, nil
 	}
-	index, stats, err := c.loadTurnIndex(path, maxLineBytes, project)
+	_, stats, err := c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		count := index.logicalTurnCount()
+		lo := max(count-limit, 0)
+		if lo > 0 {
+			olderCursor = strconv.Itoa(lo)
+		}
+		selected, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, count, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				c.invalidate(path)
+			}
+			return err
+		}
+		turns = selected
+		stats.ProjectedTurns = projected
+		return nil
+	})
 	if err != nil {
 		return nil, "", err
 	}
-	count := index.logicalTurnCount()
-	lo := 0
-	if count > limit {
-		lo = count - limit
-		olderCursor = strconv.Itoa(lo)
-	}
-	turns, projected, err := projectIndexedRangeObserved(path, index, lo, count, project, &stats)
-	if err != nil {
-		c.invalidate(path)
-		return nil, "", err
-	}
-	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
 	return turns, olderCursor, nil
 }
 
 // PageFromFile returns turns older than cursor without projecting records
-// outside that page. A non-positive limit delegates to the legacy full reader.
+// outside that page. All limits use the same grouped logical-turn numeric coordinates;
+// non-positive limits use the grouped full reader, not legacy TurnsFromFile.
 func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
+	return c.PageFromFileContext(context.Background(), path, maxLineBytes, cursor, limit, project)
+}
+
+// PageFromFileContext returns turns older than cursor while honoring ctx
+// cancellation.
+func (c *TurnCache) PageFromFileContext(ctx context.Context, path string, maxLineBytes int, cursor string, limit int, project BoundedEntryProjector) (FilePage, error) {
 	if limit <= 0 {
-		all, err := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
+		all, err := c.itemTurnsFromFileContext(ctx, path, maxLineBytes, fullProjector(project))
 		if err != nil {
 			return FilePage{}, err
 		}
 		page := appwire.PageTurns(all, cursor, limit)
 		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}, nil
 	}
-	index, stats, err := c.loadTurnIndex(path, maxLineBytes, project)
-	if err != nil {
-		return FilePage{}, err
-	}
-	hi := index.logicalTurnCount()
-	if cursor != "" {
-		if parsed, err := strconv.Atoi(cursor); err == nil {
-			hi = parsed
+	var page FilePage
+	_, stats, err := c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, func(index turnIndexDisk, stats *ReadStats) error {
+		hi := index.logicalTurnCount()
+		if cursor != "" {
+			if parsed, err := strconv.Atoi(cursor); err == nil {
+				hi = parsed
+			}
 		}
-	}
-	if hi > index.logicalTurnCount() {
-		hi = index.logicalTurnCount()
-	}
-	if hi < 0 {
-		hi = 0
-	}
-	lo := max(hi-limit, 0)
-	next := ""
-	if lo > 0 {
-		next = strconv.Itoa(lo)
-	}
-	turns, projected, err := projectIndexedRangeObserved(path, index, lo, hi, project, &stats)
+		hi = min(max(hi, 0), index.logicalTurnCount())
+		lo := max(hi-limit, 0)
+		next := ""
+		if lo > 0 {
+			next = strconv.Itoa(lo)
+		}
+		turns, projected, err := projectIndexedRangeObservedContext(ctx, path, index, lo, hi, project, stats)
+		if err != nil {
+			if !isContextError(err) {
+				c.invalidate(path)
+			}
+			return err
+		}
+		stats.ProjectedTurns = projected
+		page = FilePage{Turns: turns, NextCursor: next}
+		return nil
+	})
 	if err != nil {
-		c.invalidate(path)
 		return FilePage{}, err
 	}
-	stats.ProjectedTurns = projected
 	observeIndexRead(stats)
-	return FilePage{Turns: turns, NextCursor: next}, nil
+	return page, nil
 }
 
 // TurnCountFromFile returns the indexed logical turn count without projecting
@@ -271,12 +333,101 @@ func observeIndexRead(stats ReadStats) {
 	}
 }
 
+// logicalTurnCount returns the number of turns a full grouped projection
+// emits: the prelude (when the header carries one) plus every logical group
+// whose merged item count is nonzero. It is a single allocation-free forward
+// pass — bounded append reads call it on every request, so it must not
+// materialize groups or walk spans backward.
 func (d turnIndexDisk) logicalTurnCount() int {
-	count := d.VisibleRecords
+	count := 0
 	if PreludeTurn(d.Header) != nil {
 		count++
 	}
+	n := d.recordCount()
+	groupItems := uint64(0)
+	for i := range n {
+		record := d.recordAt(i)
+		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind) {
+			// The previous group just closed: count it when it projected
+			// items.
+			if groupItems > 0 {
+				count++
+			}
+			groupItems = 0
+		}
+		groupItems += uint64(record.GroupItems)
+	}
+	if groupItems > 0 {
+		count++
+	}
 	return count
+}
+
+// indexedGroup is one logical turn materialized over persisted records: the
+// group's contiguous record span and its accumulated state.
+type indexedGroup struct {
+	// id is the 0-based logical group ordinal over the whole record list.
+	id int
+	// start/end are the record ordinals [start, end) of the group's span.
+	start, end int
+	// turnID is the group opener's persistedTurnID; openerIndex is the
+	// opener's 1-based entry index.
+	turnID      string
+	openerIndex int
+	// items is the group's merged item count.
+	items uint64
+	// calls is the set of command call ids the group's merged items use.
+	calls map[string]bool
+	// open reports whether the group accepts continuations.
+	open bool
+}
+
+// indexedGroups materializes the whole record list into logical groups in
+// order. It mirrors the accumulator's state machine: openers start groups,
+// continuations join the open group, standalone kinds close it. Records whose
+// projected items are all invisible (ItemCount == 0) still join their group —
+// they carry stamps — but add no items.
+func (d turnIndexDisk) indexedGroups() []indexedGroup {
+	var groups []indexedGroup
+	n := d.recordCount()
+	for i := range n {
+		record := d.recordAt(i)
+		role := groupRoleFor(record.TurnKind)
+		join := role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
+		if join {
+			group := &groups[len(groups)-1]
+			group.end = i + 1
+			group.items += uint64(record.GroupItems)
+			for _, id := range record.GroupCalls {
+				group.calls[id] = true
+			}
+			continue
+		}
+		turnID := record.TurnID
+		if turnID == "" {
+			// Defensive: a record the version bump let through without a
+			// resolved id still answers by its fallback rule.
+			turnID = persistedTurnID(record.KindTurn(), record.Index)
+		}
+		group := indexedGroup{
+			id:          len(groups),
+			start:       i,
+			end:         i + 1,
+			turnID:      turnID,
+			openerIndex: record.Index,
+			items:       uint64(record.GroupItems),
+			calls:       cloneGroupCalls(record.GroupCalls),
+			open:        role != groupStandalone,
+		}
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+// KindTurn reconstructs the record's turn kind from persisted fields (the
+// turn kind itself is persisted as TurnKind).
+func (r indexedTurn) KindTurn() schema.Turn {
+	return schema.Turn{Kind: r.TurnKind}
 }
 
 func (d turnIndexDisk) recordCount() int {
@@ -435,8 +586,22 @@ func recordNodeAt(node *turnIndexRecordNode, i int) indexedTurn {
 }
 
 func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexContext(context.Background(), path, maxLineBytes, project)
+}
+
+func (c *TurnCache) loadTurnIndexContext(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, ReadStats, error) {
+	return c.loadTurnIndexInternal(ctx, path, maxLineBytes, project, false, nil)
+}
+
+func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxLineBytes int, project BoundedEntryProjector, strictItemAppendValidation bool, consume func(turnIndexDisk, *ReadStats) error) (turnIndexDisk, ReadStats, error) {
+	if err := ctx.Err(); err != nil {
+		return turnIndexDisk{}, ReadStats{}, err
+	}
 	c.indexMu.Lock()
 	defer c.indexMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return turnIndexDisk{}, ReadStats{}, err
+	}
 
 	var stats ReadStats
 	file, err := os.Open(path)
@@ -458,11 +623,14 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 	fromCache := false
 	identityMatches := false
 	c.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return turnIndexDisk{}, stats, err
+	}
 	if entry, ok := c.entries[path]; ok && entry.turnIndex != nil {
-		candidate = entry.turnIndex
+		indexCopy := *entry.turnIndex
+		candidate = &indexCopy
 		fromCache = true
-		identityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) &&
-			entry.fileIdentity == currentFileIdentity && entry.changeIdentity == currentChangeIdentity
 	}
 	c.mu.Unlock()
 	if candidate == nil {
@@ -471,30 +639,72 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 		}
 	}
 
-	if candidate != nil && !fromCache {
+	if candidate != nil {
+		// Full projection refreshes can update the outer cache entry without
+		// advancing this index. Its own identity must authenticate reuse.
 		identityMatches = candidate.TranscriptSize == info.Size() && candidate.ModTimeUnixNS == info.ModTime().UnixNano() &&
 			candidate.FileIdentity == currentFileIdentity && candidate.ChangeIdentity == currentChangeIdentity
 	}
 	sameFile := candidate != nil && currentFileIdentity != "" && candidate.FileIdentity == currentFileIdentity
 	appendOnly := sameFile && candidate.TranscriptSize < info.Size()
 	index, start, validatedBytes := usableTurnIndex(file, info.Size(), maxLineBytes, projectionID, candidate, identityMatches, appendOnly, fromCache, &stats)
+	if start >= 0 && appendOnly && strictItemAppendValidation {
+		// Sparse anchors can prove that their two small regions are unchanged,
+		// but cannot prove that an arbitrary interior rewrite did not occur before
+		// an append. Item cursors require the complete indexed prefix to validate
+		// before preserving its incarnation, including for a warm candidate.
+		stamp, readBytes := prefixStamp(file, index.CompleteSize)
+		validatedBytes += readBytes
+		if index.PrefixStamp == "" || index.PrefixStamp != stamp {
+			start = -1
+		}
+	}
+	if start >= 0 && !fromCache && !validIndexedItemCounts(index) {
+		start = -1
+	}
+	if start >= 0 && strings.TrimSpace(index.Incarnation) == "" {
+		start = -1
+	}
 	rebuilt := start < 0
-	stats.rebuilt = rebuilt
 	if start < 0 {
+		incarnation, err := newTurnIndexIncarnation()
+		if err != nil {
+			c.invalidate(path)
+			return turnIndexDisk{}, stats, err
+		}
 		index = turnIndexDisk{
 			Version:                 turnIndexVersion,
 			TranscriptFormatVersion: transcript.FormatVersion,
 			MaxLineBytes:            maxLineBytes,
 			ProjectionID:            projectionID,
 			PrefixStamp:             initialPrefixStamp(),
+			Incarnation:             incarnation,
 		}
 		start = 0
-	} else if fromCache && start == info.Size() {
+	} else if fromCache && identityMatches && start == info.Size() {
+		if consume != nil {
+			if err := consume(index, &stats); err != nil {
+				return turnIndexDisk{}, stats, err
+			}
+		}
 		c.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return turnIndexDisk{}, stats, err
+		}
 		c.touch(path)
 		c.mu.Unlock()
 		return index, stats, nil
+	} else if !appendOnly && !identityMatches {
+		incarnation, err := newTurnIndexIncarnation()
+		if err != nil {
+			c.invalidate(path)
+			return turnIndexDisk{}, stats, err
+		}
+		index.Incarnation = incarnation
+		rebuilt = true
 	}
+	stats.rebuilt = rebuilt
 	stats.IndexedBytes = validatedBytes
 	previousIndex := index
 	resolver := map[string]string{}
@@ -502,8 +712,8 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 		c.mu.Lock()
 		entry := c.entries[path]
 		if fromCache && entry.toolResolver != nil {
-			// indexMu excludes every other scanner for this cache, so the private
-			// resolver can advance in place. It is never published in an index.
+			// indexMu excludes every other scanner for this cache. The scan keeps a
+			// suffix-bounded undo log so a failure cannot mutate this published state.
 			resolver = entry.toolResolver
 		} else {
 			resolver = replayToolResolver(index, &stats)
@@ -511,57 +721,82 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project Bounded
 		c.mu.Unlock()
 	}
 	index = cloneTurnIndexForAppend(index)
-	indexedBytes, err := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, resolver, project)
-	if err != nil {
-		c.invalidate(path)
-		return turnIndexDisk{}, stats, err
-	}
-	stats.IndexedBytes += indexedBytes
-	index.TranscriptSize = info.Size()
-	index.MaxLineBytes = maxLineBytes
-	index.ProjectionID = projectionID
-	index.FileIdentity = currentFileIdentity
-	index.ChangeIdentity = currentChangeIdentity
-	index.ModTimeUnixNS = info.ModTime().UnixNano()
-	stored := index
-	c.mu.Lock()
-	entry := c.entries[path]
-	if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
-		entry.turns = nil
-		entry.full = false
-	}
-	entry.size = info.Size()
-	entry.mod = info.ModTime()
-	entry.fileIdentity = currentFileIdentity
-	entry.changeIdentity = currentChangeIdentity
-	entry.turnIndex = &stored
-	entry.toolResolver = resolver
-	c.entries[path] = entry
-	c.touch(path)
-	c.evictLocked()
-	c.mu.Unlock()
-
-	basePath := path + ".appwire-index.json"
-	if rebuilt || (!fromCache && candidate == nil) {
-		index.IntegrityStamp = turnIndexIntegrityStampObserved(index, &stats)
-		stored.IntegrityStamp = index.IntegrityStamp
-		_ = writeTurnIndex(basePath, index, &stats)
-	} else if indexedBytes > 0 || index.journalNeedsRepair {
-		if err := appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats); err == nil {
+	// Keep the scanner's suffix-bounded resolver undo log alive through selected
+	// projection and publication; cancellation cannot leak resolver changes.
+	scanComplete := false
+	finish := func(indexedBytes int64) error {
+		scanComplete = true
+		stats.IndexedBytes += indexedBytes
+		index.TranscriptSize = info.Size()
+		index.MaxLineBytes = maxLineBytes
+		index.ProjectionID = projectionID
+		index.FileIdentity = currentFileIdentity
+		index.ChangeIdentity = currentChangeIdentity
+		index.ModTimeUnixNS = info.ModTime().UnixNano()
+		if consume != nil {
+			if err := consume(index, &stats); err != nil {
+				return err
+			}
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// Linearization point: no selected work can fail or cancel before this commit.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		stored := index
+		basePath := path + ".appwire-index.json"
+		if rebuilt || (!fromCache && candidate == nil) {
+			index.IntegrityStamp = turnIndexIntegrityStampObserved(index, &stats)
+			stored.IntegrityStamp = index.IntegrityStamp
+			_ = writeTurnIndex(basePath, index, &stats)
+		} else if indexedBytes > 0 || index.journalNeedsRepair {
+			if err := appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats); err == nil {
+				stored.IntegrityStamp = index.IntegrityStamp
+			}
+		} else if !identityMatches {
+			// Metadata-only changes do not alter indexed content, but must be durable
+			// so a restart can validate the authoritative transcript identity.
+			_ = appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats)
 			stored.IntegrityStamp = index.IntegrityStamp
 		}
-	} else if !identityMatches {
-		// Metadata-only changes do not alter indexed content, but must be durable
-		// so a restart can validate the authoritative transcript identity.
-		_ = appendTurnIndexJournal(basePath+".journal", previousIndex, &index, &stats)
-		stored.IntegrityStamp = index.IntegrityStamp
+		entry := c.entries[path]
+		if entry.size != info.Size() || !entry.mod.Equal(info.ModTime()) || entry.fileIdentity != currentFileIdentity || entry.changeIdentity != currentChangeIdentity {
+			entry.turns = nil
+			entry.full = false
+			entry.itemTurns = nil
+			entry.itemFull = false
+		}
+		entry.size = info.Size()
+		entry.mod = info.ModTime()
+		entry.fileIdentity = currentFileIdentity
+		entry.changeIdentity = currentChangeIdentity
+		entry.turnIndex = &stored
+		entry.toolResolver = resolver
+		c.entries[path] = entry
+		c.touch(path)
+		c.evictLocked()
+
+		return nil
 	}
-	c.mu.Lock()
-	entry = c.entries[path]
-	entry.turnIndex = &stored
-	c.entries[path] = entry
-	c.mu.Unlock()
+	_, err = scanTurnIndexWithCommitContext(ctx, file, info.Size(), start, maxLineBytes, &index, resolver, project, finish)
+	if err != nil {
+		if !scanComplete && !isContextError(err) {
+			c.invalidate(path)
+		}
+		return turnIndexDisk{}, stats, err
+	}
 	return index, stats, nil
+}
+
+func validIndexedItemCounts(index turnIndexDisk) bool {
+	for i := 0; i < index.recordCount(); i++ {
+		record := index.recordAt(i)
+		if record.Visible != (record.ItemCount > 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID string, candidate *turnIndexDisk, identityMatches bool, appendOnly bool, trustedMemory bool, stats *ReadStats) (turnIndexDisk, int64, int64) {
@@ -575,8 +810,10 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		return turnIndexDisk{}, -1, 0
 	}
 	validatedBytes := int64(0)
-	if appendOnly && !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
-		return turnIndexDisk{}, -1, validatedBytes
+	if appendOnly {
+		if !anchorsMatchObserved(file, stats, candidate.FirstAnchor, candidate.TailAnchor) {
+			return turnIndexDisk{}, -1, validatedBytes
+		}
 	}
 	if !identityMatches && !appendOnly {
 		stamp, readBytes := prefixStamp(file, candidate.CompleteSize)
@@ -621,12 +858,41 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 }
 
 func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
+	return scanTurnIndexContext(context.Background(), file, transcriptSize, start, maxLineBytes, index, projectNames, project)
+}
+
+func scanTurnIndexContext(ctx context.Context, file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
+	return scanTurnIndexWithCommitContext(ctx, file, transcriptSize, start, maxLineBytes, index, projectNames, project, nil)
+}
+
+func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector, commit func(int64) error) (int64, error) {
 	if start >= transcriptSize {
 		if err := transcript.ValidateHeader(index.Header); err != nil {
 			return 0, err
 		}
-		return 0, nil
+		if commit != nil {
+			return 0, commit(0)
+		}
+		return 0, ctx.Err()
 	}
+	type resolverValue struct {
+		name    string
+		present bool
+	}
+	var resolverUndo map[string]resolverValue
+	scanSucceeded := false
+	defer func() {
+		if scanSucceeded {
+			return
+		}
+		for id, previous := range resolverUndo {
+			if previous.present {
+				projectNames[id] = previous.name
+			} else {
+				delete(projectNames, id)
+			}
+		}
+	}()
 	section := io.NewSectionReader(file, start, transcriptSize-start)
 	reader := bufio.NewReader(section)
 	offset := start
@@ -634,6 +900,12 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 	if n := index.recordCount(); n > 0 {
 		entryIndex = index.recordAt(n - 1).Index
 	}
+	// openCalls is the open logical group's accumulated call-id set and
+	// openTurnID its turn id. openCalls is nil until a continuation first
+	// needs it (then reconstructed from the indexed prefix) and both reset
+	// at every group start.
+	var openCalls map[string]bool
+	var openTurnID string
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
@@ -674,25 +946,70 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			index.TranscriptFormatVersion = transcript.FormatVersion
 			headerRead = true
 		} else {
+			if err := ctx.Err(); err != nil {
+				return readBytes, err
+			}
 			entry, err := transcript.DecodeEntry(trimmed)
 			if err != nil {
 				return readBytes, fmt.Errorf("parse transcript entry: %w", err)
 			}
 			entryIndex++
-			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind}
+			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
-			visible := false
+			// Logical-group bookkeeping runs BEFORE projection: the entry is
+			// projected under its group's turn id (the opener's), exactly
+			// the way the range reader names it, so the index scan and the
+			// projection cannot disagree (kata: one name per entry).
+			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+			prevKind := schema.TurnKind("")
+			if len(appended) > 0 {
+				prevKind = appended[len(appended)-1].TurnKind
+			} else if n := index.recordCount(); n > 0 {
+				prevKind = index.recordAt(n - 1).TurnKind
+			}
+			if recordStartsGroup(entry.Turn.Kind, prevKind) {
+				openTurnID = record.TurnID
+				openCalls = map[string]bool{}
+			} else if openCalls == nil || openTurnID == "" {
+				// Continues a group whose opener lives in the previously
+				// indexed prefix: reconstruct its id and accumulated calls.
+				openTurnID, openCalls = openGroupState(*index)
+			}
+			var projectedItems []appwire.ThreadItem
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
-				visible = len(project(entry.Turn, persistedTurnID(entry.Turn, entryIndex), entryIndex, recordNames)) > 0
+				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
+				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
+					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+				}
+			}
+			for _, change := range record.ToolChanges {
+				if change.Lookup {
+					continue
+				}
+				if _, recorded := resolverUndo[change.ID]; recorded {
+					continue
+				}
+				if resolverUndo == nil {
+					resolverUndo = make(map[string]resolverValue)
+				}
+				name, present := projectNames[change.ID]
+				resolverUndo[change.ID] = resolverValue{name: name, present: present}
 			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
-			record.Visible = visible
-			if visible {
+			record.ItemCount = uint32(len(projectedItems))
+			contribution, introduced := mergedContribution(projectedItems, openCalls)
+			record.GroupItems = uint32(contribution)
+			record.GroupCalls = introduced
+			record.Visible = record.ItemCount > 0
+			if record.Visible {
 				visibleRecords++
 			}
 			record.VisibleIndex = visibleRecords
 			appended = append(appended, record)
+		}
+		if err := ctx.Err(); err != nil {
+			return readBytes, err
 		}
 		offset += length
 		index.CompleteSize = offset
@@ -711,6 +1028,15 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 	if !headerRead {
 		return readBytes, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
+	if err := ctx.Err(); err != nil {
+		return readBytes, err
+	}
+	if commit != nil {
+		if err := commit(readBytes); err != nil {
+			return readBytes, err
+		}
+	}
+	scanSucceeded = true
 	return readBytes, nil
 }
 
@@ -857,63 +1183,145 @@ func anchorsMatchObserved(file *os.File, stats *ReadStats, anchors ...turnIndexA
 }
 
 func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector) ([]appwire.Turn, int) {
-	turns, projected, _ := projectIndexedRangeObserved(path, index, lo, hi, project, nil)
+	turns, projected, _ := projectIndexedRangeObservedContext(context.Background(), path, index, lo, hi, project, nil)
 	return turns, projected
 }
 
 func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector, stats *ReadStats) ([]appwire.Turn, int, error) {
+	return projectIndexedRangeObservedContext(context.Background(), path, index, lo, hi, project, stats)
+}
+
+func projectIndexedRangeObservedContext(ctx context.Context, path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector, stats *ReadStats) ([]appwire.Turn, int, error) {
 	if lo >= hi {
 		return nil, 0, nil
 	}
+	// Project the visible groups [lo, hi): each group is one turn. The
+	// prelude, when present, is visible slot 0. Groups whose merged items
+	// are empty emit no turn, so a group's visible slot — and its entry
+	// ordinal — are only consumed by groups that project.
+	turns := []appwire.Turn{}
+	projected := 0
+	prelude := PreludeTurn(index.Header)
+	slot := 0
+	if err := ctx.Err(); err != nil {
+		return nil, projected, err
+	}
+	if prelude != nil {
+		if lo == 0 {
+			positioned, err := positionPreludeItems(prelude.Items)
+			if err != nil {
+				return nil, projected, err
+			}
+			prelude.Items = positioned
+			turns = append(turns, *prelude)
+			projected++
+		}
+		slot = 1
+	}
+	entryOrdinal := uint64(0)
+	if prelude != nil {
+		entryOrdinal = 1
+	}
+	n := index.recordCount()
+	for i := 0; i < n; {
+		// Walk the record list group by group without materializing all
+		// groups: find where this group's span ends, then decide whether to
+		// project it.
+		spanEnd := i + 1
+		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind) {
+			spanEnd++
+		}
+		groupItems := uint64(0)
+		for r := i; r < spanEnd; r++ {
+			groupItems += uint64(index.recordAt(r).GroupItems)
+		}
+		if groupItems == 0 {
+			i = spanEnd
+			continue
+		}
+		thisSlot := slot
+		slot++
+		entryOrdinalAt := entryOrdinal
+		entryOrdinal++
+		groupStart := i
+		i = spanEnd
+		if thisSlot >= hi {
+			// Past the projected window: no later group can be inside it.
+			break
+		}
+		if thisSlot < lo {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, projected, err
+		}
+		group := indexedGroup{id: thisSlot, start: groupStart, end: spanEnd, turnID: index.recordAt(groupStart).TurnID, openerIndex: index.recordAt(groupStart).Index, items: groupItems, calls: nil, open: false}
+		turn, projectedGroup, err := projectIndexedGroup(ctx, path, index, &group, entryOrdinalAt, project)
+		if err != nil {
+			return nil, projected, err
+		}
+		projected += projectedGroup
+		if turn == nil {
+			continue
+		}
+		turns = append(turns, *turn)
+	}
+	return turns, projected, nil
+}
+
+// projectIndexedGroup materializes one logical group's turn: it reads every
+// record of the group's span, projects each through the BoundedEntryProjector
+// under the group's turn id, merges the items by call id, positions them at
+// the group's entry ordinal, and stamps failure/usage/timestamp across the
+// group's entries. It returns nil (not an error) when the group projects to
+// no items — the indexed metadata said otherwise, so the caller invalidates.
+func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, group *indexedGroup, entryOrdinal uint64, project BoundedEntryProjector) (*appwire.Turn, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close errors are not actionable
-	var turns []appwire.Turn
+	var items []appwire.ThreadItem
+	var entries []schema.Turn
 	projected := 0
-	prelude := PreludeTurn(index.Header)
-	recordBase := 0
-	if prelude != nil {
-		if lo == 0 && hi > 0 {
-			turns = append(turns, *prelude)
-			projected++
+	for i := group.start; i < group.end; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, projected, err
 		}
-		recordBase = 1
-	}
-	recordLogicalLo := max(lo-recordBase, 0)
-	for rank := recordLogicalLo; rank < hi-recordBase && rank < index.VisibleRecords; rank++ {
-		record, ok := index.visibleRecordAt(rank, stats)
-		if !ok {
-			break
-		}
+		record := index.recordAt(i)
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
 		}
-		projected++
 		entry, err := transcript.DecodeEntry(raw)
 		if err != nil {
 			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
 		}
-		turnID := persistedTurnID(entry.Turn, record.Index)
-		var items []appwire.ThreadItem
-		if project != nil {
-			items = project(entry.Turn, turnID, record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
-		}
-		if len(items) == 0 {
+		projected++
+		entries = append(entries, entry.Turn)
+		if project == nil {
 			continue
 		}
-		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		StampTurnFailure(&turn, entry.Turn)
-		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.UnixMilli()
-			turn.StartedAt = &startedAt
-		}
-		turn.Usage = appwire.EvenerUsageFromLLM(entry.Turn.Usage)
-		turns = append(turns, turn)
+		projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+		items = append(items, projectedItems...)
 	}
-	return turns, projected, nil
+	if err := ctx.Err(); err != nil {
+		return nil, projected, err
+	}
+	merged := mergeGroupedItems(items)
+	if len(merged) == 0 {
+		return nil, projected, nil
+	}
+	for j := range merged {
+		merged[j].TurnID = group.turnID
+	}
+	positioned, err := positionProjectedItemsAt(merged, group.turnID, entryOrdinal)
+	if err != nil {
+		return nil, projected, err
+	}
+	turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	stampGroupedTurnFromEntries(&turn, entries)
+	return &turn, projected, nil
 }
 
 func readTurnIndex(path string) (turnIndexDisk, error) {
@@ -986,6 +1394,7 @@ func readTurnIndexWithJournal(path string, transcriptSize int64) (turnIndexDisk,
 			return turnIndexDisk{}, fmt.Errorf("decode index journal: %w", err)
 		}
 		if frame.Version != turnIndexJournalVersion || frame.PreviousStamp != index.IntegrityStamp ||
+			frame.Incarnation != index.Incarnation ||
 			frame.IntegrityStamp == "" || frame.IntegrityStamp != turnIndexJournalStamp(frame) {
 			return turnIndexDisk{}, errors.New("invalid index journal integrity chain")
 		}
@@ -1006,6 +1415,7 @@ func readTurnIndexWithJournal(path string, transcriptSize int64) (turnIndexDisk,
 		index.IntegrityStamp = frame.IntegrityStamp
 		index.FirstAnchor = frame.FirstAnchor
 		index.TailAnchor = frame.TailAnchor
+		index.Incarnation = frame.Incarnation
 		index.journalApplied = true
 		validBytes += int64(len(line))
 	}
@@ -1107,6 +1517,7 @@ func appendTurnIndexJournal(path string, previous turnIndexDisk, index *turnInde
 		ModTimeUnixNS:           index.ModTimeUnixNS,
 		FirstAnchor:             index.FirstAnchor,
 		TailAnchor:              index.TailAnchor,
+		Incarnation:             index.Incarnation,
 	}
 	if stats != nil {
 		stats.journalRecords += int64(len(records))
@@ -1211,6 +1622,14 @@ func writeTurnIndex(path string, index turnIndexDisk, stats *ReadStats) error {
 func initialPrefixStamp() string {
 	sum := sha256.Sum256([]byte("evener-apptranscript-prefix-v1"))
 	return hex.EncodeToString(sum[:])
+}
+
+func newTurnIndexIncarnation() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate transcript index incarnation: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func extendPrefixStamp(stamp string, line []byte) string {
@@ -1369,7 +1788,7 @@ func projectionIdentity(project BoundedEntryProjector) string {
 			name = "<unknown>"
 		}
 	}
-	return fmt.Sprintf("turn-index-v%d:%s", turnIndexVersion, name)
+	return fmt.Sprintf("turn-index-v%d:%s:%s", turnIndexVersion, itemIndexProjectionID, name)
 }
 
 func cloneTurnIndexForAppend(index turnIndexDisk) turnIndexDisk {
@@ -1390,6 +1809,54 @@ func equalToolNames(a, b map[string]string) bool {
 
 func cloneToolNames(names map[string]string) map[string]string {
 	return cloneToolNamesObserved(names, nil)
+}
+
+// openGroupState reconstructs the open logical group's turn id and
+// accumulated call-id set at the tail of an indexed prefix. It walks back
+// through the group's records (each contributes the ids its merged items
+// introduced) until the record that started the group, whose resolved turn id
+// names the group.
+func openGroupState(index turnIndexDisk) (string, map[string]bool) {
+	calls := map[string]bool{}
+	n := index.recordCount()
+	if n == 0 {
+		return "", calls
+	}
+	turnID := ""
+	for i := n - 1; i >= 0; i-- {
+		record := index.recordAt(i)
+		for _, id := range record.GroupCalls {
+			calls[id] = true
+		}
+		turnID = record.TurnID
+		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind) {
+			break
+		}
+	}
+	if turnID == "" && n > 0 {
+		turnID = persistedTurnID(recordAtKindTurn(index, n-1), index.recordAt(n-1).Index)
+	}
+	return turnID, calls
+}
+
+// recordAtKindTurn reconstructs a record's turn kind for the fallback id
+// rule when the persisted TurnID is absent.
+func recordAtKindTurn(index turnIndexDisk, i int) schema.Turn {
+	return schema.Turn{Kind: index.recordAt(i).TurnKind}
+}
+
+// cloneGroupCalls copies a record's persisted group-call slice into the set
+// form the counting merge uses. The slice is part of the durable sidecar, so
+// readers never mutate it in place.
+func cloneGroupCalls(calls []string) map[string]bool {
+	if len(calls) == 0 {
+		return map[string]bool{}
+	}
+	set := make(map[string]bool, len(calls))
+	for _, id := range calls {
+		set[id] = true
+	}
+	return set
 }
 
 func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[string]string {

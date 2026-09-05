@@ -27,6 +27,7 @@ native:.:./appwire:FuzzMessageDecodeStructured
 native:.:./appwire:FuzzTurnPagingEquivalence
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
+native:.:./internal/appitempaging:FuzzCursorCodec
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./schema:FuzzSessionMetaRoundTrip
@@ -186,10 +187,7 @@ native:.:./internal/appserver:FuzzHandleMessage
 native:.:./internal/appprojector:FuzzProject
 native:.:./internal/apptranscript:FuzzProjectTurn
 native:.:./internal/apptranscript:FuzzDerivedTotalsMatchesIndividualScans
-native:.:./cmd/evener-hub/internal/appsource:FuzzMapCodexTurn
 native:.:./cmd/evener-hub/internal/appsource:FuzzAppSourceProgram
-native:.:./cmd/evener-hub/internal/codexlaunch:FuzzParseCodexEndpoint
-native:.:./cmd/evener-hub/internal/codexlaunch:FuzzCodexLaunchBehaviorProgram
 native:.:./cmd/evener-hub/internal/hubcore:FuzzBuildTree
 native:.:./cmd/evener-hub/internal/hubcore:FuzzHubcoreScenarios
 native:.:./internal/plugins:FuzzSourceUnmarshalJSON

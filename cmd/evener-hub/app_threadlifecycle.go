@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -38,10 +37,7 @@ var (
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
 	hubAsideSession    = agent.AsideSession
-	hubEnsureSource    = func(ctx context.Context, launcher *codexlaunch.CodexLauncher, id string, sources *appsource.Registry) (appsource.Source, error) {
-		return launcher.EnsureSource(ctx, id, sources)
-	}
-	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+	hubResolvePlugins  = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
 		return plugins.NewManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
 	}
 )
@@ -52,28 +48,8 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	sourceID := launchSourceID(params)
 	if sourceID != "" && sourceID != "local" {
-		var source appsource.Source
-		if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(sourceID) {
-			launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, sourceID, sources)
-			if err != nil {
-				return appwire.ThreadStartResponse{}, err
-			}
-			source = launched
-		} else {
-			var ok bool
-			source, ok = sources.Source(sourceID)
-			if !ok {
-				if cfg.CodexLauncher == nil {
-					return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
-				}
-				launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, sourceID, sources)
-				if err != nil {
-					return appwire.ThreadStartResponse{}, err
-				}
-				source = launched
-			}
-		}
-		if source == nil {
+		source, ok := sources.Source(sourceID)
+		if !ok || source == nil {
 			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 		}
 		return source.StartThread(ctx, params)
@@ -303,26 +279,9 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 			return appwire.ThreadResumeResponse{}, err
 		}
 		if ref.SourceID != "local" {
-			var source appsource.Source
-			if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(ref.SourceID) {
-				launched, err := hubEnsureSource(ctx, cfg.CodexLauncher, ref.SourceID, sources)
-				if err != nil {
-					return appwire.ThreadResumeResponse{}, err
-				}
-				source = launched
-			} else {
-				var err error
-				source, err = sourceForThread(sources, params.Ref, "")
-				if err != nil {
-					if cfg.CodexLauncher == nil {
-						return appwire.ThreadResumeResponse{}, err
-					}
-					launched, launchErr := hubEnsureSource(ctx, cfg.CodexLauncher, ref.SourceID, sources)
-					if launchErr != nil {
-						return appwire.ThreadResumeResponse{}, launchErr
-					}
-					source = launched
-				}
+			source, err := sourceForThread(sources, params.Ref, "")
+			if err != nil {
+				return appwire.ThreadResumeResponse{}, err
 			}
 			return source.ResumeThread(ctx, params)
 		}
@@ -479,7 +438,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local evener threads")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.ThreadForkResponse{}, err
 			}

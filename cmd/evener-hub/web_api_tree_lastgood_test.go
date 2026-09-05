@@ -34,7 +34,7 @@ func threadIDs(threads []appwire.Thread) []string {
 func TestListThreadsWithFallbackRetainsLastGood(t *testing.T) {
 	s := &WebServer{cfg: hubcore.WebConfig{}}
 	lister := &stubThreadLister{
-		id:   "codex",
+		id:   "remote",
 		resp: appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_1"}, {ID: "th_2"}}},
 	}
 
@@ -71,7 +71,7 @@ func TestListThreadsWithFallbackRetainsLastGood(t *testing.T) {
 
 func TestListThreadsWithFallbackInitialCallErrorsEmpty(t *testing.T) {
 	s := &WebServer{cfg: hubcore.WebConfig{}}
-	lister := &stubThreadLister{id: "codex", err: errors.New("down")}
+	lister := &stubThreadLister{id: "remote", err: errors.New("down")}
 	got := s.listThreadsWithFallback(context.Background(), lister)
 	if len(got) != 0 {
 		t.Fatalf("first-call error = %v, want empty", threadIDs(got))

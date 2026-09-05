@@ -247,10 +247,10 @@ Leave Jesse's real `~/.evener` and `~/.local/state/evener` untouched; the
   Assert `active` then `complete` and `N >= 1`, never `N == k`.
 - **The goal end text's wording is owned by the projector**; grep for the
   status word, not an exact sentence.
-- **A6 negative path** (goal/set rejected on a non-evener source, e.g.
-  codex) is not reachable from a evener session here; it's covered by
-  `TestHubRPCGoalSetGatedByCapability`. Step 2 verifies the positive side
-  live.
+- **A6 negative path** (`goal/set` rejected on any source that does not
+  advertise `goal/set`) is not reachable from an Evener session here; it's
+  covered by `TestHubRPCGoalSetGatedByCapability`. Step 2 verifies the positive
+  side live.
 - **Consecutive system notices group.** `SystemNoticeItem` folds a run of
   adjacent system items into a `<details data-testid="system-notice-group">`
   (`transcript/messages/SystemNoticeItem.tsx:290-294`). Each goal

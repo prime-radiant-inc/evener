@@ -13,17 +13,18 @@ const (
 type ErrorInfo string
 
 const (
-	ErrorInvalidParams          ErrorInfo = "invalidParams"
-	ErrorResourceNotFound       ErrorInfo = "resourceNotFound"
-	ErrorMethodNotFound         ErrorInfo = "methodNotFound"
-	ErrorProviderUnavailable    ErrorInfo = "providerUnavailable"
-	ErrorSessionUnavailable     ErrorInfo = "sessionUnavailable"
-	ErrorConflict               ErrorInfo = "conflict"
-	ErrorActionUnavailable      ErrorInfo = "actionUnavailable"
-	ErrorHubLaunch              ErrorInfo = "hubLaunch"
-	ErrorQueuedDrainPartial     ErrorInfo = "queuedDrainPartial"
-	ErrorMutationOutcomeUnknown ErrorInfo = "mutationOutcomeUnknown"
-	ErrorInternal               ErrorInfo = "internal"
+	ErrorInvalidParams             ErrorInfo = "invalidParams"
+	ErrorResourceNotFound          ErrorInfo = "resourceNotFound"
+	ErrorMethodNotFound            ErrorInfo = "methodNotFound"
+	ErrorProviderUnavailable       ErrorInfo = "providerUnavailable"
+	ErrorSessionUnavailable        ErrorInfo = "sessionUnavailable"
+	ErrorConflict                  ErrorInfo = "conflict"
+	ErrorActionUnavailable         ErrorInfo = "actionUnavailable"
+	ErrorHubLaunch                 ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial        ErrorInfo = "queuedDrainPartial"
+	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
+	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
+	ErrorInternal                  ErrorInfo = "internal"
 )
 
 type MutationOutcome string
@@ -65,6 +66,20 @@ func InvalidParams(message string) WireError {
 		Code:    CodeInvalidParams,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInvalidParams},
+	}
+}
+
+// TranscriptItemCursorStale reports an item-mode cursor that cannot be used
+// for the current transcript incarnation. The cursor itself is intentionally
+// never included in the message or error data.
+func TranscriptItemCursorStale() WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: "transcript item cursor is stale; refresh the thread",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
 	}
 }
 

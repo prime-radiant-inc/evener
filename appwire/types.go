@@ -106,10 +106,10 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
-	// MethodEvenerSettingsOverview returns the field bag behind six settings
+	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
-	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
-	// servers. See SettingsOverviewResponse's doc comment.
+	// hub/runtime, storage, agent roster, and probed MCP servers. See
+	// SettingsOverviewResponse's doc comment.
 	MethodEvenerSettingsOverview = "evener/settings/overview"
 	// MethodEvenerSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
@@ -566,8 +566,9 @@ type EvenerThread struct {
 	// thread envelope, which is refreshed at the turn boundaries that move
 	// them. Usage is a pointer
 	// (unlike the other two scalars) because EvenerUsage is a value struct whose
-	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
-	// signals "no token data" rather than rendering ↑0 ↓0.
+	// omitempty would never omit — nil is how a fresh thread, an old daemon, or a
+	// source-backed thread that omits the field signals "no token data" rather
+	// than rendering ↑0 ↓0.
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
 	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
 	// Emitting seconds here would mix units with the consumer's ms clock.
@@ -613,19 +614,20 @@ type EvenerThread struct {
 	// failed. Nil means nobody counted: the transcript is unreadable (a legacy
 	// format_version 1 file, or a missing one), the session has no transcript,
 	// or the producer does not derive the figure at all — an old daemon, a
-	// Codex-sourced thread, or the hub's per-entry list sweeps, which cannot
-	// afford a scan per session. Consumers render nil as nothing, never as a
-	// fabricated zero.
+	// source-backed thread that omits the field, or the hub's per-entry list
+	// sweeps, which cannot afford a scan per session. Consumers render nil as
+	// nothing, never as a fabricated zero.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// AskPending is true while an ask_user question is unanswered. Additive:
-	// absent on old daemons and Codex threads, decoding as false.
+	// absent on old daemons and source-backed threads that omit the field,
+	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
 	// surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
-	// model's transcript or any model-visible projection. Absent on old daemons /
-	// Codex threads.
+	// model's transcript or any model-visible projection. Absent on old daemons
+	// and source-backed threads that omit the field.
 	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
 	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning are the
 	// live reasoning-effort settings for the session's current profile, so a
@@ -653,9 +655,9 @@ type GoalState struct {
 }
 
 // EvenerUsage carries a evener session's cumulative self-only token totals for
-// the status row. A nil *EvenerUsage on EvenerThread means no token data (old
-// daemon, Codex thread, or a session with zero usage) — the clusters hide
-// rather than render ↑0 ↓0.
+// the status row. A nil *EvenerUsage on EvenerThread means no token data (an old
+// daemon, a source-backed thread that omits the field, or a session with zero
+// usage) — the clusters hide rather than render ↑0 ↓0.
 type EvenerUsage struct {
 	InputTokens     int64 `json:"inputTokens,omitempty"`
 	OutputTokens    int64 `json:"outputTokens,omitempty"`
@@ -795,12 +797,12 @@ type ThreadCapabilities struct {
 	// messages for processing after the active turn completes.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
-	// for a evener session that can accept a goal; false for sources without the
-	// engine (e.g. codex), so goal/set is gated like every other thread action.
+	// for a evener session that can accept a goal; false for sources that do not
+	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
-	// meta); false for Codex-bridged threads.
+	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 }
 
@@ -978,12 +980,41 @@ type EvenerTurnSlots struct {
 	Drives int64 `json:"driveTurns"`
 }
 
+// TranscriptPageUnit identifies the unit bounded by a transcript page. The
+// empty value preserves the legacy turn-page wire shape during migration.
+type TranscriptPageUnit string
+
+const (
+	TranscriptPageUnitTurn TranscriptPageUnit = "turn"
+	TranscriptPageUnitItem TranscriptPageUnit = "item"
+)
+
+// TurnItemsView identifies whether a turn carries its complete item list or a
+// fragment selected by item-mode paging.
+type TurnItemsView string
+
+const (
+	TurnItemsViewFull     TurnItemsView = "full"
+	TurnItemsViewFragment TurnItemsView = "fragment"
+)
+
+// ThreadItemPosition is an absolute position in the decoded transcript and
+// the final visible projected item slice for that entry.
+type ThreadItemPosition struct {
+	Entry uint64 `json:"entry"`
+	Item  uint32 `json:"item"`
+}
+
 type Turn struct {
-	ID        string       `json:"id"`
-	Items     []ThreadItem `json:"items,omitempty"`
-	ItemsView string       `json:"itemsView"`
-	Status    string       `json:"status"`
-	Error     *TurnError   `json:"error,omitempty"`
+	ID        string        `json:"id"`
+	Items     []ThreadItem  `json:"items,omitempty"`
+	ItemsView TurnItemsView `json:"itemsView"`
+	Status    string        `json:"status"`
+	Error     *TurnError    `json:"error,omitempty"`
+	// HasEarlierItems and HasLaterItems describe completeness at the item
+	// boundaries of a fragment. They are omitted by legacy/full responses.
+	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
+	HasLaterItems   bool `json:"hasLaterItems,omitempty"`
 	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
 	// the same scale as DurationMS and the web reducer's epoch-ms read. The
 	// appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
@@ -1114,21 +1145,23 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string        `json:"type"`
-	ID                   string        `json:"id"`
-	TurnID               string        `json:"turnId,omitempty"`
-	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
-	Text                 string        `json:"text,omitempty"`
-	Delta                string        `json:"delta,omitempty"`
-	Images               []InputItem   `json:"images,omitempty"`
-	ToolName             string        `json:"toolName,omitempty"`
-	CallID               string        `json:"callId,omitempty"`
-	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
-	Description          string        `json:"description,omitempty"`
-	Output               string        `json:"output,omitempty"`
-	Error                string        `json:"error,omitempty"`
-	OutputImages         []OutputImage `json:"outputImages,omitempty"`
-	Status               string        `json:"status,omitempty"`
+	Type                 string              `json:"type"`
+	ID                   string              `json:"id"`
+	TranscriptKey        string              `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition `json:"position,omitempty"`
+	TurnID               string              `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
+	Text                 string              `json:"text,omitempty"`
+	Delta                string              `json:"delta,omitempty"`
+	Images               []InputItem         `json:"images,omitempty"`
+	ToolName             string              `json:"toolName,omitempty"`
+	CallID               string              `json:"callId,omitempty"`
+	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Output               string              `json:"output,omitempty"`
+	Error                string              `json:"error,omitempty"`
+	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
+	Status               string              `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
@@ -1218,12 +1251,14 @@ type ThreadListResponse struct {
 }
 
 type ThreadReadParams struct {
-	ThreadID            string `json:"threadId,omitempty"`
-	Ref                 string `json:"ref,omitempty"`
-	IncludeTurns        bool   `json:"includeTurns"`
-	ItemsView           string `json:"itemsView,omitempty"`
-	Subscribe           bool   `json:"subscribe,omitempty"`
-	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
+	ThreadID            string             `json:"threadId,omitempty"`
+	Ref                 string             `json:"ref,omitempty"`
+	IncludeTurns        bool               `json:"includeTurns"`
+	ItemsView           string             `json:"itemsView,omitempty"`
+	Subscribe           bool               `json:"subscribe,omitempty"`
+	ReplaceSubscription bool               `json:"replaceSubscription,omitempty"`
+	PageUnit            TranscriptPageUnit `json:"pageUnit,omitempty"`
+	ItemLimit           int                `json:"itemLimit,omitempty"`
 	// TurnLimit bounds includeTurns to the latest N turns for windowed
 	// (lazy) loading; 0 means unbounded (the full transcript). When it
 	// truncates, the response carries OlderCursor for paging back via
@@ -1232,7 +1267,8 @@ type ThreadReadParams struct {
 }
 
 type ThreadReadResponse struct {
-	Thread Thread `json:"thread"`
+	Thread   Thread             `json:"thread"`
+	PageUnit TranscriptPageUnit `json:"pageUnit,omitempty"`
 	// OlderCursor is set when TurnLimit truncated the returned turns; pass it
 	// to thread/turns/list to fetch the page of turns just before the window.
 	// Empty means the response already includes the oldest turn.
@@ -1245,16 +1281,19 @@ type ThreadUnsubscribeParams struct {
 }
 
 type ThreadTurnsListParams struct {
-	ThreadID  string `json:"threadId,omitempty"`
-	Ref       string `json:"ref,omitempty"`
-	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
-	ItemsView string `json:"itemsView,omitempty"`
+	ThreadID  string             `json:"threadId,omitempty"`
+	Ref       string             `json:"ref,omitempty"`
+	Cursor    string             `json:"cursor,omitempty"`
+	Limit     int                `json:"limit,omitempty"`
+	ItemsView string             `json:"itemsView,omitempty"`
+	PageUnit  TranscriptPageUnit `json:"pageUnit,omitempty"`
+	ItemLimit int                `json:"itemLimit,omitempty"`
 }
 
 type ThreadTurnsListResponse struct {
-	Data       []Turn `json:"data"`
-	NextCursor string `json:"nextCursor,omitempty"`
+	Data       []Turn             `json:"data"`
+	NextCursor string             `json:"nextCursor,omitempty"`
+	PageUnit   TranscriptPageUnit `json:"pageUnit,omitempty"`
 }
 
 type ThreadTurnItemsListParams struct {
@@ -2076,10 +2115,10 @@ type ThreadStatusChangedParams struct {
 	// those flip, so the set refreshes there and nowhere else — no polling, no
 	// re-read of the transcript.
 	//
-	// ABSENT MEANS "NO UPDATE", same as the count: a source that does not
-	// state-gate its capabilities (the Codex bridge) omits it, and a client
-	// that cleared its set on absence would strip a session of every action
-	// its hydrate legitimately advertised.
+	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
+	// threads may omit capabilities their source does not advertise. A client
+	// that cleared its set on absence would strip a session of every action its
+	// hydrate legitimately advertised.
 	//
 	// A CLOSE frame is the one status a daemon does not fill in: what a thread
 	// can still be asked to do once its daemon is gone is the hub's answer, not
@@ -2101,8 +2140,9 @@ type AgentMessageDeltaParams struct {
 
 // ReasoningSummaryDeltaParams is the params shape for the
 // item/reasoning/summaryTextDelta notification: an incremental chunk of the
-// model's reasoning summary for the named reasoning item. Mirrors the Codex
-// app-server reasoning stream so the web UI can render thinking live.
+// model's reasoning summary for the named reasoning item. The hub preserves
+// source-provided compatible fields without claiming a Codex bridge, so the web
+// UI can render thinking live.
 type ReasoningSummaryDeltaParams struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
@@ -2980,28 +3020,26 @@ type PluginSetAutoUpgradeParams struct {
 }
 
 // SettingsOverviewResponse is the result of evener/settings/overview: the field
-// bag behind six settings sections whose only data path today is Go-template
-// variables rendered server-side — General, Hub, Storage, Agents, Codex
-// launch, and the probed half of MCP servers (cmd/evener-hub/templates/
-// partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
-// replacing cmd/evener-hub/web_settings.go's settingsData for exactly those six
-// (the deletion wave removes the template path once the frontend ports off
-// it). Every field is sourced from the same computation the legacy template
-// used; see each sub-type's doc comment for the exact web_settings.go
-// citation. A field the legacy template never rendered is left off rather
-// than invented — also noted on the sub-type that would otherwise carry it.
+// bag behind five settings sections whose only data path today is Go-template
+// variables rendered server-side — General, Hub, Storage, Agents, and the
+// probed half of MCP servers (cmd/evener-hub/templates/partials/settings/
+// {general,hub,storage,agents,mcp}.html) — replacing cmd/evener-hub/
+// web_settings.go's settingsData for exactly those five. Every field is sourced
+// from the same computation the legacy template used; see each sub-type's doc
+// comment for the exact web_settings.go citation. A field the legacy template
+// never rendered is left off rather than invented — also noted on the sub-type
+// that would otherwise carry it.
 //
 // The other ten settings sections (providers/credentials, evener launch,
-// in-repo trust, per-project override, marketplaces/plugins, plugin/skill
-// dirs, the MCP config editable half, theme, transcript, display,
-// notifications) are out of scope: they already have their own wire methods
-// or land on a different task's new store. Nothing here is per-project.
+// in-repo trust, per-project override, marketplaces/plugins, plugin/skill dirs,
+// the MCP config editable half, theme, transcript, display, notifications) are
+// out of scope: they already have their own wire methods or land on a different
+// task's new store. Nothing here is per-project.
 type SettingsOverviewResponse struct {
-	Hub           *SettingsHubOverview       `json:"hub,omitempty"`
-	Storage       *SettingsStorageOverview   `json:"storage,omitempty"`
-	Agents        []SettingsAgentEntry       `json:"agents,omitempty"`
-	CodexLaunches []SettingsCodexLaunchEntry `json:"codexLaunches,omitempty"`
-	McpDiscovered *SettingsMCPOverview       `json:"mcpDiscovered,omitempty"`
+	Hub           *SettingsHubOverview     `json:"hub,omitempty"`
+	Storage       *SettingsStorageOverview `json:"storage,omitempty"`
+	Agents        []SettingsAgentEntry     `json:"agents,omitempty"`
+	McpDiscovered *SettingsMCPOverview     `json:"mcpDiscovered,omitempty"`
 }
 
 // SettingsHubOverview is the Settings → General / Settings → Hub section
@@ -3088,35 +3126,6 @@ type SettingsAgentEntry struct {
 	// shape parity with web_settings.go's agentDisplay.EditPath in case a
 	// future on-disk agent source populates it.
 	EditPath string `json:"editPath,omitempty"`
-}
-
-// SettingsCodexLaunchEntry is one row in Settings → Codex launch config
-// (cmd/evener-hub/templates/partials/settings/launch-codex.html): a read-only
-// display of one [[codex_launches]] hub.toml entry.
-// Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
-// codexlaunch.CodexLaunchConfig).
-//
-// Binary/WorkingDir/Listen/Timeout ride over the wire as their raw configured
-// value (empty/zero when unset) rather than the template's display-fallback
-// text ("codex", "(inherited)", "ws://127.0.0.1:0", "30s") — the frontend
-// applies the same fallback at render time, so the wire stays truthful about
-// what is actually configured.
-//
-// Args, BearerToken, and BearerTokenFile are intentionally excluded: Args is
-// never rendered by the template, and the bearer-token fields are live
-// secrets the credential-never-echo invariant forbids sending to the browser
-// — the template never renders them either. EnvKeys carries only the Env
-// map's keys, sorted, matching the template's own redaction ("Values are
-// redacted here.").
-type SettingsCodexLaunchEntry struct {
-	ID         string `json:"id"`
-	Binary     string `json:"binary,omitempty"`
-	WorkingDir string `json:"workingDir,omitempty"`
-	Listen     string `json:"listen,omitempty"`
-	// TimeoutMillis is Timeout in milliseconds, 0 when unset (the template's
-	// 30s default applies client-side, matching the other display fallbacks).
-	TimeoutMillis int64    `json:"timeoutMillis,omitempty"`
-	EnvKeys       []string `json:"envKeys,omitempty"`
 }
 
 // SettingsMCPServerEntry is one probed MCP server row in Settings → MCP

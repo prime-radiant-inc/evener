@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,31 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
+
+func assertHubLaunchError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T is not appwire.WireError: %v", err, err)
+	}
+	if !wireErrorInfoIs(wire.Data, appwire.ErrorHubLaunch) {
+		t.Fatalf("wire error=%+v", wire)
+	}
+}
+
+func wireErrorInfoIs(data any, want appwire.ErrorInfo) bool {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return v.EvenerErrorInfo == want
+	case map[string]any:
+		return v["evenerErrorInfo"] == string(want)
+	default:
+		return false
+	}
+}
 
 func TestHubLaunchControllerSchema(t *testing.T) {
 	c := newHubLaunchController(t.TempDir())

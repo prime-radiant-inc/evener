@@ -134,7 +134,6 @@ func FuzzCommandRegistryProgram(f *testing.F) {
 				fetchHubTree(client), fetchHubSession(frames, client, ref),
 				subscribeChildActivity(client, ref.String()), fetchHubStatus(client, ref),
 				fetchHubTranscriptTargets(client, ref),
-				fetchHubModelsForHarness(client, "evener", "/tmp"),
 				fetchHubSessionModels(client, "/tmp"), fetchHubSpawnOptions(client, "/tmp"),
 				fetchHubTasks(client, ref), sendHubInput(client, ref, "x", "", nil),
 			}
