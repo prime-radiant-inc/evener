@@ -19,6 +19,7 @@ import type {
 } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -90,6 +91,22 @@ function startResponse(ref: string): ThreadStartResponse {
 // hydrates; individual tests override specific methods as needed.
 function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [
+      {
+        name: "anthropic",
+        providerId: "anthropic",
+        protocol: "anthropic",
+        auth: "bearer",
+        implicit: false,
+        isDefault: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        credentialRequired: true,
+      },
+    ],
+    availableProviders: [],
+  }));
   fake.on("evener/harnesses/list", () => ({
     data: [
       { id: "evener", label: "evener", kind: "evener" },
@@ -176,7 +193,150 @@ beforeAll(() => {
 
 beforeEach(() => {
   localStorage.clear();
+  resetCredentialsStoreForTests();
   modelListOverride = null;
+});
+
+test("missing credentials surface setup in the composer without opening a dialog or losing its draft", async () => {
+  const user = userEvent.setup();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  const connect = await screen.findByRole("button", { name: "Connect provider" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
+  await setWorkingDir(user, "/tmp/my-project");
+  expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(connect);
+  await screen.findByRole("dialog");
+  await user.keyboard("{Escape}");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  expectWorkingDir("/tmp/my-project");
+});
+
+test("retrying missing provider setup discovers a local server started afterward", async () => {
+  const user = userEvent.setup();
+  let available = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: [
+        {
+          name: "ollama",
+          providerId: "ollama",
+          protocol: "openai-chat",
+          auth: "none",
+          implicit: true,
+          isDefault: true,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: false,
+        },
+      ],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
+    fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "ollama/local-model" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
+  const retry = screen.getByRole("button", { name: "Retry provider check" });
+  available = true;
+  await user.click(retry);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  await user.click(modelTrigger());
+  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
+});
+
+test("successful keyless testing refreshes availability without an auth notification", async () => {
+  const user = userEvent.setup();
+  let available = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: [
+        {
+          name: "ollama",
+          providerId: "ollama",
+          protocol: "openai-chat",
+          auth: "none",
+          implicit: true,
+          isDefault: true,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: false,
+        },
+      ],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
+    fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "ollama/local-model" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  const testConnection = await screen.findByRole("button", { name: "Test connection" });
+  available = true;
+  await user.click(testConnection);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  await user.click(modelTrigger());
+  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
+});
+
+test("credential changes reload the cached model catalog and re-enter setup after removal", async () => {
+  const user = userEvent.setup();
+  let configured = false;
+  let modelRequests = 0;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: configured
+        ? [
+            {
+              name: "work",
+              providerId: "openai",
+              protocol: "openai-responses",
+              auth: "bearer",
+              implicit: false,
+              isDefault: true,
+              activeSource: "store",
+              hasStoredOAuth: false,
+              credentialRequired: true,
+            },
+          ]
+        : [],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => {
+      modelRequests++;
+      return { data: configured ? [{ provider: "work", model: "test-model" }] : [] };
+    });
+    fake.on("evener/launch/resolve", () => ({ effective: { model: "work/test-model" }, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
+  await setWorkingDir(user, "/tmp/my-project");
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
+  const requestsBefore = modelRequests;
+  configured = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await waitFor(() => expect(modelRequests).toBeGreaterThan(requestsBefore));
+  expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
+  configured = false;
+  await act(async () => credentialsStore.getState().fetch());
+  await screen.findByRole("button", { name: "Connect provider" });
 });
 
 afterEach(() => {

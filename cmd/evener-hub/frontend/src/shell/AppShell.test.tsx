@@ -2251,7 +2251,9 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
-  expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
+  expect(
+    client.calls.every(({ method }) => method === "evener/navigation/read" || method === "evener/instance/list"),
+  ).toBe(true);
   expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
 });
 
