@@ -265,6 +265,68 @@ func TestLocalItemPagingPreservesCursorAcrossSlidingNewestWindow(t *testing.T) {
 	}
 }
 
+func TestLocalItemPagingPreservesCursorAcrossDisjointAppendedNewestWindow(t *testing.T) {
+	source := newLocalItemReadConversionSource(t, "disjoint-window")
+	params := appwire.ThreadReadParams{Ref: "local:disjoint-window", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: params.Ref, Incarnation: "native-disjoint-window", ProjectionVersion: 1}
+	firstNativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 1})
+	if err != nil {
+		t.Fatalf("encode first native cursor: %v", err)
+	}
+	secondNativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 41})
+	if err != nil {
+		t.Fatalf("encode second native cursor: %v", err)
+	}
+
+	first, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 40, firstNativeCursor))
+	if err != nil {
+		t.Fatalf("first item response: %v", err)
+	}
+	retainedCursor, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 20})
+	if err != nil {
+		t.Fatalf("encode retained cursor: %v", err)
+	}
+	second, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(41, 80, secondNativeCursor))
+	if err != nil {
+		t.Fatalf("disjoint appended item response: %v", err)
+	}
+	if second.Identity.Incarnation != first.Identity.Incarnation {
+		t.Fatalf("append-only 1..40 -> 41..80 rotated incarnation: first=%q second=%q", first.Identity.Incarnation, second.Identity.Incarnation)
+	}
+	if _, err := appitempaging.DecodeCursor(retainedCursor, second.Identity); err != nil {
+		t.Fatalf("cursor from earlier window became stale after disjoint append: %v", err)
+	}
+}
+
+func TestLocalItemPagingPreservesCursorAcrossUnchangedBoundedToCompleteRead(t *testing.T) {
+	source := newLocalItemReadConversionSource(t, "bounded-to-complete")
+	params := appwire.ThreadReadParams{Ref: "local:bounded-to-complete", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: params.Ref, Incarnation: "native-bounded-to-complete", ProjectionVersion: 1}
+	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 2})
+	if err != nil {
+		t.Fatalf("encode native cursor: %v", err)
+	}
+
+	first, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(2, 2, nativeCursor))
+	if err != nil {
+		t.Fatalf("bounded item response: %v", err)
+	}
+	retainedCursor, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 2})
+	if err != nil {
+		t.Fatalf("encode retained cursor: %v", err)
+	}
+	second, err := source.ItemCandidatesFromRead(t.Context(), params, positionedItemReadResponse(1, 2, ""))
+	if err != nil {
+		t.Fatalf("complete item response: %v", err)
+	}
+	if second.Identity.Incarnation != first.Identity.Incarnation {
+		t.Fatalf("unchanged bounded [2] -> complete [1,2] rotated incarnation: first=%q second=%q", first.Identity.Incarnation, second.Identity.Incarnation)
+	}
+	if _, err := appitempaging.DecodeCursor(retainedCursor, second.Identity); err != nil {
+		t.Fatalf("cursor from bounded read became stale after complete read: %v", err)
+	}
+}
+
 func TestLocalItemPagingIdentityBindsEveryItemPosition(t *testing.T) {
 	source := newLocalItemReadConversionSource(t, "position-rewrite")
 	params := appwire.ThreadReadParams{Ref: "local:position-rewrite", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 4}

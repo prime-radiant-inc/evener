@@ -136,7 +136,16 @@ func transcriptItemDigest(candidates []appitempaging.TranscriptItemCandidate, co
 func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempaging.TranscriptItemCandidate, prefix bool) (itemSnapshotState, bool) {
 	current := itemSnapshotStateForCandidates(previous.ThreadRef, previous.Incarnation, previous.SourceIdentity, candidates, prefix)
 	if prefix && !previous.Prefix {
-		return current, false
+		if previous.FingerprintCount == 0 || len(candidates) < int(previous.FingerprintCount) {
+			return current, false
+		}
+		currentTail := candidates[len(candidates)-int(previous.FingerprintCount):]
+		for index, candidate := range currentTail {
+			if transcriptItemFingerprint(candidate) != previous.FingerprintTail[index] {
+				return current, false
+			}
+		}
+		return current, true
 	}
 	if previous.ItemCount == 0 {
 		return current, prefix || len(candidates) == 0
@@ -159,6 +168,23 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 		fingerprints[index] = transcriptItemFingerprint(candidate)
 	}
 	previousTail := previous.FingerprintTail[:int(previous.FingerprintCount)]
+	if fingerprints[0].Position.Entry > previous.LastPosition.Entry ||
+		(fingerprints[0].Position.Entry == previous.LastPosition.Entry && fingerprints[0].Position.Item > previous.LastPosition.Item) {
+		advanced := previous
+		advanced.ItemCount += len(fingerprints)
+		advanced.LastPosition = fingerprints[len(fingerprints)-1].Position
+		for _, fingerprint := range fingerprints {
+			advanced.TranscriptDigest = extendTranscriptItemDigest(advanced.TranscriptDigest, fingerprint)
+		}
+		combined := append(append(make([]itemSnapshotFingerprint, 0, len(previousTail)+len(fingerprints)), previousTail...), fingerprints...)
+		if len(combined) > itemSnapshotFingerprintTailCapacity {
+			combined = combined[len(combined)-itemSnapshotFingerprintTailCapacity:]
+		}
+		advanced.FingerprintCount = uint8(len(combined))
+		clear(advanced.FingerprintTail[:])
+		copy(advanced.FingerprintTail[:], combined)
+		return advanced, true
+	}
 	maxOverlap := min(len(previousTail), len(fingerprints))
 	overlap := 0
 	matches := 0

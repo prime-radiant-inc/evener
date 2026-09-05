@@ -601,14 +601,17 @@ func TestLocalDaemonItemCandidatesMaterializeAuthenticatedSnapshot(t *testing.T)
 	if err != nil {
 		t.Fatalf("observe full materialization: %v", err)
 	}
-	if full.Identity == bounded.Identity {
-		t.Fatalf("bounded-to-full identity = %+v, want rotation from %+v", full.Identity, bounded.Identity)
+	if full.Identity != bounded.Identity {
+		t.Fatalf("bounded-to-full identity = %+v, want unchanged %+v", full.Identity, bounded.Identity)
 	}
 	continued, err := continuitySource.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40, Cursor: oldCursor,
 	})
-	if err == nil {
-		t.Fatalf("original bounded cursor was accepted after full materialization: %+v", continued)
+	if err != nil {
+		t.Fatalf("continue original bounded cursor after full materialization: %v", err)
+	}
+	if len(continued.Candidates.Candidates) != 1 || continued.Candidates.Candidates[0].Item.ID != "item-00" {
+		t.Fatalf("continued bounded cursor = %+v, want item-00", continued.Candidates.Candidates)
 	}
 	partial, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{
 		Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 40,
@@ -1026,7 +1029,7 @@ func newLocalDaemonItemTransitionSource(t *testing.T, items []appwire.ThreadItem
 	return source, func(next []appwire.ThreadItem) { currentItems = next }
 }
 
-func TestLocalDaemonItemSnapshotTransitionsRotateBoundedPrefix(t *testing.T) {
+func TestLocalDaemonItemSnapshotBoundedToCompleteTransitions(t *testing.T) {
 	item := func(id string, ordinal uint32) appwire.ThreadItem {
 		position := appwire.ThreadItemPosition{Entry: 0, Item: ordinal}
 		return appwire.ThreadItem{
@@ -1056,12 +1059,16 @@ func TestLocalDaemonItemSnapshotTransitionsRotateBoundedPrefix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("full conversion: %v", err)
 		}
-		if full.Identity.Incarnation == bounded.Identity.Incarnation {
-			t.Fatalf("bounded-to-full incarnation = %q, want rotation from %q", full.Identity.Incarnation, bounded.Identity.Incarnation)
+		if full.Identity.Incarnation != bounded.Identity.Incarnation {
+			t.Fatalf("bounded-to-full incarnation = %q, want unchanged %q", full.Identity.Incarnation, bounded.Identity.Incarnation)
 		}
 		setItems([]appwire.ThreadItem{item("X", 0), item("B", 1), item("C", 2)})
-		if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: oldCursor, ItemLimit: 40}); err == nil {
-			t.Fatal("cursor from bounded prefix was accepted after full prefix materialization")
+		continued, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: oldCursor, ItemLimit: 40})
+		if err != nil {
+			t.Fatalf("continue cursor after full materialization: %v", err)
+		}
+		if len(continued.Candidates.Candidates) != 1 || continued.Candidates.Candidates[0].Item.ID != "X" {
+			t.Fatalf("continued bounded cursor = %+v, want X", continued.Candidates.Candidates)
 		}
 	})
 
