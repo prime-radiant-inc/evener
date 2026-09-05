@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"sync"
@@ -69,16 +70,40 @@ func (c *itemSnapshotStateCache) get(key string) (itemSnapshotState, bool) {
 	return element.Value.(itemSnapshotStateEntry).state, true
 }
 
-func (c *itemSnapshotStateCache) put(key string, state itemSnapshotState) {
-	if c == nil || c.capacity == 0 {
-		return
+// peek leaves recency untouched until the operation commits successfully.
+func (c *itemSnapshotStateCache) peek(key string) (itemSnapshotState, bool) {
+	if c == nil {
+		return itemSnapshotState{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	element, ok := c.entries[key]
+	if !ok {
+		return itemSnapshotState{}, false
+	}
+	return element.Value.(itemSnapshotStateEntry).state, true
+}
+
+func (c *itemSnapshotStateCache) put(key string, state itemSnapshotState) {
+	_ = c.putContext(context.Background(), key, state)
+}
+
+func (c *itemSnapshotStateCache) putContext(ctx context.Context, key string, state itemSnapshotState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c == nil || c.capacity == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if existing, ok := c.entries[key]; ok {
 		existing.Value = itemSnapshotStateEntry{key: key, state: state}
 		c.order.MoveToFront(existing)
-		return
+		return nil
 	}
 	element := c.order.PushFront(itemSnapshotStateEntry{key: key, state: state})
 	c.entries[key] = element
@@ -88,6 +113,7 @@ func (c *itemSnapshotStateCache) put(key string, state itemSnapshotState) {
 		delete(c.entries, entry.key)
 		c.order.Remove(oldest)
 	}
+	return nil
 }
 
 var itemSnapshotChainAnchor = sha256.Sum256([]byte("evener:item-snapshot-chain:v1\x00"))
@@ -170,20 +196,9 @@ func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempa
 	previousTail := previous.FingerprintTail[:int(previous.FingerprintCount)]
 	if fingerprints[0].Position.Entry > previous.LastPosition.Entry ||
 		(fingerprints[0].Position.Entry == previous.LastPosition.Entry && fingerprints[0].Position.Item > previous.LastPosition.Item) {
-		advanced := previous
-		advanced.ItemCount += len(fingerprints)
-		advanced.LastPosition = fingerprints[len(fingerprints)-1].Position
-		for _, fingerprint := range fingerprints {
-			advanced.TranscriptDigest = extendTranscriptItemDigest(advanced.TranscriptDigest, fingerprint)
-		}
-		combined := append(append(make([]itemSnapshotFingerprint, 0, len(previousTail)+len(fingerprints)), previousTail...), fingerprints...)
-		if len(combined) > itemSnapshotFingerprintTailCapacity {
-			combined = combined[len(combined)-itemSnapshotFingerprintTailCapacity:]
-		}
-		advanced.FingerprintCount = uint8(len(combined))
-		clear(advanced.FingerprintTail[:])
-		copy(advanced.FingerprintTail[:], combined)
-		return advanced, true
+		// A disjoint native window can retain identity through its native token,
+		// but cannot extend an anchored digest across unobserved positions.
+		return current, true
 	}
 	maxOverlap := min(len(previousTail), len(fingerprints))
 	overlap := 0
