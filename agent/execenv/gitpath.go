@@ -53,18 +53,24 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 	// Memoize per environment: a session resolves the git root several times at
 	// init, all on the same env and cwd, so fork `git rev-parse` once.
 	if local, ok := env.(*LocalExecutionEnvironment); ok && local.gitRoots != nil {
-		return local.gitRoots.lookup(cwd, func() string { return gitRootUncached(ctx, env, cwd) })
+		return local.gitRoots.lookup(cwd, func() (string, bool) { return gitRootUncached(ctx, env, cwd) })
 	}
-	return gitRootUncached(ctx, env, cwd)
+	root, _ := gitRootUncached(ctx, env, cwd)
+	return root
 }
 
-func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) string {
+// gitRootUncached resolves cwd's working-tree root. definitive says whether the
+// answer is one to remember: a structural resolution and a verdict git itself
+// returned are, while a fork that never ran or never finished — ctx cancelled or
+// expired, git missing, working directory unusable — is not (see
+// gitRootCache.lookup).
+func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
-		if root, ok := structuralWorktreeRoot(cwd); ok {
-			return root
+		if structural, ok := structuralWorktreeRoot(cwd); ok {
+			return structural, true
 		}
 		if !hasGitEntryAncestor(cwd) {
-			return ""
+			return "", true
 		}
 	}
 
@@ -72,12 +78,17 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 	defer cancel()
 
 	res, err := RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
-	if err != nil || res.ExitCode != 0 {
-		return ""
+	if err != nil {
+		// No verdict: the command did not run to completion. Answer empty for
+		// this call without teaching the environment anything.
+		return "", false
 	}
-	root := strings.TrimSpace(res.Stdout)
+	if res.ExitCode != 0 {
+		return "", true // git ran and said this is not a repository
+	}
+	root = strings.TrimSpace(res.Stdout)
 	if root == "" {
-		return ""
+		return "", true
 	}
 	// Best-effort sanity check: ensure the returned root is a prefix of cwd.
 	// Resolve symlinks to handle macOS /var -> /private/var and similar.
@@ -90,9 +101,9 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 	root = filepath.Clean(root)
 	cwd = filepath.Clean(cwd)
 	if root != cwd && !strings.HasPrefix(cwd, root+string(filepath.Separator)) {
-		return ""
+		return "", true // git answered, and its answer failed the sanity check
 	}
-	return root
+	return root, true
 }
 
 // ResolveMainRepoRoot returns the main repository root for cwd, resolving
@@ -105,17 +116,24 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 // a separate per-environment cache slot for that reason.
 func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 	if local, ok := env.(*LocalExecutionEnvironment); ok && local.mainRoots != nil {
-		return local.mainRoots.lookup(cwd, func() string { return mainRepoRootUncached(env, cwd) })
+		return local.mainRoots.lookup(cwd, func() (string, bool) { return mainRepoRootUncached(env, cwd) })
 	}
-	return mainRepoRootUncached(env, cwd)
+	root, _ := mainRepoRootUncached(env, cwd)
+	return root
 }
 
-func mainRepoRootUncached(env ExecutionEnvironment, cwd string) string {
+// mainRepoRootUncached resolves cwd's main repository root, reporting whether
+// the answer is definitive on the same terms gitRootUncached does: it shares
+// the cache, so a resolution error must not be memoized here either.
+func mainRepoRootUncached(env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	root, isGit, err := resolveMainRepoRoot(env, cwd)
-	if err != nil || !isGit {
-		return ""
+	if err != nil {
+		return "", false
 	}
-	return root
+	if !isGit {
+		return "", true
+	}
+	return root, true
 }
 
 func structuralWorktreeRoot(cwd string) (string, bool) {

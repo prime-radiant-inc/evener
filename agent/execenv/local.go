@@ -451,14 +451,23 @@ type gitRootCache struct {
 	m  map[string]string
 }
 
-func (c *gitRootCache) lookup(cwd string, compute func() string) string {
+// lookup memoizes compute's answer for cwd, but ONLY when compute calls it
+// definitive. A resolution that never reached a verdict — a cancelled or
+// expired context, a git that could not be run — says nothing about cwd, and
+// caching it would make this environment treat cwd as non-git for the rest of
+// its life, long after the request whose cancellation caused it is gone. A
+// negative answer git actually gave ("not a repository"), or one the filesystem
+// gave structurally, is definitive and is cached like any other.
+func (c *gitRootCache) lookup(cwd string, compute func() (root string, definitive bool)) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if v, ok := c.m[cwd]; ok {
 		return v
 	}
-	v := compute()
-	c.m[cwd] = v
+	v, definitive := compute()
+	if definitive {
+		c.m[cwd] = v
+	}
 	return v
 }
 
