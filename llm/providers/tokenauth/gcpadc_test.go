@@ -180,12 +180,13 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 
 func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
 	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
-		return nil, errors.New("invalid character")
+		t.Fatal("non-JSON must be rejected before the CredentialsFromJSON seam is called")
+		return nil, nil
 	}}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
 	err := a.Apply(context.Background(), req, storedRes("vertex", "{"))
 	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") {
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") || !strings.Contains(err.Error(), "not valid JSON") {
 		t.Fatalf("err = %v", err)
 	}
 }
