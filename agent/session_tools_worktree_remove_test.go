@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1075,6 +1076,70 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 
 	if cleanupDuringOp.Load() {
 		t.Error("the close cleaned the session's environment while the remove it interrupted was still running")
+	}
+	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
+}
+
+// The fence is only worth as much as its position in the close. Joining the
+// admitted work just before environment cleanup leaves every close-time
+// worktree step — disposing delegate lanes, sweeping residue, unlocking the
+// session's own lane, closing the stores that record all of it — running
+// concurrently with an operation that is still moving locks and lanes around.
+// The join belongs before any of that.
+func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	resB, err := r.create(t, map[string]any{"name": "b"})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	// Lane b is the session's own occupied worktree, so the unlock of b is
+	// close's own lane cleanup and nothing the remove of a would ever issue.
+	laneB := resB["path"].(string)
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	ownLaneUnlocked := make(chan struct{})
+	var unlockedOnce sync.Once
+	var cleanupDuringOp, holding atomic.Bool
+
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == laneB {
+				unlockedOnce.Do(func() { close(ownLaneUnlocked) })
+			}
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" &&
+				holding.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					r.s.Close()
+				}()
+				<-closeBegun
+				select {
+				case <-ownLaneUnlocked:
+					cleanupDuringOp.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	_, removeErr := r.removeOp(t, map[string]any{"name": "a"})
+
+	if !holding.Load() {
+		t.Fatal("remove never read the worktree registry; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringOp.Load() {
+		t.Error("the close unlocked its own lane while the remove it interrupted was still moving locks around")
 	}
 	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
 }

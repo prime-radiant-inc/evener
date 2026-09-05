@@ -221,8 +221,10 @@ func (s *Session) outstandingEnvWork() []string {
 }
 
 // joinEnvWorkWithinCloseBudget waits for every admitted environment work item
-// before the close cleans the environment, and says what it walked past when
-// the shared close budget expires first.
+// before the close touches anything that work is still using — the delegate
+// tree, this session's lanes and locks, the stores recording them, and finally
+// the environment's process table — and says what it walked past when the
+// shared close budget expires first.
 //
 // The three kinds of admission reach this join by different routes:
 //
@@ -356,6 +358,34 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.cfg.testOnly.closeAfterDisposeSweepJoin()
 		}
 
+		// Join the environment work admitted before `closing` was set: a whole
+		// manage_worktree call (admitted at its dispatch, which is the one entry
+		// every operation passes through), the refresh of any swap that call
+		// performs, and the rollback a refused or failed operation still owes
+		// after that swap returned. All of them fork git on the session's shared
+		// process table, and the last is work a close CAUSED.
+		//
+		// It joins HERE, before the delegate tree closes and before any of this
+		// session's own worktree cleanup, because everything below acts on the
+		// same lanes, locks and durable records an in-flight operation is still
+		// moving: disposing delegate lanes, sweeping foreign residue, unlocking
+		// the session's own worktree, and closing the stores that record all of
+		// it. Joining just before the environment cleanup would fence the process
+		// table and nothing else, leaving the operation to race every step in
+		// between. Nothing admitted may depend on those steps — an operation that
+		// waited on the delegate-tree close would deadlock this join until the
+		// budget expired — which is the same constraint the disposeWG join above
+		// already imposes on the dispose op.
+		//
+		// A swap's refresh stops on the session context cancelled in step 2
+		// above; a rollback is deliberately detached from it and bounded by a
+		// budget of its own; an operation stops wherever its own request context
+		// is checked. This join is the backstop over all three (see
+		// joinEnvWorkWithinCloseBudget). It runs for a child close too
+		// (cleanupEnv false): no such work may outlive the session that admitted
+		// it.
+		s.joinEnvWorkWithinCloseBudget(budgetCtx)
+
 		// The root-owned stable controller is the shutdown authority for its
 		// delegate tree. Persist and join recursive stop before generic Session
 		// teardown can close a child out from under that durable operation. The
@@ -451,22 +481,6 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		if err := s.closeOwnedDelegateStoreWithContext(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
 		}
-
-		// Join the environment work admitted before `closing` was set: a whole
-		// manage_worktree call (admitted at its dispatch, which is the one entry
-		// every operation passes through), the refresh of any swap that call
-		// performs, and the rollback a refused or failed operation still owes
-		// after that swap returned. All of them fork git on the session's shared
-		// process table, and the last is work a close CAUSED — walking past them
-		// would tear the environment down mid-command and leave behind the very
-		// lane the rollback was removing. A swap's refresh stops on the session
-		// context cancelled in step 2 above; a rollback is deliberately detached
-		// from it and bounded by a budget of its own; an operation stops wherever
-		// its own request context is checked. This join is the backstop over all
-		// three (see joinEnvWorkWithinCloseBudget). It runs for a child close too
-		// (cleanupEnv false): no such work may outlive the session that admitted
-		// it.
-		s.joinEnvWorkWithinCloseBudget(budgetCtx)
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
