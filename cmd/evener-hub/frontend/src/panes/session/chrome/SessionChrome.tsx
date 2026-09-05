@@ -231,6 +231,9 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                         (target.kind === "project" && target.projectKey === location?.project_key),
                     ),
                   );
+                // Suppress the waiter's own rejection (e.g. navigation never
+                // initialized): awaitNavigationConvergence observes it separately.
+                void invalidation.promise.catch(() => undefined);
                 try {
                   await threadsStore.getState().shutdown(sessionRef);
                   await awaitNavigationConvergence(invalidation, targets);

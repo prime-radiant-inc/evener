@@ -1142,6 +1142,9 @@ function NavigationRail({
                 (target.kind === "project" && target.projectKey === session.project_key),
             ),
           );
+        // Suppress the waiter's own rejection (e.g. navigation never
+        // initialized): awaitNavigationConvergence observes it separately.
+        void invalidation.promise.catch(() => undefined);
         try {
           await runAction(
             () => threadsStore.getState().shutdown(session.ref),
