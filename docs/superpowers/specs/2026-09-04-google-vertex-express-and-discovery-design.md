@@ -302,11 +302,12 @@ already exists in the hub's `credentialLabels.ts`.
 
 ### 4.3 Authenticator
 
-`tokenauth.GCPADC.tokenSource` keys its cache by instance **and** a hash of
-`res.Credential.Value`; when `res.Credential.Source == "store"` it builds the
-token source with `google.CredentialsFromJSON(ctx, []byte(value),
-cloudPlatformScope)` instead of `FindDefaultCredentials`. Everything else
-(`ReuseTokenSource`, the bearer header, §2.2's quota header) is shared.
+`tokenauth.GCPADC.tokenSource` caches one token source per instance, rebuilt
+when the stored credential's digest changes; when `res.Credential.Source ==
+"store"` it builds the token source with `google.CredentialsFromJSON(ctx,
+[]byte(value), cloudPlatformScope)` instead of `FindDefaultCredentials`.
+Everything else (`ReuseTokenSource`, the bearer header, §2.2's quota
+header) is shared.
 Malformed JSON surfaces as the existing `llm.ConfigurationError` shape,
 naming the instance and "stored credential".
 
@@ -380,8 +381,8 @@ Deterministic (`make test`, no credentials, no network):
   host-relative); the non-Vertex path unchanged.
 - `llm/providers/tokenauth`: `x-goog-user-project` set from
   `Transport.Vars` and absent without it; stored-JSON token source chosen for `Source == "store"`
-  (seam: `FindCredentials`/a `CredentialsFromJSON` seam); cache keyed by
-  value hash.
+  (seam: `FindCredentials`/a `CredentialsFromJSON` seam); one source per
+  instance, rebuilt when the stored credential's digest changes.
 - `envvars`: the two new variables registered.
 - `cmd/evener-hub`: `authModesFor` for `gcp-adc`; `credentialJson/set`
   validation, refusal for non-`gcp-adc` instances, store write, reload;

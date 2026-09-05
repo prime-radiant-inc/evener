@@ -30,7 +30,16 @@ type GCPADC struct {
 	CredentialsFromJSON func(ctx context.Context, data []byte, scopes ...string) (*google.Credentials, error)
 
 	mu      sync.Mutex
-	sources map[string]tokenSource
+	sources map[string]cachedSource
+}
+
+// cachedSource is one instance's token source plus the digest of the
+// stored credential it was built from ("" for application-default
+// credentials), so a replaced credential is noticed on the next request
+// and the old source dropped instead of kept alongside the new one.
+type cachedSource struct {
+	digest string
+	tokenSource
 }
 
 // tokenSource pairs a cached token source with whether the credential it
@@ -89,23 +98,22 @@ func ValidateCredentialJSON(data []byte) error {
 	return err
 }
 
-// sourceKey is the token-source cache key: the instance alone for ADC, the
-// instance plus a digest of the stored JSON otherwise, so replacing the
-// stored credential rebuilds the source.
-func sourceKey(res registry.Resolved) string {
+// credentialDigest identifies the stored credential a source was built
+// from; ADC has no stored value and digests to "".
+func credentialDigest(res registry.Resolved) string {
 	if res.Credential.Source != "store" {
-		return res.Instance
+		return ""
 	}
 	sum := sha256.Sum256([]byte(res.Credential.Value))
-	return res.Instance + "\x00" + hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:])
 }
 
 func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenSource, error) {
-	key := sourceKey(res)
+	digest := credentialDigest(res)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if src, ok := a.sources[key]; ok {
-		return src, nil
+	if c, ok := a.sources[res.Instance]; ok && c.digest == digest {
+		return c.tokenSource, nil
 	}
 	// The source outlives the request that created it, so it must not
 	// inherit that request's cancellation.
@@ -133,8 +141,8 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenS
 	}
 	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(creds.JSON)}
 	if a.sources == nil {
-		a.sources = map[string]tokenSource{}
+		a.sources = map[string]cachedSource{}
 	}
-	a.sources[key] = src
+	a.sources[res.Instance] = cachedSource{digest: digest, tokenSource: src}
 	return src, nil
 }

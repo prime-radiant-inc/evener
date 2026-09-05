@@ -178,6 +178,83 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 	}
 }
 
+func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
+	var fromJSON [][]byte
+	a := &GCPADC{
+		CredentialsFromJSON: func(_ context.Context, data []byte, scopes ...string) (*google.Credentials, error) {
+			if len(scopes) != 1 || scopes[0] != cloudPlatformScope {
+				t.Fatalf("scopes = %v", scopes)
+			}
+			fromJSON = append(fromJSON, data)
+			return &google.Credentials{JSON: data, TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
+		},
+	}
+	const valueB = `{"type":"authorized_user","client_id":"other","client_secret":"b","refresh_token":"c"}`
+	checkOneEntry := func(value string) {
+		t.Helper()
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if len(a.sources) != 1 {
+			t.Fatalf("len(a.sources) = %d, want 1", len(a.sources))
+		}
+		if got, want := a.sources["vertex"].digest, credentialDigest(storedRes("vertex", value)); got != want {
+			t.Fatalf("digest = %q, want %q", got, want)
+		}
+	}
+	for _, value := range []string{storedUserJSON, valueB, storedUserJSON} {
+		req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+		if err := a.Apply(context.Background(), req, storedRes("vertex", value)); err != nil {
+			t.Fatal(err)
+		}
+		checkOneEntry(value)
+	}
+	if len(fromJSON) != 3 {
+		t.Fatalf("parses = %d, want 3 (A dropped when B replaced it, so it is parsed again)", len(fromJSON))
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req, storedRes("vertex-2", storedUserJSON)); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.sources) != 2 {
+		t.Fatalf("len(a.sources) = %d, want 2", len(a.sources))
+	}
+}
+
+func TestGCPADCReplacesADCSourceWhenAStoredCredentialArrives(t *testing.T) {
+	a := &GCPADC{
+		FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
+		},
+		CredentialsFromJSON: func(_ context.Context, data []byte, _ ...string) (*google.Credentials, error) {
+			return &google.Credentials{JSON: data, TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
+		},
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer adc-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	req2, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req2, storedRes("vertex", storedUserJSON)); err != nil {
+		t.Fatal(err)
+	}
+	if got := req2.Header.Get("Authorization"); got != "Bearer json-token" {
+		t.Fatalf("Authorization = %q, want the stored source's token", got)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.sources) != 1 {
+		t.Fatalf("len(a.sources) = %d, want 1", len(a.sources))
+	}
+	if a.sources["vertex"].digest == "" {
+		t.Fatal("digest empty after a stored credential replaced the ADC source")
+	}
+}
+
 func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
 	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
 		t.Fatal("non-JSON must be rejected before the CredentialsFromJSON seam is called")
