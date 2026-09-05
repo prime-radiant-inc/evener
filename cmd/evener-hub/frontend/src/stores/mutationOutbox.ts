@@ -185,7 +185,12 @@ export class MutationOutbox {
 
   async connectionReady(): Promise<void> {
     if (!this.#isReady()) return;
-    await this.#queueDiscovery(() => this.#discoverAll("ready"));
+    try {
+      await this.#queueDiscovery(() => this.#discoverAll("ready"));
+    } catch {
+      // Readiness is a lifecycle notification, not a submission result.
+      // Durable work remains available for the next discovery scan.
+    }
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {

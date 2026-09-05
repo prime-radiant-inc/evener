@@ -1,9 +1,10 @@
 // @vitest-environment node
 
-import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 const TARGET = "local:thread-1";
 
@@ -620,6 +621,65 @@ describe("MutationOutbox discovery", () => {
       expect(discovered).toEqual([TARGET]);
       expect(await storage.listOutbox()).toEqual([record]);
     } finally {
+      await outbox.stop();
+      storage.close();
+    }
+  });
+
+  test("a timed-out ready scan resolves and a later focus retries discovery", async () => {
+    const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const record = await storage.enqueueIntent(intent("discover after storage recovers"));
+    const lifecycleWindow = new EventTarget();
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover(_targets, reason) {
+        discoveries.push(reason);
+      },
+      createBroadcastChannel: (name) => new TestBroadcastChannel(name, new Set()),
+      lifecycleWindow,
+      setInterval: () => 0,
+      clearInterval() {},
+    });
+    await outbox.start();
+
+    const getAll = IDBObjectStore.prototype.getAll;
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let announceRead: (() => void) | undefined;
+    const readHeld = new Promise<void>((resolve) => {
+      announceRead = resolve;
+    });
+    const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      const request = getAll.apply(this, args);
+      if (this.name === "outbox" && !hold) {
+        hold = holdIndexedDBEvent(request, "success");
+        void hold.reached.then(() => announceRead?.());
+      }
+      return request;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let failure: unknown;
+    const ready = outbox.connectionReady().catch((error) => {
+      failure = error;
+    });
+    try {
+      await readHeld;
+      await vi.runOnlyPendingTimersAsync();
+      await ready;
+      expect(failure).toBeUndefined();
+      expect(discoveries).toEqual(["startup"]);
+      hold?.release();
+      lifecycleWindow.dispatchEvent(new Event("focus"));
+      await outbox.stop();
+      expect(discoveries).toEqual(["startup", "focus"]);
+      expect(await storage.getOutbox(record.clientMutationId)).toEqual(record);
+    } finally {
+      spy.mockRestore();
+      hold?.release();
+      vi.useRealTimers();
       await outbox.stop();
       storage.close();
     }
