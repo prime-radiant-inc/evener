@@ -453,8 +453,11 @@ file using any of them fails to load; see
    instance name — and otherwise application-default credentials (the
    `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known file); it
    never reads `api_key_env` or a `<NAME>_API_KEY` variable. A store entry
-   under a `gcp-adc` instance that is not a JSON object (for example a stale
-   API key) is ignored with a warning naming the remedy.
+   under a `gcp-adc` instance that is not a credential JSON evener can use —
+   invalid JSON, or a type other than `service_account` / `authorized_user`
+   (for example a stale API key, or an `external_account` configuration) —
+   is ignored with a warning naming the remedy, and resolution falls through
+   to application-default credentials.
 
 ## Cloud transports: Azure, Bedrock, Vertex
 

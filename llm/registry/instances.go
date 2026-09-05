@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -439,10 +438,11 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		var warn []string
 		if r.creds != nil {
 			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
-				if strings.HasPrefix(strings.TrimSpace(v), "{") && json.Valid([]byte(v)) {
+				err := CheckCredentialJSON([]byte(v))
+				if err == nil {
 					return Credential{Value: v, Source: "store"}, nil
 				}
-				warn = append(warn, fmt.Sprintf("credentials-store entry for %q is not a credential JSON and is ignored for gcp-adc: clear it (evener/auth/apiKey/clear) or replace it with a service-account or authorized_user JSON", rec.name))
+				warn = append(warn, fmt.Sprintf("credentials-store entry for %q is not a credential JSON evener can use (%v); it is ignored for gcp-adc: clear it (evener/auth/apiKey/clear) or replace it with a service-account or authorized_user JSON", rec.name, err))
 			}
 		}
 		if adcAvailable(r.env) {

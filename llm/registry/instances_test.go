@@ -453,6 +453,48 @@ func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithoutADC(t *testing.T) {
 	}
 }
 
+// TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC covers a stored
+// value that IS valid JSON but not a type the gcp-adc scheme can mint a
+// token from (external_account, say): it must not shadow a working ADC
+// file, so it falls through to adc with a warning naming both problems
+// (roborev round 3, F1).
+func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (the unsupported store value must not shadow it)", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not supported", "not a credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v; want source none", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not supported", "not a credential JSON", "gcloud auth application-default login"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
 func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
 	env := noADCEnv(t)
 	env["GOOGLE_VERTEX_PROJECT"], env["GOOGLE_VERTEX_LOCATION"] = "my-project", "global"

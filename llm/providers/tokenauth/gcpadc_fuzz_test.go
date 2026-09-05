@@ -3,10 +3,12 @@ package tokenauth
 import (
 	"encoding/json"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FuzzCredentialJSON drives the gcp-adc decode+validate boundary
-// (credentialJSONType, isUserCredential, ValidateCredentialJSON) over
+// (registry.CredentialJSONType, isUserCredential, ValidateCredentialJSON) over
 // arbitrary bytes. This never calls google.CredentialsFromJSON's network
 // path — CredentialsFromJSON only parses its argument and never performs
 // I/O — so the target stays offline and deterministic (docs/skills/
@@ -23,14 +25,14 @@ func FuzzCredentialJSON(f *testing.F) {
 	f.Add([]byte("\xff"))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		err := ValidateCredentialJSON(raw) // oracle: never panics (a fuzz failure here is a crash, not a t.Fatal)
-		typ := credentialJSONType(raw)
-		allowed := typ == "service_account" || typ == "authorized_user"
+		typ := registry.CredentialJSONType(raw)
+		allowed := registry.AllowedCredentialJSONTypes[typ]
 
 		if err == nil && !allowed {
 			t.Fatalf("ValidateCredentialJSON(%q) accepted type %q, want it restricted to the allowlist", raw, typ)
 		}
 		if err == nil && isUserCredential(raw) != (typ == "authorized_user") {
-			t.Fatalf("isUserCredential(%q) = %v, want it to agree with credentialJSONType == authorized_user", raw, isUserCredential(raw))
+			t.Fatalf("isUserCredential(%q) = %v, want it to agree with registry.CredentialJSONType == authorized_user", raw, isUserCredential(raw))
 		}
 		if !json.Valid(raw) && err == nil {
 			t.Fatalf("ValidateCredentialJSON(%q) accepted invalid JSON", raw)
