@@ -25,11 +25,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The add row's picker trigger. Its accessible name is the FormRow's own
- * visible label ("New directory"), which labels the trigger the way it labelled
- * the text box before it. */
+/** The add row trigger exposes its label and selected path. */
 function picker(): HTMLElement {
-  return screen.getByRole("button", { name: "New directory" });
+  return screen.getByRole("button", { name: /^New directory:/ });
 }
 
 /** Opens the add row's path picker and types a literal path, committing it
@@ -170,6 +168,7 @@ describe("PathListEditor", () => {
     const onAdd = vi.fn(async () => ({ ok: true }) as const);
     render(<PathListEditor {...baseProps({ onAdd })} />);
     await typePath(user, "/opt/new");
+    expect(screen.getByRole("button", { name: "New directory: /opt/new — browse" })).toBeTruthy();
     expect(onAdd).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Add" }));

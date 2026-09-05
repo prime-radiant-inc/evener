@@ -131,6 +131,7 @@ export function PathListEditor({
               <div className={CLASS.addRow}>
                 <span className={CLASS.addField}>
                   <PathField
+                    ariaLabel={addLabel}
                     directory={directory}
                     id={addFieldId}
                     value={value}

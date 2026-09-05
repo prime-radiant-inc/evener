@@ -102,7 +102,7 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
   fake.on("evener/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/etc/mcp.json");
   await user.keyboard("{Enter}");
@@ -123,10 +123,10 @@ test("the config-file add row browses files, and picking one fills the add field
   });
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(screen.getByRole("button", { name: /^New config file:/ }));
   await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "New config file" }).textContent).toMatch(/\/etc\/mcp\.json/),
+    expect(screen.getByRole("button", { name: /^New config file:/ }).textContent).toMatch(/\/etc\/mcp\.json/),
   );
 });
 
