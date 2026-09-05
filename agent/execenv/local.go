@@ -106,9 +106,10 @@ type LocalExecutionEnvironment struct {
 	sbfs        *sandboxFS
 	sbfsScratch string
 	// scratchFS is the cached fd-anchored layer for an unsandboxed session's
-	// explicitly allocated scratch root. Keeping its root fd for the environment's
-	// lifetime gives the late-bound grant the same root-swap defense as policy roots;
-	// it is closed with sbfs during environment teardown or policy replacement.
+	// explicitly allocated scratch root. Keeping its root fd while the root is
+	// current gives the late-bound grant the same root-swap defense as policy
+	// roots; it is retired with sbfs (closed once drained) when the root moves,
+	// at policy replacement, and at environment teardown.
 	scratchFS     *sandboxFS
 	scratchFSRoot string
 	// retiredFS holds layers taken out of service that an operation still held
@@ -380,10 +381,12 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 	}
 }
 
-// invalidateSandboxFS closes and drops the cached fd-anchored enforcement layer so
-// the next file tool rebuilds it from the current policy. It MUST run whenever
-// e.Sandbox is replaced (EnableSandbox, UseControlPolicy); a stale sbfs captured
-// the OLD policy's root fds and would keep enforcing the OLD roots.
+// invalidateSandboxFS retires every cached fd-anchored layer (closed once no
+// operation holds it) and drops it so the next file tool rebuilds from the
+// current policy and scratch. It MUST run whenever e.Sandbox is replaced
+// (EnableSandbox, UseControlPolicy) — a stale sbfs captured the OLD policy's
+// root fds and would keep enforcing the OLD roots — and when an environment
+// loses its scratch to another (AdoptSessionScratch).
 func (e *LocalExecutionEnvironment) invalidateSandboxFS() {
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
@@ -948,8 +951,9 @@ func (e *LocalExecutionEnvironment) terminationGraceDuration() time.Duration {
 // group, waiting two seconds for graceful shutdown, then sending SIGKILL to
 // every tracked process group (a no-op for those that already exited).
 func (e *LocalExecutionEnvironment) Cleanup() {
-	// Release any cached sandbox root fds captured by the file-tool enforcement
-	// layer. Independent of the process teardown below.
+	// Retire the cached file-tool layers: their root fds close now, or once an
+	// operation still mid-flight on one completes. Independent of the process
+	// teardown below.
 	e.sbMu.Lock()
 	e.closeFileToolLayersLocked()
 	e.sbMu.Unlock()
