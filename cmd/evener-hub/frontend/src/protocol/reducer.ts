@@ -535,9 +535,24 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
   return mergeItemIdentityMetadata(older, {
     ...older,
     ...newer,
+    text: newer.text ?? older.text,
+    toolName: newer.toolName ?? older.toolName,
+    callId: newer.callId ?? older.callId,
     argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
+    description: newer.description ?? older.description,
+    eventKind: newer.eventKind ?? older.eventKind,
+    steeringKind: newer.steeringKind ?? older.steeringKind,
+    raw: newer.raw ?? older.raw,
+    output: newer.output ?? older.output,
+    error: newer.error ?? older.error,
+    prevalOnly: newer.prevalOnly ?? older.prevalOnly,
+    exitCode: newer.exitCode ?? older.exitCode,
+    images: newer.images ?? older.images,
     outputImages: newer.outputImages ?? older.outputImages,
+    source: newer.source ?? older.source,
     reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt ?? older.completedAt,
     observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
     observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
     status:
@@ -609,6 +624,16 @@ function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
   return {
     ...older,
     ...newer,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt ?? older.completedAt,
+    durationMs: newer.durationMs ?? older.durationMs,
+    usage: newer.usage ?? older.usage,
+    cost: newer.cost ?? older.cost,
+    error: newer.error ?? older.error,
+    status:
+      newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+        ? older.status
+        : newer.status,
     items: mergePageItems(older.items, newer.items),
   };
 }

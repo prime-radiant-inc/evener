@@ -2275,6 +2275,68 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
   expect(result.olderCursor).toBe("cursor_0");
 });
 
+test("mergeOlderItemPage preserves older settled payload and usage when the current same-key fragment omits them", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "current-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer text wins",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1", pageUnit: "item" }, thread.evener.ref, 1000);
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+        itemsView: "fragment",
+        items: [
+          {
+            id: "older-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older text",
+            output: "older output",
+            error: "older error",
+            exitCode: 3,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    pageUnit: "item",
+  });
+
+  expect(result.turns[0]?.usage).toEqual({ inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "current-item",
+    text: "newer text wins",
+    output: "older output",
+    error: "older error",
+    exitCode: 3,
+    completedAt: "1970-01-01T00:00:00.002Z",
+    status: "completed",
+  });
+});
+
 test("mergeOlderItemPage retains the older status when an equal-rank newer item omits status", () => {
   const thread = testThread({
     turns: [
