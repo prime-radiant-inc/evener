@@ -46,7 +46,9 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // with the swap. A close then observes either the pre-swap state entirely or
 // the post-swap state with its parked environment set, never an installed
 // next with nothing parked: in that gap a child sharing the old environment
-// could mint a scratch there that nothing would ever release.
+// could mint a scratch there that nothing would ever release. record runs
+// with s.mu held: it may only assign session fields, and must neither block
+// nor take s.mu itself.
 func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, record func()) error {
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
 	// it: the git snapshot and the pre-warm below spawn through next, and a

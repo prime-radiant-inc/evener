@@ -98,10 +98,13 @@ type LocalExecutionEnvironment struct {
 	// enforcement layer, built on first file-tool use from a file-tool-confined
 	// Sandbox policy and cached (its root fds are captured at build so a later
 	// root swap cannot redirect resolution). It folds in the session scratch
-	// path current at build, recorded in sbfsScratch; when the session moves its
-	// scratch (AdoptSessionScratch) the effective path changes and sandbox()
-	// rebuilds, the way scratchSandboxFor re-keys on scratchFSRoot. It stays nil
-	// for plain off / a nil policy.
+	// path current at build, recorded in sbfsScratch; when the effective path
+	// has changed since, sandbox() rebuilds, the way scratchSandboxFor re-keys
+	// on scratchFSRoot. A scratch move (AdoptSessionScratch) also retires the
+	// source's layers outright, whether or not its path reads differently: a
+	// wrapper reports the same session tmp before and after, and the source no
+	// longer owns the scratch either way. It stays nil for plain off / a nil
+	// policy.
 	sbMu        sync.Mutex
 	sbfs        *sandboxFS
 	sbfsScratch string
@@ -686,9 +689,7 @@ func (e *LocalExecutionEnvironment) setOwnedSessionTmp(tmp *sandbox.SessionScrat
 // artifacts after the child exits. DisposeSandboxScratch is the explicit removal
 // operation for an allocation that should not survive.
 func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
-	e.sbMu.Lock()
-	e.closeFileToolLayersLocked()
-	e.sbMu.Unlock()
+	e.invalidateSandboxFS()
 	// Releasing a lease mutates it, and two teardowns can retain the same env
 	// at once (a swap rolling back onto the parked restore environment while
 	// close retains it), so the release itself runs under scratchMu.
@@ -707,12 +708,13 @@ func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 // fresh re-rooted clone owns nothing of the parent's (WithWorkingDirectory does
 // not copy it), so disposing a clone's OWN scratch cannot touch the parent's.
 func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
-	e.sbMu.Lock()
-	e.closeFileToolLayersLocked()
-	e.sbMu.Unlock()
+	e.invalidateSandboxFS()
 	// Under scratchMu for the same reason RetainSandboxScratch releases under
 	// it: a concurrent retain of the same env must not race the lease release
-	// inside Cleanup.
+	// inside Cleanup. That holds scratchMu across the RemoveAll, which the
+	// field's "never across a subprocess" invariant permits: no command runs
+	// here, and Dispose's contract is a fresh environment no session adopted,
+	// so nothing else is minting or reading its scratch meanwhile.
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
 	tmp := e.ownedSessionTmp
@@ -775,6 +777,9 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 		e.unsandboxedScratch, unsandboxed = unsandboxed, nil
 	}
 	e.scratchMu.Unlock()
+	// Safe outside scratchMu: both pointers were taken out of from exclusively
+	// under from.scratchMu, so no environment references them any more and no
+	// concurrent retain can reach them.
 	_ = owned.Retain()
 	_ = unsandboxed.Retain()
 	// The file-tool layers each env built around the scratch it held go through
@@ -954,9 +959,7 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	// Retire the cached file-tool layers: their root fds close now, or once an
 	// operation still mid-flight on one completes. Independent of the process
 	// teardown below.
-	e.sbMu.Lock()
-	e.closeFileToolLayersLocked()
-	e.sbMu.Unlock()
+	e.invalidateSandboxFS()
 
 	// Retain both per-session scratch dirs this env provisioned — the one it owns
 	// from EnableSandbox and the one an unsandboxed env lazily minted via
