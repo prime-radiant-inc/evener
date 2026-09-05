@@ -878,7 +878,7 @@ test("a conflicting chord is rejected pre-flight: inline message, no hub write, 
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain(
-    `chord "Control+P" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`,
+    `chord "Control+P" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
   );
   expect(patchCallsOf(client)).toHaveLength(0);
   // The capture stays open so the user can try another chord or cancel...
@@ -1185,6 +1185,23 @@ test("editable true → false → true leaves the row read-only then editable ag
 // validation skips (reserved here) never reaches the validated set, but
 // dropping it is exactly the meaningful action - so the row must offer
 // Reset even though the effective bindings never changed.
+// A conflict-skip warning names the holder the way the rows do - by TITLE
+// (with the action id alongside) - not by bare action id: this list is what
+// the user reads to understand why a saved rule did not apply.
+test("a persisted rule skipped for conflicting with a default names the holder by title in the warnings list", async () => {
+  // composerFocus claiming Control+K collides with palette.open's default.
+  await wireEditableClient([{ action: ACTIONS.composerFocus, chord: "Control+K" }]);
+  render(<KeybindingsSection />);
+
+  await waitFor(() =>
+    expect(screen.getByRole("status").textContent).toContain(
+      `chord "Control+K" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
+    ),
+  );
+  // The skipped rule changed nothing: composer stays on its default.
+  expect(within(rowFor("Focus the composer")).queryByText("Customized")).toBeNull();
+});
+
 test("a persisted rule skipped by validation shows Reset, and clicking it drops the rule from the hub payload", async () => {
   // Control+W is reserved on every platform: the rule is skipped with a
   // warning and never applies.
@@ -1227,7 +1244,7 @@ test("a Reset preflight rejection's row error clears on the next confirmed paylo
   const row = rowFor("Open the command palette");
   await userEvent.setup().click(within(row).getByRole("button", { name: "Reset" }));
   const alert = await within(row).findByRole("alert");
-  expect(alert.textContent).toContain(`already bound by "${ACTIONS.paletteOpen}"`);
+  expect(alert.textContent).toContain(`already bound by "Open the command palette" (${ACTIONS.paletteOpen})`);
   expect(patchCallsOf(client)).toHaveLength(0);
   expect(keybindingsStore.getState().hubError).toBeNull();
 

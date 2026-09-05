@@ -28,6 +28,19 @@ export function currentKeybindingsPlatform(): KeybindingsPlatform {
   return /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "apple" : "other";
 }
 
+/** User-facing label for an action id in conflict messages: the default
+ * map's title plus the id when the action is known
+ * ("Open the command palette" (palette.open)); the bare id otherwise (a
+ * binding registered outside the default map - e.g. a test double or a
+ * conditional entry - has no title here). A conflict message names the
+ * HOLDER of the chord the user tried to claim; a bare action id meant
+ * nothing in the editor's inline error or the skipped-overrides warnings
+ * list, where the rows themselves are titled. */
+export function actionDisplayLabel(actionId: string): string {
+  const title = DEFAULT_BINDINGS.find((b) => b.actionId === actionId)?.title;
+  return title === undefined ? `"${actionId}"` : `"${title}" (${actionId})`;
+}
+
 // The survey's verified never-use list ("not interceptable by pages"),
 // platform-split. The Control family is listed unqualified in the survey, so
 // it is reserved on every platform. Two survey entries are deliberately NOT
@@ -335,7 +348,7 @@ export function validateOverrideRules(
         rule: removed.rule,
         reason: "conflict",
         conflictWith,
-        message: `chord "${removed.rule.chord ?? ""}" in scope "${scope}" is already bound by "${conflictWith}"`,
+        message: `chord "${removed.rule.chord ?? ""}" in scope "${scope}" is already bound by ${actionDisplayLabel(conflictWith)}`,
       });
       if (appliedActionIds.has(removed.rule.action)) dropped.add(removed.rule.action);
       skipped = true;

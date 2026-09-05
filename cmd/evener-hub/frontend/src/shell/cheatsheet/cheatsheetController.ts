@@ -29,7 +29,7 @@ import { ACTIONS } from "../../keybindings/actions";
 import { chordsOverlap, parseChord } from "../../keybindings/chord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS } from "../../keybindings/defaults";
 import { GLOBAL_SCOPE, keybindingsRegistry } from "../../keybindings/registry";
-import type { ValidationWarning } from "../../keybindings/validation";
+import { actionDisplayLabel, type ValidationWarning } from "../../keybindings/validation";
 import { keybindingsStore } from "../../stores/keybindings";
 import { prefsStore } from "../../stores/prefs";
 
@@ -72,7 +72,7 @@ function setCharacterKeyWarning(conflictWith: string | null): void {
     if (rest.length !== state.warnings.length) keybindingsStore.setState({ warnings: rest });
     return;
   }
-  const message = `the "?" cheatsheet trigger was not registered: chord "[Shift]+?" in scope "global" is already bound by "${conflictWith}"`;
+  const message = `the "?" cheatsheet trigger was not registered: chord "[Shift]+?" in scope "global" is already bound by ${actionDisplayLabel(conflictWith)}`;
   if (state.warnings.some((warning) => warning.reason === "character-key-conflict" && warning.message === message))
     return;
   const warning: ValidationWarning = {

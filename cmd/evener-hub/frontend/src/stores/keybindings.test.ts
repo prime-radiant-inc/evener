@@ -321,7 +321,9 @@ describe("keybindings store: patch", () => {
     // strict Control+K claim by another action.
     await expect(
       keybindingsStore.getState().patchOverrides([{ action: ACTIONS.composerFocus, chord: "Control+K" }]),
-    ).rejects.toThrow(`chord "Control+K" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`);
+    ).rejects.toThrow(
+      `chord "Control+K" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
+    );
 
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
     // A client-side authoring error is not hub-sourced: neither hubError nor
@@ -455,7 +457,9 @@ describe("keybindings store: patch", () => {
         { action: "no.such.action", chord: "Control+P" },
         { action: ACTIONS.composerFocus, chord: "Control+K" },
       ]),
-    ).rejects.toThrow(`chord "Control+K" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`);
+    ).rejects.toThrow(
+      `chord "Control+K" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
+    );
 
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
     expect(keybindingsStore.getState().hubError).toBeNull();
