@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -55,7 +57,7 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != repoDir {
 		t.Fatalf("currentEnv().WorkingDirectory() = %q, want %q", got, repoDir)
@@ -124,7 +126,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	sess.mu.Lock()
 	ei := sess.envInfo
@@ -278,7 +280,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 
 	// The watcher window spans the whole call, including step 2's locked
 	// section and its first post-swap prompt render.
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 	close(stop)
 	<-done
 
@@ -322,9 +324,9 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Go(func() {
 		for i := range swapIterations {
 			if i%2 == 0 {
-				sess.swapEnvAndRefresh(envA)
+				sess.swapEnvAndRefresh(envA, nil)
 			} else {
-				sess.swapEnvAndRefresh(envB)
+				sess.swapEnvAndRefresh(envB, nil)
 			}
 		}
 	})
@@ -338,4 +340,138 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	})
 
 	wg.Wait()
+}
+
+// closeFenceProbe bounds the window a fence test gives a close to reach
+// environment cleanup while it holds admitted environment work. This is an
+// absence proof: the join is exactly what keeps close out of cleanup while the
+// work is held, so there is no ordering signal to await, only a window to let
+// pass. A scripted close reaches cleanup in well under a second when the join
+// is missing, so two seconds is a tripwire with margin; it is spent on every
+// passing run.
+const closeFenceProbe = 2 * time.Second
+
+// A swap that passed its closing check is admitted: the session promised to
+// finish it. Its refresh then runs git on the environment it is installing —
+// forks on the process table the session's own close reaps — so a close that
+// walks past an admitted swap tears the environment down while those commands
+// are still starting, on contexts it never gets to cancel.
+//
+// Close therefore waits for every admitted swap before it cleans the
+// environment, and the refresh runs under the session's own context so the
+// close's cancel makes that wait short rather than a full close budget.
+//
+// The hook below holds the swap in exactly the window step 1's git occupies:
+// admitted, past the scratch move, with the install still to come.
+func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	cleanupObserved := make(chan struct{})
+	var refreshLiveAfterClose, cleanupDuringRefresh atomic.Bool
+
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(refreshCtx context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// The close cancels the session context before any teardown, so by here
+		// the refresh is already cancelled: its git stops instead of forking
+		// onto a process table the close is about to reap.
+		if refreshCtx.Err() == nil {
+			refreshLiveAfterClose.Store(true)
+		}
+		select {
+		case <-cleanupObserved:
+			cleanupDuringRefresh.Store(true)
+		case <-time.After(closeFenceProbe):
+		}
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	if refreshLiveAfterClose.Load() {
+		t.Error("the refresh context was still live after the session began closing: the close cannot stop the git the refresh forks")
+	}
+	if cleanupDuringRefresh.Load() {
+		t.Error("the close cleaned the session's environment while an admitted swap was still in flight")
+	}
+}
+
+// The fence on admitted environment work is BOUNDED by the close budget on
+// purpose. The refresh runs under the session's own context, which the close
+// cancels before it reaches the join, so the bound only bites when a process is
+// already ignoring cancellation — and an unbounded fence there would turn one
+// hung git into a daemon that never shuts down. Giving up is the lesser
+// failure, but it must not be a silent one: the close is about to reap the
+// process table under whatever is still running, so it says what it walked
+// past, by name.
+func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
+	oldBudget := LaneClosePassBudget
+	LaneClosePassBudget = 200 * time.Millisecond
+	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	lanePath, _ := createLaneExpectations(t, r, "lane")
+
+	// Collect warnings off the live session until its close shuts the channel.
+	warnings := make(chan []string, 1)
+	go func() {
+		var msgs []string
+		for ev := range r.s.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok {
+				msgs = append(msgs, data.Message)
+			}
+		}
+		warnings <- msgs
+	}()
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// Stand in for a refresh whose git ignores the cancellation the close
+		// already delivered: outlast the whole budget.
+		time.Sleep(2 * LaneClosePassBudget)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	// Close completed rather than hanging behind the held swap: <-closeDone
+	// returned above, and the events channel it closes ends the collector.
+	msgs := <-warnings
+	var fence string
+	for _, msg := range msgs {
+		if strings.Contains(msg, "environment work still in flight") {
+			fence = msg
+		}
+	}
+	if fence == "" {
+		t.Fatalf("no warning named the environment work the close walked past; warnings were %q", msgs)
+	}
+	if !strings.Contains(fence, lanePath) {
+		t.Errorf("fence warning %q does not name the swap still in flight (%s)", fence, lanePath)
+	}
 }

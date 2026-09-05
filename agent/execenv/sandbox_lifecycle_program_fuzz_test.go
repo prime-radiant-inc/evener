@@ -78,15 +78,27 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 			t.Fatalf("EnableSandbox(%s) state Sandbox=%p policy=%p Wrapper=%v tmp=%v", mode, env.Sandbox, policy, env.Wrapper != nil, env.ownedSessionTmp != nil)
 		}
 		sandboxLifecycleAssertWithin(t, tmpBase, env.ownedSessionTmp.Dir)
-		if fs := env.sandbox(); fs == nil {
+		// sandbox() acquires the layer before returning it, and a layer closes
+		// only on the release that drains it. Every observation below therefore
+		// releases what it took; a deferred release would instead hold one
+		// layer per loop iteration open until the whole program finished, which
+		// is the descriptor leak this loop used to run per fuzz case.
+		fs := env.sandbox()
+		if fs == nil {
 			t.Fatalf("EnableSandbox(%s) did not build an enforced sandbox filesystem", mode)
 		}
+		fs.release()
 
 		grant := env.WithSandboxInvocationGrant(filepath.Join(worktree, "granted.txt"))
 		grantEnv, ok := grant.(*LocalExecutionEnvironment)
-		if !ok || grantEnv == env || grantEnv.sandboxTmpBase != tmpBase || grantEnv.sandbox() == nil {
+		if !ok || grantEnv == env || grantEnv.sandboxTmpBase != tmpBase {
 			t.Fatalf("sandbox invocation grant did not create an isolated fixture clone for %s", mode)
 		}
+		grantFS := grantEnv.sandbox()
+		if grantFS == nil {
+			t.Fatalf("sandbox invocation grant clone has no enforced sandbox filesystem for %s", mode)
+		}
+		grantFS.release()
 		grantEnv.Cleanup()
 
 		child := env.WithWorkingDirectory(lane)
@@ -102,9 +114,15 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		if err := env.UseControlPolicy(worktree); err != nil {
 			t.Fatalf("UseControlPolicy(%s): %v", mode, err)
 		}
-		if env.Sandbox == nil || env.Wrapper == nil || env.sandbox() == nil || env.sandbox() == oldFS {
+		newFS := env.sandbox()
+		if env.Sandbox == nil || env.Wrapper == nil || newFS == nil || newFS == oldFS {
 			t.Fatalf("UseControlPolicy(%s) did not replace sandbox state", mode)
 		}
+		// Release the replacement first, then the layer it replaced: the policy
+		// change retired oldFS, so this release is the one that drains and
+		// closes it.
+		newFS.release()
+		oldFS.release()
 		trace.Modes = append(trace.Modes, mode.String())
 		trace.Worktrees = append(trace.Worktrees, sandboxLifecycleRelative(base, env.Sandbox.Git.WorktreeRoot))
 		ownedScratch := env.ownedSessionTmp.Dir
@@ -189,7 +207,11 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 		t.Fatalf("EnableSandbox disposable: %v", err)
 	}
 	disposePath := disposable.ownedSessionTmp.Dir
-	_ = disposable.sandbox()
+	built := disposable.sandbox()
+	if built == nil {
+		t.Fatal("EnableSandbox disposable did not build a file-tool layer to dispose")
+	}
+	built.release()
 	disposable.DisposeSandboxScratch()
 	if disposable.ownedSessionTmp != nil || disposable.sbfs != nil {
 		t.Fatal("DisposeSandboxScratch retained owned state")

@@ -258,7 +258,6 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
-			controlEnv:    s.worktreeControlEnv,
 			enterWorktree: s.enterWorktree,
 			exitWorktree:  s.exitWorktree,
 			liveWorkUnder: s.liveWorkUnder,

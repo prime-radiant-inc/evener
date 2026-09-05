@@ -489,6 +489,28 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
+	// envCleanupObserved observes every environment Close() runs Cleanup on,
+	// just before it does, so a test can assert the process-table cleanup ran
+	// exactly once and on the environment the session currently holds — never
+	// on one it parked (worktreeRestoreEnv), whose scratch is retained without
+	// it. Nil in production.
+	envCleanupObserved func(execenv.ExecutionEnvironment)
+
+	// swapEnvAfterAdopt observes the point in swapEnvAndRefresh just after the
+	// session's scratch moved onto the next environment and before the refresh
+	// and install, so a test can begin a close in that window. It receives the
+	// context the refresh's git runs under, so a test can also assert that a
+	// close cancels that work. Nil in production.
+	swapEnvAfterAdopt func(refreshCtx context.Context)
+
+	// enterWorktreeAfterSwap observes the point in enterWorktree right after
+	// the environment swap returned — the earliest point outside the swap a
+	// close can land — so a test can run one there against a session whose
+	// installed and parked environments are both already recorded. It is NOT
+	// a seam between the install and the record: those share one s.mu hold,
+	// and a seam between them would have to release it. Nil in production.
+	enterWorktreeAfterSwap func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta

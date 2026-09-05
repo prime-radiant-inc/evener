@@ -507,7 +507,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 			root.cfg.ModelFallbacks[0] = "openai/mutated-fallback"
 			*root.cfg.EnableLoopDetection = true
 			root.mu.Unlock()
-			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir))
+			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir), nil)
 			root.replaceActiveProvenance(mutatedProvenance)
 		})
 	}

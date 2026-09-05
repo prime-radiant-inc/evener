@@ -261,13 +261,16 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren            map[string]drainGraceChild
-	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
-	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
-	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
-	sweepWG                       sync.WaitGroup  // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
-	laneSweepTimer                clock.Timer     // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
-	laneReLockRetryTimer          clock.Timer     // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
-	pendingReLock                 []isolationLane // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
+	toolEventsWG                  sync.WaitGroup       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG                     sync.WaitGroup       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	disposeWG                     sync.WaitGroup       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	sweepWG                       sync.WaitGroup       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
+	envWorkWG                     sync.WaitGroup       // admitted work that runs commands on the session's environment: a swap's refresh (swapEnvAndRefresh) and a worktree op's deferred rollback; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs before environment cleanup so no such command outlives the process table it forks on
+	envWork                       map[envWorkID]string // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	envWorkSeq                    uint64               // last envWork handle issued; guarded by mu
+	laneSweepTimer                clock.Timer          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
+	laneReLockRetryTimer          clock.Timer          // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
+	pendingReLock                 []isolationLane      // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
@@ -1062,6 +1065,17 @@ func (s *Session) ID() string { return s.id }
 
 func (s *Session) apiLogContext(ctx context.Context) context.Context {
 	return llm.WithAPILogContext(ctx, s.id)
+}
+
+// sessionContext returns the session's own context — the one Close cancels —
+// as the parent for work that must stop when the session closes. A Session
+// built without one (a bare test fixture) gets a background context, so every
+// caller can derive unconditionally.
+func (s *Session) sessionContext() context.Context {
+	if s.sessionCtx != nil {
+		return s.sessionCtx
+	}
+	return context.Background()
 }
 
 // The contextmgr.Host seam is satisfied by the ctxHost adapter (context_host.go),
