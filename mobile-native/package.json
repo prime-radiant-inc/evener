@@ -8,6 +8,7 @@
     "@react-navigation/native-stack": "^7.18.10",
     "expo": "~57.0.20",
     "expo-build-properties": "~57.0.17",
+    "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.2",
     "expo-secure-store": "~57.0.3",
     "expo-sqlite": "~57.0.2",
@@ -15,6 +16,7 @@
     "expo-system-ui": "~57.0.3",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-enriched-markdown": "1.0.2",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
     "zustand": "^5.0.15"
@@ -24,6 +26,7 @@
     "@types/node": "^26.4.1",
     "@types/react": "~19.2.2",
     "@types/ws": "^8.18.1",
+    "patch-package": "^8.0.1",
     "tsx": "^4.23.13",
     "typescript": "~6.0.3",
     "vitest": "^5.0.0",
@@ -35,7 +38,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "patch-package --error-on-fail"
   },
   "private": true
 }
