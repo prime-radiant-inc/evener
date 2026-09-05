@@ -1523,6 +1523,9 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.isSubagentSession() && s.cfg.spawn.subagentTask != "" {
+		return s.cfg.spawn.subagentTask
+	}
 	for _, t := range s.history {
 		if t.Kind == schema.TurnUserInput {
 			return t.Message.Text()

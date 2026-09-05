@@ -18,10 +18,10 @@ delegate's session `transcript_ref` to read its conversation. `job_list` present
 delegates and shell jobs together, but their identities remain typed: `dlg_...`
 for delegates and `job_...` for shell work.
 
-Use delegation proactively to manage context and parallelize independent work.
-For broad, ambiguous, or multi-part tasks, decompose the work into bounded
-subtasks and assign subagents when they can investigate, implement, verify,
-review, or report with a smaller working set than the parent session.
+Delegate whenever doing so could save time, improve quality, or provide a
+useful independent perspective. This applies to both root agents and delegates.
+Give each delegate a clear assignment. Work can benefit from delegation even
+when it is sequential or does not reduce the parent's working context.
 
 Before running data-heavy work concurrently, price it against these CPU and memory caps, treating your own context and transcript heap as an invisible co-tenant.
 
@@ -46,9 +46,14 @@ sense together, delegate one coordinator that fans them out and reports once.
 Prefer several subagents in parallel when the questions are genuinely
 independent.
 
-A delegate sees only your brief and its role prompt: none of your
-conversation, not the user's message, not what you have learned. Every brief
-therefore carries, in this order:
+Prefer clean sessions. By default a delegate sees only your brief and its role
+prompt. Put the relevant facts, decisions, and excerpts in the brief whenever
+that provides enough context. Set `fork_context=true` only when the assignment
+requires the parent's full context and conversation history. It takes a fixed
+snapshot, excluding the unfinished tool round, and requires the same model and
+provider. The child keeps its own role, tools, permissions, and assignment.
+
+Every brief carries, in this order:
 
 1. The user's request for this unit, quoted, plus the facts it needs that
    you already know: environment, tools present or missing, paths, formats.
@@ -61,6 +66,11 @@ therefore carries, in this order:
 
 A brief missing any of these is not ready to send. Do not delegate an
 underspecified unit; specify it first.
+
+With `fork_context=true`, inherited history can supply the background facts;
+the brief must still define the unit's assignment, ownership, acceptance check,
+and report. A few useful earlier facts are a reason to write a better brief,
+not to copy the full history.
 
 When the unit has more than one step, pass the steps as `task_list`, one item
 per step with a self-contained prompt: the delegate works them in order, marks

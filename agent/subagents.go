@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -622,11 +623,11 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 ) (*preparedSubagentRun, error) {
 	return s.prepareSubagentRunFromSelection(
 		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection, nil,
+		parentTasks, grantTools, selection, nil, nil,
 	)
 }
 
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection) (*preparedSubagentRun, error) {
+func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -649,7 +650,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	selection.agent = nil
 	return s.prepareSubagentRunFromSelection(
 		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.Config.ReasoningEffort,
-		nil, nil, selection, &descriptor,
+		nil, nil, selection, &descriptor, inheritedContext,
 	)
 }
 
@@ -691,6 +692,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	grantTools []string,
 	selection subagentModelSelection,
 	frozen *delegatestore.Descriptor,
+	inheritedContext []transcript.Entry,
 ) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
@@ -728,6 +730,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
+	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification

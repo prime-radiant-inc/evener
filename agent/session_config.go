@@ -601,6 +601,10 @@ type spawnConfig struct {
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 
+	// inheritedContext seeds a delegate's transcript once, at construction.
+	// NewSession consumes it; descendants start clean unless they also opt in.
+	inheritedContext []transcript.Entry
+
 	// depth is the sub-agent nesting depth (0 for root sessions).
 	depth int
 

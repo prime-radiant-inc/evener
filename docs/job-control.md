@@ -359,6 +359,24 @@ with the returned `delegate_id`. To start an observer sidecar, set
 `watch_parent:true`; the child can then observe its immediate parent with
 `job_watch(source="parent")` and report through `communicate(end_turn=true)`.
 
+Delegates start with a **clean session** by default. Put the relevant facts,
+decisions, and excerpts in the assignment whenever that gives the child enough
+context. Use `fork_context:true` only for work that requires the parent's **full
+context and conversation history**. The option requires the same model and
+provider, including the model selected by an agent role.
+
+A fork takes a fixed copy of the recorded conversation before the unfinished
+tool round. Completed tool exchanges and images remain available; compaction
+summaries determine the working context just as they do in the parent, while
+the earlier conversation remains in the child's transcript. Later parent
+messages are not added to that snapshot. Resuming the delegate uses its own
+saved transcript.
+
+The child keeps its own assignment, role, tools, sandbox, and delegation
+allowance. Parent usage, pending deliveries, client mutation IDs, and server
+continuation handles are not adopted. The assignment must still state what
+the child owns, how to verify the result, and what to report back.
+
 Canonical background shape:
 
 ```json
@@ -383,6 +401,7 @@ Full target shape (no `max_wait_ms`):
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high",
   "watch_parent": false,
+  "fork_context": false,
   "result_schema": {
     "type": "object",
     "properties": {
