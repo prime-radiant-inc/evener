@@ -13,7 +13,8 @@
         "NSLocalNetworkUsageDescription": "Connect to your Evener hubs on your local network.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "NSPhotoLibraryAddUsageDescription": "Save images from your Evener conversations to your photo library."
       }
     },
     "android": {

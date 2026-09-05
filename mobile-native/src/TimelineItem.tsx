@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { View } from "react-native";
+import { MarkdownResponse } from "./MarkdownResponse";
 import type { TimelineRow } from "./timeline";
 import { Action, Copy, useColors } from "./ui";
 
@@ -32,9 +33,7 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
       content = (
         <>
           {item.streaming ? <Copy muted>Writing…</Copy> : null}
-          <Copy label={`Evener: ${item.markdown || "Writing"}`}>
-            {item.markdown || "…"}
-          </Copy>
+          <MarkdownResponse markdown={item.markdown || "…"} />
         </>
       );
       break;

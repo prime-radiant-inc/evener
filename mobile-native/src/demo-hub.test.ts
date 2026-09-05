@@ -9,6 +9,30 @@ import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 
 describe("native demonstration hub", () => {
+	it("projects exact reference Markdown through the real conversation service", async () => {
+		const markdown =
+			"## Reference\n\nA **bold** paragraph.\n\n```ts\nconst n = 1;\n```";
+		const hub = await createDemoHub(0, markdown);
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const service = createConversationService(client);
+		try {
+			await client.connect();
+			const conversation = await service.open("demo:playground");
+			expect(conversation.items).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "assistant", markdown }),
+				]),
+			);
+		} finally {
+			service.close();
+			client.close();
+			await hub.close();
+		}
+	});
 	it("keeps matching session references on different hubs isolated", async () => {
 		const first = await createDemoHub(0);
 		const second = await createDemoHub(0);
