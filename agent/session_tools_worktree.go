@@ -1546,7 +1546,6 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	default:
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: %s is locked (%s)", target, reason)
 	}
-	left := s.worktreeLeaveRecord(porcelain)
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
@@ -1554,14 +1553,16 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	// Steps 4-5: swap the env directly to the target (no intermediate
 	// restore step) and refresh envInfo + the prompt cache. A sandbox re-root the
 	// host cannot satisfy fails closed rather than switching in unconfined. A
-	// swap the session's close refused gives step 3 back: the target's lock
-	// and the lock the leave released.
+	// swap the session's close refused gives the target's lock back. The lock
+	// the leave released is deliberately NOT restored: the refusal means the
+	// session is closing, and its close unlocks its own lane on the way out
+	// (unlockOwnManagedWorktreeAtClose) — a re-lock landing after that would
+	// strand the lane under a dead session's marker, which prune skips and
+	// remove refuses. Resume handles either state; worktreeCreate leaves its
+	// own leave alone for the same reason.
 	if err := s.enterWorktree(target, true); err != nil {
-		if errors.Is(err, errSwapWhileClosing) {
-			if lockedTarget {
-				_, _ = run("worktree", "unlock", target)
-			}
-			s.restoreLeftWorktreeLock(run, left)
+		if errors.Is(err, errSwapWhileClosing) && lockedTarget {
+			_, _ = run("worktree", "unlock", target)
 		}
 		return WorktreeSwitchResult{}, err
 	}
@@ -1663,53 +1664,16 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if st.currentWorktree != "" && filepath.Clean(st.currentWorktree) == filepath.Clean(matchedPath) {
 		return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch, NoOp: true}, nil
 	}
-	left := s.worktreeLeaveRecord(porcelain)
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	// A refused swap has nothing of its own to give back here (no target
+	// lock), and the lock the leave released stays released — see the by-name
+	// choreography for why a re-lock would strand it.
 	if err := s.enterWorktree(matchedPath, false); err != nil {
-		if errors.Is(err, errSwapWhileClosing) {
-			s.restoreLeftWorktreeLock(run, left)
-		}
 		return WorktreeSwitchResult{}, err
 	}
 	return WorktreeSwitchResult{Path: matchedPath, Branch: matchedBranch}, nil
-}
-
-// worktreeLeftLock records what leaving the current worktree is about to do
-// to its lock, so a refused swap can put it back.
-type worktreeLeftLock struct {
-	path     string
-	unlocked bool // the leave releases this session's own marker on path
-}
-
-// worktreeLeaveRecord reads, from the porcelain the leave itself decides on,
-// whether leaving the current worktree will release this session's own lock
-// on it (spec §5 EvLeave: only an own marker is unlocked).
-func (s *Session) worktreeLeaveRecord(porcelain []worktree.PorcelainEntry) worktreeLeftLock {
-	s.mu.Lock()
-	path := s.worktreeCurrentPath
-	s.mu.Unlock()
-	if path == "" {
-		return worktreeLeftLock{}
-	}
-	locked, reason := lockStateFromPorcelain(porcelain, path)
-	st := worktree.Unlocked
-	if locked {
-		st = worktree.ClassifyReason(reason, s.id, "")
-	}
-	return worktreeLeftLock{path: path, unlocked: worktree.Decide(worktree.EvLeave, st) == worktree.ActUnlock}
-}
-
-// restoreLeftWorktreeLock puts back the own-marker lock a leave released, for
-// a switch whose swap was then refused: the session still occupies that
-// worktree, so it must hold its lock again. Best-effort, like every rollback
-// of a refused op.
-func (s *Session) restoreLeftWorktreeLock(run worktree.GitRunner, left worktreeLeftLock) {
-	if !left.unlocked {
-		return
-	}
-	_, _ = run("worktree", "lock", "--reason", worktree.FormatSessionMarker(s.id), left.path)
 }
 
 // worktreeAdopt performs the adopt operation: convert a worktree that sits

@@ -7,8 +7,11 @@ import (
 )
 
 // A switch refused mid-swap has already locked the target and unlocked the
-// lane it was leaving; it has to give the target's lock back and restore the
-// previous lane's, leaving the session's recorded state where it was.
+// lane it was leaving. It gives the target's lock back and leaves the previous
+// lane as the leave left it: the refusal means the session is closing, and
+// its close unlocks its own lane on the way out — a re-lock landing after that
+// would strand the lane under a dead session's marker, which prune skips and
+// remove refuses. The session's recorded state stays where it was.
 func TestWorktreeSwitch_RefusedMidSwapRestoresThePreviousLocks(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -40,8 +43,8 @@ func TestWorktreeSwitch_RefusedMidSwapRestoresThePreviousLocks(t *testing.T) {
 	if _, locked, reason := sr.laneLocked(t, laneA); locked {
 		t.Errorf("the refused switch left the target %s locked (%q), want it unlocked again", laneA, reason)
 	}
-	if _, locked, reason := sr.laneLocked(t, laneB); !locked || reason != marker {
-		t.Errorf("the refused switch left the previous lane %s locked=%v %q, want its lock restored with %q", laneB, locked, reason, marker)
+	if _, locked, reason := sr.laneLocked(t, laneB); locked && reason == marker {
+		t.Errorf("the refused switch left the previous lane %s locked with the closed session's marker %q; nothing will ever release it", laneB, reason)
 	}
 	r.s.mu.Lock()
 	current := r.s.worktreeCurrentPath
