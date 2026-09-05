@@ -1154,6 +1154,193 @@ describe("keybindings store: support flap discards hub state", () => {
   });
 });
 
+// A support flap (supported -> unsupported -> supported, SAME client) begins
+// a new ready generation on the flap-BACK (finding 24): every token captured
+// under the pre-flap generation dies with it, while the new generation's own
+// refresh - fired after the bump - applies normally.
+describe("keybindings store: support flap generation fence", () => {
+  test("a patch response landing after a support flap is dropped, leaving the refreshed state", async () => {
+    const client = new FakeClient("ready");
+    let current = overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    client.on("evener/settings/keybindings/get", () => current);
+    let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    await wireClient(client, true);
+
+    const patch = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
+    await waitFor(() => expect(resolvePatch).toBeDefined());
+
+    // The flap: down (un-apply + reset), then back - the hub now serves
+    // revision 5 with a DIFFERENT override, and the flap-back refresh lands
+    // it under the new generation.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    current = overridesPayload(5, [{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+    expect(keybindingsStore.getState().revision).toBe(5);
+
+    // The pre-flap patch's response lands now: composed against the pre-flap
+    // revision, it must not re-apply over the refreshed state.
+    resolvePatch?.(overridesPayload(4, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
+    const result = await patch;
+
+    expect(result.revision).toBe(5);
+    const state = keybindingsStore.getState();
+    expect(state.revision).toBe(5);
+    expect(state.rawOverrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([`${ACTIONS.composerFocus}#override`]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("a write queued pre-flap rejects after the flap with no wire request", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+    let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    await wireClient(client, true);
+
+    const first = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    await waitFor(() =>
+      expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1),
+    );
+    // Write #2 queues behind the in-flight write, created under the pre-flap
+    // generation.
+    const second = keybindingsStore
+      .getState()
+      .patchOverrides(() => [
+        ...keybindingsStore.getState().rawOverrides,
+        { action: ACTIONS.composerFocus, chord: "Control+M" },
+      ]);
+
+    // The flap: the same client loses and regains support; the flap-back
+    // refresh (revision 1, empty) lands under the new generation.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+
+    // The first write's response is dropped (pre-flap generation); write #2
+    // must REJECT at the call-time fence - its generation ended with the
+    // flap - having sent no request, and (finding 22) without stamping
+    // hubError onto the refreshed state.
+    resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    await first;
+    await expect(second).rejects.toThrow(/unavailable/);
+
+    expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().revision).toBe(1);
+  });
+
+  test("a notification landing in the post-flap pre-refresh window is dropped; the refresh and later notifications apply", async () => {
+    // The first get lands; the flap-back get hangs so a notification can
+    // arrive inside the post-flap pre-refresh window.
+    const client = new FakeClient("ready");
+    let resolveGet: ((value: KeybindingsOverrides) => void) | undefined;
+    let hang = false;
+    client.on("evener/settings/keybindings/get", () => {
+      if (!hang) return overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+      return new Promise<KeybindingsOverrides>((resolve) => {
+        resolveGet = resolve;
+      });
+    });
+    await wireClient(client, true);
+
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    hang = true;
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+
+    // Pre-flap cargo (revision 9, higher than anything the returning hub
+    // will serve) lands before the new generation's refresh has confirmed
+    // state: dropped. Applied, it would also eat the refresh's lower-but-
+    // current revision 5 via the stale guard.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(9, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+    });
+    expect(keybindingsStore.getState().revision).toBe(0);
+    expect(keybindingsStore.getState().loaded).toBe(false);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([
+      ACTIONS.railToggle,
+      `${ACTIONS.railToggle}#mod-twin`,
+    ]);
+
+    // The new generation's own refresh is NOT fenced out by the transition
+    // bump: revision 5 applies ...
+    resolveGet?.(overridesPayload(5, [{ action: ACTIONS.composerFocus, chord: "Control+M" }]));
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+    expect(keybindingsStore.getState().revision).toBe(5);
+    expect(bindingsFor(ACTIONS.composerFocus).map((b) => b.id)).toEqual([`${ACTIONS.composerFocus}#override`]);
+
+    // ... and post-refresh notifications apply normally.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(6, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+    });
+    expect(keybindingsStore.getState().revision).toBe(6);
+    expect(bindingsFor(ACTIONS.railToggle).map((b) => b.id)).toEqual([`${ACTIONS.railToggle}#override`]);
+  });
+
+  test("a same-value support re-notification does NOT fence in-flight work", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolvePatch = resolve;
+        }),
+    );
+    await wireClient(client, true);
+
+    const patch = keybindingsStore.getState().patchOverrides([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
+    await waitFor(() => expect(resolvePatch).toBeDefined());
+
+    // The features object is re-set with the SAME supported value: not a
+    // transition, so no generation bump - the in-flight patch's response
+    // must still apply.
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    resolvePatch?.(overridesPayload(4, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
+    const result = await patch;
+
+    expect(result.revision).toBe(4);
+    expect(keybindingsStore.getState().revision).toBe(4);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+  });
+});
+
 describe("keybindings store: write serialization", () => {
   test("concurrent patches serialize: each composes expectedRevision and payload after the previous lands", async () => {
     const client = new FakeClient("ready");

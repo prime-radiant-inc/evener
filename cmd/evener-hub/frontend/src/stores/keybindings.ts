@@ -307,6 +307,25 @@ function setSupportFromConnection(): void {
   const support = currentSupport();
   const state = keybindingsStore.getState();
   if (support === "supported") {
+    // A flap BACK from unsupported (finding 24): the pre-flap generation's
+    // in-flight work must not survive into the refreshed state - a patch
+    // response composed against the pre-flap revision, a queued write
+    // fenced at call time under the pre-flap generation, a notification
+    // dispatched before the transition. Begin a NEW ready generation on
+    // the transition (the clientEpoch bump fences all three paths; the
+    // notification rewire drops the old wrapper): isCurrentReady fails for
+    // every token captured pre-flap. The flap-back refresh trigger in
+    // onConnectionChange runs AFTER this and fires under the NEW epoch, so
+    // the new generation's own refresh is not fenced out by its own bump.
+    // Only the TRANSITION bumps: a same-value re-notification (hubSupport
+    // already "supported") and the unknown window (a transient disconnect
+    // keeps its state and its in-flight work) leave the generation intact.
+    // The DOWNWARD flap needs no bump: currentSupport() gates every path
+    // for the unsupported window itself, and refreshFor's entry guard
+    // refuses to run while unsupported.
+    if (state.hubSupport === "unsupported" && wiredClient !== null && activeReadyClient === wiredClient) {
+      beginReadyGeneration(wiredClient);
+    }
     if (state.hubSupport !== support) keybindingsStore.setState({ hubSupport: support });
     return;
   }
@@ -354,6 +373,12 @@ function onNotification(notification: AnyNotification): void {
   // A late notification landing during an unsupported window must not
   // re-install overrides into a registry the support drop just un-applied.
   if (currentSupport() !== "supported") return;
+  // A notification arriving before the CURRENT generation's refresh has
+  // confirmed state carries pre-refresh - potentially pre-flap - cargo
+  // (finding 24): its revision predates the flap, and applying it over the
+  // reset state would let the stale guard eat the in-flight refresh's
+  // older-but-current payload. Drop it; the refresh fetches the truth.
+  if (!keybindingsStore.getState().loaded) return;
   const payload = fromWireOverrides(notification.params);
   if (payload === undefined) return;
   try {
@@ -451,6 +476,9 @@ function onConnectionChange(
     previous.features?.keybindingsSettings !== true &&
     state.client?.state === "ready"
   ) {
+    // setSupportFromConnection runs FIRST: on a flap-back it has already
+    // begun the new ready generation (finding 24), so this refresh belongs
+    // to the NEW epoch and is not fenced out by the transition bump.
     if (activeReadyClient === state.client) void refreshFor(state.client, activeReadyEpoch);
   }
 }
