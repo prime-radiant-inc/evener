@@ -159,6 +159,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 
 			firstRequest := <-requests
 			secondRequest := <-requests
+			llm.WaitForPriorAPIAttempts(ctx)
 			attempts := sink.snapshot()
 			if len(attempts) != 2 {
 				t.Fatalf("canonical attempts = %d, want one per actual request", len(attempts))
@@ -401,6 +402,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 
 			firstRequest := <-requests
 			<-requests
+			llm.WaitForPriorAPIAttempts(ctx)
 			attempts := sink.snapshot()
 			if len(attempts) != 2 {
 				t.Fatalf("canonical attempts = %d, want 2", len(attempts))
