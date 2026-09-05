@@ -9,9 +9,9 @@
 // as "needsYou" (awaiting status or askPending), "running" (active status), or
 // "recent" (everything else).
 //
-// Contract (generation 2): list() requests a single page of up to 501 threads
-// and returns at most 500. hasMore is true when the server returned more than
-// 500 rows. There is no cursor pagination — the roster is a single-page view.
+// list() requests one extra thread beyond the selected page size to detect
+// hasMore. The default page size is 500; smaller screens can choose less.
+// There is no cursor pagination — the roster is a single-page view.
 
 import type {
   Thread,
@@ -39,8 +39,6 @@ export interface RosterService {
 
 // The maximum number of threads displayed in the roster.
 export const ROSTER_PAGE_SIZE = 500;
-// The number of threads to request so hasMore can be determined in one call.
-const ROSTER_REQUEST_LIMIT = ROSTER_PAGE_SIZE + 1;
 
 // Classify a thread's attention based on its status and askPending flag.
 // - awaiting status or askPending=true => "needsYou" (agent needs user input)
@@ -68,16 +66,34 @@ function projectThread(thread: Thread): RosterEntry {
 
 export function createRosterService(
   client: ConversationClientLike,
+  pageSize = ROSTER_PAGE_SIZE,
 ): RosterService {
+  if (
+    !Number.isInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > ROSTER_PAGE_SIZE
+  ) {
+    throw new RangeError(
+      `Roster page size must be an integer between 1 and ${ROSTER_PAGE_SIZE}`,
+    );
+  }
   return {
     async list() {
       const response: ThreadListResponse = await client.request("thread/list", {
-        limit: ROSTER_REQUEST_LIMIT,
+        limit: pageSize + 1,
       });
-      const rows = (response.data ?? []).map(projectThread);
+      const rows = response.data ?? [];
+      // Multiple server thread records can resolve to the same navigable session.
+      // Keep the first projection for each canonical route, in server order.
+      const sessions = new Map<string, RosterEntry>();
+      for (const thread of rows) {
+        const entry = projectThread(thread);
+        if (!sessions.has(entry.ref)) sessions.set(entry.ref, entry);
+      }
       return {
-        threads: rows.slice(0, ROSTER_PAGE_SIZE),
-        hasMore: rows.length > ROSTER_PAGE_SIZE,
+        threads: [...sessions.values()].slice(0, pageSize),
+        // Overflow reflects raw server rows: unseen rows may hold more sessions.
+        hasMore: rows.length > pageSize,
       };
     },
 

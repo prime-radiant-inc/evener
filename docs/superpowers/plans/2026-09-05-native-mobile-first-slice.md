@@ -21,16 +21,16 @@
 Files: mobile-native/package.json, app.json, metro.config.js, App.tsx,
 src/connection.ts, src/connection.test.ts, src/ConnectionProvider.tsx.
 
-- [ ] Generate a blank TypeScript Expo app; install native stack, safe areas,
+- [x] Generate a blank TypeScript Expo app; install native stack, safe areas,
   screens, SecureStore, Zustand, and the compatible SDK dependencies.
-- [ ] Test origin normalization and rejection of embedded credentials/query,
+- [x] Test origin normalization and rejection of embedded credentials/query,
   then implement `connectionTarget(origin: string): string` returning /rpc
   WebSocket URL. Test `connectClient` with a network-boundary socket and real
   AppwireClient handshake; assert header authentication and cleanup.
-- [ ] Supply connection state and connect/disconnect through React context;
-  save manually entered profile only in SecureStore. Close on background and
+- [x] Supply connection state and connect/disconnect through React context;
+  save multiple named profiles only in SecureStore; expose a hub switcher. Close on background and
   reconnect on foreground, reloading current session after ready.
-- [ ] Verify TypeScript and unit tests, commit.
+- [x] Verify TypeScript and unit tests, commit.
 
 ## Task 2: Native session and conversation screens
 
@@ -39,18 +39,18 @@ Interfaces: context exposes AppwireClient|null and connection state;
 createRosterService(client).list() supplies roster; createConversationService
 and createConversationStore supply transcript and mutations.
 
-- [ ] Render native stack with Connect, Sessions, Conversation routes.
-- [ ] Use FlatList for roster, pull-to-refresh, loading/error/empty states.
-- [ ] Open conversation via existing service/store; render text rows and
+- [x] Render native stack with Connect, Sessions, Conversation routes.
+- [x] Use FlatList for roster, pull-to-refresh, loading/error/empty states.
+- [x] Open conversation via existing service/store; render text rows and
   expandable activity, native multiline composer, capability gated send/stop.
-- [ ] On ready after reconnect rehydrate; unsubscribe/close on unmount.
-- [ ] Exercise actual screens on both native simulators, including navigation,
+- [x] On ready after reconnect rehydrate; unsubscribe/close on unmount.
+- [x] Exercise actual screens on both native simulators, including navigation,
   keyboard, scrolling, and connection error. Commit after typecheck.
 
 ## Task 3: Verification and review
 
-- [ ] Test with deterministic network boundary or isolated scripted hub; do
+- [x] Test with deterministic network boundary or isolated scripted hub; do
   not send messages to existing real sessions as an incidental test.
-- [ ] Run unit tests, typecheck, native bundles on both platforms.
-- [ ] Capture simulator screenshots and independently review the change.
-- [ ] Document exact launch commands and verified versus unverified behavior.
+- [x] Run unit tests, typecheck, native bundles on both platforms.
+- [x] Capture simulator screenshots and independently review the change.
+- [x] Document exact launch commands and verified versus unverified behavior.
