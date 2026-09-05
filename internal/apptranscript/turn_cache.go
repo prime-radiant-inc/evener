@@ -10,14 +10,16 @@ import (
 
 const defaultTurnCacheSize = 32
 
-// TurnCache memoizes TurnsFromFile by path and authoritative file metadata.
+// TurnCache memoizes one full transcript projection by path and authoritative
+// file metadata.
 // Transcript files are append-only, so matching object identity, size, mtime,
 // and platform change time means the parse is unchanged — a cache hit returns
 // the previously parsed turns without re-reading and re-projecting the file.
 //
 // The returned slice is shared and MUST be treated as read-only by callers
 // (WindowTurns/PageTurns slice it without mutating elements). A cache instance
-// assumes a single EntryProjector, so give each call site its own cache.
+// assumes a single EntryProjector and projection mode, so give each call site
+// its own cache.
 type TurnCache struct {
 	mu      sync.Mutex
 	indexMu sync.Mutex // serializes suffix advancement and journal appends
@@ -90,6 +92,15 @@ func scanMemoIdentity(info os.FileInfo, fromEntryOrdinal int) scanMemoKey {
 func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
 	return c.load(path, func() ([]appwire.Turn, error) {
 		return TurnsFromFile(path, maxLineBytes, project)
+	})
+}
+
+// ItemTurnsFromFile returns the cached logical item turns for path when its
+// authoritative file metadata matches the cached entry, otherwise parses via
+// the package ItemTurnsFromFile and caches the result.
+func (c *TurnCache) ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return c.load(path, func() ([]appwire.Turn, error) {
+		return ItemTurnsFromFile(path, maxLineBytes, project)
 	})
 }
 

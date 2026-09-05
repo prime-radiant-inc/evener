@@ -110,7 +110,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 		if !ok {
 			return appwire.ThreadTurnsListResponse{}, false, nil
 		}
-			page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
+		page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
@@ -173,7 +173,7 @@ func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, para
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-		page, err := pastEntryLatestItems(ctx, entry, itemLimit)
+	page, err := pastEntryLatestItems(ctx, entry, itemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
@@ -793,14 +793,14 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
-	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
 	})
 	if err != nil {
 		return nil, err
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
-	// TurnsFromFile only has the per-round usage persisted in the transcript;
+	// ItemTurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's instance and model, so the cost estimate
 	// is stamped here as a post-pass against the row those resolve to.
 	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
