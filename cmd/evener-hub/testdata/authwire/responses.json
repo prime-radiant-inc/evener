@@ -147,6 +147,23 @@
     }
   },
   {
+    "case": "status/store-credential-json",
+    "note": "a gcp-adc instance whose credential is an authorized_user JSON kept in credentials.toml",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "vertexish",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "store",
+      "authModes": [
+        "adc",
+        "credentialJson"
+      ],
+      "hasStoredOAuth": false,
+      "hasStoredFile": true
+    }
+  },
+  {
     "case": "status/auth-none",
     "note": "a local endpoint that wants no credential at all",
     "method": "evener/auth/status",

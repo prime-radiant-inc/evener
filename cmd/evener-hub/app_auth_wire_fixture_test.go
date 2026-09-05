@@ -130,10 +130,17 @@ func authControllerOver(toml string, env map[string]string) func(t *testing.T) *
 
 // withStoredKey stores a key for name before the question is asked.
 func withStoredKey(build func(t *testing.T) *hubAuthController, name string) func(t *testing.T) *hubAuthController {
+	return withStoredValue(build, name, "sk-stored")
+}
+
+// withStoredValue stores an arbitrary credentials-store value under name — a
+// credential JSON for a gcp-adc instance, a key for everything else — and
+// reloads the registry so the value is what resolves.
+func withStoredValue(build func(t *testing.T) *hubAuthController, name, value string) func(t *testing.T) *hubAuthController {
 	return func(t *testing.T) *hubAuthController {
 		t.Helper()
 		ctrl := build(t)
-		if err := ctrl.setCredential(name, "sk-stored"); err != nil {
+		if err := ctrl.setCredential(name, value); err != nil {
 			t.Fatalf("store credential for %s: %v", name, err)
 		}
 		if err := ctrl.reloadRegistry(); err != nil {
@@ -251,6 +258,13 @@ func authWireScenarios() []authWireScenario {
 					"[providers.vertexish]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nauth = \"gcp-adc\"\n",
 					map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": adcCredentialsFile(t)})(t)
 			}),
+		},
+		{
+			name: "status/store-credential-json",
+			note: "a gcp-adc instance whose credential is an authorized_user JSON kept in credentials.toml",
+			run: statusOf("vertexish", withStoredValue(authControllerOver(
+				"[providers.vertexish]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nauth = \"gcp-adc\"\n", nil),
+				"vertexish", `{"type":"authorized_user","client_id":"cid","client_secret":"csecret","refresh_token":"rtoken"}`)),
 		},
 		{
 			name: "status/auth-none",
