@@ -770,6 +770,8 @@ Discovery and projection refresh are background work after a successful commit.
 Their delays or failures cannot turn a saved message into a failed submission.
 A failed startup scan remains retryable, and repeated lifecycle scans of the
 same kind share outstanding work rather than accumulating behind stalled storage.
+Runtime initialization registers its listeners and schedules startup discovery
+without waiting for the scan. A new submission can commit while that read stalls.
 
 Local commits publish their record and provenance before releasing the composer.
 Projection reads, whether for one target or all targets, cannot overwrite a newer

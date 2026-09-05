@@ -146,12 +146,9 @@ export class MutationOutbox {
     this.#lifecycleWindow?.addEventListener("focus", this.#handleFocus);
     this.#lifecycleDocument?.addEventListener("visibilitychange", this.#handleVisibility);
     this.#intervalId = this.#setInterval(() => this.#scheduleReadyScan("interval"), 2000);
-    try {
-      await this.#discoverAll("startup");
-    } catch {
-      // A failed scan does not invalidate the runtime. Its lifecycle hooks
-      // retry discovery, and new submissions still require their own commit.
-    }
+    // Submissions need the runtime's listeners, not a scan of earlier work.
+    // Queue startup discovery so a stalled read cannot delay their own commit.
+    this.#schedule(() => this.#discoverAll("startup"));
   }
 
   async stop(): Promise<void> {
