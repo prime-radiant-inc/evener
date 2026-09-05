@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -23,11 +23,11 @@ import {
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { useConnection } from "./ConnectionProvider";
-import { TimelineItem } from "./TimelineItem";
 import {
   captureUnconfirmedSend,
   restoreUnconfirmedDraft,
 } from "./draftRecovery";
+import { TimelineItem } from "./TimelineItem";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
@@ -35,6 +35,7 @@ const NATIVE_ROSTER_PAGE_SIZE = 50;
 export type Routes = {
   Hubs: undefined;
   Sessions: undefined;
+  NewSession: { hubId: string; hubName: string };
   Conversation: { hubId: string; ref: string; title: string };
 };
 
@@ -266,8 +267,22 @@ export function SessionsScreen({
       headerLeft: () => (
         <Action onPress={() => navigation.popToTop()}>Hubs</Action>
       ),
+      headerRight: () => (
+        <Action
+          disabled={!activeProfile || state !== "ready"}
+          onPress={() => {
+            if (activeProfile)
+              navigation.navigate("NewSession", {
+                hubId: activeProfile.id,
+                hubName: activeProfile.name,
+              });
+          }}
+        >
+          New session
+        </Action>
+      ),
     });
-  }, [navigation]);
+  }, [navigation, activeProfile, state]);
   return (
     <SafeAreaView
       edges={["bottom", "left", "right"]}
