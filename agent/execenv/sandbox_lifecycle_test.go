@@ -163,10 +163,14 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		laneA, laneB, home := twoLanes(t)
 		env := NewLocalExecutionEnvironment(laneA)
 		env.Sandbox = resolvedAt(t, home, laneA, sandbox.ModeWorkspaceWrite)
+		// sandbox() acquires the layer before returning it, and a layer closes
+		// only on the release that drains it; both of the ones this subtest takes
+		// go back, or their root descriptors stay open for the rest of the run.
 		first := env.sandbox()
 		if first == nil {
 			t.Fatal("an enforced policy must build a sandboxFS")
 		}
+		defer first.release()
 		rp2 := resolvedAt(t, home, laneB, sandbox.ModeWorkspaceWrite)
 		if err := env.EnableSandbox(rp2); err != nil {
 			t.Fatalf("EnableSandbox: %v", err)
@@ -176,6 +180,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if second == nil || second == first {
 			t.Errorf("EnableSandbox must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
 		}
+		defer second.release()
 		// Not a pointer-identity check against rp2: sandbox() folds the concrete
 		// scratch dir into its OWN copy of the policy (WithSessionScratch), so the
 		// rebuilt sandboxFS legitimately carries a policy value distinct from rp2 —
@@ -200,6 +205,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if first == nil {
 			t.Fatal("an enforced policy must build a sandboxFS")
 		}
+		defer first.release()
 		if err := env.UseControlPolicy(main); err != nil {
 			t.Fatalf("UseControlPolicy: %v", err)
 		}
@@ -207,6 +213,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if second == nil || second == first {
 			t.Errorf("UseControlPolicy must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
 		}
+		defer second.release()
 		if second != nil && second.policy != env.Sandbox {
 			t.Error("rebuilt sandboxFS must reflect the control policy")
 		}
@@ -291,9 +298,11 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 	if env.Wrapper != nil {
 		t.Fatalf("a host with no backend must build no kernel wrapper, got %+v", env.Wrapper)
 	}
-	if env.sandbox() == nil {
+	confined := env.sandbox()
+	if confined == nil {
 		t.Fatal("a write-blocked policy must build the file-tool enforcement layer")
 	}
+	defer confined.release()
 
 	// A write into the workspace is refused and lands nothing.
 	target := filepath.Join(worktree, "deliverable.md")
