@@ -952,6 +952,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           <div className={CLASS.notice} role="status">
             <span>Connect a provider to use a model. Sign in or add an API key here.</span>
             <Button onClick={() => setConnectingProvider(true)}>Connect provider</Button>
+            <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+              Retry provider check
+            </Button>
           </div>
         )}
         {usesEvenerModels && providerSetup.status === "error" && (

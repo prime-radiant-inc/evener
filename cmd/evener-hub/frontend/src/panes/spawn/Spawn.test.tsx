@@ -216,6 +216,45 @@ test("missing credentials surface setup in the composer without opening a dialog
   expectWorkingDir("/tmp/my-project");
 });
 
+test("retrying missing provider setup discovers a local server started afterward", async () => {
+  const user = userEvent.setup();
+  let available = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({
+      instances: [
+        {
+          name: "ollama",
+          providerId: "ollama",
+          protocol: "openai-chat",
+          auth: "none",
+          implicit: true,
+          isDefault: true,
+          activeSource: "none",
+          hasStoredOAuth: false,
+          credentialRequired: false,
+        },
+      ],
+      availableProviders: [],
+    }));
+    fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
+    fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "ollama/local-model" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
+  const retry = screen.getByRole("button", { name: "Retry provider check" });
+  available = true;
+  await user.click(retry);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  await user.click(modelTrigger());
+  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
+});
+
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = userEvent.setup();
   let available = false;
