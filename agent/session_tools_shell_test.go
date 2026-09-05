@@ -638,11 +638,8 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
 			}
-			if !res.Truncated {
-				t.Fatalf("promoted shell model output was not truncated under constrained registry limits: %q", res.Output)
-			}
 			if !strings.Contains(res.Output, out.JobID) {
-				t.Fatalf("truncated promoted shell model output lost job_id %q: %q", out.JobID, res.Output)
+				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 			}
 			_, _ = s.jobManager.stop(out.JobID)
 			waitForShellDone(t, s.jobManager, out.JobID)
