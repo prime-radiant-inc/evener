@@ -650,28 +650,41 @@ func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
 	}
 }
 
-// TestMissingVars covers the names a caller shows for a curated provider whose
+// TestUnresolvedBaseURL covers what a caller shows for a curated provider whose
 // base URL does not resolve here. GOOGLE_VERTEX_HOST is derived from the
 // location by the vertex-location host rule, so only the location is named,
 // and the credential's variable is none of the URL's business (roborev round
-// 6, F2).
-func TestMissingVars(t *testing.T) {
+// 6, F2). A location that is set but unusable is a problem to report, not a
+// variable to set (round 8, F2).
+func TestUnresolvedBaseURL(t *testing.T) {
 	for _, tt := range []struct {
-		name string
-		env  map[string]string
-		id   string
-		want []string
+		name        string
+		env         map[string]string
+		id          string
+		wantUnset   []string
+		wantProblem string
 	}{
-		{name: "no variables set", env: map[string]string{}, id: "google-vertex", want: []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}},
-		{name: "location set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global"}, id: "google-vertex", want: []string{"GOOGLE_VERTEX_PROJECT"}},
-		{name: "both set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}, id: "google-vertex", want: nil},
-		{name: "curated default", env: map[string]string{}, id: "openai", want: nil},
-		{name: "unknown id", env: map[string]string{}, id: "no-such-provider", want: nil},
+		{name: "no variables set", env: map[string]string{}, id: "google-vertex", wantUnset: []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}},
+		{name: "location set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global"}, id: "google-vertex", wantUnset: []string{"GOOGLE_VERTEX_PROJECT"}},
+		{name: "both set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}, id: "google-vertex"},
+		{name: "curated default", env: map[string]string{}, id: "openai"},
+		{name: "unknown id", env: map[string]string{}, id: "no-such-provider"},
+		{name: "invalid location", env: map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "bad.host"}, id: "google-vertex", wantProblem: `invalid GOOGLE_VERTEX_LOCATION "bad.host"`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := fixtureLoad(t, tt.env, "")
-			if got := r.MissingVars(tt.id); !slices.Equal(got, tt.want) {
-				t.Fatalf("MissingVars(%q) = %v, want %v", tt.id, got, tt.want)
+			unset, problems := r.UnresolvedBaseURL(tt.id)
+			if !slices.Equal(unset, tt.wantUnset) {
+				t.Fatalf("UnresolvedBaseURL(%q) unset = %v, want %v", tt.id, unset, tt.wantUnset)
+			}
+			if tt.wantProblem == "" {
+				if len(problems) != 0 {
+					t.Fatalf("UnresolvedBaseURL(%q) problems = %v, want none", tt.id, problems)
+				}
+				return
+			}
+			if len(problems) != 1 || !strings.Contains(problems[0], tt.wantProblem) {
+				t.Fatalf("UnresolvedBaseURL(%q) problems = %v, want one naming %s", tt.id, problems, tt.wantProblem)
 			}
 		})
 	}

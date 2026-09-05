@@ -1013,34 +1013,40 @@ func (r *Registry) computeHidden(rec *record) {
 	rec.head.Hidden = hidden
 }
 
-// MissingVars names the environment variables a curated provider's base
-// URL still needs in this environment, in the names the hub and the docs
-// use (VarsEnv's env name, or the placeholder itself when there is none);
-// nil when the URL resolves. A placeholder the transport's host rule
-// derives is reported as its input: vertex-location derives
-// GOOGLE_VERTEX_HOST from GOOGLE_VERTEX_LOCATION, so only the location
-// is named.
-func (r *Registry) MissingVars(id string) []string {
+// UnresolvedBaseURL explains why a curated provider's base URL does not
+// resolve in this environment: unset names the environment variables still
+// missing (VarsEnv's env name, or the placeholder itself when there is
+// none; a placeholder the host rule derives is reported as its input, so an
+// unset GOOGLE_VERTEX_LOCATION is named once), and problems carries the
+// resolver's warnings for values that are set but unusable (an invalid
+// Vertex location). Both nil when the URL resolves or the id is unknown.
+func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
 	rec, ok := r.curated[id]
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	_, missing, _ := r.resolveBaseURL(rec, rec.head.Transport)
-	if len(missing) == 0 {
-		return nil
+	url, missing, warnings := r.resolveBaseURL(rec, rec.head.Transport)
+	if url != "" && len(missing) == 0 {
+		return nil, nil
 	}
-	names := make([]string, 0, len(missing))
 	for _, name := range missing {
 		if rec.head.Transport.HostRule == HostRuleVertexLocation && name == "GOOGLE_VERTEX_HOST" {
+			// The rule derives the host from the location, so it is the
+			// location's name to report — and only when the location is
+			// itself unset: a location that is set but refused is a warning.
+			if !slices.Contains(missing, "GOOGLE_VERTEX_LOCATION") {
+				continue
+			}
 			name = "GOOGLE_VERTEX_LOCATION"
 		}
 		if env, ok := rec.head.Transport.VarsEnv[name]; ok {
 			name = env
 		}
-		names = append(names, name)
+		unset = append(unset, name)
 	}
-	slices.Sort(names)
-	return slices.Compact(names)
+	slices.Sort(unset)
+	slices.Sort(warnings)
+	return slices.Compact(unset), slices.Compact(warnings)
 }
 
 // ProviderIDs lists the curated registry ids, sorted.

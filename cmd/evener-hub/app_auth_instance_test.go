@@ -539,4 +539,21 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 			t.Fatalf("err = %q, must not list the base-URL variables once they are set", msg)
 		}
 	})
+
+	t.Run("invalid location", func(t *testing.T) {
+		// The location is set, so telling the user to set it is no help:
+		// say what is wrong with the value instead (round 8, F2).
+		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "bad.host"})
+		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		if err == nil {
+			t.Fatal("the spawn gate accepted a google-vertex provider with an invalid location")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, `not configured: invalid GOOGLE_VERTEX_LOCATION "bad.host"`) {
+			t.Fatalf("err = %q, want it to explain what is wrong with the location", msg)
+		}
+		if strings.Contains(msg, "set GOOGLE_VERTEX_LOCATION") {
+			t.Fatalf("err = %q, must not tell the user to set a variable that is already set", msg)
+		}
+	})
 }
