@@ -489,8 +489,7 @@ func (s *LocalDaemonSource) advanceLocalDaemonItemSnapshot(ctx context.Context, 
 		return next, false, ctx.Err()
 	}
 	if err != nil {
-		var wire appwire.WireError
-		if errors.As(err, &wire) {
+		if wire, ok := errors.AsType[appwire.WireError](err); ok {
 			data, ok := wire.Data.(appwire.ErrorData)
 			if ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale {
 				return next, false, nil

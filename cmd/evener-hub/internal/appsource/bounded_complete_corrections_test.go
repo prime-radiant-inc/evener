@@ -37,58 +37,66 @@ func (f *inverseNativeFixture) dial(context.Context, string, *http.Client, http.
 		if err := json.Unmarshal(request.Params, &params); err != nil {
 			return err
 		}
-		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
-			transport.recv <- appwire.ErrorMessage(request.ID, appwire.InvalidParams(err.Error()))
-			return nil
-		}
-		items := f.items
-		next := ""
-		view := appwire.TurnItemsViewFull
-		if params.PageUnit != appwire.TranscriptPageUnitItem && f.complete != nil {
-			items = f.complete
-		}
-		if params.PageUnit == appwire.TranscriptPageUnitItem {
-			f.requests = append(f.requests, params)
-			if f.cancel != nil {
-				f.cancel()
-			}
-			if f.failure != nil {
-				var wire appwire.WireError
-				if !errors.As(f.failure, &wire) {
-					return f.failure
-				}
-				transport.recv <- appwire.ErrorMessage(request.ID, wire)
-				return nil
-			}
-			before, err := appitempaging.DecodeCursor(params.Cursor, f.identity)
-			if err != nil {
-				transport.recv <- appwire.ErrorMessage(request.ID, appwire.TranscriptItemCursorStale())
-				return nil
-			}
-			candidates, err := localDaemonItemCandidates([]appwire.Turn{{ID: "turn-1", Items: items}})
-			if err != nil {
+		response, err := f.page(params)
+		if err != nil {
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok {
 				return err
 			}
-			selected, older, err := appitempaging.SelectCandidates(candidates, &before, params.ItemLimit)
-			if err != nil {
-				return err
-			}
-			items = make([]appwire.ThreadItem, len(selected))
-			for i, c := range selected {
-				items[i] = c.Item
-			}
-			if older {
-				next, err = appitempaging.EncodeCursor(f.identity, selected[0].Position)
-				if err != nil {
-					return err
-				}
-			}
-			view = appwire.TurnItemsViewFragment
+			transport.recv <- appwire.ErrorMessage(request.ID, wire)
+		} else {
+			transport.recv <- appwire.ResponseMessage(request.ID, response)
 		}
-		transport.recv <- appwire.ResponseMessage(request.ID, appwire.ThreadTurnsListResponse{PageUnit: params.PageUnit, Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: view}}, NextCursor: next})
 		return nil
 	}
 	return transport, nil
+}
+
+// page returns native RPC errors; dial frames them without treating a valid
+// error response as a failed transport send.
+func (f *inverseNativeFixture) page(params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
+		return appwire.ThreadTurnsListResponse{}, appwire.InvalidParams(err.Error())
+	}
+	items := f.items
+	next := ""
+	view := appwire.TurnItemsViewFull
+	if params.PageUnit != appwire.TranscriptPageUnitItem && f.complete != nil {
+		items = f.complete
+	}
+	if params.PageUnit == appwire.TranscriptPageUnitItem {
+		f.requests = append(f.requests, params)
+		if f.cancel != nil {
+			f.cancel()
+		}
+		if f.failure != nil {
+			return appwire.ThreadTurnsListResponse{}, f.failure
+		}
+		before, err := appitempaging.DecodeCursor(params.Cursor, f.identity)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		candidates, err := localDaemonItemCandidates([]appwire.Turn{{ID: "turn-1", Items: items}})
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		selected, older, err := appitempaging.SelectCandidates(candidates, &before, params.ItemLimit)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		items = make([]appwire.ThreadItem, len(selected))
+		for i, c := range selected {
+			items[i] = c.Item
+		}
+		if older {
+			next, err = appitempaging.EncodeCursor(f.identity, selected[0].Position)
+			if err != nil {
+				return appwire.ThreadTurnsListResponse{}, err
+			}
+		}
+		view = appwire.TurnItemsViewFragment
+	}
+	return appwire.ThreadTurnsListResponse{PageUnit: params.PageUnit, Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: view}}, NextCursor: next}, nil
 }
 
 func inverseCursor(t *testing.T, identity appitempaging.CursorIdentity, position appwire.ThreadItemPosition) string {
