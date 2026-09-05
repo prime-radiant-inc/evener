@@ -8,12 +8,13 @@
 // picker on every other.
 import { useEffect, useRef, useState } from "react";
 import type { PathFieldPanelProps } from "../../widgets";
-import { Button, PathFieldPanel, Sheet } from "../../widgets";
+import { Button, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import { type PluginSelectionState, selectedPluginNames } from "./pluginSelectionState";
 import type { PluginPreviewLoadState } from "./usePluginPreview";
+import { WorkingDirectoryPicker, type WorkingDirectoryPickerProps } from "./WorkingDirectoryPicker";
 
 export interface MobilePickerOption {
   value: string;
@@ -29,6 +30,8 @@ export interface MobileSettingRowsProps {
   complete: PathFieldPanelProps["complete"];
   listRecents: NonNullable<PathFieldPanelProps["listRecents"]>;
   fallbackDir: string;
+  validatePath: WorkingDirectoryPickerProps["validatePath"];
+  createDirectory: WorkingDirectoryPickerProps["createDirectory"];
   onCwdPanelClose: (value: string) => void;
   branch: string;
   reasoningEffort: string;
@@ -162,6 +165,8 @@ export function MobileSettingRows({
   complete,
   listRecents,
   fallbackDir,
+  validatePath,
+  createDirectory,
   onCwdPanelClose,
   branch,
   reasoningEffort,
@@ -186,8 +191,7 @@ export function MobileSettingRows({
     lastTriggerRef.current.focus();
   }, [openPicker]);
 
-  function closePicker(committedCwd = cwd): void {
-    if (openPicker === "Working directory") onCwdPanelClose(committedCwd);
+  function closePicker(): void {
     if (openPicker === "Plugins") setPluginDraft(pluginSelection);
     setOpenPicker(null);
   }
@@ -294,27 +298,22 @@ export function MobileSettingRows({
         onChange={onAccessChange}
       />
 
-      <Sheet
-        open={openPicker === "Working directory"}
-        side="bottom"
-        onClose={closePicker}
-        title="Choose working directory"
-      >
-        <div className={CLASS.sheetBody}>
-          <PathFieldPanel
-            kind="dir"
-            value={cwd}
-            onChange={onCwdChange}
-            onCommit={(value) => {
-              onCwdChange(value);
-              closePicker(value);
-            }}
-            complete={complete}
-            listRecents={listRecents}
-            fallbackDir={fallbackDir}
-          />
-        </div>
-      </Sheet>
+      {openPicker === "Working directory" && (
+        <WorkingDirectoryPicker
+          value={cwd}
+          fallbackDir={fallbackDir}
+          complete={complete}
+          listRecents={listRecents}
+          validatePath={validatePath}
+          createDirectory={createDirectory}
+          onClose={closePicker}
+          onPick={(path) => {
+            onCwdChange(path);
+            onCwdPanelClose(path);
+            closePicker();
+          }}
+        />
+      )}
 
       <Sheet
         open={pluginsSupported && openPicker === "Plugins" && pluginResponse !== undefined}

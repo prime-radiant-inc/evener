@@ -1,20 +1,6 @@
-// The spawn pane: starts a new agent.
-//
-// This page IS the composer, not a form that happens to contain one - it renders
-// the same widgets/promptcard the session composer does, with its own primary
-// verb ("Start") in the card's corner. The prompt leads and takes the page's
-// vertical slack; beneath it sits ONE compact configuration row (working
-// directory widest, since it is the only field that changes often, then model
-// and effort), with the branch riding the directory row as a read-only HEAD
-// readout rather than a peer field. Harness lives in Advanced options: most
-// installs have exactly one, and a field whose answer is always "evener" should
-// not lead the page.
-//
-// Behind that: sticky-default layering + stale-model cleanup, the schema-driven
-// advanced options (which also host the access-mode field, 9ct0 §3.3), image
-// attachments, working-dir preflight, and ?dir=/?prompt= URL prefill (floor §1,
-// parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
-// (Jesse 2026-07-22).
+// Session creation keeps the project directory above the prompt and the
+// less frequently changed launch settings below it. The directory picker
+// commits once, so browsing does not churn directory-dependent configuration.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
@@ -38,7 +24,6 @@ import {
   IconButton,
   Loader,
   PaneScaffold,
-  PathField,
   PromptCard,
   Select,
   SendIcon,
@@ -52,6 +37,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
+import { basename } from "../../widgets/pathfield/pathRows";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -85,6 +71,7 @@ import {
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
+import { DirectoryIcon, WorkingDirectoryPicker } from "./WorkingDirectoryPicker";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -128,7 +115,9 @@ const CLASS = {
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   cfgModel: requireClass(styles.cfgModel, "spawn.module.css", "cfgModel"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
+  directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
+  directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
+  directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
@@ -159,6 +148,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [cwd, setCwd] = useState("");
+  const [directoryOpen, setDirectoryOpen] = useState(false);
   const [branch, setBranch] = useState(""); // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useState("");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
@@ -313,6 +303,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
     [client],
   );
+  const createDirectory = useCallback((path: string) => createDir(client, path), [client]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
       client.request("evener/launch/resolve", {
@@ -831,15 +822,52 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
+        <div className={CLASS.cfgDir}>
+          <button
+            type="button"
+            id="spawn-cwd"
+            className={CLASS.directoryButton}
+            aria-label="Working directory"
+            aria-haspopup="dialog"
+            aria-expanded={directoryOpen}
+            onClick={() => setDirectoryOpen(true)}
+          >
+            <DirectoryIcon />
+            <span className={CLASS.directoryText}>
+              <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
+              <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
+            </span>
+            <span>Change…</span>
+          </button>
+          {branch !== "" && (
+            <span className={CLASS.branch} data-testid="spawn-branch">
+              {branch}
+            </span>
+          )}
+        </div>
+        {directoryOpen && (
+          <WorkingDirectoryPicker
+            value={cwd}
+            fallbackDir={getGlobalLastWorkingDir()}
+            complete={complete}
+            listRecents={listRecents}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
+            onClose={() => setDirectoryOpen(false)}
+            onPick={(path) => {
+              setCwd(path);
+              setGlobalLastWorkingDir(path);
+              setDirectoryOpen(false);
+            }}
+          />
+        )}
+
         <div className={CLASS.mobilePromptIntro} data-testid="spawn-mobile-prompt-intro">
           <h3 className={CLASS.mobilePromptHeading}>What should the agent do?</h3>
           <p className={CLASS.mobilePromptSubtitle}>Leave blank to start a dormant session.</p>
         </div>
 
-        {/* The prompt comes FIRST and takes the page's slack: writing the
-            prompt is what starting an agent IS, and everything below it is
-            configuration that mostly stays where it was last left. The card is
-            the same widgets/promptcard the session composer renders. */}
+        {/* The prompt shares its card and attachment controls with the session composer. */}
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
           <PromptCard
             data-testid="spawn-prompt-card"
@@ -949,45 +977,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
-        {/* ONE compact row of configuration beneath the card, widest field
-            first: the working directory is the only one that changes often.
-            Harness moved into Advanced options - most installs have exactly one,
-            and a field whose answer is always "evener" should not lead the page. */}
+        {/* Model and effort share the secondary settings row. */}
         <div className={CLASS.cfg}>
-          <div className={CLASS.cfgDir}>
-            <FormRow label="Working directory" htmlFor="spawn-cwd">
-              <PathField
-                id="spawn-cwd"
-                value={cwd}
-                onChange={setCwd}
-                kind="dir"
-                listRecents={listRecents}
-                complete={complete}
-                // With no ?dir= prefill and no per-project blob the field starts
-                // empty; the panel then opens on the last directory a session was
-                // launched in rather than on $HOME (spec 3.4). Read here rather
-                // than captured at mount so it reflects the latest stamp.
-                fallbackDir={getGlobalLastWorkingDir()}
-                placeholder="Working directory"
-                // Browsing writes the field on every step, so the last-used
-                // directory is recorded once the panel closes rather than
-                // continuously (spec 3.7).
-                onPanelClose={setGlobalLastWorkingDir}
-              />
-            </FormRow>
-            {/* Branch is a read-only HEAD readout, not a peer field: it rides
-                the directory row as a mono suffix ("~/code/evener · main") because
-                it is a property of that directory. */}
-            {branch !== "" && (
-              <span className={CLASS.branch} data-testid="spawn-branch" title={`HEAD ${branch}`}>
-                <span className={CLASS.branchSeparator} aria-hidden="true">
-                  ·
-                </span>
-                {branch}
-              </span>
-            )}
-          </div>
-
           {/* data-testid on the wrapper, not the trigger: the trigger is
               ModelCatalog's own button and has no hook to give, and the pane
               now renders a SECOND "— change model" button (the card's
@@ -1081,6 +1072,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             cwd={cwd}
             onCwdChange={setCwd}
             complete={complete}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
             listRecents={listRecents}
             fallbackDir={getGlobalLastWorkingDir()}
             onCwdPanelClose={setGlobalLastWorkingDir}

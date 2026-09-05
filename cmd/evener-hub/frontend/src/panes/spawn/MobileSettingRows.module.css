@@ -111,3 +111,20 @@
     width: 100%;
   }
 }
+
+/* Directory identity gets its own line so the final path component remains
+ * readable even when its parents are long. */
+.row[data-label="Working directory"] .rowButton {
+  flex-wrap: wrap;
+}
+.row[data-label="Working directory"] .rowValue {
+  order: 3;
+  flex-basis: 100%;
+  margin-left: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.row[data-label="Working directory"] .caret {
+  margin-left: auto;
+}
