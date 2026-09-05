@@ -63,6 +63,7 @@ export function WorkingDirectoryPicker({
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
   const [entries, setEntries] = useState<string[] | null>(null);
+  const [validated, setValidated] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -82,6 +83,7 @@ export function WorkingDirectoryPicker({
     // without opening the phone keyboard when browsing by touch.
     if (document.activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
+    setValidated(false);
     setEntries(null);
     setError(null);
     setCreating(false);
@@ -95,6 +97,7 @@ export function WorkingDirectoryPicker({
       const canonical = result.path || path.trim();
       setCurrent(canonical);
       setTyped(canonical);
+      setValidated(true);
       const children = await complete(childrenPrefix(canonical), false);
       if (mounted.current && request.current === id) setEntries(children);
     } catch (err) {
@@ -132,7 +135,7 @@ export function WorkingDirectoryPicker({
     }
   }, [creating, busy]);
 
-  const ready = entries !== null && typed === current && !busy;
+  const ready = validated && typed === current && !busy;
   const segments = current.split("/").filter(Boolean);
   const crumbs = segments.map((label, index) => ({
     label,

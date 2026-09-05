@@ -126,3 +126,14 @@ test("root and empty folders remain selectable", async () => {
   await user.click(screen.getByRole("button", { name: "Use this folder" }));
   expect(onPick).toHaveBeenCalledWith("/");
 });
+
+test.each(["pending", "failed"])("a validated directory remains selectable when listing is %s", async (listing) => {
+  const { user, onPick } = setup({
+    complete: () => (listing === "failed" ? Promise.reject(new Error("listing unavailable")) : new Promise(() => {})),
+  });
+  if (listing === "failed") await screen.findByRole("alert");
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
+  expect(onPick).toHaveBeenCalledWith("/work");
+});

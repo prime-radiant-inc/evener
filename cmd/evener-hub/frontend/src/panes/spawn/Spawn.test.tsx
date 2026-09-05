@@ -2279,21 +2279,28 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   expect(started?.reasoningEffort ?? "").toBe(displayed);
 });
 
-// The Effort ladder needs the scoped model catalog. The loader is keyed by
-// harness+cwd, but its request is debounced so every character typed into the
-// working-directory path does not issue a separate model/list RPC.
-test("typing a working directory does not reload the model catalog per keystroke", async () => {
+// The model catalog follows the committed directory, not the picker's draft.
+test("typing a working directory reloads the model catalog only after confirmation", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "model/list")).toBe(true));
 
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
-  await user.type(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }), "/tmp/some/project");
-  await settled();
+  await user.click(workingDir());
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/tmp/some/project{Enter}");
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(baseline);
+  await user.click(confirm);
 
-  // 17 characters typed. One reload for the settled path is the contract; a
-  // reload per character is the defect.
-  const perKeystroke = fake.calls.filter((call) => call.method === "model/list").length - baseline;
-  expect(perKeystroke).toBeLessThanOrEqual(1);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "model/list").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/some/project",
+    }),
+  );
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(baseline + 1);
 });
