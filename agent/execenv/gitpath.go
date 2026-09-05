@@ -3,6 +3,7 @@ package execenv
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,8 +103,10 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 		if structural, ok := structuralWorktreeRoot(cwd); ok {
 			return structural, true
 		}
-		if !hasGitEntryAncestor(cwd) {
-			return "", true
+		if present, known := hasGitEntryAncestor(cwd); !present {
+			// A stat that failed for any reason other than absence leaves the
+			// question open, so answer empty for this call and cache nothing.
+			return "", known
 		}
 	}
 
@@ -201,15 +204,24 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 	}
 }
 
-func hasGitEntryAncestor(cwd string) bool {
+// hasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
+// known says whether the walk actually established that: only ErrNotExist means
+// "there is nothing here". A stat that failed for any other reason — the
+// directory unreadable, the filesystem erroring — leaves the question open, and
+// the caller must not memoize an absence it never observed.
+func hasGitEntryAncestor(cwd string) (present, known bool) {
 	dir := filepath.Clean(cwd)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return true
+		_, err := os.Stat(filepath.Join(dir, ".git"))
+		if err == nil {
+			return true, true
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false
+			return false, true
 		}
 		dir = parent
 	}

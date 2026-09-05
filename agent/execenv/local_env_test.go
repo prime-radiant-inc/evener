@@ -327,8 +327,8 @@ func TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock(t *testing.T) {
 	if _, ok := structuralWorktreeRoot(work); ok {
 		t.Fatal("layout no longer misses structuralWorktreeRoot; this test would not exercise the git fallback")
 	}
-	if !hasGitEntryAncestor(work) {
-		t.Fatal("layout has no .git ancestor; this test would not exercise the git fallback")
+	if present, known := hasGitEntryAncestor(work); !present || !known {
+		t.Fatalf("layout has no observable .git ancestor (present=%v known=%v); this test would not exercise the git fallback", present, known)
 	}
 
 	env := NewLocalExecutionEnvironment(work)
