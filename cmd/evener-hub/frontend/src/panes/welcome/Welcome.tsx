@@ -14,7 +14,8 @@ export interface WelcomePaneParams {
 export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams>) {
   const { status } = useProviderSetup();
   useEffect(() => {
-    if (focused && status === "missing" && window.location.pathname === "/") navigate("/new", { replace: true });
+    if (focused && status === "missing" && window.location.pathname === "/")
+      navigate(`/new${window.location.search}${window.location.hash}`, { replace: true });
   }, [focused, status]);
   // The note is rendered by EmptyState's hint (the original rendering path,
   // so the existing "shows params.note as a hint" test stays green). It is

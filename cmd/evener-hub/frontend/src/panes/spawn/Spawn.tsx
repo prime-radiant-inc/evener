@@ -236,6 +236,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
+  const initialModelRef = useRef("");
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -371,13 +372,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema) and the stale-model sweep.
+  // (harnesses, advanced schema).
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
   useEffect(() => {
     const urlPrefill = readUrlPrefill(window.location.search);
     const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
     if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
     if (defaults.harness) setHarness(defaults.harness);
+    initialModelRef.current = defaults.model ?? "";
     if (defaults.model) setModel(defaults.model);
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
@@ -399,16 +401,24 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       },
       () => {},
     );
-    // Stale-model cleanup (floor §1.10): sweep the persisted defaults against the
-    // live model list; if this project's prefilled model was discarded, clear it
-    // and surface the inline notice.
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Sweep persisted defaults using the current provider configuration. A
+  // credential refresh cancels older catalogs before they can discard a model.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  useEffect(() => {
+    let active = true;
+    const initialModel = initialModelRef.current;
     loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
-        if (defaults.model && discarded.includes(defaults.model)) {
+        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
           setModel("");
-          setStaleNotice(defaults.model);
+          setStaleNotice(initialModel);
         }
       },
       () => {},
@@ -416,7 +426,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [client, providerSetup.instances]);
 
   // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
   // /new?dir=/?prompt= navigation while this pane is already open refocuses

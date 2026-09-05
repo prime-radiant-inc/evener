@@ -25,6 +25,7 @@ import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
+import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
 
 let modelListOverride: ModelDescriptor[] | null = null;
@@ -1161,6 +1162,23 @@ test("loads sticky defaults from localStorage on mount", async () => {
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
 
+test("Welcome preserves URL-prefilled setup fields when routing to Spawn", async () => {
+  window.history.pushState({}, "", "/?dir=%2Fhome%2Fme%2Fapp&prompt=fix%20it#setup");
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  });
+  connectionStore.getState().connect(client);
+  const welcome = render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  await waitFor(() => expect(window.location.pathname).toBe("/new"));
+  welcome.unmount();
+  renderSpawn(client);
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
+  );
+  expectWorkingDir("/home/me/app");
+  expect(window.location.hash).toBe("#setup");
+});
+
 test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp&prompt=fix%20it");
   renderSpawn(readyClient());
@@ -1803,6 +1821,33 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
 
   expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5");
   expect(modelTrigger().textContent).not.toContain("claude-opus-4");
+});
+
+test("a model response from before a credential refresh cannot discard the saved selection", async () => {
+  const saved = JSON.stringify({ model: "openai/gpt-5" });
+  localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/p");
+  localStorage.setItem("evener-hub.spawn-defaults./p", saved);
+  let refreshed = false;
+  const pending: Array<(response: ModelListResponse) => void> = [];
+  const client = readyClient((fake) => {
+    fake.on("model/list", () =>
+      refreshed
+        ? { data: [{ provider: "openai", model: "gpt-5" }] }
+        : new Promise<ModelListResponse>((resolve) => pending.push(resolve)),
+    );
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await waitFor(() => expect(modelTrigger().textContent).toContain("openai/gpt-5"));
+  expect(pending.length).toBeGreaterThan(0);
+  refreshed = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await act(async () => {
+    for (const resolve of pending) resolve({ data: [{ provider: "openai", model: "gpt-4o" }] });
+  });
+  expect(modelTrigger().textContent).toContain("openai/gpt-5");
+  expect(localStorage.getItem("evener-hub.spawn-defaults./p")).toBe(saved);
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
 });
 
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {
