@@ -1274,6 +1274,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_steering_live_${activeTurnId}_${steeringCount}`,
             turnId: activeTurnId,
             type: "steering",
+            ...(params.startedAt !== undefined ? { startedAt: epochMsToISO(params.startedAt) } : {}),
             text: params.text ?? "",
             images: imagesToItemImages(params.images),
             status: "completed",
