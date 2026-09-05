@@ -1060,7 +1060,7 @@ func TestLocalDaemonHiddenCompletePrefixValidation(t *testing.T) {
 			case secondCursor:
 				return page([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""), nil
 			default:
-				return appwire.ThreadTurnsListResponse{}, fmt.Errorf("unexpected native cursor")
+				return appwire.ThreadTurnsListResponse{}, errors.New("unexpected native cursor")
 			}
 		})
 		complete, err := source.ItemCandidatesFromRead(t.Context(), appwire.ThreadReadParams{Ref: "local:thread"}, read(completeItems, ""))

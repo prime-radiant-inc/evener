@@ -87,7 +87,7 @@ func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 				cancel()
 			}
 
-			native := &remoteItemPackingRPCSource{itemPackingRPCSource: itemPackingRPCSource{
+			native := &remoteItemPackingRPCSource{itemPackingRPCSource{
 				read:                 read,
 				readCandidates:       nativeResult,
 				rejectLegacyItemList: true,

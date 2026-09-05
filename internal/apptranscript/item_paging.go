@@ -236,10 +236,6 @@ func intersectItemRanges(ranges []indexedItemRange, start, end uint64) []indexed
 	return selected
 }
 
-func projectIndexedItemRanges(path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
-	return projectIndexedItemRangesContext(context.Background(), path, index, ranges, project)
-}
-
 func projectIndexedItemRangesContext(ctx context.Context, path string, index turnIndexDisk, ranges []indexedItemRange, project BoundedEntryProjector) ([]appitempaging.TranscriptItemCandidate, int, error) {
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0)
 	projectedRecords := 0

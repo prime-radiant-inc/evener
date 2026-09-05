@@ -417,6 +417,7 @@ func (s *LocalDaemonSource) localDaemonHiddenPrefixUnchanged(
 		history = append(history, pages[pageIndex]...)
 	}
 	if err := appitempaging.ValidateCandidates(history); err != nil {
+		//lint:ignore nilerr cross-page disagreement means the hidden snapshot rotated, not that the daemon read failed
 		return false, nil
 	}
 	return itemSnapshotStateMatchesCompleteCandidates(previous, history), nil
