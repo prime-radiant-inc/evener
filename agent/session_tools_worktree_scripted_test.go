@@ -355,9 +355,11 @@ type scriptedWorktreeEntry struct {
 // argv fail loudly so adding a new production command cannot silently turn the
 // harness into a permissive mock.
 type scriptedWorktreeGit struct {
-	// mu serializes run, as the real binary's repository locks serialize
-	// concurrent git processes: a session's close can sweep lane residue while
-	// an op it refused is still rolling its own git changes back.
+	// mu serializes run so concurrent callers see a consistent model: a
+	// session's close can sweep lane residue while an op it refused is still
+	// rolling its own git changes back. Real git does not queue the loser of
+	// such an overlap — it fails it with a lock-exists error — so this is a
+	// stand-in for that exclusion, not a model of it.
 	mu          sync.Mutex
 	root        string
 	branches    map[string]string
@@ -468,6 +470,9 @@ func (g *scriptedWorktreeGit) runWorktree(args []string) (string, error) {
 		if entry == nil {
 			return "", fmt.Errorf("scripted git: lock target %q does not exist", args[4])
 		}
+		// Not modeled: real git refuses to lock an already-locked worktree
+		// ("already locked"); this overwrites the reason. No test relies on
+		// the refusal, and one that needs it must use the real-git harness.
 		entry.lockReason = args[3]
 		return "", nil
 	}
