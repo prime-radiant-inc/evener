@@ -631,8 +631,6 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		indexCopy := *entry.turnIndex
 		candidate = &indexCopy
 		fromCache = true
-		identityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) &&
-			entry.fileIdentity == currentFileIdentity && entry.changeIdentity == currentChangeIdentity
 	}
 	c.mu.Unlock()
 	if candidate == nil {
@@ -641,7 +639,9 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		}
 	}
 
-	if candidate != nil && !fromCache {
+	if candidate != nil {
+		// Full projection refreshes can update the outer cache entry without
+		// advancing this index. Its own identity must authenticate reuse.
 		identityMatches = candidate.TranscriptSize == info.Size() && candidate.ModTimeUnixNS == info.ModTime().UnixNano() &&
 			candidate.FileIdentity == currentFileIdentity && candidate.ChangeIdentity == currentChangeIdentity
 	}
