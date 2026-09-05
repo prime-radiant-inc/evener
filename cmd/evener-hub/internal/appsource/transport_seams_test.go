@@ -1011,9 +1011,14 @@ func newLocalDaemonItemTransitionSource(t *testing.T, items []appwire.ThreadItem
 	t.Helper()
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	currentItems := items
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		itemsView := appwire.TurnItemsViewFull
+		if params.PageUnit == appwire.TranscriptPageUnitItem {
+			itemsView = appwire.TurnItemsViewFragment
+		}
 		return appwire.ThreadTurnsListResponse{
-			Data: []appwire.Turn{{ID: "turn-1", Items: currentItems, ItemsView: appwire.TurnItemsViewFull}},
+			Data:     []appwire.Turn{{ID: "turn-1", Items: currentItems, ItemsView: itemsView}},
+			PageUnit: params.PageUnit,
 		}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
@@ -1114,6 +1119,37 @@ func TestLocalDaemonItemSnapshotBoundedToCompleteTransitions(t *testing.T) {
 		}
 		if appended.Identity.Incarnation != first.Identity.Incarnation {
 			t.Fatalf("appended full incarnation = %q, want %q", appended.Identity.Incarnation, first.Identity.Incarnation)
+		}
+	})
+
+	t.Run("full A,B then bounded disjoint C,D", func(t *testing.T) {
+		source, _ := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("A", 0), item("B", 1)})
+		nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
+		nativeOlderCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: 2})
+		if err != nil {
+			t.Fatalf("encode native older cursor: %v", err)
+		}
+		complete, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""))
+		if err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("C", 2), item("D", 3)}, nativeOlderCursor))
+		if err != nil {
+			t.Fatalf("bounded disjoint conversion: %v", err)
+		}
+		if bounded.Identity.Incarnation != complete.Identity.Incarnation {
+			t.Fatalf("complete [A,B] -> bounded disjoint [C,D] incarnation = %q, want unchanged %q", bounded.Identity.Incarnation, complete.Identity.Incarnation)
+		}
+		browserCursor, err := appitempaging.EncodeCursor(bounded.Identity, bounded.Candidates.Candidates[0].Position)
+		if err != nil {
+			t.Fatalf("encode bounded browser cursor: %v", err)
+		}
+		continued, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: browserCursor, ItemLimit: 40})
+		if err != nil {
+			t.Fatalf("continue bounded disjoint cursor: %v", err)
+		}
+		if len(continued.Candidates.Candidates) != 2 || continued.Candidates.Candidates[0].Item.ID != "A" || continued.Candidates.Candidates[1].Item.ID != "B" {
+			t.Fatalf("continued bounded disjoint cursor = %+v, want A,B", continued.Candidates.Candidates)
 		}
 	})
 }
