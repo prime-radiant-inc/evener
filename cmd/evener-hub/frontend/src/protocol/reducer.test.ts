@@ -1500,7 +1500,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     model,
     {
       method: "evener/steering/injected",
-      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
+      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user", startedAt: 1000 },
     },
     1002,
   );
@@ -1512,6 +1512,7 @@ test('evener/steering/injected with source "user" appends a steering item to the
     turnId: "turn_1",
     type: "steering",
     text: "please also check X",
+    startedAt: "1970-01-01T00:00:01.000Z",
     status: "completed",
     source: "user",
   });
