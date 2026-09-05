@@ -599,26 +599,32 @@ func formatShellResult(out shellToolResult) string {
 		}
 	case promoted:
 		foot = append(foot,
-			fmt.Sprintf("still running as %s — the foreground wait ended, not the command", out.JobID),
+			"the foreground wait ended, not the command",
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
 	case directBackground:
-		foot = append(foot, "running in background as "+out.JobID)
+		// The identifying footer is appended after optional retention details so
+		// the job ID remains at the absolute tail.
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
 	}
+	if promoted {
+		foot = append(foot, "still running as "+out.JobID)
+	} else if directBackground {
+		foot = append(foot, "running in background as "+out.JobID)
+	}
+	if backgrounded {
+		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		b.WriteByte(' ')
+	}
 	if len(foot) > 0 {
 		b.WriteString("[")
 		b.WriteString(strings.Join(foot, " · "))
 		b.WriteString("]")
-	}
-	if backgrounded {
-		b.WriteByte('\n')
-		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
