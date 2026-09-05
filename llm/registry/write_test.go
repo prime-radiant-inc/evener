@@ -19,11 +19,12 @@ func writerFixtureLayer() *Layer {
 		Providers: map[string]Provider{
 			"work": {
 				ID: "work", Base: "openai", Protocol: ProtocolOpenAIChat, Surface: SurfaceGeneric,
-				Headers:           map[string]string{"X-Portkey-Provider": "openai"},
-				CredentialHeaders: map[string]string{"Authorization": "Bearer $PORTKEY_KEY"},
-				APIKeyEnv:         []string{},
-				DefaultModel:      "glm-5.2-nvfp4",
-				Transport:         Transport{BaseURL: "https://gw.example.com/v1"},
+				InheritModelsMatching: []string{"alpha-*"},
+				Headers:               map[string]string{"X-Portkey-Provider": "openai"},
+				CredentialHeaders:     map[string]string{"Authorization": "Bearer $PORTKEY_KEY"},
+				APIKeyEnv:             []string{},
+				DefaultModel:          "glm-5.2-nvfp4",
+				Transport:             Transport{BaseURL: "https://gw.example.com/v1"},
 				Caps: Caps{
 					Fields: map[string]bool{"stream_options": false}, ContextWindow: new(131072),
 					ChatTemplateKwargs: map[string]any{"enable_thinking": true, "options": map[string]any{"mode": "fast"}},

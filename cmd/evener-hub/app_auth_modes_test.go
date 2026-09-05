@@ -25,7 +25,7 @@ func TestAuthModesForCoversEveryScheme(t *testing.T) {
 		registry.AuthHeader:           {"apiKey"},
 		registry.AuthOptionalBearer:   {"none", "apiKey"},
 		registry.AuthNone:             {"none"},
-		registry.AuthGCPADC:           {"adc"},
+		registry.AuthGCPADC:           {"adc", "credentialJson"},
 		registry.AuthOAuthOpenAICodex: {"oauth"},
 	}
 	for scheme, modes := range want {
@@ -78,7 +78,7 @@ func TestAuthStatusAuthModesFollowTheInstance(t *testing.T) {
 		{
 			name:  "gcp-adc instance",
 			toml:  "[providers.work]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:8080/v1\"\nauth = \"gcp-adc\"\n",
-			modes: []string{"adc"},
+			modes: []string{"adc", "credentialJson"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

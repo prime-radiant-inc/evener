@@ -110,7 +110,7 @@
     "WebSearch": "overlay/provider",
     "model": "row:claude-opus-5"
   },
-  "default_model": "gemini-3.7-flash",
+  "default_model": "gemini-3.8-flash",
   "cheap_model": "gemini-2.5-flash-lite",
   "credential_source": "adc",
   "pruned_fields": [

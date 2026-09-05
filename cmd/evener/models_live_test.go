@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/anthropic"
+	"primeradiant.com/evener/llm/providers/google"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -687,6 +689,135 @@ func TestLiveVertexOneRequest(t *testing.T) {
 		t.Fatalf("%s: POST %s → %d with no reply text: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
 	}
 	t.Logf("%s: POST %s (wire %s) → %d, %d chars of reply text", ref, res.Transport.Endpoint, res.WireID, status, len(text))
+}
+
+const vertexExpressInstance = "google-vertex-express"
+
+// TestVertexExpressRequestShape pins the express row before any network is
+// involved (spec 2026-09-04 google-vertex-express §1): header auth with
+// x-goog-api-key, the constant project-less v1 base URL, the publisher
+// generateContent path with the wire id in it, listing unsupported.
+func TestVertexExpressRequestShape(t *testing.T) {
+	env := map[string]string{envvars.GoogleVertexAPIKey.Name: "k-offline"}
+	r, err := registry.Load(
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithNoUserLayer(),
+		registry.WithEnv(func(name string) (string, bool) { v, ok := env[name]; return v, ok }),
+	)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ref := vertexExpressInstance + "/gemini-2.5-flash-lite"
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	if res.Synthesized {
+		t.Fatalf("%s: synthesized; the express row must inherit google's catalog", ref)
+	}
+	if res.Transport.Auth != registry.AuthHeader || res.Transport.AuthHeader != "x-goog-api-key" {
+		t.Fatalf("%s: auth %q/%q", ref, res.Transport.Auth, res.Transport.AuthHeader)
+	}
+	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1" {
+		t.Fatalf("%s: base URL %q", ref, res.Transport.BaseURL)
+	}
+	if res.Transport.Endpoint != "/publishers/google/models/{model}:generateContent" || res.Transport.ModelsEndpoint != registry.EndpointUnsupported {
+		t.Fatalf("%s: endpoints %+v", ref, res.Transport)
+	}
+	if res.Credential.Value != "k-offline" || res.Credential.Source != "env:"+envvars.GoogleVertexAPIKey.Name {
+		t.Fatalf("%s: credential %+v", ref, res.Credential)
+	}
+	t.Logf("%s: base=%s endpoint=%s wire=%s", ref, res.Transport.BaseURL, res.Transport.Endpoint, res.WireID)
+}
+
+// TestLiveVertexExpressOneRequest sends one generateContent through the
+// express row with the key in GOOGLE_VERTEX_API_KEY. Run with:
+//
+//	EVENER_LIVE_TESTS=1 GOOGLE_VERTEX_API_KEY=… go test ./cmd/evener/ -run TestLiveVertexExpressOneRequest -v -count=1 -args -live-config=/path/to/providers.toml
+func TestLiveVertexExpressOneRequest(t *testing.T) {
+	requireLiveGate(t, "the Vertex express live pin")
+	if os.Getenv(envvars.GoogleVertexAPIKey.Name) == "" {
+		t.Skipf("set %s to run the Vertex express live pin", envvars.GoogleVertexAPIKey.Name)
+	}
+	r := loadLiveRegistry(t)
+	ref := vertexExpressInstance + "/gemini-3.8-flash"
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	url, body, ok := liveBody(res)
+	if !ok {
+		t.Fatalf("%s: protocol %s builds no request body", ref, res.Protocol)
+	}
+	client := &http.Client{Timeout: 90 * time.Second}
+	status, resp := liveRequest(t, client, http.MethodPost, url, body, res)
+	if status != http.StatusOK {
+		t.Fatalf("%s: POST %s → %d: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
+	}
+	if text := strings.TrimSpace(string(liveText(res.Protocol, resp))); text == "" {
+		t.Fatalf("%s: %d with no reply text: %s", ref, status, excerpt(resp, 300))
+	}
+	t.Logf("%s: POST %s → %d", ref, res.Transport.Endpoint, status)
+}
+
+// TestLiveVertexListModels lists the project's Gemini publisher models through
+// the google protocol's Vertex branch with application-default credentials and
+// the quota-project header (spec §2). Needs GOOGLE_VERTEX_PROJECT/LOCATION.
+func TestLiveVertexListModels(t *testing.T) {
+	requireLiveGate(t, "the Vertex listing live pin")
+	requireGCPADC(t)
+	if os.Getenv(envvars.GoogleVertexProject.Name) == "" || os.Getenv(envvars.GoogleVertexLocation.Name) == "" {
+		t.Skipf("set %s and %s to run the Vertex listing live pin", envvars.GoogleVertexProject.Name, envvars.GoogleVertexLocation.Name)
+	}
+	r := loadLiveRegistry(t)
+	res, err := r.Resolve("google-vertex/gemini-3.8-flash")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	rows, err := (&google.Protocol{Client: &http.Client{Timeout: 60 * time.Second}}).ListModels(ctx, res)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	if len(ids) == 0 || !slices.Contains(ids, "gemini-3.8-flash") {
+		t.Fatalf("listing = %v; want gemini-3.8-flash among ≥1 ids", ids)
+	}
+	t.Logf("google-vertex lists %d text models: %s", len(ids), strings.Join(ids, ", "))
+}
+
+// TestLiveVertexStoredCredentialOneRequest sends one generateContent through
+// google-vertex resolved from a credentials-store JSON entry (spec §4): it
+// skips unless the live config's credentials.toml holds one under
+// "google-vertex", so the registry reports source store.
+func TestLiveVertexStoredCredentialOneRequest(t *testing.T) {
+	requireLiveGate(t, "the Vertex stored-credential live pin")
+	if os.Getenv(envvars.GoogleVertexProject.Name) == "" || os.Getenv(envvars.GoogleVertexLocation.Name) == "" {
+		t.Skipf("set %s and %s to run the Vertex stored-credential live pin", envvars.GoogleVertexProject.Name, envvars.GoogleVertexLocation.Name)
+	}
+	r := loadLiveRegistry(t)
+	ref := "google-vertex/gemini-3.8-flash"
+	res, err := r.Resolve(ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	if res.Credential.Source != "store" {
+		t.Skipf("%s resolves from %q, not a stored credential JSON; add one under google-vertex in %s", ref, res.Credential.Source, liveStorePath())
+	}
+	url, body, ok := liveBody(res)
+	if !ok {
+		t.Fatalf("%s: protocol %s builds no request body", ref, res.Protocol)
+	}
+	status, resp := liveRequest(t, &http.Client{Timeout: 90 * time.Second}, http.MethodPost, url, body, res)
+	if status != http.StatusOK {
+		t.Fatalf("%s: POST %s → %d: %s", ref, res.Transport.Endpoint, status, excerpt(resp, 300))
+	}
+	t.Logf("%s (source store): POST %s → %d", ref, res.Transport.Endpoint, status)
 }
 
 // liveWireRecorder keeps the request body of the call it forwards so a

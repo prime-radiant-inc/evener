@@ -135,6 +135,8 @@ var (
 	GoogleVertexProject                = Var{Name: "GOOGLE_VERTEX_PROJECT", Summary: "Google Vertex project the endpoint is built from.", Visibility: Public}
 	GoogleVertexLocation               = Var{Name: "GOOGLE_VERTEX_LOCATION", Summary: "Google Vertex location the endpoint host is built from.", Visibility: Public}
 	GoogleApplicationCredentials       = Var{Name: "GOOGLE_APPLICATION_CREDENTIALS", Summary: "Path to the Google application-default credentials file; when unset, the well-known gcloud path is used.", Visibility: Public}
+	GoogleVertexAPIKey                 = Var{Name: "GOOGLE_VERTEX_API_KEY", Summary: "Google Cloud API key for Vertex AI express mode; the google-vertex-express instance.", Secret: true, Visibility: Public}
+	GoogleVertexExpressBaseURL         = Var{Name: "GOOGLE_VERTEX_EXPRESS_BASE_URL", Summary: "Vertex AI express-mode base URL override (default https://aiplatform.googleapis.com/v1).", Visibility: Public}
 	CloudflareAccountID                = Var{Name: "CLOUDFLARE_ACCOUNT_ID", Summary: "Cloudflare account id the Workers AI endpoint is built from.", Visibility: Public}
 	DatabricksHost                     = Var{Name: "DATABRICKS_HOST", Summary: "Databricks workspace host the endpoint is built from.", Visibility: Public}
 	InfomaniakProductID                = Var{Name: "INFOMANIAK_PRODUCT_ID", Summary: "Infomaniak product id the endpoint is built from.", Visibility: Public}
@@ -269,6 +271,8 @@ var allVars = []Var{
 	GoogleVertexProject,
 	GoogleVertexLocation,
 	GoogleApplicationCredentials,
+	GoogleVertexAPIKey,
+	GoogleVertexExpressBaseURL,
 	CloudflareAccountID,
 	DatabricksHost,
 	InfomaniakProductID,

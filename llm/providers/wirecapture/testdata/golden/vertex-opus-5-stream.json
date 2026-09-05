@@ -7,7 +7,8 @@
   "headers": {
     "Anthropic-Version": "2023-06-01",
     "Authorization": "Bearer \u003ccredential\u003e",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "X-Goog-User-Project": "my-project"
   },
   "body": {
     "anthropic_version": "vertex-2023-10-16",

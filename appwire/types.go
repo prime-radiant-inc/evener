@@ -78,6 +78,7 @@ const (
 	MethodEvenerAuthList              = "evener/auth/list"
 	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
 	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
+	MethodEvenerAuthCredentialJsonSet = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
 	MethodEvenerLaunchResolve         = "evener/launch/resolve"
@@ -2517,6 +2518,14 @@ type AuthApiKeyClearParams struct {
 	Provider string `json:"provider"`
 }
 
+// AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
+// a Google credential JSON (service-account key or application-default
+// authorized_user file) for a gcp-adc instance.
+type AuthCredentialJsonSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+}
+
 // AuthDeviceStartParams is the params for evener/auth/device/start.
 type AuthDeviceStartParams struct {
 	Provider string `json:"provider"`
@@ -2594,15 +2603,23 @@ type InstanceEntry struct {
 
 // ProviderDescriptor is a registry provider the add form can build on: its
 // id and display name, the protocol and auth scheme it defaults to, and the
-// variable names its transport and credential read.
+// variables its transport and credential read. Vars maps a template
+// placeholder name to the environment variable name it is fed by (the same
+// shape as registry.Transport.VarsEnv), so a typed override can be sent
+// keyed by the name the registry actually substitutes. VarsEnv is the same
+// environment-variable names alone, sorted. It stays a list because v3
+// peers — a TUI built before Vars existed — decode it as one, and
+// ProtocolVersion is compared exactly, so a wire shape cannot change under
+// v3; new readers use Vars.
 type ProviderDescriptor struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name,omitempty"`
-	Protocol  string   `json:"protocol"`
-	Auth      string   `json:"auth"`
-	VarsEnv   []string `json:"varsEnv,omitempty"`
-	APIKeyEnv []string `json:"apiKeyEnv,omitempty"`
-	Implicit  bool     `json:"implicit"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name,omitempty"`
+	Protocol  string            `json:"protocol"`
+	Auth      string            `json:"auth"`
+	VarsEnv   []string          `json:"varsEnv,omitempty"`
+	Vars      map[string]string `json:"vars,omitempty"`
+	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
+	Implicit  bool              `json:"implicit"`
 }
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics

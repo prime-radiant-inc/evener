@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -113,21 +114,22 @@ func (ts transportSchema) isZero() bool {
 }
 
 type providerSchema struct {
-	Base              string                 `toml:"base"`
-	InheritModels     *bool                  `toml:"inherit_models"`
-	Implicit          *bool                  `toml:"implicit"`
-	Name              string                 `toml:"name"`
-	Doc               string                 `toml:"doc"`
-	Protocol          string                 `toml:"protocol"`
-	Surface           string                 `toml:"surface"`
-	Family            string                 `toml:"family"`
-	APIKey            string                 `toml:"api_key"`
-	APIKeyEnv         []string               `toml:"api_key_env"`
-	Headers           map[string]string      `toml:"headers"`
-	CredentialHeaders map[string]string      `toml:"credential_headers"`
-	DefaultModel      string                 `toml:"default_model"`
-	CheapModel        string                 `toml:"cheap_model"`
-	Models            map[string]modelSchema `toml:"models"`
+	Base                  string                 `toml:"base"`
+	InheritModels         *bool                  `toml:"inherit_models"`
+	InheritModelsMatching []string               `toml:"inherit_models_matching"`
+	Implicit              *bool                  `toml:"implicit"`
+	Name                  string                 `toml:"name"`
+	Doc                   string                 `toml:"doc"`
+	Protocol              string                 `toml:"protocol"`
+	Surface               string                 `toml:"surface"`
+	Family                string                 `toml:"family"`
+	APIKey                string                 `toml:"api_key"`
+	APIKeyEnv             []string               `toml:"api_key_env"`
+	Headers               map[string]string      `toml:"headers"`
+	CredentialHeaders     map[string]string      `toml:"credential_headers"`
+	DefaultModel          string                 `toml:"default_model"`
+	CheapModel            string                 `toml:"cheap_model"`
+	Models                map[string]modelSchema `toml:"models"`
 	transportSchema
 	Caps
 }
@@ -237,7 +239,8 @@ func parseLayer(data []byte, tag string, curated bool) (*Layer, error) {
 			return nil, fmt.Errorf("%s: %w", tag, err)
 		}
 		p := Provider{
-			ID: name, Base: ps.Base, InheritModels: ps.InheritModels, Implicit: ps.Implicit, Name: ps.Name, Doc: ps.Doc,
+			ID: name, Base: ps.Base, InheritModels: ps.InheritModels, InheritModelsMatching: slices.Clone(ps.InheritModelsMatching),
+			Implicit: ps.Implicit, Name: ps.Name, Doc: ps.Doc,
 			Protocol: ps.Protocol, Surface: ps.Surface, Family: ps.Family, Transport: ps.transport(),
 			APIKey: ps.APIKey, Headers: ps.Headers, CredentialHeaders: ps.CredentialHeaders, Caps: ps.Caps,
 			DefaultModel: ps.DefaultModel, CheapModel: ps.CheapModel, Models: map[string]Model{},
@@ -304,6 +307,17 @@ func validateProvider(ps providerSchema, where string) error {
 	}
 	if ps.Surface != "" && !surfaces[ps.Surface] {
 		return fmt.Errorf("%s: unknown surface %q", where, ps.Surface)
+	}
+	if len(ps.InheritModelsMatching) > 0 {
+		if ps.Base == "" {
+			return fmt.Errorf("%s: inherit_models_matching needs base = <registry id>", where)
+		}
+		if ps.InheritModels != nil && !*ps.InheritModels {
+			return fmt.Errorf("%s: inherit_models_matching conflicts with inherit_models = false", where)
+		}
+		if slices.Contains(ps.InheritModelsMatching, "") {
+			return fmt.Errorf("%s: inherit_models_matching: empty pattern", where)
+		}
 	}
 	if err := checkEnvRefs(ps.APIKey, where+".api_key"); err != nil {
 		return err

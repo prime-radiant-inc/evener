@@ -100,6 +100,20 @@ describe("activeSourceLabel", () => {
   test("falls back to the raw value for an unrecognized activeSource", () => {
     expect(activeSourceLabel(instance({ name: "a", providerId: "x", activeSource: "mystery" }))).toBe("mystery");
   });
+
+  test("store + gcp-adc -> Configured via stored credential JSON", () => {
+    expect(
+      activeSourceLabel(
+        instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc", activeSource: "store" }),
+      ),
+    ).toBe("Configured via stored credential JSON");
+  });
+
+  test("store + bearer -> Configured via stored API key", () => {
+    expect(
+      activeSourceLabel(instance({ name: "a", providerId: "anthropic", auth: "bearer", activeSource: "store" })),
+    ).toBe("Configured via stored API key");
+  });
 });
 
 describe("styleInfoText", () => {

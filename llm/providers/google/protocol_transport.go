@@ -74,6 +74,9 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 	if res.Transport.ModelsEndpoint == registry.EndpointUnsupported {
 		return nil, llm.ErrModelListingUnsupported
 	}
+	if isVertexTransport(res) {
+		return p.listVertexModels(ctx, res)
+	}
 	u := protocolhttp.URL(res, res.Transport.ModelsEndpoint)
 	if strings.Contains(u, "?") {
 		u += "&pageSize=1000"

@@ -378,14 +378,19 @@ func consumedEnvVars(rec *record, source string) []string {
 // shadowedEnvVar names an environment variable that is set but loses to
 // cred, the credential that actually resolved (spec §10: api_key >
 // credential_headers > store > env). Only those three sources can shadow
-// anything: oauth-openai-codex and gcp-adc are terminal branches in
-// credential that never consult api_key_env at all (whether they resolve,
-// giving "oauth"/"adc", or not, giving "none" the same as every other
-// unresolved scheme), so naming a candidate against any of them - including
-// "none" - would blame a source that was never actually in contention.
+// anything, and only outside the gcp-adc scheme: oauth-openai-codex and
+// gcp-adc are terminal branches in credential that never consult
+// api_key_env at all - gcp-adc's own store lookup is keyed by instance
+// name, not by any api_key_env/InstanceKeyEnvVar candidate - so naming a
+// candidate against either of them, for any of their sources ("oauth",
+// "adc", "store", or "none"), would blame a variable that was never
+// actually in contention.
 // Empty when nothing shadows it: no remaining candidate is set, or an env
 // source is itself what won.
 func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
+	if rec.head.Transport.Auth == AuthGCPADC {
+		return ""
+	}
 	switch cred.Source {
 	case "api_key", "credential_headers", "store":
 	default:
@@ -422,10 +427,29 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
 	case AuthGCPADC:
-		if adcAvailable(r.env) {
-			return Credential{Source: "adc"}, nil
+		// A credential JSON stored under the instance name (a service-account
+		// key or an authorized_user file the hub accepted) outranks the ADC
+		// file, so a hub host needs neither gcloud nor variables (spec §4.2).
+		// A store entry that is not a JSON object — a stale API key left
+		// over from before this instance used gcp-adc, say — is not a
+		// credential this scheme can use; it must not shadow a working ADC
+		// file, so it falls through with a warning instead of being
+		// returned (roborev F2).
+		var warn []string
+		if r.creds != nil {
+			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+				err := CheckCredentialJSON([]byte(v))
+				if err == nil {
+					return Credential{Value: v, Source: "store"}, nil
+				}
+				warn = append(warn, fmt.Sprintf("credentials-store entry for %q is not a credential JSON evener can use (%v); it is ignored for gcp-adc: clear it (evener/auth/apiKey/clear) or replace it with a service-account or authorized_user JSON", rec.name, err))
+			}
 		}
-		return none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)")
+		if adcAvailable(r.env) {
+			return Credential{Source: "adc"}, warn
+		}
+		cred, reasons := none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
+		return cred, append(warn, reasons...)
 	}
 	if h.APIKey != "" {
 		v, missing := expandEnv(h.APIKey, r.env)

@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -405,6 +406,12 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if c.instanceIsCodex(name) {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
 	}
+	// A bare key under a gcp-adc instance is one the authenticator would
+	// reject as JSON at first request; point at the flow that stores what
+	// this scheme actually reads.
+	if c.instanceUsesGCPADC(name) {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
+	}
 	if err := c.setCredential(name, params.Value); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
@@ -595,26 +602,67 @@ func authModesFor(auth string) []string {
 	case registry.AuthOptionalBearer:
 		return []string{"none", "apiKey"}
 	case registry.AuthGCPADC:
-		return []string{"adc"}
+		return []string{"adc", "credentialJson"}
 	default:
 		return []string{"apiKey"}
 	}
 }
 
+// instanceAuthScheme returns the transport auth scheme for name - an
+// authored instance or a curated implicit provider - and whether one was
+// found, the shared lookup behind instanceIsCodex and instanceUsesGCPADC.
+func (c *hubAuthController) instanceAuthScheme(name string) (string, bool) {
+	r := c.registry()
+	if r == nil {
+		return "", false
+	}
+	if inst, ok := r.Instance(name); ok {
+		return inst.Auth, true
+	}
+	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		return p.Transport.Auth, true
+	}
+	return "", false
+}
+
 // instanceIsCodex reports whether name authenticates through the Codex
 // OAuth flow (spec §9.5): its transport auth is oauth-openai-codex.
 func (c *hubAuthController) instanceIsCodex(name string) bool {
-	r := c.registry()
-	if r == nil {
-		return false
+	auth, ok := c.instanceAuthScheme(name)
+	return ok && auth == registry.AuthOAuthOpenAICodex
+}
+
+// instanceUsesGCPADC reports whether name authenticates through Google
+// application-default credentials (spec §9.4): its transport auth is gcp-adc.
+func (c *hubAuthController) instanceUsesGCPADC(name string) bool {
+	auth, ok := c.instanceAuthScheme(name)
+	return ok && auth == registry.AuthGCPADC
+}
+
+// CredentialJsonSet stores a Google credential JSON for a gcp-adc instance
+// (spec 2026-09-04 google-vertex-express §4.4): validated the way the
+// authenticator will parse it, written to the credentials store under the
+// instance name, then the registry reloads so the instance resolves with
+// source store.
+func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
+	name := normalizeAuthProvider(params.Provider)
+	value := strings.TrimSpace(params.Value)
+	if value == "" {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
-	if inst, ok := r.Instance(name); ok {
-		return inst.Auth == registry.AuthOAuthOpenAICodex
+	if !c.instanceUsesGCPADC(name) {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start")
 	}
-	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
-		return p.Transport.Auth == registry.AuthOAuthOpenAICodex
+	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
 	}
-	return false
+	if err := c.setCredential(name, value); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
+	if err := c.reloadRegistry(); err != nil {
+		return appwire.AuthStatusResponse{}, err
+	}
+	return c.Status(appwire.AuthStatusParams{Provider: name})
 }
 
 // requiresCodex returns an InvalidParams error when the named instance does

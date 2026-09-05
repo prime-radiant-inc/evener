@@ -9,11 +9,15 @@
 // becomes Base provider over availableProviders, the openai-only API-style
 // radio is gone (Protocol is no longer openai-specific data the form
 // special-cases), and the Add form gains a dynamic Input per the selected
-// provider's VarsEnv name plus api-key-env/credential-header fields
+// provider's Vars entry plus api-key-env/credential-header fields
 // mirroring the CLI's --api-key-env/--credential-header flags (§11.2).
+// Vars maps template placeholder name -> environment variable name
+// (roborev round 1, F3): the input is labeled by the env name (what the
+// docs tell users to set) but keyed by the template name, since that is
+// what the registry actually substitutes.
 import { type FormEvent, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
-import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
+import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -23,6 +27,7 @@ const CLASS = {
   body: requireClass(styles.body, "instanceDialogs.module.css", "body"),
   actions: requireClass(styles.actions, "instanceDialogs.module.css", "actions"),
   error: requireClass(styles.error, "instanceDialogs.module.css", "error"),
+  textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
 
 // nonEmptyVars trims and drops blank entries before they reach the wire -
@@ -58,15 +63,15 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     { value: "", label: "" },
     ...availableProviders.map((p) => ({ value: p.id, label: p.name || p.id })),
   ];
-  const varsEnv = availableProviders.find((p) => p.id === base)?.varsEnv ?? [];
+  const templateVars = availableProviders.find((p) => p.id === base)?.vars ?? {};
 
   function handleBaseChange(nextBase: string): void {
     setBase(nextBase);
     setVars({}); // a var input from the previous base must not leak into the new one
   }
 
-  function updateVar(varName: string, value: string): void {
-    setVars((current) => ({ ...current, [varName]: value }));
+  function updateVar(template: string, value: string): void {
+    setVars((current) => ({ ...current, [template]: value }));
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -136,16 +141,18 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
             disabled={busy}
           />
         </FormRow>
-        {varsEnv.map((varName) => (
-          <FormRow key={varName} label={varName} htmlFor={`add-instance-var-${varName}`}>
-            <Input
-              id={`add-instance-var-${varName}`}
-              value={vars[varName] ?? ""}
-              onChange={(event) => updateVar(varName, event.target.value)}
-              disabled={busy}
-            />
-          </FormRow>
-        ))}
+        {Object.entries(templateVars)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([template, envName]) => (
+            <FormRow key={template} label={envName} htmlFor={`add-instance-var-${template}`}>
+              <Input
+                id={`add-instance-var-${template}`}
+                value={vars[template] ?? ""}
+                onChange={(event) => updateVar(template, event.target.value)}
+                disabled={busy}
+              />
+            </FormRow>
+          ))}
         <FormRow label="API key environment variable (optional)" htmlFor="add-instance-apikeyenv">
           <Input
             id="add-instance-apikeyenv"
@@ -273,10 +280,40 @@ export interface ApiKeyDialogProps {
   onSuccess: () => void;
 }
 
-/** Set/Replace API key (parity-m7-settings.md §7d) - never echoes any
- * stored value; the field is write-only. Unaffected by the registry
- * cut-over: it only ever reads instance.name. */
-export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+interface CredentialValueDialogProps {
+  instance: InstanceEntry;
+  onCancel: () => void;
+  onSuccess: () => void;
+  title: string;
+  label: string;
+  inputId: string;
+  placeholder: string;
+  successText: string;
+  /** "password" for a single-line secret (ApiKeyDialog); "textarea" for a
+   * multi-line paste (CredentialJsonDialog). */
+  input: "password" | "textarea";
+  submit: (name: string, value: string) => Promise<AuthStatusResponse>;
+}
+
+// CredentialValueDialog is the submit/refresh/toast/error flow shared by
+// ApiKeyDialog and CredentialJsonDialog - a trimmed-empty value silently
+// cancels (no RPC), otherwise it calls `submit`, refetches the instance
+// list, toasts, and calls onSuccess, or shows the server's rejection inline
+// and as a "Save failed" toast. ApiKeyDialog/CredentialJsonDialog are thin
+// wrappers that supply this component's copy, field id/kind, and which
+// store method `submit` calls - never a second copy of this flow.
+function CredentialValueDialog({
+  instance,
+  onCancel,
+  onSuccess,
+  title,
+  label,
+  inputId,
+  placeholder,
+  successText,
+  input,
+  submit,
+}: CredentialValueDialogProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -292,9 +329,9 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
     setError(null);
     setBusy(true);
     try {
-      await credentialsStore.getState().setApiKey(instance.name, trimmed);
+      await submit(instance.name, trimmed);
       await credentialsStore.getState().fetch();
-      toast.push("success", `API key saved for ${instance.name}`);
+      toast.push("success", successText);
       onSuccess();
     } catch (err) {
       const message = errorText(err);
@@ -306,17 +343,30 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
   }
 
   return (
-    <Dialog open onClose={onCancel} title={`Set API key for ${instance.name}`}>
+    <Dialog open onClose={onCancel} title={title}>
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label={`API key for ${instance.name}`} htmlFor="api-key-value">
-          <Input
-            id="api-key-value"
-            type="password"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            placeholder="paste key"
-            disabled={busy}
-          />
+        <FormRow label={label} htmlFor={inputId}>
+          {input === "textarea" ? (
+            <textarea
+              id={inputId}
+              className={CLASS.textarea}
+              rows={8}
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder={placeholder}
+              disabled={busy}
+              spellCheck={false}
+            />
+          ) : (
+            <Input
+              id={inputId}
+              type="password"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder={placeholder}
+              disabled={busy}
+            />
+          )}
         </FormRow>
         {error && (
           <p className={CLASS.error} role="alert">
@@ -333,5 +383,48 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
         </div>
       </form>
     </Dialog>
+  );
+}
+
+/** Set/Replace API key (parity-m7-settings.md §7d) - never echoes any
+ * stored value; the field is write-only. Unaffected by the registry
+ * cut-over: it only ever reads instance.name. */
+export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+  return (
+    <CredentialValueDialog
+      instance={instance}
+      onCancel={onCancel}
+      onSuccess={onSuccess}
+      title={`Set API key for ${instance.name}`}
+      label={`API key for ${instance.name}`}
+      inputId="api-key-value"
+      placeholder="paste key"
+      successText={`API key saved for ${instance.name}`}
+      input="password"
+      submit={(name, value) => credentialsStore.getState().setApiKey(name, value)}
+    />
+  );
+}
+
+/**
+ * CredentialJsonDialog stores a Google credential JSON (a service-account
+ * key or an application_default_credentials.json) for a gcp-adc instance via
+ * evener/auth/credentialJson/set. The hub validates the paste before it is
+ * stored, so a server error here is the parse failure, shown inline.
+ */
+export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+  return (
+    <CredentialValueDialog
+      instance={instance}
+      onCancel={onCancel}
+      onSuccess={onSuccess}
+      title={`Set Google credential JSON for ${instance.name}`}
+      label={`Credential JSON for ${instance.name}`}
+      inputId="credential-json-value"
+      placeholder="paste a service-account key or application_default_credentials.json"
+      successText={`Credential JSON saved for ${instance.name}`}
+      input="textarea"
+      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value)}
+    />
   );
 }

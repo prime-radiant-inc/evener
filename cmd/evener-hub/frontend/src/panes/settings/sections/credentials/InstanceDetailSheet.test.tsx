@@ -24,6 +24,7 @@ function noopHandlers() {
   return {
     onTestCredentials: vi.fn(),
     onSetApiKey: vi.fn(),
+    onSetCredentialJson: vi.fn(),
     onOAuthStart: vi.fn(),
     onEdit: vi.fn(),
     onClear: vi.fn(),
@@ -210,6 +211,24 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Clear stored key" })).toBeTruthy();
   });
 
+  // A gcp-adc instance's stored credential is a JSON document, not an API
+  // key - the danger-zone button must call it that, same as the sheet's own
+  // Set/Replace credential JSON action above (roborev round 3, F3).
+  test("Clear stored credential JSON for a gcp-adc instance with a stored file shadowed behind ADC", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        activeSource: "adc",
+        hasStoredFile: true,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Clear stored credential JSON" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
+  });
+
   test("no Clear stored key when the stored key IS the active source", () => {
     renderSheet(instance({ name: "a", providerId: "x", activeSource: "store", hasStoredFile: true }));
     expect(screen.queryByRole("button", { name: "Clear stored key" })).toBeNull();
@@ -334,6 +353,46 @@ describe("action labels follow stored state", () => {
       }),
     );
     expect(screen.queryByRole("button", { name: /sign in|refresh oauth/i })).toBeNull();
+  });
+
+  test("'Set credential JSON' for a gcp-adc instance with nothing stored", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        hasStoredFile: false,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Set credential JSON" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set key" })).toBeNull();
+  });
+
+  test("'Replace credential JSON' and the stored-credential label once one is stored", () => {
+    renderSheet(
+      instance({
+        name: "vertex",
+        providerId: "google-vertex",
+        auth: "gcp-adc",
+        authModes: ["adc", "credentialJson"],
+        hasStoredFile: true,
+        activeSource: "store",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Replace credential JSON" })).toBeTruthy();
+    // A regex, not an exact string: the layer's "↳ " prefix and the label
+    // render as sibling text nodes in the same <span> (same reason the
+    // sibling assertions above, at :119-120 and :134, use a regex too).
+    expect(screen.getByText(/Configured via stored credential JSON/)).toBeTruthy();
+  });
+
+  test("the credential JSON action calls onSetCredentialJson", async () => {
+    const { handlers } = renderSheet(
+      instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc", authModes: ["adc", "credentialJson"] }),
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "Set credential JSON" }));
+    expect(handlers.onSetCredentialJson).toHaveBeenCalled();
   });
 });
 

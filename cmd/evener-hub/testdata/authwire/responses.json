@@ -140,9 +140,27 @@
       "signedIn": true,
       "activeSource": "adc",
       "authModes": [
-        "adc"
+        "adc",
+        "credentialJson"
       ],
       "hasStoredOAuth": false
+    }
+  },
+  {
+    "case": "status/store-credential-json",
+    "note": "a gcp-adc instance whose credential is an authorized_user JSON kept in credentials.toml",
+    "method": "evener/auth/status",
+    "response": {
+      "provider": "vertexish",
+      "supported": true,
+      "signedIn": true,
+      "activeSource": "store",
+      "authModes": [
+        "adc",
+        "credentialJson"
+      ],
+      "hasStoredOAuth": false,
+      "hasStoredFile": true
     }
   },
   {
@@ -398,7 +416,8 @@
         "implicit": false,
         "isDefault": false,
         "authModes": [
-          "adc"
+          "adc",
+          "credentialJson"
         ],
         "activeSource": "adc",
         "hasStoredOAuth": false,

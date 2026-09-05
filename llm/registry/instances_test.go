@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -339,5 +340,197 @@ func TestCredential_ValueNeverSerializes(t *testing.T) {
 func TestEnvVarName(t *testing.T) {
 	if envVarName("kimi-for-coding") != "KIMI_FOR_CODING" || envVarName("zai-coding-plan") != "ZAI_CODING_PLAN" || envVarName("work") != "WORK" {
 		t.Fatal("envVarName wrong")
+	}
+}
+
+const vertexUserInstanceToml = `
+[providers.vertex]
+base = "google-vertex"
+[providers.vertex.vars]
+"GOOGLE_VERTEX_PROJECT" = "my-project"
+"GOOGLE_VERTEX_LOCATION" = "global"
+`
+
+// noADCEnv is an environment where adcAvailable is false: an empty HOME and
+// no GOOGLE_APPLICATION_CREDENTIALS.
+func noADCEnv(t *testing.T) map[string]string {
+	t.Helper()
+	return map[string]string{"HOME": t.TempDir()}
+}
+
+func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
+	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "store" || len(inst.Warnings) != 0 {
+		t.Fatalf("instance = %+v ok=%v; want source store with no warnings", inst, ok)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "store" || res.Credential.Value != stored {
+		t.Fatalf("credential = %+v", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCStoreSourceNeverReportsShadowedEnvVar(t *testing.T) {
+	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
+	env := noADCEnv(t)
+	env["VERTEX_API_KEY"] = "placeholder"
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.ShadowedEnvVar != "" {
+		t.Fatalf("instance = %+v ok=%v; want no shadowed env var (gcp-adc never consults api_key_env)", inst, ok)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ShadowedEnvVar != "" {
+		t.Fatalf("resolved.ShadowedEnvVar = %q, want empty", res.ShadowedEnvVar)
+	}
+}
+
+func TestCredential_GCPADCWithoutStoreOrFileIsNoneAndNamesTheRemedies(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"gcloud auth application-default login", "GOOGLE_APPLICATION_CREDENTIALS", "credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
+// writeFakeADCFile writes an ADC file under env's HOME so adcAvailable(env)
+// reports true, the same technique golden_test.go's goldenRegistry uses.
+func writeFakeADCFile(t *testing.T, env map[string]string) {
+	t.Helper()
+	adc := filepath.Join(env["HOME"], ".config", "gcloud", "application_default_credentials.json")
+	if err := os.MkdirAll(filepath.Dir(adc), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adc, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (the stale store value must not shadow it)", inst, ok)
+	}
+	if joined := strings.Join(inst.Warnings, "; "); !strings.Contains(joined, "not a credential JSON") {
+		t.Fatalf("warnings = %q, want it to name the ignored store value", joined)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithoutADC(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v; want source none", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not a credential JSON", "gcloud auth application-default login"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
+// TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC covers a stored
+// value that IS valid JSON but not a type the gcp-adc scheme can mint a
+// token from (external_account, say): it must not shadow a working ADC
+// file, so it falls through to adc with a warning naming both problems
+// (roborev round 3, F1).
+func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (the unsupported store value must not shadow it)", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not supported", "not a credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
+// TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC covers a stored value
+// whose type is allowed but which carries no key material: Google's parser
+// accepts it and fails only at the first request, so the gate refuses it here
+// and a working ADC file still wins (roborev round 6, F1).
+func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"service_account"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (a store value with no key material must not shadow it)", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"missing client_email, private_key", "not a credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v; want source none", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not supported", "not a credential JSON", "gcloud auth application-default login"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
+func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
+	env := noADCEnv(t)
+	env["GOOGLE_VERTEX_PROJECT"], env["GOOGLE_VERTEX_LOCATION"] = "my-project", "global"
+	without := fixtureLoad(t, env, "")
+	if slices.Contains(instanceNames(without), "google-vertex") {
+		t.Fatal("google-vertex exists with neither an ADC file nor a store entry")
+	}
+	with := fixtureLoad(t, env, "", WithCredentials(fakeCreds{"google-vertex": `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`}))
+	if !slices.Contains(instanceNames(with), "google-vertex") {
+		t.Fatalf("a store entry did not make google-vertex exist: %v", instanceNames(with))
 	}
 }
