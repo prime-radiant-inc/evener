@@ -350,13 +350,19 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 	}
 }
 
-// The enter's swap installs the new environment, and the environment it
-// leaves is recorded as parked (worktreeRestoreEnv) only afterwards. A close
-// landing in between cleans the new environment and sees nothing parked, so a
-// child sharing the old environment that minted a scratch there after the
-// move leaves a lease nothing releases. The parked environment has to be
-// published under the same lock hold that installs the new one.
-func TestWorktreeSwap_CloseBetweenInstallAndRecordRetainsTheOldEnvironmentScratch(t *testing.T) {
+// The swap installs the new environment and runs the caller's record — which
+// publishes the environment the enter parks (worktreeRestoreEnv) — in ONE
+// s.mu hold, so no observer can see one without the other. By the time the
+// swap returns both are recorded, and a close from there on finds the parked
+// environment and retains the scratch a child sharing that object minted on
+// it after the move; without that, the lease is one nothing releases.
+//
+// The close below runs concurrently, from inside the enter's tail: the
+// earliest point outside the swap at which a close can land. That is NOT the
+// interval between the install and the record — since the record joined the
+// install's lock hold there is no such interval, and a seam between them
+// would have to release the very lock that closes it.
+func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *testing.T) {
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -373,14 +379,26 @@ func TestWorktreeSwap_CloseBetweenInstallAndRecordRetainsTheOldEnvironmentScratc
 	closeDone := make(chan struct{})
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
 	r.s.cfg.testOnly.enterWorktreeAfterSwap = func() {
-		// What a child sharing the old environment does after the move: its
+		// Both halves of the swap's locked section are already visible: the
+		// lane clone is installed AND the launch environment is parked.
+		r.s.mu.Lock()
+		installed, _ := r.s.env.(*execenv.LocalExecutionEnvironment)
+		parked := r.s.worktreeRestoreEnv
+		r.s.mu.Unlock()
+		if installed == launch {
+			t.Errorf("the swap returned with the launch environment %p still installed", launch)
+		}
+		if parked != launch {
+			t.Errorf("parked environment = %p, want the launch environment %p recorded with the install", parked, launch)
+		}
+		// What a child sharing the parked object does after the move: its
 		// command mints a scratch on the object the enter just emptied.
 		if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
-			t.Errorf("child command on the old environment: %v", err)
+			t.Errorf("child command on the parked environment: %v", err)
 		}
 		second = launch.SessionScratchDir()
-		// The close runs to completion here: this is the interval between the
-		// install and the record, and close must find the parked environment.
+		// The close runs to completion here, concurrently with the enter's
+		// tail, and has to find the parked environment.
 		go func() {
 			defer close(closeDone)
 			r.s.Close()
@@ -395,11 +413,11 @@ func TestWorktreeSwap_CloseBetweenInstallAndRecordRetainsTheOldEnvironmentScratc
 		t.Fatalf("create: %v", err)
 	}
 	if second == "" || second == first {
-		t.Fatalf("old environment scratch after the move = %q, want a fresh one beside %q", second, first)
+		t.Fatalf("parked environment scratch after the move = %q, want a fresh one beside %q", second, first)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(second) })
 
-	for name, dir := range map[string]string{"session": first, "old environment": second} {
+	for name, dir := range map[string]string{"session": first, "parked environment": second} {
 		if _, statErr := os.Stat(dir); statErr != nil {
 			t.Errorf("the %s scratch %s was removed, want it retained for the handoff: %v", name, dir, statErr)
 		}

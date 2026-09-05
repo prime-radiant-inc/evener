@@ -504,9 +504,11 @@ type testConfig struct {
 	swapEnvAfterAdopt func(refreshCtx context.Context)
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
-	// the environment swap returned, so a test can begin a close there and
-	// prove the parked restore environment was published with the install.
-	// Nil in production.
+	// the environment swap returned — the earliest point outside the swap a
+	// close can land — so a test can run one there against a session whose
+	// installed and parked environments are both already recorded. It is NOT
+	// a seam between the install and the record: those share one s.mu hold,
+	// and a seam between them would have to release it. Nil in production.
 	enterWorktreeAfterSwap func()
 
 	// metaFS, when non-nil, replaces the real OS filesystem for every
