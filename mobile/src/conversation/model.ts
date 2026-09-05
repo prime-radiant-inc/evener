@@ -131,6 +131,7 @@ export interface MobileCapabilities {
   forkFromTurn: boolean;
   shutdown: boolean;
   changeModel: boolean;
+  changeVisionModel: boolean;
   queue: boolean;
   goal: boolean;
   rename: boolean;

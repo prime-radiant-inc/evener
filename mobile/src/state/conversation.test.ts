@@ -105,6 +105,7 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
