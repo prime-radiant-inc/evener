@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationMutationState } from "../../mobile/src/state/conversation";
 import {
-  captureUnconfirmedSend,
+  captureUnconfirmedInput,
   restoreUnconfirmedDraft,
 } from "./draftRecovery";
 
@@ -16,15 +16,27 @@ const pending: ConversationMutationState = {
 };
 
 describe("draft recovery after connection loss", () => {
+  it.each(["steer", "queue"] as const)(
+    "retains an uncertain %s without resending it",
+    (kind) => {
+      expect(captureUnconfirmedInput({ ...pending, kind })).toBe(submitted);
+      expect(
+        captureUnconfirmedInput({ ...pending, kind, status: "failed" }),
+      ).toBeNull();
+    },
+  );
+
   it("preserves submitted text separately from an empty composer", () => {
-    expect(captureUnconfirmedSend(pending)).toBe(submitted);
+    expect(captureUnconfirmedInput(pending)).toBe(submitted);
   });
 
   it("does not recover a completed, failed, or interrupt mutation as an unconfirmed send", () => {
-    expect(captureUnconfirmedSend(null)).toBeNull();
-    expect(captureUnconfirmedSend({ ...pending, status: "failed" })).toBeNull();
+    expect(captureUnconfirmedInput(null)).toBeNull();
     expect(
-      captureUnconfirmedSend({
+      captureUnconfirmedInput({ ...pending, status: "failed" }),
+    ).toBeNull();
+    expect(
+      captureUnconfirmedInput({
         ...pending,
         kind: "interrupt",
         draftSnapshot: null,
