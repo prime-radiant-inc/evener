@@ -409,6 +409,15 @@ function setSupportFromConnection(): void {
   // discard a flap-back refresh carrying a LOWER revision (a restored
   // backup, a reset state file), stranding the rollback state indefinitely.
   // The raw set stays retained either way - it is what re-drives the retry.
+  // loaded drops too (finding 36, now fully aligned with the rewire path):
+  // the retained payload is retained-but-UNCONFIRMED - that is exactly what
+  // loaded means. Keeping it true would let a changed-notification landing
+  // between the flap-back and its refresh pass onNotification's loaded gate
+  // and apply against the pre-flap state, after which the authoritative
+  // refresh (revision possibly lower, or equal-but-different) is discarded
+  // by the stale guard - the notification's version stays unverified. With
+  // loaded false the notification takes the finding-25 dirty-flag path and
+  // the flap-back refresh is the confirmation point that flips loaded back.
   const dropHubState =
     support === "unsupported" &&
     !unrestored &&
@@ -433,7 +442,7 @@ function setSupportFromConnection(): void {
       hubError: unrestored || unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
       conflict: null,
       ...(dropHubState ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [] } : {}),
-      ...(unrestored ? { revision: 0 } : {}),
+      ...(unrestored ? { loaded: false, revision: 0 } : {}),
     });
 }
 

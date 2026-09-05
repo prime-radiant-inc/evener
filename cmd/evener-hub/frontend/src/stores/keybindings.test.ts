@@ -1032,7 +1032,11 @@ describe("keybindings store: support loss", () => {
     // behavior: the hub payload is RETAINED (it re-drives reconciliation
     // once the wedge clears) and the error says so, retryably.
     const retained = keybindingsStore.getState();
-    expect(retained.loaded).toBe(true);
+    // loaded drops even on the rollback (finding 36): the retained payload
+    // is retained-but-UNCONFIRMED, so a changed-notification landing
+    // between a flap-back and its refresh must take the finding-25
+    // dirty-flag path instead of applying against the pre-flap state.
+    expect(retained.loaded).toBe(false);
     // revision RESETS to 0 even on the rollback (finding 34): revision
     // numbering is hub-scoped, and a retained old-hub revision would let
     // the stale guard discard a flap-back refresh carrying a LOWER
@@ -1130,6 +1134,102 @@ describe("keybindings store: support loss", () => {
       ACTIONS.paletteOpen,
       `${ACTIONS.paletteOpen}#mod-twin`,
     ]);
+  });
+
+  test("a notification landing between flap-back and its refresh is dropped to the dirty-flag path, and the refresh converges to the hub's truth (finding 36)", async () => {
+    let payload = overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    let pending: Promise<KeybindingsOverrides> | undefined;
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => pending ?? payload);
+    await wireClient(client, true);
+
+    // Wedge + support drop: the un-apply rolls back, retaining the payload
+    // UNCONFIRMED (loaded false) with revision reset.
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    expect(keybindingsStore.getState().hubError).toContain("still in effect");
+    expect(keybindingsStore.getState().loaded).toBe(false);
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+
+    // Support returns; the flap-back refresh hangs in flight.
+    let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
+    pending = new Promise<KeybindingsOverrides>((resolve) => {
+      resolveGet = resolve;
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+
+    // The hub changes the override to Control+Y (revision 4); the
+    // notification arrives BEFORE the refresh lands. With loaded false it
+    // must NOT apply against the pre-flap state - it marks the generation
+    // dirty instead.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(4, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]),
+    });
+    expect(keybindingsStore.getState().revision).toBe(0);
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // The in-flight get's response PREDATES the change (revision 3): it
+    // confirms the state (loaded flips true) and the dirty flag fires ONE
+    // follow-up fetch, which lands the hub's truth (revision 4).
+    payload = overridesPayload(4, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
+    const getCalls = () => client.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+    resolveGet?.(overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+    pending = undefined;
+    await waitFor(() => expect(keybindingsStore.getState().revision).toBe(4));
+    // wireClient's connect refresh + its explicit refreshOverrides, the
+    // flap-back refresh, and the dirty-flag follow-up. Without the finding-36
+    // gate the notification applies and no follow-up fires (3 calls).
+    expect(getCalls()).toBe(4);
+    expect(keybindingsStore.getState().loaded).toBe(true);
+    expect(keybindingsStore.getState().hubError).toBeNull();
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => serializeChord(b.chord))).toEqual(["Control+Y"]);
+  });
+
+  test("a notification landing AFTER the confirmed flap-back refresh applies normally (regression)", async () => {
+    let payload = overridesPayload(5, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => payload);
+    await wireClient(client, true);
+
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    expect(keybindingsStore.getState().loaded).toBe(false);
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+
+    // Flap back; the refresh confirms revision 6, flipping loaded back.
+    payload = overridesPayload(6, []);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+    expect(keybindingsStore.getState().hubError).toBeNull();
+
+    // A notification on the CONFIRMED state applies directly.
+    client.emitNotification({
+      method: "evener/settings/keybindings/changed",
+      params: overridesPayload(7, [{ action: ACTIONS.paletteOpen, chord: "Control+M" }]),
+    });
+    await waitFor(() => expect(keybindingsStore.getState().revision).toBe(7));
+    expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+M" }]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => serializeChord(b.chord))).toEqual(["Control+M"]);
   });
 
   test("a transient disconnect of a SUPPORTED hub keeps the overrides applied", async () => {
