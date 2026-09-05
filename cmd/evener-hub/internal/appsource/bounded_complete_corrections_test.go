@@ -146,22 +146,41 @@ func TestInverseNativeFixtureControls(t *testing.T) {
 
 func TestBoundedToCompleteAuthenticatesNativeHistory(t *testing.T) {
 	for _, caller := range []string{"conversion", "materialized"} {
-		for _, change := range []string{"append", "retired_native", "hidden_disagreement", "span_rewrite"} {
+		for _, change := range []string{"append", "large_append", "retired_native", "hidden_disagreement", "hidden_insertion", "hidden_deletion", "span_rewrite"} {
 			t.Run(caller+"/"+change, func(t *testing.T) {
-				all := correctionItems(5)
+				count, start, end := 5, 2, 4
+				appendOnly := change == "append" || change == "large_append"
+				if change == "large_append" {
+					count, start, end = 85, 42, 82
+				}
+				all := correctionItems(count)
+				if change == "hidden_insertion" {
+					for i := range all {
+						all[i].Position.Item *= 2
+					}
+				}
 				source, _ := newLocalDaemonItemTransitionSource(t, nil)
 				fixture := inverseNativeFixture{items: all, identity: appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "v1", ProjectionVersion: 1}}
 				source.dial = fixture.dial
 				params := appwire.ThreadReadParams{Ref: "local:thread", ItemLimit: 40}
-				first, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[2:4], inverseCursor(t, fixture.identity, *all[2].Position)))
+				first, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[start:end], inverseCursor(t, fixture.identity, *all[start].Position)))
 				if err != nil {
 					t.Fatal(err)
 				}
-				outward := inverseCursor(t, first.Identity, *all[2].Position)
+				outward := inverseCursor(t, first.Identity, *all[start].Position)
 				current := append([]appwire.ThreadItem(nil), all...)
-				if change != "append" {
+				if !appendOnly {
 					current = current[:4]
 					current[0].TranscriptKey = "rewritten"
+				}
+				if change == "hidden_insertion" {
+					inserted := correctionItems(1)[0]
+					inserted.ID, inserted.TranscriptKey = "inserted", "key-inserted"
+					inserted.Position.Item = 1
+					current = append([]appwire.ThreadItem{all[0], inserted}, all[1:4]...)
+				}
+				if change == "hidden_deletion" {
+					current = all[1:4]
 				}
 				if change == "retired_native" {
 					fixture.identity.Incarnation = "v2"
@@ -181,9 +200,12 @@ func TestBoundedToCompleteAuthenticatesNativeHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if change == "append" {
+				if appendOnly {
 					if next.Identity != first.Identity {
 						t.Error("append-only complete materialization rotated outward identity")
+					}
+					if change == "large_append" && len(fixture.requests) < 3 {
+						t.Error("large inverse proof did not traverse all native pages")
 					}
 					if len(fixture.requests) == 0 {
 						t.Error("complete transition skipped native proof")
@@ -238,7 +260,7 @@ func TestSecondDisjointThenCompleteAppendPreservesIdentity(t *testing.T) {
 
 func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 	for _, caller := range []string{"conversion", "materialized"} {
-		for _, failure := range []string{"cancellation", "transport"} {
+		for _, failure := range []string{"cancellation", "transport", "protocol"} {
 			t.Run(caller+"/"+failure, func(t *testing.T) {
 				all := correctionItems(4)
 				source, _ := newLocalDaemonItemTransitionSource(t, nil)
@@ -256,6 +278,16 @@ func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 					fixture.cancel = cancel
 				} else {
 					fixture.failure = appwire.WireError{Code: appwire.CodeUnavailable, Message: "native proof unavailable"}
+					if failure == "protocol" {
+						fixture.failure = appwire.InvalidParams("native proof invalid")
+					}
+				}
+				var proofError error
+				if failure != "cancellation" {
+					_, proofError = source.ListTurns(t.Context(), appwire.ThreadTurnsListParams{Ref: "local:thread", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 2, Cursor: inverseCursor(t, fixture.identity, *all[2].Position)})
+					if proofError == nil {
+						t.Fatal("native error control succeeded")
+					}
 				}
 				var err error
 				if caller == "conversion" {
@@ -265,6 +297,12 @@ func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 				}
 				if err == nil {
 					t.Error("failed native proof succeeded")
+				}
+				if failure != "cancellation" {
+					var got, want appwire.WireError
+					if !errors.As(err, &got) || !errors.As(proofError, &want) || got.Code != want.Code || got.Message != want.Message {
+						t.Errorf("native proof error changed: %v, want %v", err, proofError)
+					}
 				}
 				if failure == "cancellation" && !errors.Is(err, context.Canceled) {
 					t.Errorf("want cancellation, got %v", err)
