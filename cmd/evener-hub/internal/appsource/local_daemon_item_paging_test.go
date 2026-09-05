@@ -83,6 +83,8 @@ func TestLocalItemPagingPreservesCursorAcrossUnchangedBoundedToCompleteRead(t *t
 	source := newLocalItemReadConversionSource(t, "bounded-to-complete")
 	params := appwire.ThreadReadParams{Ref: "local:bounded-to-complete", PageUnit: appwire.TranscriptPageUnitItem, ItemLimit: 1}
 	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: params.Ref, Incarnation: "native-bounded-to-complete", ProjectionVersion: 1}
+	fixture := inverseNativeFixture{items: positionedItemReadResponse(1, 2, "").Thread.Turns[0].Items, identity: nativeIdentity}
+	source.dial = fixture.dial
 	nativeCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 2})
 	if err != nil {
 		t.Fatalf("encode native cursor: %v", err)
