@@ -118,7 +118,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 
 	if laneDirPresent {
 		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			laneMain := execenv.ResolveMainRepoRoot(local.WithWorkingDirectory(lanePath), lanePath)
+			laneMain := resolveLaneMainRoot(local, lanePath)
 			if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
 				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
 			}
