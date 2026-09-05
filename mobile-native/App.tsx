@@ -8,11 +8,12 @@ import { StatusBar } from "expo-status-bar";
 import { useColorScheme } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ConnectionProvider } from "./src/ConnectionProvider";
+import { NewSessionScreen } from "./src/NewSessionScreen";
 import {
   ConversationScreen,
   HubsScreen,
-  SessionsScreen,
   type Routes,
+  SessionsScreen,
 } from "./src/screens";
 
 const Stack = createNativeStackNavigator<Routes>();
@@ -31,6 +32,11 @@ export default function App() {
               options={{ title: "Evener · Hubs" }}
             />
             <Stack.Screen name="Sessions" component={SessionsScreen} />
+            <Stack.Screen
+              name="NewSession"
+              component={NewSessionScreen}
+              options={{ title: "New session" }}
+            />
             <Stack.Screen
               name="Conversation"
               component={ConversationScreen}
