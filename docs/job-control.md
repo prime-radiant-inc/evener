@@ -50,8 +50,9 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
 - Use `delegate` to start a new delegate conversation: `prompt` is the brief
-  (the only input the delegate receives) and `task_list` seeds its task list,
-  one item per step. It returns `dlg_...`,
+  and `task_list` seeds its task list, one item per step. Sessions start clean
+  by default; use `fork_context=true` only when the assignment requires the
+  parent's full context and history. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
 - Use `delegate_send` for follow-up: a running delegate is steered; an idle,
   resumable delegate starts its next private run through the same call.
