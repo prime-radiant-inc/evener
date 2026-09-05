@@ -269,6 +269,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
 		}
 	}
+	inheritedContext := cfg.spawn.inheritedContext
+	cfg.spawn.inheritedContext = nil
 	s := &Session{
 		id:                            sessionID,
 		cfg:                           cfg,
@@ -296,6 +298,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		artifactStore:                 store,
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
+	}
+	if inheritedContext != nil {
+		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
+		s.history = ResumeHistory(inheritedContext)
+		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
+		s.history = append(s.history, boundary)
+		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
 	}
 	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
@@ -433,10 +442,20 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
-			// A fresh session starts from an empty transcript, so the running
-			// failure count starts at a MEASURED zero rather than at "unknown"
-			// (FailedToolCallsSnapshot).
-			tw.TrackFailures(nil, 0)
+			// Only this session's own turns count as failures; a forked
+			// delegate's inherited prefix belongs to its parent.
+			tw.TrackFailures(nil, s.fork.divergence)
+		}
+	}
+	if inheritedContext != nil {
+		if tw == nil {
+			return nil, errors.New("fork delegate context requires a writable child transcript")
+		}
+		for _, entry := range inheritedContext {
+			if err := tw.Append(entry.Turn); err != nil {
+				_ = tw.Close()
+				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
+			}
 		}
 	}
 	s.attachTranscript(tw)
@@ -676,6 +695,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.artifactStore = restoreCfg.artifactStore
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
+	}
+	if meta.IsSubagent && meta.DivergenceTurn > 0 && cfg.spawn.subagentTask == "" {
+		// A direct resume has no live parent carrier. The assignment in meta
+		// belongs to this delegate; the first inherited input belongs to its parent.
+		cfg.spawn.subagentTask = meta.OriginalPrompt
 	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)

@@ -177,11 +177,11 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "The brief: the delegate's only top-level input (task_list adds the ordered step prompts). None of your conversation, the user's message, or what you have learned reaches it. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). For a unit with more than one step, put the steps in task_list rather than here.",
+					"description": "The delegate's assignment (task_list adds ordered step prompts). By default the delegate starts a clean session with no parent conversation. State the user's request for this unit (quote it), the facts it needs that you already know (environment, tools present or missing, paths, formats), exactly which files or paths it owns and must not touch, the acceptance check (the exact command(s) and the expected result), and the evidence to report back (paths, diffs, the check's output). With fork_context=true, inherited history supplies background but this prompt must still define the assignment, ownership, acceptance check, and report. For a unit with more than one step, put the steps in task_list rather than here.",
 				},
 				"task_list": map[string]any{
 					"type":        "array",
-					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must stand alone: the delegate sees no other context.",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
@@ -199,6 +199,10 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "Absent (default): the delegate gets an allowance one below yours and may delegate in turn. 0: a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type carries the `delegate` tool (the built-in `default` and `subagent` roles do; `explorer` does not)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
+				"fork_context": map[string]any{
+					"type": "boolean", "default": false,
+					"description": "Copy the parent's full conversation history into this delegate. Use only when the assignment requires that full context and history. Defaults to false. When selected facts, decisions, or excerpts are sufficient, include them in the prompt and start a clean session. The snapshot excludes the unfinished tool round; the child keeps its own role and permissions. Requires the parent's model and provider.",
+				},
 				"isolation": map[string]any{
 					"type":        "string",
 					"enum":        []string{"worktree"},

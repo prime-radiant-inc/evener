@@ -16,6 +16,7 @@
 import { createRoot } from "react-dom/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
+import railStyles from "../shell/rail/Rail.module.css";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -241,11 +242,8 @@ function leakingElements(viewportBottom: number): { selector: string; top: numbe
 function measureShell() {
   const de = document.documentElement;
   const shell = root.firstElementChild;
-  // The rail's scroll container: the footer owns data-testid="rail-settings";
-  // its parent is the rail root, and the rail's .body is the one child whose
-  // overflow-y is not visible.
-  const settings = document.querySelector("[data-testid='rail-settings']");
-  const rail = settings?.parentElement?.parentElement ?? null;
+  // Select the rail directly, independently of header control placement.
+  const rail = document.querySelector(`.${railStyles.rail}`);
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
   // The rail's full ancestor chain up to <body>, with the computed properties
@@ -355,22 +353,17 @@ function scrollMetrics(el: Element | null) {
   };
 }
 
-// The mobile Sheet panel hosting the rail, located from the rail's one
-// stable anchor (the settings button's testid). Shared by both mobile
+// The mobile Sheet panel hosting the rail. Shared by both mobile
 // measurements so the ancestor walk lives in exactly one place.
 function mobileRailPanel(): Element | null {
-  const settings = document.querySelector("[data-testid='rail-settings']");
-  const footer = settings?.parentElement ?? null;
-  const rail = footer?.parentElement ?? null;
+  const rail = document.querySelector(`.${railStyles.rail}`);
   const panelBody = rail?.parentElement ?? null;
   return panelBody?.parentElement ?? null;
 }
 
 function measureMobileSidebar() {
-  const settings = document.querySelector("[data-testid='rail-settings']");
-  const footer = settings?.parentElement ?? null;
-  const rail = footer?.parentElement ?? null;
-  const railBody = footer?.previousElementSibling ?? null;
+  const rail = document.querySelector(`.${railStyles.rail}`);
+  const railBody = rail?.querySelector(`.${railStyles.body}`) ?? null;
   const panelBody = rail?.parentElement ?? null;
   const panel = mobileRailPanel();
   const panelText = panel?.textContent ?? "";

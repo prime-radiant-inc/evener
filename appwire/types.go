@@ -2258,6 +2258,8 @@ type WarningParams struct {
 // "user" for human-sent steering (rendered as a user message) and omitted
 // entirely for daemon-originated steering (issue #24).
 type EvenerSteeringInjectedParams struct {
+	// StartedAt is the server event timestamp in epoch milliseconds.
+	StartedAt        *int64      `json:"startedAt,omitempty"`
 	ThreadID         string      `json:"threadId"`
 	Ref              string      `json:"ref"`
 	Text             string      `json:"text,omitempty"`

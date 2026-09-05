@@ -1162,6 +1162,12 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if err != nil {
 		return delegateStartFailed(err)
 	}
+	if args.ForkContext {
+		parent := s.currentProfile()
+		if selection.profile.ID() != parent.ID() || selection.profile.Model() != parent.Model() {
+			return delegateStartFailed(errors.New("invalid_request: fork_context requires the parent's model and provider; use a clean session with a self-contained prompt for a different model"))
+		}
+	}
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
@@ -1526,7 +1532,15 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	if started.descriptor.ParentWatchGranted {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection)
+	var inheritedContext []transcript.Entry
+	if args.ForkContext {
+		var err error
+		inheritedContext, err = s.snapshotDelegateContext()
+		if err != nil {
+			return nil, err
+		}
+	}
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
 	if err != nil {
 		return nil, err
 	}

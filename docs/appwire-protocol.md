@@ -543,6 +543,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `startedAt` | `*int64` | yes |  |
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `text` | `string` | yes |  |

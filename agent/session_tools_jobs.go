@@ -472,6 +472,13 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Isolation:       stringArg(args, "isolation"),
 		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
+	if raw, exists := args["fork_context"]; exists {
+		var ok bool
+		a.ForkContext, ok = raw.(bool)
+		if !ok {
+			return delegateArgs{}, errors.New("invalid_request: fork_context must be a JSON boolean")
+		}
+	}
 	// The sandbox field now encodes both mode and an optional network override
 	// in a single enum value. Values like "read-only+nonet" split into mode=
 	// "read-only" and sandbox_net=false. "nonet" alone means inherit the
@@ -523,8 +530,8 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 }
 
 // delegateTaskListArg decodes the delegate tool's task_list items into task
-// templates. Every item needs a title and a prompt; the delegate sees nothing
-// but these strings, so an empty prompt is an error rather than a blank task.
+// templates. Every item needs a title and a prompt that defines its own step,
+// so an empty prompt is an error rather than a blank task.
 func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 	raw, ok := args["task_list"]
 	if !ok || raw == nil {
