@@ -32,6 +32,9 @@
 // scroller, anywhere) rather than leaving it floating over content it no
 // longer points at.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ACTIONS } from "../../../keybindings/actions";
+import { keybindingsRegistry } from "../../../keybindings/registry";
+import { installKeybindings } from "../../../shell/installKeybindings";
 import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { clampToBounds, messageContentElement } from "./selectionQuoteLogic";
@@ -71,19 +74,58 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  // Read by the Mod+' handler inside the effect below without making
-  // `actions` an effect dependency - every caller (Session.tsx included)
-  // passes a fresh array literal each render, and re-subscribing the whole
-  // listener set on every render for that reason alone would be wasteful
-  // (same idiom as Composer.tsx's own textRef, kept live without being a
-  // dependency).
+  // Read by the selection.quote action below without making `actions` an
+  // effect dependency - every caller (Session.tsx included) passes a fresh
+  // array literal each render, and re-registering the action on every render
+  // for that reason alone would be wasteful (same idiom as Composer.tsx's
+  // own textRef, kept live without being a dependency).
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
-  // Mirrors `selection` state, read (never written) by the Mod+' handler -
-  // see that handler's own comment for why it reads this ref instead of
-  // the setSelection updater's own current-value argument.
+  // Mirrors `selection` state, read (never written) by the selection.quote
+  // action - see that registration's own comment for why it reads this ref
+  // instead of the setSelection updater's own current-value argument.
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+
+  // Mod+' invokes the bar's first (and today, only) action directly against
+  // the currently captured selection - the same code path a click on the
+  // bar's own button takes (actions[0].onInvoke below), just reachable
+  // without a pointer. A no-op with nothing captured. The chord is the
+  // keybindings dispatcher's; its binding (keybindings/defaults.ts's
+  // selection.quote) carries this listener's old policy: strict modifiers
+  // (AltGr, reported as ctrlKey+altKey, does not misfire the chord - see
+  // MDN's own note on AltGr), no editable-target or modal guard (the old
+  // listener had neither), and still yields to a keydown another handler
+  // already claimed (defaultPrevented - see OverlayPanel.tsx's own Escape
+  // precedent).
+  //
+  // BLOCKER fix (preserved): onInvoke must NOT run inside a setSelection
+  // updater. A setState updater must be a pure function - React calls it
+  // twice under StrictMode (see shell/rail/Rail.tsx:323-325's own comment on
+  // this exact rule) - so a real double-invoke there ran onInvoke (and so
+  // requestQuoteInsert) twice per keypress, silently double-inserting the
+  // quote. Reading the current selection from selectionRef (written every
+  // render, never inside a state updater) and invoking OUTSIDE setSelection
+  // keeps the updater the pure `() => null` it always should have been.
+  useEffect(() => {
+    installKeybindings();
+    // One SelectionQuote mounts per session pane (Session.tsx), so several
+    // instances register selection.quote at once. The registry invokes an
+    // action's handlers in registration order until one ACCEPTS; returning
+    // false when THIS instance holds no captured selection passes the chord
+    // to the instance that does - exactly the old per-instance document
+    // listeners' semantics (every instance saw the keydown; only the one
+    // holding the selection acted). The disposer removes only this
+    // instance's registration, so unmounting one pane never deadens ⌘' for
+    // the rest.
+    return keybindingsRegistry.getState().registerAction(ACTIONS.selectionQuote, () => {
+      const current = selectionRef.current;
+      if (!current) return false;
+      actionsRef.current[0]?.onInvoke(current.text);
+      setSelection(null);
+      return true;
+    });
+  }, []);
 
   const evaluate = useCallback(() => {
     const container = containerRef.current;
@@ -121,36 +163,6 @@ export function SelectionQuote({ containerRef, actions }: SelectionQuoteProps) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setSelection(null);
-        return;
-      }
-      // Mod+' invokes the bar's first (and today, only) action directly
-      // against the currently captured selection - the same code path a
-      // click on the bar's own button takes (actions[0].onInvoke below),
-      // just reachable without a pointer. A no-op with nothing captured.
-      //
-      // !event.altKey: AltGr (used to type "'" directly on some non-US
-      // keyboard layouts) is reported as ctrlKey+altKey by browsers - see
-      // MDN's own note on AltGr - so without this guard, typing a literal
-      // "'" via AltGr on those layouts would misfire this chord.
-      // !event.defaultPrevented: some other handler (e.g. an ancestor
-      // overlay) already claimed this keydown - see OverlayPanel.tsx's own
-      // Escape precedent for the same idea.
-      //
-      // BLOCKER fix: onInvoke used to run INSIDE the setSelection updater
-      // function. A setState updater must be a pure function - React calls
-      // it twice under StrictMode (see shell/rail/Rail.tsx:323-325's own
-      // comment on this exact rule) - so a real double-invoke there ran
-      // onInvoke (and so requestQuoteInsert) twice per keypress, silently
-      // double-inserting the quote. Reading the current selection from
-      // selectionRef (written every render, never inside a state updater)
-      // and invoking OUTSIDE setSelection fixes that: the updater itself is
-      // now the pure `() => null` it always should have been.
-      if (event.key === "'" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.defaultPrevented) {
-        const current = selectionRef.current;
-        if (current) {
-          actionsRef.current[0]?.onInvoke(current.text);
-          setSelection(null);
-        }
       }
     };
     const handleScroll = () => setSelection(null);
