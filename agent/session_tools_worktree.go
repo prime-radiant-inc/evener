@@ -242,6 +242,13 @@ type worktreeGuard struct {
 	// exitWorktree()), or an error when the swap was refused because the
 	// session is closing.
 	exitWorktree func() (restoredRoot string, ok bool, err error)
+	// beginOp admits a whole manage_worktree call on the session's close fence,
+	// labelled for a fence warning. ok is false when the session is already
+	// closing, in which case the operation runs unfenced — there is nothing left
+	// to fence it against. A true return MUST be paired with endOp.
+	beginOp func(label string) (envWorkID, bool)
+	// endOp releases an admission obtained from beginOp.
+	endOp func(envWorkID)
 	// liveWorkUnder reports live child/delegate/shell work rooted at or under
 	// path (spec §7 liveWorkUnder()); remove/prune use it.
 	liveWorkUnder func(path string) []string
@@ -314,6 +321,21 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	_ = s.reg.Register(t)
 }
 
+// worktreeOpLabel names a manage_worktree call for a close-fence warning: the
+// operation, and the target it acts on when the arguments carry one. The
+// argument names are the schema's own (name for create/switch/remove, path for
+// switch-by-path and adopt, id for dispose), so an unrecognized shape degrades
+// to the bare operation rather than guessing.
+func worktreeOpLabel(operation string, args map[string]any) string {
+	label := "manage_worktree " + operation
+	for _, key := range []string{"name", "path", "id"} {
+		if target, ok := args[key].(string); ok && strings.TrimSpace(target) != "" {
+			return label + " " + strings.TrimSpace(target)
+		}
+	}
+	return label
+}
+
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
 // directly on the registry, mirroring registerGoalTools/registerTaskTools:
 // registry-only, not part of any provider profile's own tool definitions.
@@ -338,6 +360,24 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// created; see rootOnlyWorktreeTools).
 			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
 				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+			}
+			// Admit the WHOLE operation on the close fence, here, at the one
+			// entry every operation passes through (worktreeGuard is wired only
+			// from newToolDeps, and the sole direct call to an op function —
+			// remove's cascade into dispose — is itself inside a dispatched
+			// operation). Every arm runs git on the session's execution
+			// environment and most of them move lanes and locks around, so a
+			// close must wait for the operation rather than reap the process
+			// table under its git or unlock a lane it is still moving. Only some
+			// operations swap the environment, so the swap's own admission
+			// covers only those, and it does not begin until after an op's core
+			// has already run; this one spans the call. The swap and rollback
+			// admissions nest inside it and carry the finer labels a fence
+			// warning wants once the operation is past its core.
+			if deps.worktreeGuard.beginOp != nil {
+				if admission, ok := deps.worktreeGuard.beginOp(worktreeOpLabel(operation, args)); ok {
+					defer deps.worktreeGuard.endOp(admission)
+				}
 			}
 			switch operation {
 			case "create":

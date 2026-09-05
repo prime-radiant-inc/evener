@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -1011,4 +1013,68 @@ func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 	if got := sr.laneLockReason(t, launchPath); got != foreignReason {
 		t.Errorf("launch worktree lock = %q, want untouched %q", got, foreignReason)
 	}
+}
+
+// remove has no environment swap, so nothing about it was ever admitted on the
+// close fence: it read the registry, unlocked crash residue, removed a
+// worktree, and deleted a branch and a sidecar, all on git forked into the
+// process table a concurrent close reaps. The fence has to cover the whole
+// operation, not just the swap some operations happen to perform.
+func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	// Creating b leaves a — unlocked and removable — and puts the session in b,
+	// so the close's own close-time unlock targets b and never touches a.
+	if _, err := r.create(t, map[string]any{"name": "b"}); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+
+	cleanupObserved := make(chan struct{})
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	var cleanupDuringOp, holding atomic.Bool
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+
+	// Begin the close from inside the operation, at remove's first git command.
+	// Installed after the setup creates, and the close cannot have run one
+	// earlier because this hook is what starts it, so the first registry read to
+	// arrive is remove's own.
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" &&
+				holding.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					r.s.Close()
+				}()
+				<-closeBegun
+				select {
+				case <-cleanupObserved:
+					cleanupDuringOp.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	_, removeErr := r.removeOp(t, map[string]any{"name": "a"})
+
+	// Checked before the join: a hook that never fired means no close was ever
+	// started, and waiting on closeDone would hang instead of reporting that.
+	if !holding.Load() {
+		t.Fatal("remove never read the worktree registry; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringOp.Load() {
+		t.Error("the close cleaned the session's environment while the remove it interrupted was still running")
+	}
+	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
 }

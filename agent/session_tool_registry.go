@@ -260,6 +260,8 @@ func newToolDeps(s *Session) *toolDeps {
 			state:         s.worktreeStateSnapshot,
 			enterWorktree: s.enterWorktree,
 			exitWorktree:  s.exitWorktree,
+			beginOp:       s.beginEnvWork,
+			endOp:         s.endEnvWork,
 			liveWorkUnder: s.liveWorkUnder,
 			create:        s.worktreeCreate,
 			switchByName:  s.worktreeSwitchByName,
