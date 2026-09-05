@@ -18,3 +18,7 @@ Research checked 5 September 2026. Product pages show published intent and marke
 The strongest direction for Evener combines content-first reading, compact work-oriented navigation and selective action emphasis. This is our inference across the sources. It must be tested against Evener’s real activity streams and both operating systems. “Current state of the art” here means recently verified relevant examples and published guidance, not an exhaustive ranking of every mobile application.
 
 The lookbook embeds official remote imagery with credits and source links. Images can change or become unavailable. It includes a local prototype screenshot separately labeled as a rejected baseline; reference imagery is not an Evener mockup.
+
+## Agent products and community feedback
+
+See [Codex/ChatGPT and Claude Code mobile research](agent-mobile-research.md) for official capability references, credited UI screenshots, dated Reddit discussions, a concrete iOS draft/keyboard report, and the limits of indexed X evidence. These sources extend the initial product sample and do not establish survey prevalence.
