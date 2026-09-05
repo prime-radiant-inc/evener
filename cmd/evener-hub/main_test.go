@@ -139,7 +139,7 @@ func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(context.Context, hubHTTPServer, hubShutdowner) error { return nil },
+		serve: func(context.Context, hubHTTPServer) error { return nil },
 	}
 	return root, cfg, deps
 }
@@ -172,7 +172,7 @@ func TestRunMainAppWireTraceCapturesRPCConnection(t *testing.T) {
 	var rpcServer *httptest.Server
 	serveErr := errors.New("serve failed")
 	deps.afterWeb = func(created *WebServer) { web = created }
-	deps.serve = func(context.Context, hubHTTPServer, hubShutdowner) error {
+	deps.serve = func(context.Context, hubHTTPServer) error {
 		if web == nil {
 			t.Fatal("serve reached before WebServer construction")
 		}
@@ -373,7 +373,7 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
+		serve: func(context.Context, hubHTTPServer) error {
 			served = true
 			return nil
 		},
@@ -459,7 +459,7 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
+		serve: func(context.Context, hubHTTPServer) error {
 			served = true
 			return nil
 		},

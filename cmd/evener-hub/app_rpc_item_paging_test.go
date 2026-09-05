@@ -27,7 +27,7 @@ import (
 )
 
 func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
-	const ref = "codex:item-list-parity"
+	const ref = "remote:item-list-parity"
 	identity := appitempaging.CursorIdentity{
 		ThreadRef:         ref,
 		Incarnation:       "item-list-parity",
@@ -87,7 +87,7 @@ func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 				cancel()
 			}
 
-			native := &itemPackingRPCSource{
+			native := &remoteItemPackingRPCSource{itemPackingRPCSource: itemPackingRPCSource{
 				read:                 read,
 				readCandidates:       nativeResult,
 				rejectLegacyItemList: true,
@@ -97,7 +97,7 @@ func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 					}
 					return nativeResult, nil
 				},
-			}
+			}}
 			legacy := &legacyItemListRPCSource{
 				read: read,
 				list: list,
@@ -126,6 +126,10 @@ func TestHubRPCItemListNativeSuccessLegacyIdentityError(t *testing.T) {
 		})
 	}
 }
+
+type remoteItemPackingRPCSource struct{ itemPackingRPCSource }
+
+func (*remoteItemPackingRPCSource) ID() string { return "remote" }
 
 func dispatchHubItemList(ctx context.Context, t *testing.T, source appsource.Source, ref string) (appwire.ThreadTurnsListResponse, error) {
 	t.Helper()
@@ -163,7 +167,7 @@ func (s *legacyItemListRPCSource) ID() string {
 	if s.id != "" {
 		return s.id
 	}
-	return "codex"
+	return "remote"
 }
 
 func (s *legacyItemListRPCSource) ReadThread(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -188,19 +192,12 @@ func (s *legacyItemListRPCSource) ListTurns(ctx context.Context, _ appwire.Threa
 // rather than a response fixture: the hub must select pages, regroup turn
 // fragments, and mint the opaque continuation itself.
 func TestAppRPCAtomicItemPagingEndToEnd(t *testing.T) {
-	for _, sourceKind := range []string{"live-daemon", "ended-local", "codex"} {
+	for _, sourceKind := range []string{"live-daemon", "ended-local"} {
 		t.Run(sourceKind, func(t *testing.T) {
 			ref := pagingSourceID(sourceKind) + ":paging-thread"
 			fixture := newRPCAtomicPagingFixture(t, sourceKind, ref)
-			switch sourceKind {
-			case "codex":
-				if _, ok := fixture.Source.(*appsource.CodexSource); !ok {
-					t.Fatalf("source = %T, want production CodexSource", fixture.Source)
-				}
-			default:
-				if _, ok := fixture.Source.(*appsource.LocalDaemonSource); !ok {
-					t.Fatalf("source = %T, want production LocalDaemonSource", fixture.Source)
-				}
+			if _, ok := fixture.Source.(*appsource.LocalDaemonSource); !ok {
+				t.Fatalf("source = %T, want production LocalDaemonSource", fixture.Source)
 			}
 			sources := appsource.NewRegistry()
 			sources.Add(fixture)
@@ -226,15 +223,8 @@ func TestAppRPCAtomicItemPagingEndToEnd(t *testing.T) {
 				t.Fatalf("initial cursor = %q, want opaque non-decimal cursor", read.OlderCursor)
 			}
 			initialCalls := pagingPathCounts(fixture.sourcePathCalls())
-			if sourceKind == "codex" && initialCalls["codex.read"] != 1 {
-				t.Fatalf("initial codex read calls = %d, want 1; native sequence=%v", initialCalls["codex.read"], fixture.sourcePathCalls())
-			}
-			wantLists := 0
-			if sourceKind == "codex" {
-				wantLists = 1
-			}
-			if got := initialCalls[sourceKind+".list"]; got != wantLists {
-				t.Fatalf("initial %s materialization list calls = %d, want %d; native sequence=%v", sourceKind, got, wantLists, fixture.sourcePathCalls())
+			if got := initialCalls[sourceKind+".list"]; got != 0 {
+				t.Fatalf("initial %s materialization list calls = %d, want 0; native sequence=%v", sourceKind, got, fixture.sourcePathCalls())
 			}
 			assertPublicItemPage(t, read.Thread.Turns)
 			assertItemPageFitsSoftLimit(t, read)
@@ -306,7 +296,7 @@ func TestAppRPCAtomicItemPagingEndToEnd(t *testing.T) {
 			}
 			call := itemByID(all, "item_tool_call")
 			result := itemByID(all, "item_tool_result_tool")
-			if call.ArgumentsJSON == "" || strings.Trim(result.Output, `"`) != "paging complete" || (sourceKind != "codex" && call.CallID != result.CallID) || (sourceKind == "codex" && (call.CallID == "" || result.CallID == "")) {
+			if call.ArgumentsJSON == "" || strings.Trim(result.Output, `"`) != "paging complete" || call.CallID != result.CallID {
 				t.Fatalf("split tool call/result = call=%+v result=%+v (args=%q output=%q callID=%q resultCallID=%q source=%q), want complete shared call", call, result, call.ArgumentsJSON, result.Output, call.CallID, result.CallID, sourceKind)
 			}
 			if !containsTurnItem(read.Thread.Turns, "turn_shared", "item-44") ||
@@ -1022,8 +1012,6 @@ func newRPCAtomicPagingFixture(t *testing.T, sourceKind, ref string) *rpcAtomicP
 		source, candidateSource, replace = newRealLocalPagingSource(t, sourceKind, ref, candidates, appwire.ThreadStatusActive, &paths)
 	case "ended-local":
 		source, candidateSource, replace = newRealLocalPagingSource(t, sourceKind, ref, candidates, appwire.ThreadStatusClosed, &paths)
-	case "codex":
-		source, candidateSource, replace = newRealCodexPagingSource(t, candidates, &paths)
 	default:
 		t.Fatalf("unknown source kind %q", sourceKind)
 	}
@@ -1056,10 +1044,7 @@ func (s *rpcAtomicPagingFixture) ItemCandidatesFromRead(ctx context.Context, par
 	return responseSource.ItemCandidatesFromRead(ctx, params, response)
 }
 
-func pagingSourceID(sourceKind string) string {
-	if sourceKind == "codex" {
-		return "codex"
-	}
+func pagingSourceID(string) string {
 	return "local"
 }
 
@@ -1097,55 +1082,12 @@ func newRealLocalPagingSource(
 	return source, source, func() { entry.InstanceID = "instance-2" }
 }
 
-func newRealCodexPagingSource(
-	t *testing.T,
-	candidates []appitempaging.TranscriptItemCandidate,
-	paths *[]string,
-) (*appsource.CodexSource, appsource.ItemCandidateSource, func()) {
-	t.Helper()
-	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex", SourceID: "codex", AdapterNativeInitialize: true})
-	nativeItems := codexPagingItems(candidates)
-	nativeTurn := map[string]any{"id": "turn_shared", "status": "completed", "items": nativeItems}
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		*paths = append(*paths, "codex.read")
-		return map[string]any{"thread": map[string]any{"id": "paging-thread", "sessionId": "paging-thread", "source": "codex", "status": map[string]any{"type": "completed"}}}, nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadResume, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		return map[string]any{"thread": map[string]any{"id": "paging-thread", "sessionId": "paging-thread", "source": "codex", "status": map[string]any{"type": "completed"}}}, nil
-	})
-	nativeCalls := 0
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		nativeCalls++
-		*paths = append(*paths, "codex.list")
-		return map[string]any{"data": []map[string]any{nativeTurn}}, nil
-	})
-	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	t.Cleanup(httpServer.Close)
-	source := appsource.NewCodexSource(appsource.CodexSourceConfig{ID: "codex", Endpoint: "ws" + httpServer.URL[len("http"):]}, httpServer.Client())
-	return source, source, func() { nativeTurn["id"] = "turn_changed" }
-}
-
 func wirePagingTurn(candidates []appitempaging.TranscriptItemCandidate) appwire.Turn {
 	items := make([]appwire.ThreadItem, len(candidates))
 	for i, candidate := range candidates {
 		items[i] = candidate.Item
 	}
 	return appwire.Turn{ID: "turn_shared", Status: appwire.TurnStatusCompleted, ItemsView: appwire.TurnItemsViewFull, Items: items}
-}
-
-func codexPagingItems(candidates []appitempaging.TranscriptItemCandidate) []map[string]any {
-	items := make([]map[string]any, len(candidates))
-	for i, candidate := range candidates {
-		item := map[string]any{"type": "agentMessage", "id": candidate.Item.ID, "text": candidate.Item.Text, "status": "completed"}
-		if i == 4 {
-			item = map[string]any{"type": "commandExecution", "id": candidate.Item.ID, "command": "printf paging", "status": "completed"}
-		}
-		if i == 5 {
-			item = map[string]any{"type": "mcpToolCall", "id": candidate.Item.ID, "tool": "shell", "toolCallId": "tool", "result": "paging complete", "status": "completed"}
-		}
-		items[i] = item
-	}
-	return items
 }
 
 func (s *rpcAtomicPagingFixture) sourcePathCalls() []string {

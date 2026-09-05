@@ -64,7 +64,6 @@ var (
 	EVENERHubAuthToken                = Var{Name: "EVENER_HUB_AUTH_TOKEN", Summary: "Hub capability token for evener-tui.", Secret: true, Visibility: Public}
 	EVENERHubBin                      = Var{Name: "EVENER_HUB_BIN", Summary: "Path to the evener binary (for the hub subcommand) used by evener tui autostart.", Visibility: Public}
 	EVENERHubSpawned                  = Var{Name: "EVENER_HUB_SPAWNED", Summary: "Set by evener-hub for spawned evener serve daemons.", Visibility: Internal}
-	EVENERHubSpawnedCodex             = Var{Name: "EVENER_HUB_SPAWNED_CODEX", Summary: "Set by evener-hub for spawned Codex app-server processes.", Visibility: Internal}
 	EVENERHubToken                    = Var{Name: "EVENER_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}
 	EVENERLoginHeadless               = Var{Name: "EVENER_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
@@ -203,7 +202,6 @@ var allVars = []Var{
 	EVENERHubAuthToken,
 	EVENERHubBin,
 	EVENERHubSpawned,
-	EVENERHubSpawnedCodex,
 	EVENERHubToken,
 	EVENERLoginHeadless,
 	EVENERModel,

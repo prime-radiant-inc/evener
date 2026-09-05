@@ -11,7 +11,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -68,21 +67,15 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 		registry := appsource.NewRegistry()
 		registry.Add(remote)
 
-		launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed"}})
-		launcher.Sources["managed"] = remote
 		cfg := hubcore.WebConfig{
 			HubStateRoot: root, RunDir: filepath.Join(root, "run"),
 			PluginRoot:          filepath.Join(root, "plugins"),
 			ProvidersConfigPath: filepath.Join(root, "providers.toml"),
-			CodexLauncher:       launcher,
 		}
 
 		switch seed % 3 {
 		case 0:
-			configured := newHubSourceRegistry(hubcore.WebConfig{
-				RunDir:       cfg.RunDir,
-				CodexSources: []appsource.CodexSourceConfig{{ID: "codex", Endpoint: "http://127.0.0.1:1"}},
-			})
+			configured := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
 			if local, ok := configured.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}
@@ -90,11 +83,8 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			_, _ = sourceForThread(appsource.NewRegistry(), "", "")
 			_, _ = sourceForThread(registry, "remote:thread", "")
 			_, _ = sourceForThread(registry, "bad ref", "")
-			_, _ = sourceForThreadWithManagedLaunch(context.Background(), cfg, registry, "managed:thread", "thread")
-			_, _ = managedLaunchSourceIDForRef(cfg, "managed:thread")
-			_, _ = managedLaunchSourceIDForRef(cfg, "local:thread")
-			_, _ = managedLaunchSourceIDForRef(cfg, "bad ref")
-			_ = hubKnowsRef(cfg, "managed:thread")
+			_, _ = sourceForThreadWithDeletionFence(cfg, registry, "remote:thread", "thread")
+			_ = hubKnowsRef(cfg, "remote:thread")
 			_ = relayOnThreadRead(&noReadRelaySource{remote})
 
 		case 1:

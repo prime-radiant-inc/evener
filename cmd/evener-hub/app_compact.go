@@ -47,7 +47,7 @@ func compactThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources
 
 func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
 	_, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (struct{}, error) {
-		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err
 		}
@@ -61,7 +61,7 @@ func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 
 func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.ThreadClearResponse, error) {
-		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return appwire.ThreadClearResponse{}, err
 		}

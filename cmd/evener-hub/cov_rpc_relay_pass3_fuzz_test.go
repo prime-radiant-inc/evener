@@ -88,7 +88,6 @@ func FuzzRPCRelayPass3(f *testing.F) {
 		_ = relayOnThreadRead(source)
 		_, _ = sourceForThread(registry, "remote:thread", "")
 		_, _ = sourceForThread(registry, "", "")
-		_, _ = managedLaunchSourceIDForRef(hubcore.WebConfig{}, "remote:thread")
 		_ = hubKnowsRef(hubcore.WebConfig{}, "remote:thread")
 		_ = isSessionUnavailableError(nil)
 		_ = isSessionUnavailableError(errors.New("plain"))

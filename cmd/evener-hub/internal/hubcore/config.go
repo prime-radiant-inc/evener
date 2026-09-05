@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
@@ -58,9 +56,6 @@ type WebConfig struct {
 	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
 	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
 	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
-	CodexSources              []appsource.CodexSourceConfig
-	CodexLaunches             []codexlaunch.CodexLaunchConfig
-	CodexLauncher             *codexlaunch.CodexLauncher
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured

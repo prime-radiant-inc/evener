@@ -61,7 +61,7 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(_ context.Context, srv hubHTTPServer, _ hubShutdowner) error {
+		serve: func(_ context.Context, srv hubHTTPServer) error {
 			cancel()
 			return nil
 		},
@@ -117,7 +117,7 @@ func TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren(t *testing.T) 
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: func(context.Context, hubHTTPServer, hubShutdowner) error { return nil },
+		serve: func(context.Context, hubHTTPServer) error { return nil },
 		afterWeb: func(web *WebServer) {
 			webConfig = web.cfg
 		},

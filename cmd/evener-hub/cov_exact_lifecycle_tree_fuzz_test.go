@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
@@ -38,36 +37,20 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		reg := appsource.NewRegistry()
 		reg.Add(remote)
 
-		// Managed launch failures and nil managed sources exercise the defensive
-		// lifecycle outcomes without starting an external process.
-		bad := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed", Binary: "/does/not/exist"}})
-		_, _ = hubThreadStart(ctx, hubcore.WebConfig{CodexLauncher: bad}, reg, appwire.ThreadStartParams{Harness: "managed"})
-		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: bad}, reg, appwire.ThreadResumeParams{Ref: "managed:r"})
 		missing := appsource.NewRegistry()
-		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: bad}, missing, appwire.ThreadResumeParams{Ref: "remote:r"})
-		fallbackLaunch := codexlaunch.NewCodexLauncher(nil)
-		fallbackLaunch.Sources["remote"] = remote
-		fallbackLaunch.Running["remote"] = &codexlaunch.LaunchedCodex{Exited: make(chan struct{})}
-		_, _ = hubThreadStart(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, missing, appwire.ThreadStartParams{Harness: "remote"})
-		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, missing, appwire.ThreadResumeParams{Ref: "remote:r"})
+		_, _ = hubThreadResume(ctx, hubcore.WebConfig{}, missing, appwire.ThreadResumeParams{Ref: "remote:r"})
 		resumeSpawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{SessionID: "r"}, nil
 		}}
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{Spawner: resumeSpawner}, reg, appwire.ThreadResumeParams{Ref: "local:r"})
 
 		oldCanonicalize, oldResolve, oldParse := hubCanonicalizeDir, hubResolveLaunch, hubParseModelRef
-		oldRefresh, oldList, oldFork, oldEnsure := hubRosterRefresh, hubRosterList, hubForkSession, hubEnsureSource
+		oldRefresh, oldList, oldFork := hubRosterRefresh, hubRosterList, hubForkSession
 		t.Cleanup(func() {
 			hubCanonicalizeDir, hubResolveLaunch, hubParseModelRef = oldCanonicalize, oldResolve, oldParse
 			hubRosterRefresh, hubRosterList, hubForkSession = oldRefresh, oldList, oldFork
-			hubEnsureSource = oldEnsure
 		})
 		_ = oldList(hubcore.NewRosterWithEntries())
-		hubEnsureSource = func(context.Context, *codexlaunch.CodexLauncher, string, *appsource.Registry) (appsource.Source, error) {
-			return nil, nil
-		}
-		_, _ = hubThreadStart(ctx, hubcore.WebConfig{CodexLauncher: bad}, appsource.NewRegistry(), appwire.ThreadStartParams{Harness: "managed"})
-		hubEnsureSource = oldEnsure
 		spawner := &fakeRPCModelContractSpawner{fakeRPCSpawner: fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{PID: 44}, nil
 		}, resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -96,8 +79,6 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		}
 		_, _ = hubThreadStart(ctx, localCfg, reg, appwire.ThreadStartParams{})
 		_, _ = hubThreadResume(ctx, localCfg, reg, appwire.ThreadResumeParams{Session: "r"})
-		freshMissing := appsource.NewRegistry()
-		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, freshMissing, appwire.ThreadResumeParams{Ref: "remote:r"})
 		hubResolveLaunch = oldResolve
 
 		hubForkSession = func(string, string, int, string, string) (string, error) { return "child", nil }
