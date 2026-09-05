@@ -396,6 +396,48 @@ test("Escape cancels the capture without a hub write and leaves the chord unchan
   );
 });
 
+test("a second non-modifier key does NOT overwrite the captured chord; Enter saves the FIRST", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  expect(within(box).getByText("P")).toBeTruthy();
+  // The stray press before Enter: the recorded chord stands (cancel and
+  // re-capture to change it) - the box keeps showing P and W never appears.
+  fireEvent.keyDown(box, { key: "w" });
+  expect(within(box).getByText("P")).toBeTruthy();
+  expect(within(box).queryByText("W")).toBeNull();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.paletteOpen, chord: "Control+P" }] },
+  });
+});
+
+test("after capture, modifier presses do not replace the preview and Escape still cancels", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  expect(within(box).getByText("P")).toBeTruthy();
+  // The held-modifier echo still updates internally, but the recorded chord
+  // owns the preview.
+  fireEvent.keyDown(box, { key: "Shift" });
+  expect(within(box).getByText("P")).toBeTruthy();
+  fireEvent.keyUp(box, { key: "Shift" });
+  fireEvent.keyDown(box, { key: "Escape" });
+
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("K")).toBeTruthy();
+  expect(within(row).queryByText("Customized")).toBeNull();
+});
+
 // Plain Escape is cancel, permanently: it cannot be assigned through the
 // editor (the VS Code keybinding-editor convention), so the built-in Escape
 // bindings come back via Reset, never via capture. Escape WITH a modifier is
@@ -850,9 +892,15 @@ test("a conflicting chord is rejected pre-flight: inline message, no hub write, 
       .bindings.filter((b) => b.actionId === ACTIONS.composerFocus)
       .map((b) => b.id),
   ).toEqual([ACTIONS.composerFocus, `${ACTIONS.composerFocus}#mod-twin`]);
-  // A subsequent valid chord still saves from the same capture.
+  // The recorded (conflicting) chord stands while this capture lives
+  // (finding 30): the way to another chord is cancel and RE-CAPTURE, and
+  // the fresh capture then saves clean.
   fireEvent.keyDown(captureBox(), { key: "m", ctrlKey: true });
-  fireEvent.keyDown(captureBox(), { key: "Enter" });
+  expect(within(captureBox()).getByText("P")).toBeTruthy();
+  fireEvent.keyDown(captureBox(), { key: "Escape" });
+  const box2 = await enterCapture("Focus the composer");
+  fireEvent.keyDown(box2, { key: "m", ctrlKey: true });
+  fireEvent.keyDown(box2, { key: "Enter" });
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
 });
 

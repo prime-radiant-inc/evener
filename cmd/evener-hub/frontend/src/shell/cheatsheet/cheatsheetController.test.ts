@@ -183,4 +183,46 @@ describe("cheatsheet controller: character-key trigger reconcile", () => {
     expect(questionTriggerRegistered()).toBe(true);
     expect(characterKeyWarnings()).toEqual([]);
   });
+
+  // Finding 29: present no longer implies checked. A foreign binding that
+  // lands AFTER "?" registered (a direct registration bypasses the overrides
+  // store's validation, and registerBinding's exact-match gate allows bare
+  // "?" against "[Shift]+?") must not co-fire with the built-in: the next
+  // reconcile unregisters "?" and warns, the foreign binding wins - and its
+  // removal re-registers "?" and clears the warning (total both ways).
+  test("a foreign binding landing AFTER ? was registered unregisters it with the warning until it clears", () => {
+    disposers.push(installCharacterKeyTriggerReconcile());
+    expect(questionTriggerRegistered()).toBe(true);
+
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "?",
+    });
+    reconcileCharacterKeyTrigger();
+    expect(questionTriggerRegistered()).toBe(false);
+    const warnings = characterKeyWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.rule).toEqual({ action: ACTIONS.cheatsheetToggle, chord: "[Shift]+?" });
+    expect(warnings[0]?.conflictWith).toBe("foreign.action");
+
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    reconcileCharacterKeyTrigger();
+    expect(questionTriggerRegistered()).toBe(true);
+    expect(characterKeyWarnings()).toEqual([]);
+  });
+
+  test("present without overlap stays quiet across repeated reconciles (regression)", () => {
+    disposers.push(installCharacterKeyTriggerReconcile());
+    expect(questionTriggerRegistered()).toBe(true);
+
+    // The present-path re-check must not churn: no warning, and the entry
+    // stays registered no matter how often the reconcile runs.
+    reconcileCharacterKeyTrigger();
+    reconcileCharacterKeyTrigger();
+    reconcileCharacterKeyTrigger();
+    expect(questionTriggerRegistered()).toBe(true);
+    expect(characterKeyWarnings()).toEqual([]);
+    expect(keybindingsStore.getState().warnings).toEqual([]);
+  });
 });

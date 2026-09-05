@@ -85,10 +85,11 @@ function setCharacterKeyWarning(conflictWith: string | null): void {
 }
 
 /** Enforces "the ? binding is registered exactly while characterKeyTriggers
- * is on AND cheatsheet.toggle is on its default map". An applied override
- * (or unbind) owns the action's whole chord set, so "?" never comes back
- * there - the override is the user's own replacement for both triggers.
- * Idempotent and total: safe to run after any pref or override change. */
+ * is on AND cheatsheet.toggle is on its default map AND no foreign binding
+ * overlaps the chord". An applied override (or unbind) owns the action's
+ * whole chord set, so "?" never comes back there - the override is the
+ * user's own replacement for both triggers. Idempotent and total: safe to
+ * run after any pref or override change. */
 export function reconcileCharacterKeyTrigger(): void {
   const registry = keybindingsRegistry.getState();
   const present = registry.bindings.some((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
@@ -97,19 +98,8 @@ export function reconcileCharacterKeyTrigger(): void {
     setCharacterKeyWarning(null);
     return;
   }
-  if (present) {
-    setCharacterKeyWarning(null);
-    return;
-  }
   const input = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
   if (input === undefined) return;
-  const onDefaultMap =
-    registry.bindings.some((b) => b.id === ACTIONS.cheatsheetToggle) &&
-    !registry.bindings.some((b) => b.actionId === ACTIONS.cheatsheetToggle && b.id.endsWith("#override"));
-  if (!onDefaultMap) {
-    setCharacterKeyWarning(null);
-    return;
-  }
   // The entry registers with NO validation layer: a chord claimed while the
   // pref was off (the entry was not registered, so nothing conflicted at
   // bind time) must not end up shadowing or shadowed by the built-in. The
@@ -125,6 +115,29 @@ export function reconcileCharacterKeyTrigger(): void {
       binding.scope === scope &&
       chordsOverlap(binding.chord, sequence),
   );
+  if (present) {
+    // Present does NOT imply checked: a foreign binding registered AFTER
+    // "?" (registerBinding's exact-match gate allows bare "?" against
+    // "[Shift]+?", and a direct registration bypasses the overrides store's
+    // validation) would co-fire with the built-in forever. The foreign
+    // binding wins - same precedence as the not-present path - so the entry
+    // unregisters and the warning surfaces; the foreign binding's removal
+    // re-registers "?" on a later pass and clears the warning.
+    if (overlapping !== undefined) {
+      registry.unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+      setCharacterKeyWarning(overlapping.actionId);
+      return;
+    }
+    setCharacterKeyWarning(null);
+    return;
+  }
+  const onDefaultMap =
+    registry.bindings.some((b) => b.id === ACTIONS.cheatsheetToggle) &&
+    !registry.bindings.some((b) => b.actionId === ACTIONS.cheatsheetToggle && b.id.endsWith("#override"));
+  if (!onDefaultMap) {
+    setCharacterKeyWarning(null);
+    return;
+  }
   if (overlapping !== undefined) {
     // Do not register; surface the skip. The reconcile is total and
     // subscribed to the overrides store, so removing the overlapping

@@ -133,7 +133,10 @@ interface CaptureBoxProps {
  * Single-press chords only: the default map is single-press throughout and
  * multi-press overlap checking is deliberately coarser (chord.ts's
  * chordsOverlap), so the editor does not author sequences. Plain Enter saves
- * and plain Escape cancels; either key WITH a modifier records as a chord. */
+ * and plain Escape cancels; either key WITH a modifier records as a chord.
+ * The FIRST non-modifier press records the chord; later presses are ignored
+ * (a stray key before Enter must not silently replace what is saved) - to
+ * change the chord, cancel and re-capture. */
 function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   const [held, setHeld] = useState<string[]>([]);
   const [captured, setCaptured] = useState<Chord | null>(null);
@@ -205,6 +208,9 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
       });
       return;
     }
+    // The recorded chord stands: further non-modifier presses are consumed
+    // (preventDefault/stopPropagation above) but do NOT overwrite it.
+    if (captured !== null) return;
     setError(null);
     // ASCII letters normalize to uppercase: KeyboardEvent.key for a
     // mod chord arrives lowercase ("p" for Ctrl+P) while the default map
