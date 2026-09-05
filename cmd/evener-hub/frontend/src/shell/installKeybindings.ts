@@ -22,6 +22,7 @@
 import { registerDefaultBindings } from "../keybindings/defaults";
 import { createKeybindingDispatcher, isModalOpenTarget } from "../keybindings/dispatcher";
 import { keybindingsRegistry } from "../keybindings/registry";
+import { installCharacterKeyTriggerReconcile } from "./cheatsheet/cheatsheetController";
 import { paletteStore } from "./palette/paletteController";
 
 let installed = false;
@@ -30,6 +31,12 @@ export function installKeybindings(): void {
   if (installed) return;
   installed = true;
   registerDefaultBindings(keybindingsRegistry);
+  // The "?" character-key trigger's pref-conditional registration (the WCAG
+  // 2.1.4 turn-off). Installed here, not by the overlay component, so the
+  // invariant holds on mobile too - where the overlay never mounts and the
+  // binding is inert for lack of an action - keeping the settings section's
+  // customized-marker comparison truthful there as well.
+  installCharacterKeyTriggerReconcile();
   const dispatcher = createKeybindingDispatcher({
     isModalOpen: (event) => paletteStore.getState().open || isModalOpenTarget(event),
   });

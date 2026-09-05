@@ -1422,6 +1422,7 @@ function NavigationRail({
           </Tooltip>
           {onHide && (
             <IconButton
+              data-rail-toggle=""
               label="Hide sidebar"
               icon={<span aria-hidden="true">☰</span>}
               variant="quiet"

@@ -45,7 +45,9 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
   const statusType = useThreadsStore((s) => (ref === undefined ? undefined : s.threads.get(ref)?.status.type));
   const state = statusType === undefined ? undefined : cadenceStateForStatus(statusType);
   return (
-    <span className={styles.tab}>
+    // data-session-tab is the hold-hints overlay's anchor (shell/holdhints):
+    // the session-cycling chip positions itself over the first session tab.
+    <span className={styles.tab} data-session-tab={ref !== undefined ? "" : undefined}>
       <DockviewDefaultTab {...props} />
       {state !== undefined && DOT_STATES.has(state) && (
         <span className={styles.dot}>

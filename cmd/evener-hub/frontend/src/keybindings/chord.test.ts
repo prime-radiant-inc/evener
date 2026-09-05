@@ -112,10 +112,10 @@ describe("chordsOverlap", () => {
 
   test("an exact-required chord overlaps a chord that lists the rest as OPTIONAL", () => {
     // The dispatch-time shadowing the whole-branch review flagged: Control+K
-    // matches palette.open's Control+[Meta]+[Shift]+[Alt]+K default.
-    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+[Meta]+[Shift]+[Alt]+K"))).toBe(true);
+    // matches palette.open's Control+[Meta]+K default.
+    expect(chordsOverlap(parseChord("Control+K"), parseChord("Control+[Meta]+K"))).toBe(true);
     // Symmetrically, the fully-loaded press also overlaps the plain one.
-    expect(chordsOverlap(parseChord("Control+[Meta]+[Shift]+[Alt]+K"), parseChord("Control+K"))).toBe(true);
+    expect(chordsOverlap(parseChord("Control+[Meta]+K"), parseChord("Control+K"))).toBe(true);
   });
 
   test("an extra REQUIRED modifier escapes the overlap when the other side does not allow it", () => {

@@ -151,8 +151,8 @@ describe("restoreDefaultBinding", () => {
 
 describe("rebindAction overlap conflicts", () => {
   test("throws when the chord only overlaps another action's OPTIONAL modifiers, atomically", () => {
-    // Control+K matches palette.open's Control+[Meta]+[Shift]+[Alt]+K at
-    // dispatch time; the earlier-registered default would shadow the override.
+    // Control+K matches palette.open's Control+[Meta]+K at dispatch time;
+    // the earlier-registered default would shadow the override.
     const registry = withDefaults();
     const before = registry.getState().bindings;
     expect(() => rebindAction(registry, ACTIONS.composerFocus, "Control+K")).toThrow(/conflict/);
