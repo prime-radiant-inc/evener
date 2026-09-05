@@ -123,7 +123,7 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 // §4.4).
 func ValidateCredentialJSON(data []byte) error {
 	if !json.Valid(data) {
-		return fmt.Errorf("not valid JSON")
+		return errors.New("not valid JSON")
 	}
 	if err := credentialTypeError(data); err != nil {
 		return err
