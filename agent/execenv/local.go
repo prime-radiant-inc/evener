@@ -612,8 +612,8 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.scratchMu.Lock()
 	prior := e.ownedSessionTmp
 	e.ownedSessionTmp = nil
-	e.scratchMu.Unlock()
 	_ = prior.Retain()
+	e.scratchMu.Unlock()
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
 		e.Wrapper = nil
@@ -686,10 +686,12 @@ func (e *LocalExecutionEnvironment) RetainSandboxScratch() {
 	e.sbMu.Lock()
 	e.closeFileToolLayersLocked()
 	e.sbMu.Unlock()
+	// Releasing a lease mutates it, and two teardowns can retain the same env
+	// at once (a swap rolling back onto the parked restore environment while
+	// close retains it), so the release itself runs under scratchMu.
 	e.scratchMu.Lock()
-	tmp := e.ownedSessionTmp
-	e.scratchMu.Unlock()
-	_ = tmp.Retain()
+	defer e.scratchMu.Unlock()
+	_ = e.ownedSessionTmp.Retain()
 }
 
 // DisposeSandboxScratch releases the per-session/per-lane scratch dir and cached
@@ -705,10 +707,13 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	e.sbMu.Lock()
 	e.closeFileToolLayersLocked()
 	e.sbMu.Unlock()
+	// Under scratchMu for the same reason RetainSandboxScratch releases under
+	// it: a concurrent retain of the same env must not race the lease release
+	// inside Cleanup.
 	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
 	tmp := e.ownedSessionTmp
 	e.ownedSessionTmp = nil
-	e.scratchMu.Unlock()
 	_ = tmp.Cleanup()
 }
 

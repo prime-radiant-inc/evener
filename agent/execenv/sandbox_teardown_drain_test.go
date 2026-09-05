@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -33,4 +34,24 @@ func TestCleanupLeavesAHeldFileToolLayerOpenUntilItsOperationCompletes(t *testin
 	if !held.closed.Load() {
 		t.Errorf("the held layer was not closed once its operation completed")
 	}
+}
+
+// A worktree exit's swap rollback and the session's close can both retain the
+// same environment's scratch (the parked restore environment is the swap's
+// target). Releasing a lease mutates it, so the retain has to run under the
+// scratch lock, or the two releases race on the lease file.
+func TestRetainSessionScratchIsSafeToRunConcurrently(t *testing.T) {
+	env := readConfinedEnvAt(t, t.TempDir())
+	if env.SessionScratchDir() == "" {
+		t.Fatal("the env owns no scratch")
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			env.RetainSessionScratch()
+		}()
+	}
+	wg.Wait()
 }
