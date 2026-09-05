@@ -1,8 +1,6 @@
 package hub
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -91,9 +89,13 @@ type navigationServiceConfig struct {
 	Generation   func() (string, error)
 	Now          func() time.Time
 	NewTimer     func(time.Duration) navigationTimer
-	Cache        *navigationRepresentationCache
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
+	// historyEntries and historyBytes override the default delta-history
+	// retention. Production leaves both zero for the full default budget;
+	// tests set them to force eviction with small fixtures.
+	historyEntries int
+	historyBytes   int64
 }
 
 type navigationTimer interface {
@@ -141,12 +143,10 @@ type navigationRefreshTicket struct {
 
 type navigationServiceStats struct {
 	CoreBuilds uint64
-	Cache      navigationCacheStats
 }
 
 type NavigationServiceStats = navigationServiceStats
 type NavigationResourceKey = navigationResourceKey
-type NavigationRepresentation = navigationRepresentation
 
 // NavigationService owns the coherent, revisioned navigation generation for a
 // single hub. Its source capture and pure projection are separated so a changed
@@ -161,7 +161,6 @@ type NavigationService struct {
 	newTimer     func(time.Duration) navigationTimer
 	buildTimeout time.Duration
 	retryAfter   time.Duration
-	cache        *navigationRepresentationCache
 	history      *navigationHistory
 
 	core                *navigationCoreSnapshot
@@ -206,30 +205,20 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 			return realNavigationTimer{timer: time.NewTimer(delay)}
 		}
 	}
-	cache := cfg.Cache
-	if cache == nil {
-		// Cache and delta history share one service-global retention budget. The
-		// standalone cache constructor keeps its public defaults; service-owned
-		// retention reserves half for each store.
-		cache = newNavigationRepresentationCache(defaultNavigationCacheEntries/2, defaultNavigationCacheBytes/2)
-	}
-	cache.mu.Lock()
-	if cache.maxEntries > defaultNavigationCacheEntries {
-		cache.maxEntries = defaultNavigationCacheEntries
-	}
-	if cache.maxBytes > defaultNavigationCacheBytes {
-		cache.maxBytes = defaultNavigationCacheBytes
-	}
-	cache.mu.Unlock()
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	if cfg.BuildTimeout <= 0 {
 		cfg.BuildTimeout = defaultNavigationBuildTimeout
 	}
 	if cfg.RetryAfter <= 0 {
 		cfg.RetryAfter = defaultNavigationRetryAfter
 	}
-	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
-	historyEntries := max(0, defaultNavigationCacheEntries-cache.maxEntries)
-	historyBytes := max(0, defaultNavigationCacheBytes-cache.maxBytes)
+	historyEntries, historyBytes := defaultNavigationCacheEntries, defaultNavigationCacheBytes
+	if cfg.historyEntries > 0 {
+		historyEntries = cfg.historyEntries
+	}
+	if cfg.historyBytes > 0 {
+		historyBytes = cfg.historyBytes
+	}
 	return &NavigationService{
 		source:           cfg.Source,
 		generation:       id,
@@ -238,7 +227,6 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
 		retryAfter:       cfg.RetryAfter,
-		cache:            cache,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		resources:        make(map[navigationResourceKey]navigationResourceState),
 		wake:             make(chan struct{}, 1),
@@ -287,7 +275,7 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	if s.genErr != nil {
 		return nil
 	}
-	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{1, 2}}
+	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence, ReadVersions: []int{2}}
 }
 
 // EmptyMutation returns the current navigation generation with no invalidation
@@ -304,13 +292,12 @@ func (s *NavigationService) Stats() NavigationServiceStats {
 	s.mu.Lock()
 	stats := navigationServiceStats{CoreBuilds: s.coreBuilds}
 	s.mu.Unlock()
-	stats.Cache = s.cache.Stats()
 	return stats
 }
 
 // CurrentRevision is assertion-oriented. HTTP must pass a semantic, unversioned
-// key directly to Representation, which captures its version and projection in
-// one transaction; a VersionedKey then Representation sequence is racy.
+// key directly to readV2, which captures its version and projection in
+// one transaction; a VersionedKey then read sequence is racy.
 func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -319,10 +306,14 @@ func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 
 // VersionedKey atomically obtains the current semantic resource version. It is
 // paired internally with the immutable core projection selected by
-// Representation, so a new projection's bytes cannot enter an old cache key.
+// readV2, so a new projection's bytes cannot enter an old cache key.
 func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (NavigationResourceKey, error) {
 	_, versioned, _, err := s.versionedCore(ctx, key)
 	return versioned, err
+}
+
+type navigationReadResult struct {
+	Response appwire.NavigationReadResponse
 }
 
 func (s *NavigationService) versionedCore(ctx context.Context, key navigationResourceKey) (*navigationBuildFlight, navigationResourceKey, navigationProjection, error) {
@@ -354,44 +345,6 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 	// navigationProjection retains only deep-cloned input and derived maps. A
 	// value copy is enough to bind this request to the exact core selected above.
 	return flight, versioned, s.core.projection, nil
-}
-
-// Representation captures a versioned key and its immutable core projection in
-// one service transaction, then caches bytes only under that paired version.
-func (s *NavigationService) Representation(ctx context.Context, key navigationResourceKey) (NavigationRepresentation, error) {
-	_, versioned, projection, err := s.versionedCore(ctx, key)
-	if err != nil {
-		return navigationRepresentation{}, err
-	}
-	representation, err := s.cache.Get(ctx, versioned, func(context.Context) (navigationRepresentation, error) {
-		object, _, err := projection.Resource(versioned)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		encoded, err := json.Marshal(object)
-		if err != nil {
-			return navigationRepresentation{}, fmt.Errorf("encode navigation representation: %w", err)
-		}
-		compressed, err := gzipNavigation(encoded)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		return navigationRepresentation{
-			Object:     object,
-			JSON:       encoded,
-			Gzip:       compressed,
-			Generation: versioned.Generation,
-			Revision:   versioned.Revision,
-		}, nil
-	})
-	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-		return navigationRepresentation{}, navigationUnavailable(err)
-	}
-	return representation, err
-}
-
-type navigationReadResult struct {
-	Response appwire.NavigationReadResponse
 }
 
 // readV2 captures one authoritative projection and reconciles it against an
@@ -459,18 +412,6 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 	response.Data = snapshotData
 	_ = s.history.Remember(view, currentBase, &snapshot)
 	return navigationReadResult{Response: response}, nil
-}
-
-func gzipNavigation(input []byte) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := gzip.NewWriter(&buffer)
-	if _, err := writer.Write(input); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
 }
 
 // Refresh always requests a new source capture, but all concurrent callers join

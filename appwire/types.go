@@ -236,7 +236,6 @@ type NavigationReadParams struct {
 	Ref                   string              `json:"ref,omitempty"`
 	Offset                *uint32             `json:"offset,omitempty"`
 	Limit                 *uint32             `json:"limit,omitempty"`
-	ETag                  string              `json:"etag,omitempty"`
 	Base                  *NavigationReadBase `json:"base,omitempty"`
 }
 
@@ -270,11 +269,11 @@ func (params *NavigationReadParams) UnmarshalJSON(data []byte) error {
 			return errors.New("invalid navigation base")
 		}
 	}
-	if decoded.RepresentationVersion <= 1 && decoded.Base != nil {
-		return errors.New("base is valid only for representationVersion 2")
+	if decoded.RepresentationVersion != 2 {
+		return errors.New("representationVersion must be 2")
 	}
-	if decoded.RepresentationVersion == 2 && decoded.ETag != "" {
-		return errors.New("etag is valid only for representationVersion 1")
+	if _, present := fields["etag"]; present {
+		return errors.New("etag is not a v2 field")
 	}
 	*params = NavigationReadParams(decoded)
 	return nil

@@ -35,38 +35,14 @@ func navigationReadWithFields(ctx context.Context, server *appserver.Server, nav
 	if err := ctx.Err(); err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	if params.RepresentationVersion == 2 {
-		if params.ETag != "" {
-			return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
-		}
-		result, err := navigation.readV2(ctx, key, params.Base)
-		if err != nil {
-			return appwire.NavigationReadResponse{}, navigationReadError(server, err)
-		}
-		return result.Response, nil
-	}
-	if params.Base != nil {
+	if params.RepresentationVersion != 2 {
 		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
 	}
-	if params.RepresentationVersion != 0 && params.RepresentationVersion != 1 {
-		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
-	}
-	representation, err := navigation.Representation(ctx, key)
+	result, err := navigation.readV2(ctx, key, params.Base)
 	if err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	response := appwire.NavigationReadResponse{
-		Status:       "ok",
-		GenerationID: representation.Generation,
-		Revision:     representation.Revision,
-		ETag:         representation.ETag,
-	}
-	if params.ETag == representation.ETag {
-		response.Status = "not_modified"
-		return response, nil
-	}
-	response.Data = json.RawMessage(append([]byte(nil), representation.JSON...))
-	return response, nil
+	return result.Response, nil
 }
 
 func navigationReadKey(params appwire.NavigationReadParams) (navigationResourceKey, error) {

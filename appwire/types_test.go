@@ -218,16 +218,17 @@ func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	zero := uint32(0)
 	params := NavigationReadParams{
-		Resource:   "project_page",
-		Section:    "live",
-		SectionID:  "pin-a",
-		Catalog:    "projects",
-		ProjectKey: "project-a",
-		Tier:       "recent",
-		Ref:        "local:session-a",
-		Offset:     &zero,
-		Limit:      &zero,
-		ETag:       "etag-a",
+		Resource:              "project_page",
+		Section:               "live",
+		SectionID:             "pin-a",
+		Catalog:               "projects",
+		ProjectKey:            "project-a",
+		Tier:                  "recent",
+		Ref:                   "local:session-a",
+		Offset:                &zero,
+		Limit:                 &zero,
+		RepresentationVersion: 2,
+		Base:                  &NavigationReadBase{GenerationID: "generation-a", Revision: 7, ETag: "etag-a"},
 	}
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -238,16 +239,17 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 		t.Fatalf("unmarshal params fields: %v", err)
 	}
 	for name, want := range map[string]string{
-		"resource":   `"project_page"`,
-		"section":    `"live"`,
-		"sectionId":  `"pin-a"`,
-		"catalog":    `"projects"`,
-		"projectKey": `"project-a"`,
-		"tier":       `"recent"`,
-		"ref":        `"local:session-a"`,
-		"offset":     "0",
-		"limit":      "0",
-		"etag":       `"etag-a"`,
+		"resource":              `"project_page"`,
+		"section":               `"live"`,
+		"sectionId":             `"pin-a"`,
+		"catalog":               `"projects"`,
+		"projectKey":            `"project-a"`,
+		"tier":                  `"recent"`,
+		"ref":                   `"local:session-a"`,
+		"offset":                "0",
+		"limit":                 "0",
+		"representationVersion": "2",
+		"base":                  `{"generationId":"generation-a","revision":7,"etag":"etag-a"}`,
 	} {
 		if got := string(fields[name]); got != want {
 			t.Fatalf("field %q = %s, want %s in %s", name, got, want, raw)
@@ -311,6 +313,24 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	}
 	if got, want := string(notModified), `{"status":"not_modified","generationId":"generation-a","revision":7,"etag":"etag-a"}`; got != want {
 		t.Fatalf("not-modified response = %s, want %s", got, want)
+	}
+}
+
+func TestNavigationReadParamsRequiresRepresentationVersion2(t *testing.T) {
+	for _, raw := range []string{
+		`{"resource":"manifest"}`,
+		`{"resource":"manifest","representationVersion":1}`,
+		`{"resource":"manifest","representationVersion":2,"etag":"legacy"}`,
+		`{"resource":"manifest","etag":"legacy"}`,
+	} {
+		var params NavigationReadParams
+		if err := json.Unmarshal([]byte(raw), &params); err == nil {
+			t.Fatalf("Unmarshal(%s) = nil, want invalid-params error", raw)
+		}
+	}
+	var params NavigationReadParams
+	if err := json.Unmarshal([]byte(`{"resource":"manifest","representationVersion":2}`), &params); err != nil {
+		t.Fatalf("Unmarshal(v2) = %v, want nil", err)
 	}
 }
 
