@@ -62,6 +62,7 @@ export function DirectoryPicker({
   const initialPath = value || fallbackDir || "~";
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
+  const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
   const [validated, setValidated] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
@@ -84,6 +85,7 @@ export function DirectoryPicker({
     // without opening the phone keyboard when browsing by touch.
     if (document.activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
+    setPathEdited(false);
     setValidated(false);
     setEntries(null);
     setError(null);
@@ -139,7 +141,7 @@ export function DirectoryPicker({
     }
   }, [creating, busy]);
 
-  const ready = validated && typed === current && !busy;
+  const ready = validated && !pathEdited && typed === current && !busy;
   // Paths belong to the Linux/macOS hub, regardless of the browser OS.
   // Match the shared path helpers and supported hub builds in .goreleaser.yml.
   const segments = current.split("/").filter(Boolean);
@@ -280,6 +282,12 @@ export function DirectoryPicker({
               onChange={(event) => {
                 request.current++;
                 setTyped(event.target.value);
+                setPathEdited(true);
+                setEntries(null);
+                setValidated(false);
+                // Editing Path closes creation without moving focus away.
+                wasCreating.current = false;
+                setCreating(false);
                 setError(null);
               }}
             />
@@ -336,8 +344,16 @@ export function DirectoryPicker({
               {error}
             </p>
           )}
-          <section className={CLASS.folders} aria-label="Folders" aria-busy={entries === null && error === null}>
-            {entries === null ? (
+          <section
+            className={CLASS.folders}
+            aria-label="Folders"
+            aria-busy={!pathEdited && entries === null && error === null}
+          >
+            {pathEdited ? (
+              <p className={CLASS.status} role="status">
+                Press Go to browse this path.
+              </p>
+            ) : entries === null ? (
               !error && (
                 <p className={CLASS.status} role="status">
                   Loading directories…
