@@ -4712,29 +4712,77 @@ describe("useThreadsStore.listModels", () => {
     expect(after.data[0]?.model).toBe("model-2");
   });
 
-  test("a listing in flight when evener/auth/updated arrives does not repopulate the cache", async () => {
+  // deferredModelList scripts model/list to hang until the test resolves it,
+  // one resolver per request in arrival order, so a test can interleave the
+  // auth-updated notification with listings still in flight.
+  function deferredModelList(fake: FakeClient): Array<(resp: ModelListResponse) => void> {
+    const pending: Array<(resp: ModelListResponse) => void> = [];
+    fake.on(
+      "model/list",
+      () =>
+        new Promise<ModelListResponse>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    return pending;
+  }
+  const stale: ModelListResponse = { data: [{ provider: "google-vertex", model: "stale" }] };
+  const fresh: ModelListResponse = { data: [{ provider: "google-vertex", model: "fresh" }] };
+
+  test("a listing in flight when evener/auth/updated arrives still answers its caller but does not become the cache", async () => {
     const fake = connectFakeClient();
-    let call = 0;
-    let releaseFirst: (() => void) | undefined;
-    fake.on("model/list", () => {
-      call += 1;
-      if (call === 1) {
-        return new Promise<ModelListResponse>((resolve) => {
-          releaseFirst = () => resolve({ data: [{ provider: "google-vertex", model: "stale" }] });
-        });
-      }
-      return { data: [{ provider: "google-vertex", model: "fresh" }] };
-    });
+    const pending = deferredModelList(fake);
 
     const first = threadsStore.getState().listModels();
-    for (let i = 0; i < 50 && !releaseFirst; i++) await Promise.resolve();
-    if (!releaseFirst) throw new Error("the first model/list request never reached the fake client");
+    await flushUntil(() => pending.length === 1);
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
-    releaseFirst();
-    await first;
-    const after = await threadsStore.getState().listModels();
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
 
-    expect(after.data[0]?.model).toBe("fresh");
+    const after = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[1]?.(fresh);
+    expect((await after).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a caller arriving after evener/auth/updated does not de-dupe onto a pre-credential listing still in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    expect(pending).toHaveLength(2);
+
+    pending[0]?.(stale);
+    pending[1]?.(fresh);
+    expect((await first).data[0]?.model).toBe("stale");
+    expect((await second).data[0]?.model).toBe("fresh");
+  });
+
+  test("a pre-credential listing settling does not evict the newer in-flight listing from the dedupe slot", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[0]?.(stale);
+    await first;
+
+    // The third caller must share the second request, not start a third.
+    const third = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 3, 5);
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    expect((await second).data[0]?.model).toBe("fresh");
+    expect((await third).data[0]?.model).toBe("fresh");
     expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
   });
 

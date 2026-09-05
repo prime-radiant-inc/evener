@@ -817,8 +817,10 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // same way inflightHydrates does for ensureThread. A rejection is never
 // written to modelsCache (so a prior good cache survives a later failed
 // refresh, and a first-ever failure leaves nothing stale to keep serving),
-// and inflightModelsList is always cleared in a `finally` so a failed call
-// never poisons the next one with a repeated rejection.
+// and the call that owns inflightModelsList clears it in a `finally` so a
+// failed call never poisons the next one with a repeated rejection — only
+// while the slot still holds its own request, because evener/auth/updated
+// drops the slot and a newer call may have claimed it since.
 let modelsCache: ModelListResponse | null = null;
 // modelsEpoch advances on every evener/auth/updated: a credential change can
 // make models discoverable (a stored Vertex credential JSON enables the
