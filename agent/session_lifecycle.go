@@ -184,6 +184,19 @@ func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
 	return s.registerEnvWorkLocked(label), true
 }
 
+// relabelEnvWork renames a live admission. An operation's admission is taken
+// before the work it will eventually have to undo, so the label that is honest
+// during the operation is not the one that is honest once its rollback starts;
+// the rollback renames itself as it begins. A handle no longer live (the work
+// returned) renames nothing.
+func (s *Session) relabelEnvWork(id envWorkID, label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, live := s.envWork[id]; live {
+		s.envWork[id] = label
+	}
+}
+
 // endEnvWork releases an admission obtained from beginEnvWork().
 func (s *Session) endEnvWork(id envWorkID) {
 	s.mu.Lock()

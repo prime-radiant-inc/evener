@@ -457,6 +457,12 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 	if !strings.Contains(fence, lanePath) {
 		t.Errorf("fence warning %q does not name the swap still in flight (%s)", fence, lanePath)
 	}
+	// The create is held mid-enter: its admission covers the whole operation,
+	// but no rollback has started and one may never start. Naming it a rollback
+	// here would send a reader looking for cleanup that is not running.
+	if strings.Contains(fence, "rollback") {
+		t.Errorf("fence warning %q calls the create a rollback while its swap is still in flight and nothing has been rolled back", fence)
+	}
 }
 
 // collectWarningsUntilClosed drains every EventWarning off sess until its close

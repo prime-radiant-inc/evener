@@ -1216,14 +1216,22 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	// The rollback runs after the swap has already left the close fence, and its
 	// git forks on the process table a close reaps. Take an admission of its own
 	// so a close that refused the swap waits for the undo it caused instead of
-	// tearing the environment down mid-rollback.
-	rollbackAdmission, rollbackFenced := s.beginEnvWork("create rollback for " + res.Path)
+	// tearing the environment down mid-rollback. It has to be taken HERE, not
+	// where the rollback starts: between the swap releasing its own admission
+	// and this defer running there is a window a close fits through, and an
+	// admission asked for inside it would be refused. So the admission spans the
+	// whole operation and is named for it, and renames itself if a rollback does
+	// start — a create held mid-enter is not a rollback and must not read as one.
+	createAdmission, createFenced := s.beginEnvWork("create " + res.Path)
 	defer func() {
-		if rollbackFenced {
-			defer s.endEnvWork(rollbackAdmission)
+		if createFenced {
+			defer s.endEnvWork(createAdmission)
 		}
 		if entered {
 			return
+		}
+		if createFenced {
+			s.relabelEnvWork(createAdmission, "create rollback for "+res.Path)
 		}
 		run, done, err := s.worktreeCleanupRun(res.MainRoot)
 		if err != nil {
@@ -1643,15 +1651,20 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 		// has already cancelled the request context run is bound to. Like the
 		// create rollback, it runs after the swap has left the close fence and
 		// forks git on the process table a close reaps, so it takes an admission
-		// of its own; a lock left behind here strands the target under this
-		// session's marker, which prune skips.
-		unlockAdmission, unlockFenced := s.beginEnvWork("switch target unlock for " + target)
+		// of its own, spanning the whole switch for the same reason the create's
+		// does and renamed the same way when the unlock starts; a lock left
+		// behind here strands the target under this session's marker, which
+		// prune skips.
+		switchAdmission, switchFenced := s.beginEnvWork("switch to " + target)
 		defer func() {
-			if unlockFenced {
-				defer s.endEnvWork(unlockAdmission)
+			if switchFenced {
+				defer s.endEnvWork(switchAdmission)
 			}
 			if entered {
 				return
+			}
+			if switchFenced {
+				s.relabelEnvWork(switchAdmission, "switch target unlock for "+target)
 			}
 			unlock, done, err := s.worktreeCleanupRun(st.mainRepoRoot)
 			if err != nil {
