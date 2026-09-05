@@ -70,7 +70,9 @@ import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
+  subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
+  useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
@@ -156,6 +158,7 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoad
 export function Composer({ ref }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
+  const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
@@ -199,6 +202,8 @@ export function Composer({ ref }: ComposerProps) {
   const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const actionPending = busyAction !== null || submitting || mutationWriteStalled;
+  const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Whether a FINISHED session's collapsed follow-up field currently has focus,
   // which is what expands it from its one-line resting state. Only read on that
@@ -301,6 +306,22 @@ export function Composer({ ref }: ComposerProps) {
     textRef.current = nextText;
     setText(nextText);
   }, []);
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    // Re-read at subscription time so a commit between render and mount
+    // cannot leave an already-cleared sticky draft in a fresh composer.
+    updateText(readDraft(ref));
+    const unsubscribe = subscribeComposerSubmissionCommitted((targetRef, submittedText) => {
+      if (targetRef === ref && activeRecoveryIdRef.current === null && textRef.current === submittedText) {
+        updateText("");
+      }
+    });
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
+  }, [ref, updateText]);
 
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
@@ -781,6 +802,7 @@ export function Composer({ ref }: ComposerProps) {
   // unconditional clear that could silently discard an edit made while the
   // strip's own drain request was still in flight.
   function handleDrainSuccess(): void {
+    if (!mountedRef.current) return;
     const snapshot = lastDrainSnapshotRef.current;
     if (snapshot === null) return; // defensive only: onDrainSuccess never fires without a prior getComposerText() call
     if (textRef.current === snapshot.text) {
@@ -928,6 +950,7 @@ export function Composer({ ref }: ComposerProps) {
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload);
         },
       );
+      if (!mountedRef.current) return;
       if (submittedRecoveryId !== null && activeRecoveryIdRef.current === submittedRecoveryId) {
         recoveryOwnsLocalDraftRef.current = false;
         setActiveRecoveryId(null);
@@ -942,7 +965,7 @@ export function Composer({ ref }: ComposerProps) {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
     } finally {
-      setBusyAction(null);
+      if (mountedRef.current) setBusyAction(null);
     }
   }
 
@@ -979,7 +1002,7 @@ export function Composer({ ref }: ComposerProps) {
 
   function handleFormSubmit(event: FormEvent): void {
     event.preventDefault();
-    if (busyAction !== null) return;
+    if (actionPending) return;
     if (!hasContent) return; // empty composer: no-op, no request, no message
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -1014,7 +1037,7 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   function handleSteerClick(): void {
-    if (busyAction !== null) return;
+    if (actionPending) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
@@ -1036,7 +1059,7 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   async function handleInterruptClick(): Promise<void> {
-    if (busyAction !== null) return;
+    if (actionPending) return;
     setBusyAction("interrupt");
     try {
       await threadsStore.getState().interrupt(ref);
@@ -1189,8 +1212,10 @@ export function Composer({ ref }: ComposerProps) {
         activeRecoveryId={activeRecoveryId ?? undefined}
         onEditRecovery={activateRecovery}
         onDrainSuccess={handleDrainSuccess}
-        busy={busyAction !== null}
-        onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
+        busy={actionPending}
+        onDrainBusyChange={(draining) => {
+          if (mountedRef.current) setBusyAction(draining ? "drain" : null);
+        }}
       />
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
@@ -1320,7 +1345,7 @@ export function Composer({ ref }: ComposerProps) {
                             // busy + the interrupt capability are already what
                             // makes this render at all, so only an in-flight
                             // request of our own is left to gate on.
-                            disabled={busyAction !== null}
+                            disabled={actionPending}
                           >
                             Stop
                           </Button>
@@ -1346,7 +1371,7 @@ export function Composer({ ref }: ComposerProps) {
                           // the authority there, the same way it is for whether
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
-                          disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
+                          disabled={actionPending || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
                         >
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
@@ -1367,7 +1392,7 @@ export function Composer({ ref }: ComposerProps) {
                             onClick={handleSteerClick}
                             // Same as Stop above: busy + the steer capability
                             // already gate this control's existence.
-                            disabled={busyAction !== null}
+                            disabled={actionPending}
                           >
                             Steer
                           </Button>

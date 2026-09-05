@@ -18,6 +18,7 @@ import {
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
+import { clearDraft, readDraft } from "../draft";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
@@ -26,6 +27,7 @@ interface PendingTurnsStoreState {
   outbox: Map<string, MutationOutboxRecord>;
   optimistic: Map<string, MutationOptimisticRecord>;
   recovery: Map<string, MutationRecoveryRecord>;
+  submittingRefs: ReadonlySet<string>;
   // Every client mutation id this client's own durable projection has held, for
   // as long as this page lives. The durable records themselves are the primary
   // evidence of "this client submitted it", and they are deliberately short
@@ -35,11 +37,9 @@ interface PendingTurnsStoreState {
   // outlive the record, because routing asks about it after the hydrate too -
   // see reconcilePendingEntries.
   //
-  // Recorded from the projection read rather than the submit call because the
-  // clientMutationId is minted inside the durable enqueue, and the read that
-  // publishes that write always precedes any hydrate that could settle it: the
-  // daemon cannot report an id it has not been sent yet, and the send happens
-  // after the local commit this read follows.
+  // Local commits publish their identity directly, before the composer can
+  // accept another message. Projection reads discover identities from reloads
+  // and other tabs; a stalled read cannot hide a commit made by this page.
   //
   // Ids only, one per mutation this page submits, never pruned - a page that
   // submits enough sends for that to matter has far larger records than these
@@ -51,24 +51,26 @@ const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
   outbox: new Map(),
   optimistic: new Map(),
   recovery: new Map(),
+  submittingRefs: new Set(),
   submittedHere: new Set(),
 }));
 
-const refreshGenerations = new Map<string, number>();
+let refreshGeneration = 0;
 const appliedRefreshGenerations = new Map<string, number>();
 let refreshEpoch = 0;
 
 function replaceTargetRecords<T extends { clientMutationId: string; targetRef: string }>(
   current: Map<string, T>,
-  targetRef: string | undefined,
+  targets: ReadonlySet<string>,
   records: T[],
 ): Map<string, T> {
-  if (targetRef === undefined) return new Map(records.map((record) => [record.clientMutationId, record]));
   const next = new Map(current);
   for (const [id, record] of next) {
-    if (record.targetRef === targetRef) next.delete(id);
+    if (targets.has(record.targetRef)) next.delete(id);
   }
-  for (const record of records) next.set(record.clientMutationId, record);
+  for (const record of records) {
+    if (targets.has(record.targetRef)) next.set(record.clientMutationId, record);
+  }
   return next;
 }
 
@@ -162,9 +164,7 @@ function recordSubmittedHere(snapshot: {
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
-  const key = ref ?? "*";
-  const generation = (refreshGenerations.get(key) ?? 0) + 1;
-  refreshGenerations.set(key, generation);
+  const generation = ++refreshGeneration;
   try {
     const snapshot = await readMutationPersistence(ref);
     if (refreshEpoch !== epoch) return false;
@@ -175,12 +175,26 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
     // later - may be looking at storage that record has since been settled out
     // of. Skipping it there would leave the id known to nobody.
     recordSubmittedHere(snapshot);
-    if (generation < (appliedRefreshGenerations.get(key) ?? 0)) return true;
-    appliedRefreshGenerations.set(key, generation);
+    // Reads of all targets and reads of one target share the same ordering.
+    // An old all-target snapshot must not erase a newer local commit.
+    const targets = new Set(
+      ref === undefined
+        ? [
+            ...appliedRefreshGenerations.keys(),
+            ...snapshot.outbox.map((record) => record.targetRef),
+            ...snapshot.optimistic.map((record) => record.targetRef),
+            ...snapshot.recovery.map((record) => record.targetRef),
+          ]
+        : [ref],
+    );
+    for (const target of targets) {
+      if (generation < (appliedRefreshGenerations.get(target) ?? 0)) targets.delete(target);
+      else appliedRefreshGenerations.set(target, generation);
+    }
     pendingTurnsStore.setState((state) => ({
-      outbox: replaceTargetRecords(state.outbox, ref, snapshot.outbox),
-      optimistic: replaceTargetRecords(state.optimistic, ref, snapshot.optimistic),
-      recovery: replaceTargetRecords(state.recovery, ref, snapshot.recovery),
+      outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
+      optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
+      recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
     }));
     return true;
   } catch {
@@ -190,7 +204,17 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   }
 }
 
-subscribeMutationPersistence((targetRefs) => {
+subscribeMutationPersistence((targetRefs, committed) => {
+  if (committed) {
+    const { record, recoveryId } = committed;
+    appliedRefreshGenerations.set(record.targetRef, ++refreshGeneration);
+    recordSubmittedHere({ outbox: [record], optimistic: [] });
+    pendingTurnsStore.setState((state) => {
+      const recovery = new Map(state.recovery);
+      if (recoveryId) recovery.delete(recoveryId);
+      return { outbox: new Map(state.outbox).set(record.clientMutationId, record), recovery };
+    });
+  }
   if (targetRefs.length === 0) {
     void refreshPendingTurnsProjection();
     return;
@@ -206,6 +230,18 @@ export interface SubmitWithPendingTrackingOptions {
   onFailure: (error: unknown) => void;
 }
 
+type SubmissionCommittedListener = (ref: string, text: string) => void;
+const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
+
+export function subscribeComposerSubmissionCommitted(listener: SubmissionCommittedListener): () => void {
+  submissionCommittedListeners.add(listener);
+  return () => submissionCommittedListeners.delete(listener);
+}
+
+export function useComposerSubmitting(ref: string): boolean {
+  return useStore(pendingTurnsStore, (state) => state.submittingRefs.has(ref));
+}
+
 // The action resolves at the local IndexedDB commit boundary. Durable state,
 // not a component timer or text echo, is the only optimistic lifecycle.
 //
@@ -219,14 +255,40 @@ export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
   perform: () => Promise<void>,
 ): Promise<void> {
+  if (pendingTurnsStore.getState().submittingRefs.has(opts.ref)) {
+    return Promise.reject(new Error("A message submission is already pending for this task"));
+  }
+  const epoch = refreshEpoch;
+  pendingTurnsStore.setState((state) => ({ submittingRefs: new Set(state.submittingRefs).add(opts.ref) }));
   return trackProjectionWork(
     (async () => {
       try {
-        await perform();
-      } catch (error) {
-        opts.onFailure(error);
-        throw error;
+        try {
+          await perform();
+        } catch (error) {
+          opts.onFailure(error);
+          throw error;
+        }
+        // Submission ownership outlives a mounted composer. A retired mount
+        // must not clear a newer draft written after a tab switch.
+        if (epoch === refreshEpoch && readDraft(opts.ref) === opts.text) {
+          clearDraft(opts.ref);
+          for (const listener of submissionCommittedListeners) {
+            try {
+              listener(opts.ref, opts.text);
+            } catch (error) {
+              console.error("Composer submission listener failed", error);
+            }
+          }
+        }
       } finally {
+        if (epoch === refreshEpoch) {
+          pendingTurnsStore.setState((state) => {
+            const submittingRefs = new Set(state.submittingRefs);
+            submittingRefs.delete(opts.ref);
+            return { submittingRefs };
+          });
+        }
         // Projection reads own their tracking, but cannot delay or change the
         // result of a submission whose durable outcome is already known.
         void refreshPendingTurnsProjection(opts.ref);
@@ -323,7 +385,15 @@ export function updateRecoveryPendingTurn(
   text: string,
   attachments: InputAttachment[],
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => updateRecoveryMutation(clientMutationId, ref, text, attachments));
+  // Composer serializes edits before resending. A committed edit must release
+  // that chain even when the recovery tray cannot refresh yet.
+  return trackProjectionWork(
+    (async () => {
+      const updated = await updateRecoveryMutation(clientMutationId, ref, text, attachments);
+      void refreshPendingTurnsProjection(ref);
+      return updated;
+    })(),
+  );
 }
 
 export function discardRecoveryPendingTurn(
@@ -341,15 +411,20 @@ export function resendRecoveryPendingTurn(
   text: string,
   attachments: InputAttachment[],
 ): Promise<boolean> {
-  return mutateThenRefresh(
-    ref,
-    async () => (await resendRecoveryMutation(clientMutationId, ref, route, text, attachments)) !== undefined,
+  // Resend publishes its committed handoff directly. Reading the recovery
+  // tray again cannot hold up a submission that already has a durable owner.
+  return trackProjectionWork(
+    (async () => {
+      const record = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments);
+      void refreshPendingTurnsProjection(ref);
+      return record !== undefined;
+    })(),
   );
 }
 
 export function resetPendingTurnsStoreForTests(): void {
   refreshEpoch += 1;
-  refreshGenerations.clear();
+  refreshGeneration = 0;
   appliedRefreshGenerations.clear();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
@@ -358,6 +433,7 @@ export function resetPendingTurnsStoreForTests(): void {
     outbox: new Map(),
     optimistic: new Map(),
     recovery: new Map(),
+    submittingRefs: new Set(),
     submittedHere: new Set(),
   });
 }

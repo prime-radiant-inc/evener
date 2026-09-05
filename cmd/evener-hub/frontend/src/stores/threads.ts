@@ -570,15 +570,28 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-const mutationPersistenceListeners = new Set<(targetRefs: string[]) => void>();
+interface MutationCommit {
+  record: MutationOutboxRecord;
+  recoveryId?: string;
+}
+
+type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
+const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 
 function isCurrentMutationRuntime(runtime: MutationRuntime | null): runtime is MutationRuntime {
   return runtime?.active === true && mutationRuntime === runtime;
 }
 
-function notifyMutationPersistence(targetRefs: Iterable<string>): void {
+function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: MutationCommit): void {
   const refs = [...new Set(targetRefs)];
-  for (const listener of mutationPersistenceListeners) listener(refs);
+  for (const listener of mutationPersistenceListeners) {
+    try {
+      listener(refs, committed);
+    } catch (error) {
+      // A projection listener cannot change the result of a durable write.
+      console.error("Mutation persistence listener failed", error);
+    }
+  }
 }
 
 function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
@@ -736,7 +749,7 @@ export interface MutationPersistenceSnapshot {
   recovery: MutationRecoveryRecord[];
 }
 
-export function subscribeMutationPersistence(listener: (targetRefs: string[]) => void): () => void {
+export function subscribeMutationPersistence(listener: MutationPersistenceListener): () => void {
   mutationPersistenceListeners.add(listener);
   return () => mutationPersistenceListeners.delete(listener);
 }
@@ -808,7 +821,7 @@ export async function resendRecoveryMutation(
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
-  notifyMutationPersistence([targetRef]);
+  notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
   return record;
 }
@@ -1130,8 +1143,8 @@ async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  await runtime.outbox.enqueueIntent(intent);
-  notifyMutationPersistence([ref]);
+  const record = await runtime.outbox.enqueueIntent(intent);
+  notifyMutationPersistence([ref], { record });
 }
 
 async function enqueueMutation(

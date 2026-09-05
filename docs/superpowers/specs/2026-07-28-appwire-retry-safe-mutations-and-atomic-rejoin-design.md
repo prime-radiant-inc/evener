@@ -771,6 +771,27 @@ Their delays or failures cannot turn a saved message into a failed submission.
 A failed startup scan remains retryable, and repeated lifecycle scans of the
 same kind share outstanding work rather than accumulating behind stalled storage.
 
+Local commits publish their record and provenance before releasing the composer.
+Projection reads, whether for one target or all targets, cannot overwrite a newer
+commit with an older snapshot. Recovery resend also publishes the atomic handoff
+from its recovery record to its new outbox record directly.
+Recovery edits remain serialized through write completion, without waiting for
+display refresh. Notification listener failures are reported separately and
+cannot change a committed submission into a failed send.
+
+Within a page, pending composer submission ownership is shared per target from
+the initial click through completion. Switching dock tabs cannot create a fresh
+send of the same pending draft. Successful completion clears sticky text only if
+it still matches the submitted text, and a retired composer cannot clear a newer
+mount's draft or attachments.
+
+This page-lifetime guard is not a durable draft-to-mutation identity. Sticky
+composer drafts currently persist text separately from the outbox; a full reload
+can recover a committed outbox record while also restoring that text. Strict
+duplicate prevention for resubmitting the restored draft requires an atomic or
+otherwise recoverable draft-to-mutation handoff. That architectural work is
+separate from the storage watchdog; matching text cannot safely identify a send.
+
 An outbox record moves through:
 
 1. `submitting`: locally recorded, no authoritative outcome observed;
