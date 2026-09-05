@@ -581,6 +581,7 @@ func formatShellResult(out shellToolResult) string {
 	// the command itself did not time out — the foreground wait did, and the
 	// command keeps running as a durable background job.
 	promoted := out.Mode == string(shellModeBackground) && out.TimedOut && out.JobID != ""
+	directBackground := out.Mode == string(shellModeBackground) && out.JobID != "" && !promoted
 
 	var foot []string
 	if out.ExitCode != nil && out.Mode != string(shellModeBackground) && !runTimeout {
@@ -601,7 +602,7 @@ func formatShellResult(out shellToolResult) string {
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
-	case out.Mode == string(shellModeBackground) && out.JobID != "":
+	case directBackground:
 		foot = append(foot, "running in background as "+out.JobID)
 	case out.JobID != "":
 		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
@@ -613,6 +614,10 @@ func formatShellResult(out shellToolResult) string {
 		b.WriteString("[")
 		b.WriteString(strings.Join(foot, " · "))
 		b.WriteString("]")
+	}
+	if directBackground {
+		b.WriteByte('\n')
+		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
