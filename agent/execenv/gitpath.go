@@ -2,7 +2,9 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -64,6 +66,37 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 // returned are, while a fork that never ran or never finished — ctx cancelled or
 // expired, git missing, working directory unusable — is not (see
 // gitRootCache.lookup).
+// gitAnswered reports whether err from a git invocation is git's OWN answer — a
+// process that ran and chose its exit status — rather than a failure to obtain
+// an answer at all. It is what decides whether a resolution may be memoized
+// (gitRootCache.lookup): a verdict about a directory is stable and worth
+// remembering, while "we could not ask" is a property of one moment, and
+// caching that makes an environment believe a directory is not a repository
+// long after the request whose cancellation caused it is gone.
+//
+// nil is an answer. A cancelled or expired context is not, nor is the error the
+// runner substitutes when it gives up — so the context is consulted directly as
+// well as through the error. A process killed by a signal never chose its
+// status, so a wrapper or the runner ending git is not git answering. Anything
+// that is not an exit status at all (binary missing, EAGAIN, a transport
+// failure from a non-local environment) produced no verdict either.
+func gitAnswered(ctx context.Context, err error) bool {
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok {
+		return false
+	}
+	return exitErr.ProcessState != nil && exitErr.ProcessState.Exited()
+}
+
 func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
 		if structural, ok := structuralWorktreeRoot(cwd); ok {
@@ -79,9 +112,10 @@ func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) 
 
 	res, err := RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "rev-parse", "--show-toplevel")
 	if err != nil {
-		// No verdict: the command did not run to completion. Answer empty for
-		// this call without teaching the environment anything.
-		return "", false
+		// A non-zero exit reaches us as an error value, so "error" alone cannot
+		// mean "no answer": git refusing a directory (exit 128) is a verdict, and
+		// a permanent one. Classify by what the error IS.
+		return "", gitAnswered(execCtx, err)
 	}
 	if res.ExitCode != 0 {
 		return "", true // git ran and said this is not a repository
@@ -128,7 +162,13 @@ func ResolveMainRepoRoot(env ExecutionEnvironment, cwd string) string {
 func mainRepoRootUncached(env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	root, isGit, err := resolveMainRepoRoot(env, cwd)
 	if err != nil {
-		return "", false
+		// The same classification gitRootUncached makes, on the same cache. The
+		// resolver wraps its causes with %w, so git's exit status is still
+		// reachable through them; its own structural errors (an unreadable
+		// pointer file, a root that does not contain cwd) are not exit statuses
+		// and stay uncached, which costs a re-resolution rather than a wrong
+		// permanent answer.
+		return "", gitAnswered(context.Background(), err)
 	}
 	if !isGit {
 		return "", true
