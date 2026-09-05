@@ -611,6 +611,19 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		s.mu.Lock()
 		stale := ctx.Err() != nil || s.epoch != epoch || after != expected
 		if stale {
+			// An invalidation that lands mid-build would otherwise be
+			// dropped: the retry commits fresh state as an ordinary
+			// (non-mutating) read, discarding the observed changes, and a
+			// later forced refresh finds nothing further and clears the
+			// pending hint with no publication ever reaching clients.
+			// Adopting the armed hint makes this build's commit publish
+			// the change it already observed. The hint stays armed for
+			// anything landing after this point, and a failed retry leaves
+			// the scheduler's normal pacing untouched.
+			if s.pendingInvalidation {
+				flight.hint = mergeNavigationChangeHints(flight.hint, s.pendingHint)
+				flight.mutated = true
+			}
 			s.mu.Unlock()
 			expected = after
 			continue

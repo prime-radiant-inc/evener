@@ -188,6 +188,60 @@ func TestNavigationServiceEmitsExactDependentTargetsAndWildcard(t *testing.T) {
 	}
 }
 
+func TestNavigationServicePublishesInvalidationRacingOrdinaryBuild(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	service := newTestNavigationService(t, source)
+	done := make(chan navigationReadResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+		done <- result
+		errs <- err
+	}()
+	<-source.entered
+	source.changeTitle("fresh")
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	close(source.release)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if !bytes.Contains(result.Response.Data, []byte("fresh")) {
+		t.Fatalf("read cached stale core bytes: %s", result.Response.Data)
+	}
+	// The invalidation raced an ordinary (non-mutating) build, which retried
+	// and committed the fresh state. Its publication must still reach
+	// clients; otherwise the change is committed but nobody is told, and a
+	// later forced refresh finds no further changes and clears the pending
+	// hint with nothing ever published.
+	publications := service.DrainPublications()
+	if len(publications) != 1 {
+		t.Fatalf("publications = %+v, want exactly the raced invalidation", publications)
+	}
+	// A cold first read observes every resource as changed, so the
+	// publication legitimately covers more than the raced hint; the
+	// property under test is that the raced change is published at all.
+	found := false
+	for _, target := range publications[0].Targets {
+		if target.Kind == appwire.NavigationTargetProject && target.ProjectKey == "p1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("publication targets = %+v, want project p1 covered", publications[0].Targets)
+	}
+	// The scheduler's follow-up forced refresh must not publish a second
+	// time: the change is already committed and published above.
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if extra := service.DrainPublications(); len(extra) != 0 {
+		t.Fatalf("follow-up refresh published %+v, want nothing further", extra)
+	}
+}
+
 func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	source.entered = make(chan struct{})
