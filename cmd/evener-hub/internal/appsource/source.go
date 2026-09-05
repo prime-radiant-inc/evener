@@ -133,6 +133,9 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 				return ItemCandidateResult{}, err
 			}
 			rotated = previousNativeCursor != responseNativeCursor
+			if !rotated {
+				next.NativeCursor = previous.NativeCursor
+			}
 		}
 	}
 	if rotated {

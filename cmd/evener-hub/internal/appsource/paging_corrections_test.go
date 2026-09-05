@@ -255,3 +255,59 @@ func TestNativeProofFailurePreservesSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestDisjointBoundedAdvancePreservesNativeContinuation(t *testing.T) {
+	all := correctionItems(6)
+	source, setOlder := newLocalDaemonItemTransitionSource(t, all[:2])
+	params := appwire.ThreadReadParams{Ref: "local:thread"}
+	complete, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[:2], ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "native", ProjectionVersion: 1}
+	nativeCursor := func(position appwire.ThreadItemPosition) string {
+		cursor, err := appitempaging.EncodeCursor(nativeIdentity, position)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cursor
+	}
+	first, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[2:4], nativeCursor(*all[2].Position)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _ := source.itemSnapshots.peek("local:thread")
+	if first.Identity != complete.Identity || !state.Prefix || state.NativeCursor == "" {
+		t.Fatalf("first bounded observation failed to retain authenticated prefix: %+v", state)
+	}
+	second, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[4:], nativeCursor(*all[4].Position)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Identity != complete.Identity {
+		t.Fatal("disjoint bounded append rotated valid identity")
+	}
+	state, _ = source.itemSnapshots.peek("local:thread")
+	if state.NativeCursor == "" {
+		t.Errorf("disjoint bounded append discarded native continuation (Prefix=%v)", state.Prefix)
+	}
+	outward, err := appitempaging.EncodeCursor(second.Identity, second.Candidates.Candidates[0].Position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This request asks for all four items before position 4, so the native
+	// response is truthfully exhausted and respects its four-item limit.
+	setOlder(all[:4])
+	older, err := source.ListItemCandidates(t.Context(), appwire.ThreadTurnsListParams{Ref: "local:thread", Cursor: outward, ItemLimit: 4})
+	if err != nil {
+		t.Fatalf("valid continuation after disjoint bounded append: %v", err)
+	}
+	if older.Identity != complete.Identity || !older.Exhausted || len(older.Candidates.Candidates) != 4 {
+		t.Fatalf("older page = %+v", older)
+	}
+	for i, candidate := range older.Candidates.Candidates {
+		if candidate.Item.TranscriptKey != all[i].TranscriptKey || candidate.Position != *all[i].Position {
+			t.Fatalf("older item %d = %+v, want %+v", i, candidate, all[i])
+		}
+	}
+}

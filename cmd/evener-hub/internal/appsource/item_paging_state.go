@@ -156,9 +156,11 @@ func transcriptItemDigest(candidates []appitempaging.TranscriptItemCandidate, co
 	return digest, true
 }
 
-// itemSnapshotStateAdvance proves that candidates describe the same anchored
-// transcript observed by previous. Full materializations recompute the anchor;
-// bounded newest windows may only append through one exact tail-to-head overlap.
+// itemSnapshotStateAdvance derives the next summary and checks observed
+// continuity. Full materializations recompute the anchored prefix; bounded
+// windows extend the digest only through an exact tail-to-head overlap.
+// Disjoint windows return a fresh bounded summary; the caller must authenticate
+// and retain their native cursor before preserving transcript identity.
 func itemSnapshotStateAdvance(previous itemSnapshotState, candidates []appitempaging.TranscriptItemCandidate, prefix bool) (itemSnapshotState, bool) {
 	current := itemSnapshotStateForCandidates(previous.ThreadRef, previous.Incarnation, previous.SourceIdentity, candidates, prefix)
 	if prefix && !previous.Prefix {
