@@ -534,6 +534,22 @@ describe("setCharacterKeyTriggers", () => {
   });
 });
 
+describe("setLastSettingsSection", () => {
+  test("persists under its own evener.prefs.lastSettingsSection key and updates state", () => {
+    expect(prefsStore.getState().lastSettingsSection).toBeNull();
+    prefsStore.getState().setLastSettingsSection("keybindings");
+    expect(localStorage.getItem(KEY("lastSettingsSection"))).toBe("keybindings");
+    expect(prefsStore.getState().lastSettingsSection).toBe("keybindings");
+    // A fresh hydration (what the next page load does) reads it back.
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().lastSettingsSection).toBe("keybindings");
+    // null is absence: the key is removed, never a literal "null" string.
+    prefsStore.getState().setLastSettingsSection(null);
+    expect(localStorage.getItem(KEY("lastSettingsSection"))).toBeNull();
+    expect(prefsStore.getState().lastSettingsSection).toBeNull();
+  });
+});
+
 describe("localStorage unavailable (e.g. Safari private mode)", () => {
   test("reading falls back to defaults rather than throwing", () => {
     vi.spyOn(MemoryStorage.prototype, "getItem").mockImplementation(() => {

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ACTIONS } from "../../../keybindings/actions";
+import { parseChord, serializeChord } from "../../../keybindings/chord";
 import {
   CHARACTER_KEY_TRIGGER_BINDING_ID,
   DEFAULT_BINDINGS,
@@ -269,6 +270,59 @@ test("an unsupported hub keeps every row read-only (no editing affordances)", as
   expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
 });
 
+// The stale-hub window: a supported hub whose override state has not landed
+// (or failed to) for the CURRENT client must not offer editing - a PATCH
+// composed there would carry the previous hub's revision and payload.
+test("the section is read-only while the hub's overrides are still loading, then editing unlocks", async () => {
+  const client = new FakeClient("ready");
+  let resolveGet: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/get",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolveGet = resolve;
+      }),
+  );
+  client.on("evener/settings/keybindings/patch", (params) => overridesPayload(2, params.config.rules));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  render(<KeybindingsSection />);
+
+  // hubSupport is "supported" but nothing is loaded for THIS hub yet: no
+  // editing affordances, and a status line says why.
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain("read-only until they arrive");
+  expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
+
+  // The refresh lands: editing unlocks and a save round-trips.
+  // (FakeClient defers the handler to a microtask, like a real RPC.)
+  await waitFor(() => expect(resolveGet).toBeDefined());
+  resolveGet?.(overridesPayload(1, []));
+  const chordButton = await screen.findByRole("button", {
+    name: "Change the shortcut for Open the command palette",
+  });
+  await userEvent.setup().click(chordButton);
+  fireEvent.keyDown(captureBox(), { key: "p", ctrlKey: true });
+  fireEvent.keyDown(captureBox(), { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+});
+
+test("a refresh error leaves the section read-only with a truthful status", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => {
+    throw new Error("socket went away");
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  expect(screen.getByRole("alert").textContent).toContain("socket went away");
+  expect(screen.getByRole("status").textContent).toContain("Editing is unavailable");
+  expect(within(rowFor("Open the command palette")).getByText("K")).toBeTruthy();
+});
+
 test("a hub with unknown support keeps every row read-only", () => {
   render(<KeybindingsSection />);
   expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
@@ -342,6 +396,203 @@ test("Escape cancels the capture without a hub write and leaves the chord unchan
   );
 });
 
+test("a second non-modifier key does NOT overwrite the captured chord; Enter saves the FIRST", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  expect(within(box).getByText("P")).toBeTruthy();
+  // The stray press before Enter: the recorded chord stands (cancel and
+  // re-capture to change it) - the box keeps showing P and W never appears.
+  fireEvent.keyDown(box, { key: "w" });
+  expect(within(box).getByText("P")).toBeTruthy();
+  expect(within(box).queryByText("W")).toBeNull();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.paletteOpen, chord: "Control+P" }] },
+  });
+});
+
+test("after capture, modifier presses do not replace the preview and Escape still cancels", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  expect(within(box).getByText("P")).toBeTruthy();
+  // The held-modifier echo still updates internally, but the recorded chord
+  // owns the preview.
+  fireEvent.keyDown(box, { key: "Shift" });
+  expect(within(box).getByText("P")).toBeTruthy();
+  fireEvent.keyUp(box, { key: "Shift" });
+  fireEvent.keyDown(box, { key: "Escape" });
+
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("K")).toBeTruthy();
+  expect(within(row).queryByText("Customized")).toBeNull();
+});
+
+// Plain Escape is cancel, permanently: it cannot be assigned through the
+// editor (the VS Code keybinding-editor convention), so the built-in Escape
+// bindings come back via Reset, never via capture. Escape WITH a modifier is
+// a normal chord and records. settings.close's own default is Escape with
+// every modifier optional, so overriding THAT action with Shift+Escape
+// conflicts with nothing.
+test("plain Escape cancels but Shift+Escape records as a chord", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  let box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "Escape" });
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+
+  box = await enterCapture("Close settings");
+  fireEvent.keyDown(box, { key: "Escape", shiftKey: true });
+  expect(within(box).getByText("Shift")).toBeTruthy();
+  expect(within(box).getByText("Escape")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.settingsClose, chord: "Shift+Escape" }] },
+  });
+});
+
+// Uppercase normalization is ASCII-only: String.toUpperCase can change
+// LENGTH on non-ASCII input ("ß" -> "SS"), which would corrupt the chord.
+test("a non-ASCII character records verbatim; ASCII letters still normalize to uppercase", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  let box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: "ß" });
+  expect(within(box).getByText("ß")).toBeTruthy();
+  expect(within(box).queryByText("SS")).toBeNull();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "ß" }] },
+  });
+
+  box = await enterCapture("Quote the selection into the composer");
+  fireEvent.keyDown(box, { key: "a" });
+  expect(within(box).getByText("A")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(2));
+  expect(patchCallsOf(client)[1]?.params).toEqual({
+    expectedRevision: 2,
+    config: {
+      version: 1,
+      rules: [
+        { action: ACTIONS.composerFocus, chord: "ß" },
+        { action: ACTIONS.selectionQuote, chord: "A" },
+      ],
+    },
+  });
+});
+
+// Click-away cancels even when the click target cannot take focus: onBlur
+// alone only fires when focus MOVES, so a document-level pointerdown listener
+// (capture phase) covers non-focusable clicks while the capture is live.
+test("pointerdown outside the capture box cancels without refocusing the chord button", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.pointerDown(document.body);
+
+  expect(screen.queryByText("Press new shortcut…")).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(0);
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("K")).toBeTruthy();
+  // refocus:false - a click-away cancel leaves focus where the user put it,
+  // unlike the keyboard cancel which returns focus to the chord button.
+  expect(document.activeElement).not.toBe(
+    within(row).getByRole("button", { name: "Change the shortcut for Open the command palette" }),
+  );
+});
+
+test("pointerdown INSIDE the capture box does not cancel", async () => {
+  await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.pointerDown(box);
+
+  expect(captureBox()).toBeTruthy();
+  expect(screen.getByText("Press new shortcut…")).toBeTruthy();
+});
+
+test("the outside-pointerdown listener is removed when the capture closes", async () => {
+  const addSpy = vi.spyOn(document, "addEventListener");
+  const removeSpy = vi.spyOn(document, "removeEventListener");
+  try {
+    await wireEditableClient();
+    render(<KeybindingsSection />);
+    await enterCapture("Open the command palette");
+
+    // The capture box's listener is the pointerdown one in the capture phase.
+    const added = addSpy.mock.calls.filter((call) => call[0] === "pointerdown" && call[2] === true);
+    expect(added).not.toHaveLength(0);
+    const listener = added[added.length - 1]?.[1];
+
+    fireEvent.keyDown(captureBox(), { key: "Escape" });
+    expect(screen.queryByText("Press new shortcut…")).toBeNull();
+
+    expect(
+      removeSpy.mock.calls.some((call) => call[0] === "pointerdown" && call[1] === listener && call[2] === true),
+    ).toBe(true);
+  } finally {
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  }
+});
+
+// Whole-payload PATCHes are composed from the hub's RAW rules: a rule
+// validation skipped (here: an action this client does not know, written by
+// a newer one) is still the hub's state and must survive an unrelated edit.
+test("an unrelated edit preserves a hub rule validation skips (unknown action survives in the PATCH payload)", async () => {
+  const client = await wireEditableClient([{ action: "future.new.action", chord: "Control+Alt+9" }]);
+  render(<KeybindingsSection />);
+
+  // The skipped rule stays a quiet warning; nothing is customized.
+  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
+  expect(screen.queryByText("Customized")).toBeNull();
+
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  // The unknown-action rule passes through untouched, alongside the edit.
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: {
+      version: 1,
+      rules: [
+        { action: "future.new.action", chord: "Control+Alt+9" },
+        { action: ACTIONS.paletteOpen, chord: "Control+P" },
+      ],
+    },
+  });
+  // The preserved rule's pre-existing warning did not block the save, and
+  // the confirmed payload still lists it as a (skipped) warning.
+  await waitFor(() => expect(within(rowFor("Open the command palette")).getByText("P")).toBeTruthy());
+  expect(screen.getByRole("status").textContent).toContain('unknown keybinding action "future.new.action"');
+});
+
 test("a plain Enter with nothing captured neither saves nor cancels", async () => {
   const client = await wireEditableClient();
   render(<KeybindingsSection />);
@@ -351,6 +602,270 @@ test("a plain Enter with nothing captured neither saves nor cancels", async () =
 
   expect(screen.getByText("Press new shortcut…")).toBeTruthy();
   expect(patchCallsOf(client)).toHaveLength(0);
+});
+
+// The spacebar's event.key is a literal " " - the tinykeys grammar's press
+// SEPARATOR - so capture maps it to the canonical, matchable name "Space"
+// (tinykeys' matcher also compares event.code, which IS "Space"). A literal
+// " " would not survive parseChord at all.
+test("capturing Space records the canonical name and the chord round-trips through the grammar", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: " " });
+  expect(within(box).getByText("Space")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Space" }] },
+  });
+  // The saved chord parses back to the same press (it would throw on " ").
+  expect(serializeChord(parseChord("Space"))).toBe("Space");
+  // The confirmed payload reconciled onto the registry with the same chord.
+  await waitFor(() => expect(within(rowFor("Focus the composer")).getByText("Space")).toBeTruthy());
+});
+
+// IME composition keydowns (isComposing, key "Process"/"Unidentified") are
+// not presses: they record nothing and an IME commit Enter must not save.
+test("IME composition events neither record nor save; a non-composing press still works", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  // Mid-composition keydowns: no chord recorded.
+  fireEvent.keyDown(box, { key: "Process", isComposing: true });
+  fireEvent.keyDown(box, { key: "a", isComposing: true });
+  expect(box.textContent).toContain("Press new shortcut…");
+  // A composition-commit Enter does NOT save...
+  fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(box, { key: "Unidentified" });
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(captureBox()).toBeTruthy();
+
+  // ...and a real press afterwards still records and saves.
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  expect(within(box).getByText("M")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+  });
+});
+
+// Browsers that signal IME input ONLY through keyCode 229 (no isComposing,
+// an ordinary-looking key) hit the dispatcher's second guard; capture must
+// run the same one or composition input / a commit Enter records as a chord.
+test("a keydown reported only via keyCode 229 records nothing and does not save", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+  const box = await enterCapture("Focus the composer");
+
+  fireEvent.keyDown(box, { key: "a", keyCode: 229 });
+  expect(box.textContent).toContain("Press new shortcut…");
+  fireEvent.keyDown(box, { key: "Enter", keyCode: 229 });
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(captureBox()).toBeTruthy();
+
+  // A real press afterwards still records and saves.
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  expect(within(box).getByText("M")).toBeTruthy();
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+});
+
+// A save is a hub round trip; a click-away cancel closes the box while the
+// PATCH is in flight. The per-capture generation token keeps the stale
+// continuation from closing or repainting a capture it did not start.
+test("a save resolving after a click-away cancel does not clobber a reopened capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Open a capture and start a save; the PATCH hangs.
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // Click away: the capture cancels while the save is in flight...
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+
+  // ...and the user reopens the same row's capture.
+  const reopened = await enterCapture("Open the command palette");
+  expect(reopened.textContent).toContain("Press new shortcut…");
+
+  // The stale save resolves: the reopened capture stays open and untouched.
+  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+  await waitFor(() => expect(keybindingsStore.getState().revision).toBe(2));
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(reopened);
+  expect(reopened.textContent).toContain("Press new shortcut…");
+});
+
+test("a stale save's error does not surface into a reopened capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let rejectPatch: ((error: Error) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((_resolve, reject) => {
+        rejectPatch = reject;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  fireEvent.pointerDown(document.body);
+  const reopened = await enterCapture("Open the command palette");
+  expect(reopened.textContent).toContain("Press new shortcut…");
+
+  // The old save FAILS: its error belongs to the cancelled capture and must
+  // not surface on the ROW. (The store still records the failed patch as
+  // hubError - the section-level alert is the store's contract for any
+  // failed patch, capture or not; what the generation token guards is the
+  // row/capture continuation.)
+  rejectPatch?.(new Error("hub exploded"));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
+  // hubError also makes the whole section read-only (editable includes
+  // hubError === null), so the reopened capture CLOSES: an interactive box
+  // must not strand in a section whose controls have all gone read-only.
+  // The finding-13 guarantee this test pins is the error's containment, not
+  // the capture's survival across an editability loss.
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+});
+
+// Writes serialize at the store: an edit made while ANOTHER row's write is
+// in flight queues behind it (no controls are disabled - the queue absorbs
+// the concurrency), composes its expectedRevision and payload from the
+// first write's confirmed state, and - via the finding-13 generation token
+// - still cannot touch a capture that was cancelled while it queued.
+test("a save queued behind another row's in-flight write lands in order and ignores its cancelled capture", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () =>
+    overridesPayload(1, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  let firstExpectedRevision: number | undefined;
+  let resolveFirstPatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (firstExpectedRevision === undefined) {
+      firstExpectedRevision = params.expectedRevision;
+      return new Promise<KeybindingsOverrides>((resolve) => {
+        resolveFirstPatch = resolve;
+      });
+    }
+    return overridesPayload(params.expectedRevision + 1, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Row B (command palette) Reset starts PATCH #1, which hangs in flight.
+  const resetButton = within(rowFor("Open the command palette")).getByRole("button", { name: "Reset" });
+  await userEvent.setup().click(resetButton);
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // While it hangs, the composer row's controls stay ENABLED (the queue
+  // absorbs the concurrency - nothing is disabled during a write)...
+  const chordButton = screen.getByRole("button", { name: "Change the shortcut for Focus the composer" });
+  expect((chordButton as HTMLButtonElement).disabled).toBe(false);
+  await userEvent.setup().click(chordButton);
+  const box = captureBox();
+  fireEvent.keyDown(box, { key: "m", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  // ...and the save QUEUES: no second PATCH has hit the wire yet.
+  expect(patchCallsOf(client)).toHaveLength(1);
+
+  // The capture is cancelled before its save executes.
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+
+  // PATCH #1 lands: the queued save composes against the post-Reset state
+  // (expectedRevision 2, rules WITHOUT the dropped palette override) and
+  // applies to the store...
+  resolveFirstPatch?.(overridesPayload((firstExpectedRevision ?? 0) + 1, []));
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(2));
+  expect(patchCallsOf(client)[1]?.params).toEqual({
+    expectedRevision: 2,
+    config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Control+M" }] },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().revision).toBe(3));
+
+  // ...but the cancelled capture is never touched: it stays closed, no row
+  // error appears, focus is not stolen back to the chord button.
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(within(rowFor("Focus the composer")).queryByRole("alert")).toBeNull();
+  expect(document.activeElement).not.toBe(
+    screen.getByRole("button", { name: "Change the shortcut for Focus the composer" }),
+  );
+});
+
+// "+" is tinykeys' modifier DELIMITER, so a naive read says a captured "+"
+// chord ("Shift++", "Control++") cannot parse. The installed tinykeys splits
+// modifiers with a lookbehind (/(?<=\w|\])\+/), so a trailing "+" parses as
+// the key, and capture records the modifiers actually held - the chord
+// matches the very keydown that produced it. This test pins that end-to-end
+// through the REAL dispatcher so a tinykeys regression turns red here.
+test("capturing + saves a chord that round-trips and fires on a real + keydown", async () => {
+  const client = await wireEditableClient();
+  const focusSpy = vi.fn();
+  const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.composerFocus, focusSpy);
+  try {
+    await withDispatcher(async () => {
+      render(<KeybindingsSection />);
+      const box = await enterCapture("Focus the composer");
+
+      // US layout: "+" is Shift+=, so the keydown carries Shift.
+      fireEvent.keyDown(box, { key: "+", shiftKey: true });
+      // KeyHint renders "+" SEPARATORS between kbds, so assert the kbd run
+      // itself rather than a bare text match.
+      expect([...box.querySelectorAll("kbd")].map((kbd) => kbd.textContent)).toEqual(["Shift", "+"]);
+      fireEvent.keyDown(box, { key: "Enter" });
+
+      await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+      expect(patchCallsOf(client)[0]?.params).toEqual({
+        expectedRevision: 1,
+        config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Shift++" }] },
+      });
+      // The serialized chord parses back to itself (a delimiter collision
+      // would throw or misparse the key).
+      expect(serializeChord(parseChord("Shift++"))).toBe("Shift++");
+      expect(serializeChord(parseChord("Control++"))).toBe("Control++");
+
+      // The confirmed payload reconciled, and the REAL dispatcher's matcher
+      // fires the action on the + keydown.
+      await waitFor(() =>
+        expect([...rowFor("Focus the composer").querySelectorAll("kbd")].map((kbd) => kbd.textContent)).toEqual([
+          "Shift",
+          "+",
+        ]),
+      );
+      fireEvent.keyDown(document.body, { key: "+", shiftKey: true });
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+    });
+  } finally {
+    unregister();
+  }
 });
 
 test("a conflicting chord is rejected pre-flight: inline message, no hub write, capture stays open", async () => {
@@ -363,7 +878,7 @@ test("a conflicting chord is rejected pre-flight: inline message, no hub write, 
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain(
-    `chord "Control+P" in scope "global" is already bound by "${ACTIONS.paletteOpen}"`,
+    `chord "Control+P" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
   );
   expect(patchCallsOf(client)).toHaveLength(0);
   // The capture stays open so the user can try another chord or cancel...
@@ -377,9 +892,15 @@ test("a conflicting chord is rejected pre-flight: inline message, no hub write, 
       .bindings.filter((b) => b.actionId === ACTIONS.composerFocus)
       .map((b) => b.id),
   ).toEqual([ACTIONS.composerFocus, `${ACTIONS.composerFocus}#mod-twin`]);
-  // A subsequent valid chord still saves from the same capture.
+  // The recorded (conflicting) chord stands while this capture lives
+  // (finding 30): the way to another chord is cancel and RE-CAPTURE, and
+  // the fresh capture then saves clean.
   fireEvent.keyDown(captureBox(), { key: "m", ctrlKey: true });
-  fireEvent.keyDown(captureBox(), { key: "Enter" });
+  expect(within(captureBox()).getByText("P")).toBeTruthy();
+  fireEvent.keyDown(captureBox(), { key: "Escape" });
+  const box2 = await enterCapture("Focus the composer");
+  fireEvent.keyDown(box2, { key: "m", ctrlKey: true });
+  fireEvent.keyDown(box2, { key: "Enter" });
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
 });
 
@@ -450,6 +971,47 @@ test("a failed Unbind surfaces the hub error inline on the row", async () => {
   const row = rowFor("Open the command palette");
   await waitFor(() => expect(within(row).getByRole("alert").textContent).toContain("socket went away"));
   expect(within(row).getByText("K")).toBeTruthy();
+});
+
+test("a confirmed hub payload clears a stale row error - and leaves an unrelated capture alone", async () => {
+  // The hub rejects writes while it recovers; the failed PATCH never
+  // confirmed, so the GET stays at revision 1 and the refresh re-confirms
+  // the SAME payload (the stale guard is `<`: an equal-revision refresh
+  // still applies and clears hubError).
+  let failPatch = true;
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (failPatch) throw new Error("state unavailable");
+    return overridesPayload(2, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  const row = rowFor("Open the command palette");
+  await waitFor(() => expect(within(row).getByRole("alert").textContent).toContain("state unavailable"));
+  expect(keybindingsStore.getState().hubError).not.toBeNull();
+
+  // The hub answers a refresh again: hubError clears, and the row's stale
+  // inline error clears WITH it - the bindings it described are no longer
+  // the truth (the palette was never unbound).
+  failPatch = false;
+  await keybindingsStore.getState().refreshOverrides();
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
+
+  // The clearing is scoped to the stale error: a capture open on another
+  // row rides through a later confirmed payload untouched. A NOTIFICATION,
+  // not a refresh: a refresh flips hubLoading, which makes the section
+  // read-only for the flight and cancels captures by design (finding 18) -
+  // the notification path confirms a payload without the loading gate.
+  const box = await enterCapture("Focus the composer");
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(1, []),
+  });
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(box);
 });
 
 // The cheatsheet.toggle row is the one multi-entry action: the editor edits
@@ -552,4 +1114,358 @@ test("Escape cancels the capture and does NOT fire settings.close; outside captu
     unregister();
     popScope();
   }
+});
+
+// Editability is a per-render prop driven by hub support; a capture is row
+// state with a save in flight on the wire. Support loss mid-capture must
+// cancel the capture like a click-away (generation bumped, no refocus):
+// otherwise the interactive box strands in a read-only section and the
+// resolving save's continuation would repaint it.
+test("editable flipping false mid-capture closes the box and a resolving in-flight save does not touch the row", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Open a capture and start a save; the PATCH hangs.
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+
+  // Support drops while the save is in flight: the row goes read-only and
+  // the capture must close with it.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
+
+  // The stale save resolves: no capture reopens, no row-level error.
+  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  expect(within(rowFor("Open the command palette")).queryByRole("alert")).toBeNull();
+});
+
+test("editable true → false → true leaves the row read-only then editable again, and a fresh capture opens", async () => {
+  const client = await wireEditableClient();
+  render(<KeybindingsSection />);
+
+  await enterCapture("Open the command palette");
+
+  // Support drops: capture cancelled, editing affordance gone.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  expect(screen.queryByRole("button", { name: /shortcut for Open the command palette/ })).toBeNull();
+
+  // Support returns (the store re-refreshes the hub payload on its own):
+  // the chord button comes back and opens a NEW capture.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  const chordButton = await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
+  await userEvent.setup().click(chordButton);
+  expect(captureBox().textContent).toContain("Press new shortcut…");
+});
+
+// Reset availability derives from the hub's RAW rules: a persisted rule
+// validation skips (reserved here) never reaches the validated set, but
+// dropping it is exactly the meaningful action - so the row must offer
+// Reset even though the effective bindings never changed.
+// A conflict-skip warning names the holder the way the rows do - by TITLE
+// (with the action id alongside) - not by bare action id: this list is what
+// the user reads to understand why a saved rule did not apply.
+test("a persisted rule skipped for conflicting with a default names the holder by title in the warnings list", async () => {
+  // composerFocus claiming Control+K collides with palette.open's default.
+  await wireEditableClient([{ action: ACTIONS.composerFocus, chord: "Control+K" }]);
+  render(<KeybindingsSection />);
+
+  await waitFor(() =>
+    expect(screen.getByRole("status").textContent).toContain(
+      `chord "Control+K" in scope "global" is already bound by "Open the command palette" (${ACTIONS.paletteOpen})`,
+    ),
+  );
+  // The skipped rule changed nothing: composer stays on its default.
+  expect(within(rowFor("Focus the composer")).queryByText("Customized")).toBeNull();
+});
+
+test("a persisted rule skipped by validation shows Reset, and clicking it drops the rule from the hub payload", async () => {
+  // Control+W is reserved on every platform: the rule is skipped with a
+  // warning and never applies.
+  const client = await wireEditableClient([{ action: ACTIONS.railToggle, chord: "Control+W" }]);
+  render(<KeybindingsSection />);
+
+  const row = rowFor("Toggle the sidebar");
+  const reset = within(row).getByRole("button", { name: "Reset" });
+  // An action with no raw rule shows no Reset (regression).
+  expect(within(rowFor("Open the command palette")).queryByRole("button", { name: "Reset" })).toBeNull();
+  // The Customized marker stays on the effective bindings: the skipped rule
+  // changed nothing, so no marker.
+  expect(within(row).queryByText("Customized")).toBeNull();
+
+  await userEvent.setup().click(reset);
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  // The PATCH drops the rule: the full replacement rule set without it.
+  expect(patchCallsOf(client)[0]?.params).toEqual({
+    expectedRevision: 1,
+    config: { version: 1, rules: [] },
+  });
+  await waitFor(() => expect(within(rowFor("Toggle the sidebar")).queryByRole("button", { name: "Reset" })).toBeNull());
+});
+
+// Finding 33: a preflight rejection (a Reset that would re-conflict a
+// restored default) sets ONLY the row error - hubError stays null by design,
+// so the hubError transition cannot clear it. The next confirmed hub payload
+// (here a `changed` notification from an edit made elsewhere) supersedes the
+// bindings the error described, and the apply-serial bump clears the row error.
+test("a Reset preflight rejection's row error clears on the next confirmed payload", async () => {
+  const client = await wireEditableClient([
+    { action: ACTIONS.composerFocus, chord: "Control+K" },
+    { action: ACTIONS.paletteOpen, chord: "Control+P" },
+  ]);
+  render(<KeybindingsSection />);
+
+  // Reset on the palette row drops the palette override: the simulation
+  // restores palette.open's default Control+K, which composer's override
+  // still claims - an introduced conflict the hub write never sees.
+  const row = rowFor("Open the command palette");
+  await userEvent.setup().click(within(row).getByRole("button", { name: "Reset" }));
+  const alert = await within(row).findByRole("alert");
+  expect(alert.textContent).toContain(`already bound by "Open the command palette" (${ACTIONS.paletteOpen})`);
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(keybindingsStore.getState().hubError).toBeNull();
+
+  // Nothing hub-sourced follows on its own: the error persists until a
+  // confirmed payload lands (the composer rule was removed through another
+  // client), then clears with the apply.
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  });
+  await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
+  expect(keybindingsStore.getState().hubError).toBeNull();
+});
+
+// Finding 33, fence half: a write QUEUED in a ready generation that a
+// support flap ends rejects at the call-time fence - throw-only, hubError
+// stays null by design (finding 22) - leaving a row error no hubError
+// transition can clear. The next confirmed payload clears it.
+test("a generation-fenced queued write's row error clears on the next confirmed payload", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () =>
+    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Write 1 (palette Unbind) hangs in flight; write 2 (composer Unbind)
+  // queues behind it in the same generation.
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  await userEvent.setup().click(within(rowFor("Focus the composer")).getByRole("button", { name: "Unbind" }));
+
+  // A support flap ends the ready generation: the flap-back begins a NEW
+  // generation and re-refreshes (revision 3 again), confirming state - that
+  // apply-serial bump happens BEFORE either row error exists.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+
+  // Write 1's response lands in the DEAD generation (dropped, synthesized
+  // resolution); write 2 then executes and the call-time fence throws - the
+  // composer row shows the error while hubError stays null.
+  resolvePatch?.(overridesPayload(4, []));
+  const composerRow = rowFor("Focus the composer");
+  const alert = await within(composerRow).findByRole("alert");
+  expect(alert.textContent).toContain("unavailable");
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(1);
+
+  // A confirmed payload for the NEW generation supersedes the bindings the
+  // error described: the row error clears.
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(5, []),
+  });
+  await waitFor(() => expect(within(composerRow).queryByRole("alert")).toBeNull());
+});
+
+// Finding 35: after an un-apply ROLLBACK on support loss the hubError alert
+// reports the old overrides still in effect; the status line must not
+// contradict it by claiming the built-in defaults. (Clean unsupported keeps
+// the defaults wording - pinned by the pre-existing "does not support synced
+// keybinding overrides" test.)
+test("a wedged support loss keeps the overrides firing and the status does not claim the defaults are in effect", async () => {
+  const client = await wireEditableClient([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+  render(<KeybindingsSection />);
+
+  // The wedge: a foreign binding squatting palette.open's DEFAULT chord, so
+  // the support drop's un-apply restore exact-matches, throws, and rolls
+  // back. palette.open's default is $mod+K with legacyEitherMod, so the
+  // restored base serializes "Control+[Meta]+K" (Meta OPTIONAL).
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("still in effect");
+  const status = screen.getByRole("status");
+  expect(status.textContent).not.toContain("built-in defaults are in effect");
+  expect(status.textContent).toContain("still in effect");
+  // ...and the listing backs it up: the palette override is still firing
+  // and still marked Customized.
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("Customized")).toBeTruthy();
+  expect(within(row).getByText("P")).toBeTruthy();
+});
+
+// Finding 37: the round-3 gate locks editing while hubError is set, and a
+// successful refresh clears it - the error block offers a Retry control that
+// re-drives the refresh. The control unmounts the moment the refresh starts
+// (refreshFor's entry clears hubError), so a double-click has no second
+// target; the in-flight window with a PRESERVED rollback error disables it
+// instead (separate test).
+test("a failed patch locks editing and shows a Retry that re-drives the refresh and restores editability (finding 37)", async () => {
+  const client = new FakeClient("ready");
+  let pending: Promise<KeybindingsOverrides> | undefined;
+  client.on("evener/settings/keybindings/get", () => pending ?? overridesPayload(1, []));
+  let failPatch = true;
+  client.on("evener/settings/keybindings/patch", (params) => {
+    if (failPatch) throw new Error("hub exploded");
+    return overridesPayload(2, params.config.rules);
+  });
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // A transient server error: the PATCH rejects on the live generation, so
+  // hubError surfaces and editing locks behind the round-3 gate.
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBe("hub exploded"));
+  expect(screen.queryByRole("button", { name: /shortcut for/ })).toBeNull();
+  const retry = screen.getByRole("button", { name: "Retry" });
+
+  // The hub recovers. Arm a hanging get so the in-flight window is
+  // observable: clicking Retry starts the refresh, which clears hubError at
+  // entry - the alert and the Retry control unmount, leaving no second
+  // click target (the double-fire guard on this path).
+  failPatch = false;
+  let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
+  pending = new Promise<KeybindingsOverrides>((resolve) => {
+    resolveGet = resolve;
+  });
+  const getCalls = () => client.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+  const before = getCalls();
+  await userEvent.setup().click(retry);
+  await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+  expect(getCalls()).toBe(before + 1);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+  // The refresh lands: hubError clears and editability returns.
+  resolveGet?.(overridesPayload(1, []));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+  await screen.findByRole("button", { name: "Change the shortcut for Open the command palette" });
+});
+
+// Finding 37: on an unsupported hub a refresh cannot help (refreshFor's
+// entry guard refuses it) - no Retry, even when the rollback alert is
+// showing (that state's retry is connection-change-driven, findings 31/35).
+test("Retry does not appear on an unsupported hub, even with the rollback alert (finding 37)", async () => {
+  const client = await wireEditableClient([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+  render(<KeybindingsSection />);
+  // The wedge rolls the support drop's un-apply back (finding-35 staging):
+  // the rollback alert shows, but the hub is unsupported - no Retry.
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("still in effect");
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+// Finding 37, in-flight window: through a rewire rollback the hubError is
+// PRESERVED while the new hub's refresh is in flight (unapplyRolledBack), so
+// the Retry control stays mounted - disabled while hubLoading, making a
+// double-click a no-op. When the refresh lands and clears the error, the
+// control unmounts.
+test("Retry is disabled while a refresh is in flight through the rollback window (finding 37)", async () => {
+  const clientA = new FakeClient("ready");
+  clientA.on("evener/settings/keybindings/get", () =>
+    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  await wireClient(clientA, true);
+  render(<KeybindingsSection />);
+
+  // The wedge: a foreign binding squatting palette.open's default chord, so
+  // the rewire's un-apply restore throws and rolls back.
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  const clientB = new FakeClient("ready");
+  let resolveGet: ((p: KeybindingsOverrides) => void) | undefined;
+  clientB.on(
+    "evener/settings/keybindings/get",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolveGet = resolve;
+      }),
+  );
+  connectionStore.getState().connect(clientB);
+  connectionStore.setState({
+    features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().hubLoading).toBe(true));
+  expect(keybindingsStore.getState().hubError).toContain("still in effect");
+
+  // Retry is mounted (supported hub, hubError present) but disabled for the
+  // flight: clicking it fires no second get.
+  const retry = screen.getByRole("button", { name: "Retry" });
+  expect((retry as HTMLButtonElement).disabled).toBe(true);
+  const getCalls = () => clientB.calls.filter((c) => c.method === "evener/settings/keybindings/get").length;
+  const before = getCalls();
+  await userEvent.setup().click(retry);
+  expect(getCalls()).toBe(before);
+
+  // Unwedge; the refresh lands, clears the rollback error, and the control
+  // unmounts.
+  keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+  resolveGet?.(overridesPayload(1, []));
+  await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });

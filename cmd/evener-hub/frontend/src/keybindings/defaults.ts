@@ -323,16 +323,39 @@ export function registerDefaultBindings(registry: KeybindingsRegistry): Binding[
   return registered;
 }
 
+/** The one CONDITIONAL default-map entry's inclusion test, shared by the
+ * registration path here and the simulation path
+ * (defaultBindingShapesForAction) so the actual restore and the validation
+ * simulation can never disagree (finding 27): the "?" character-key
+ * trigger exists only while the characterKeyTriggers pref is on. */
+function includeDefaultEntry(entryId: string, options?: { characterKeyTriggers?: boolean }): boolean {
+  return !(options?.characterKeyTriggers === false && entryId === CHARACTER_KEY_TRIGGER_BINDING_ID);
+}
+
 /** Registers only the given action's default entries (plus the $mod twin),
  * the per-action equivalent of registerDefaultBindings the overrides store
- * uses to restore one action's defaults. Throws on an unknown action id. */
-export function registerDefaultBindingsForAction(registry: KeybindingsRegistry, actionId: string): Binding[] {
+ * uses to restore one action's defaults. Throws on an unknown action id.
+ *
+ * `characterKeyTriggers: false` mirrors the live registry when the
+ * cheatsheet character-key pref is off (the cheatsheetController has no
+ * "?" binding registered then): the restore skips the conditional entry,
+ * so it cannot collide with a user rule claiming exactly [Shift]+? -
+ * registerBinding throws on an exact same-scope serialization match, and
+ * the reconcile's strip runs AFTER this mutation (the ordering contract),
+ * so the collision would precede the cleanup. The controller re-registers
+ * the entry itself when the pref turns back on. */
+export function registerDefaultBindingsForAction(
+  registry: KeybindingsRegistry,
+  actionId: string,
+  options?: { characterKeyTriggers?: boolean },
+): Binding[] {
   const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
   if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
   const registered: Binding[] = [];
   for (const input of inputs) {
     const pair = modPair(input);
     for (const entry of pair ?? [input]) {
+      if (!includeDefaultEntry(entry.id, options)) continue;
       registered.push(registry.getState().registerBinding(entry));
     }
   }
@@ -348,14 +371,24 @@ export interface DefaultBindingShape {
 /** The (scope, parsed chord) pairs registerDefaultBindingsForAction would
  * register for the action, WITHOUT registering them: the validation layer
  * simulates dropped-override restorations against these. Throws on an
- * unknown action id. */
-export function defaultBindingShapesForAction(actionId: string): DefaultBindingShape[] {
+ * unknown action id.
+ *
+ * `characterKeyTriggers: false` mirrors the live registry when the
+ * cheatsheet character-key pref is off (the cheatsheetController
+ * unregisters the "?" entry while the pref is off): the restored set then
+ * excludes the character-key trigger binding, so the simulation cannot
+ * report a conflict against a binding that will not exist. */
+export function defaultBindingShapesForAction(
+  actionId: string,
+  options?: { characterKeyTriggers?: boolean },
+): DefaultBindingShape[] {
   const inputs = DEFAULT_BINDINGS.filter((input) => input.actionId === actionId);
   if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
   const shapes: DefaultBindingShape[] = [];
   for (const input of inputs) {
     const pair = modPair(input);
     for (const entry of pair ?? [input]) {
+      if (!includeDefaultEntry(entry.id, options)) continue;
       shapes.push({
         id: entry.id,
         scope: entry.scope ?? GLOBAL_SCOPE,

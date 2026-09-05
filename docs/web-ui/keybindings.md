@@ -312,7 +312,20 @@ Triggers:
   prefs store and the overrides store: an applied override (or unbind)
   owns the action's whole chord set, so `?` never reappears on an
   overridden `cheatsheet.toggle` — the override is the user's own
-  replacement for both triggers.
+  replacement for both triggers. A pref flip also RE-VALIDATES the
+  persisted rules (the overrides store's prefs subscription re-applies
+  the raw set): the simulation treats `?` as pref-authoritative — the
+  re-apply runs in the flip instant, before the reconcile has
+  unregistered/re-registered the entry, and must simulate the map the
+  reconcile is about to establish — so a chord claimed while the pref
+  was off (say `composer.focus` on Shift+?) is un-applied by the
+  restore-wins rule with a conflict warning when the pref flips back
+  on, and a rule skipped while the pref was on applies when it flips
+  off. The reconcile's register path is separately overlap-checked as
+  the guard for overlaps validation does not manage (a foreign binding
+  squatting the chord): it skips the registration and surfaces a
+  `character-key-conflict` warning naming the holder in the Settings
+  section's warnings list until the overlap clears.
 - **Close**: Escape (the OverlayPanel's own handler claims it first
   whenever focus is inside the dialog; the scope-gated `cheatsheet.close`
   binding is the window-level backstop) or ⌘/ again.
@@ -403,7 +416,19 @@ it pushes `SETTINGS_SCOPE` and registers `settings.close` in one effect.
 
 Overrides are stored **on the hub**, not in the browser. There is no
 localStorage layer: an unsupported or unreachable hub means built-in
-defaults only, never a local fallback copy.
+defaults only, never a local fallback copy. Live-registry posture follows
+the same claim: when support resolves to **unsupported** (the feature set
+is known and does not advertise keybindings) any applied overrides are
+un-applied through the same atomic unwind the reconcile uses, because the
+settings section tells the user the built-in defaults are in effect — and
+the hub payload state (`loaded`/`revision`/`overrides`/`rawOverrides`) is
+discarded with them, so a supported reconnect accepts the returning hub's
+revision whatever it is (a restored backup can be LOWER than the old hub's)
+and edits compose from the new payload. Late `changed` notifications and
+in-flight PATCH responses landing during an unsupported window are dropped,
+not applied. A supported hub that is merely **unreachable** (transient
+disconnect) keeps its overrides firing — the rows show them read-only
+until the hub returns.
 
 ### Server side
 
@@ -454,7 +479,10 @@ default.
   wins** — the rule is skipped with a `conflict` warning and its action
   falls back to its own defaults, so every action stays bound. A chord freed
   earlier in the same payload (rebind-away or unbind) can be claimed by a
-  later rule.
+  later rule. The restored set mirrors the character-key pref: while the
+  pref is off the live registry has no `?` binding, so the simulated restore
+  does not claim one either — resetting `cheatsheet.toggle` cannot
+  phantom-conflict with a user chord that overlaps `?`.
 
 ### Apply flow
 
@@ -481,7 +509,24 @@ not the store; the store carries `hubSupport`, `revision`, the validated
 - **Patch** (the editor's write path): sends `expectedRevision` +
   `{version: 1, rules}`; on success the canonical response is applied; on a
   conflict rejection the store refreshes to `data.current`, sets `conflict`
-  and `hubError`, and rethrows.
+  and `hubError`, and rethrows. The store rejects a patch while any refresh
+  is in flight (`hubLoading`): the in-flight payload can land at any
+  revision, and a concurrent PATCH's `expectedRevision` would race it.
+  Writes also **serialize at the store**: `patchOverrides` calls chain onto
+  a pending-write queue, so at most one PATCH is in flight and each write
+  runs only after the previous one settles. Callers pass a composition
+  THUNK (`() => replacementRules(...)`) so the whole-payload rule set is
+  composed at execution time against the raw set the previous write left
+  behind — composing at call time would race the queued-ahead write with a
+  stale `expectedRevision` and a payload missing its confirmed change (a
+  self-inflicted conflict). A failed write settles the queue entry without
+  blocking the next one. Each write is also fenced to the ready generation
+  it was CREATED under: the client and epoch are captured at call time, and
+  a queued write whose generation ended while it waited (client replaced,
+  generation bumped) rejects with the same unavailable-class error before
+  any wire request — compose-at-execution is right within one generation,
+  but an edit made against one hub's displayed state must not land on the
+  next hub's config.
 
 ### Failure posture
 
@@ -511,10 +556,26 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   or "Set a shortcut" when unbound) swaps the row's controls for a focused
   capture box showing "Press new shortcut…". Held modifiers echo live as
   `KeyHint` chips; the first non-modifier press records the chord. Plain
-  Enter saves, plain Escape cancels, Enter/Escape WITH a modifier record
-  as chords (Escape itself stays bindable). Clicking away cancels. The
+  Enter saves. Plain Escape ALWAYS cancels the capture — bare Escape
+  cannot be assigned through the editor (Escape-as-cancel is the
+  keybinding-editor convention), so the two built-in Escape bindings
+  (Close settings, Close the keyboard shortcuts overlay) are restored via
+  **Reset to default** rather than re-captured. Enter/Escape WITH a
+  modifier still record as chords (Shift+Escape is bindable). Clicking
+  away cancels, whether or not the click target can take focus. The
   capture box preventDefaults and stopPropagations every keydown, so the
   dispatcher and `settings.close`'s own Escape stay inert while capturing.
+  IME composition keydowns are ignored with the dispatcher's own guard
+  (`isComposing` / `keyCode === 229` / `Process` / `Unidentified`), so a
+  composition or its commit Enter can never record or save. A save is a
+  hub round trip that can outlive the box: a click-away cancel mid-save
+  bumps a per-capture generation token, and the stale save's resolution
+  applies only while its generation is current — it cannot close or
+  repaint a capture the user reopened before it landed. Editability loss
+  (a disconnect, support loss, hub replacement, or a hub error making the
+  section read-only) cancels an open capture the same way — generation
+  bumped, no focus return — so an interactive box never strands in the
+  read-only listing.
 - **Single-press only.** Capture records one press — no multi-press
   sequences — matching the all-single-press default map (multi-press
   conflict checking is deliberately coarser). Bare-character chords (a
@@ -532,9 +593,11 @@ the **Character-key shortcuts** Switch row at the top owning the WCAG
   with `expectedRevision` optimistic concurrency (the apply flow above); a
   revision conflict refreshes to the server's current payload.
 - **Unbind / Reset.** "Unbind" (bound actions) writes a `chord: null`
-  rule; "Reset" (actions carrying an override) drops the action from the
-  payload, restoring its defaults through the reconcile's
-  `restoreDefaultBinding`. Failures surface inline under the row.
+  rule; "Reset" (actions carrying a RAW override rule — including a
+  persisted rule validation skips, where dropping it is exactly the
+  meaningful action) drops the action from the payload, restoring its
+  defaults through the reconcile's `restoreDefaultBinding`. Failures
+  surface inline under the row.
 - **cheatsheet.toggle.** The ⌘/ base chord edits like any other. The `?`
   character-key entry renders read-only with a note while it is
   registered: it follows the character-key pref and the

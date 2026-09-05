@@ -5,7 +5,9 @@ import {
   CHARACTER_KEY_TRIGGER_BINDING_ID,
   CHEATSHEET_SCOPE,
   DEFAULT_BINDINGS,
+  defaultBindingShapesForAction,
   registerDefaultBindings,
+  registerDefaultBindingsForAction,
   SETTINGS_SCOPE,
 } from "./defaults";
 import { createKeybindingDispatcher, type KeybindingDispatcher } from "./dispatcher";
@@ -374,5 +376,25 @@ describe("default bindings through the dispatcher", () => {
       ACTIONS.selectionQuote,
       ACTIONS.settingsOpen,
     ]);
+  });
+});
+
+describe("register vs shapes agreement", () => {
+  // The preflight (defaultBindingShapesForAction) and the mutation
+  // (registerDefaultBindingsForAction) share one predicate for the
+  // conditional "?" entry; if they ever diverge the validation can accept a
+  // restore that then throws, or reject one that would succeed.
+  test("both paths include or exclude the ? trigger for the SAME pref value", () => {
+    for (const pref of [true, false]) {
+      const registry = createKeybindingsRegistry();
+      const registered = registerDefaultBindingsForAction(registry, ACTIONS.cheatsheetToggle, {
+        characterKeyTriggers: pref,
+      }).map((b) => b.id);
+      const shaped = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+        characterKeyTriggers: pref,
+      }).map((s) => s.id);
+      expect(registered).toEqual(shaped);
+      expect(registered.includes(CHARACTER_KEY_TRIGGER_BINDING_ID)).toBe(pref);
+    }
   });
 });

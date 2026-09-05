@@ -68,9 +68,20 @@ export function rebindAction(registry: KeybindingsRegistry, actionId: string, ch
 
 /** Restores the action's default binding(s) (plus the `$mod` twin), removing
  * any override or unbind. Idempotent on an action that was never overridden.
- * Throws on an unknown action id. */
-export function restoreDefaultBinding(registry: KeybindingsRegistry, actionId: string): void {
+ * Throws on an unknown action id.
+ *
+ * `characterKeyTriggers: false` mirrors the character-key pref into the
+ * restore (finding 27): with the pref off the conditional "?" entry is not
+ * re-registered - the cheatsheetController owns it and re-adds it when the
+ * pref turns on. The caller (the overrides store) knows the pref; the
+ * simulation (validation.ts via defaultBindingShapesForAction) consults the
+ * SAME inclusion test, so restore and simulation stay in lockstep. */
+export function restoreDefaultBinding(
+  registry: KeybindingsRegistry,
+  actionId: string,
+  options?: { characterKeyTriggers?: boolean },
+): void {
   defaultInputFor(actionId);
   removeActionBindings(registry, actionId);
-  registerDefaultBindingsForAction(registry, actionId);
+  registerDefaultBindingsForAction(registry, actionId, options);
 }
