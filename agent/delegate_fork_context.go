@@ -64,7 +64,8 @@ func completedDelegateContext(entries []transcript.Entry) []transcript.Entry {
 					delete(pending, part.ToolResult.ToolCallID)
 				}
 			}
-		case schema.TurnSteering, schema.TurnHookCompleted, schema.TurnAttentionResolution:
+		case schema.TurnSteering, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch:
+			// Settings and telemetry can change while tools are executing.
 		default:
 			clear(pending)
 		}

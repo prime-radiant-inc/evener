@@ -35,6 +35,8 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			root.appendTurn(schema.TurnTool, llm.ToolResult("completed", "parent-result-sentinel", true))
 			root.appendTurn(schema.TurnUserInput, llm.User("current-input-sentinel"))
 			root.appendTurn(schema.TurnAssistant, forkContextToolCall("pending-spawn", "delegate"))
+			// A model setting can change while a tool is still executing.
+			root.appendTurn(schema.TurnModelSwitch, llm.System("model-marker-sentinel"))
 
 			params := map[string]any{"prompt": "child-assignment-sentinel", "delegation_allowance": float64(0)}
 			if option != nil {
