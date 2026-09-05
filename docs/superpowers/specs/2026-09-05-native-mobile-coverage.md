@@ -7,6 +7,11 @@ and control of other sessions is outside v1.
 
 ## Current evidence and remaining workflows
 
+Reconciled against source at `fabdb86db` on 5 September 2026. The current
+[design roadmap](../../design/mobile/README.md) and
+[workflow studies](../../design/mobile/workflow-studies.md) govern visual work.
+No workflow below is certified release-complete.
+
 The protocol inventory comes from
 cmd/evener-hub/frontend/src/protocol/types.gen.ts (MethodTypes). A method's
 existence is not UI coverage. Each workflow needs a usable native surface and
@@ -14,29 +19,44 @@ behavioral verification, including errors, authorization, and hub isolation.
 
 | Workflow | Native status | Work still required |
 | --- | --- | --- |
-| Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect | Edit profiles, pairing, physical network and auth recovery checks |
+| Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect; one active foreground connection | Edit profiles, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
 | Browse conversations | First 50 distinct sessions, refresh, native navigation | Pagination, search, archived sessions, project organization, favorites and pin sections |
-| Read conversation | Shared canonical projection, older history, expandable activity | Rich Markdown/code, attachments, long-transcript performance and accessible disclosure |
-| Compose | Text send, stop, uncertainty recovery while mounted | Persistent hub-scoped drafts, attachments, command selection, queue and steering |
-| Create session | Native project/harness/model/prompt flow; playground creation verified on both platforms | Real Evener E2E, large catalogs, physical keyboard/accessibility coverage |
+| Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; unapproved visual experiment | Rich Markdown/code, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
+| Compose | Text send/steer/queue/stop gated by capabilities; uncertainty recovery while mounted | Persistent hub-scoped drafts, attachments, command selection, queue inspection/cancel/promotion/drain; complete both-platform running-turn E2E |
+| Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
 | Manage session | Not exposed | Rename, fork, resume, clear, compact, shutdown; honor capabilities and identity |
-| Model and launch settings | Not exposed | Model, vision model, reasoning, launch layers, schema validation and repository trust |
+| Model and launch settings | Model/reasoning selection during creation only | Model, vision model, reasoning, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
-| Approvals | Not exposed | Sandbox escalation resolution and any other user decision surfaces |
+| Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
 | Hub navigation | Not exposed | Favorite/archive, project/session removal, pin assign/unpin, section rename/delete |
 | Provider authentication | Not exposed | Status, API keys, login/logout, device authorization, auth tests |
 | Instances | Not exposed | List/create/edit/remove/default |
 | Plugins and marketplaces | Not exposed | Browse/preview/install/upgrade/enable/disable/remove, source management, auto-upgrade |
 | Hub preferences | Not exposed | Overview, transcript display settings, upgrade |
-| Native distribution | Expo Go verified | Standalone iOS/Android builds, signing/distribution, physical devices |
+| Native distribution | Standalone simulator/emulator release builds and installation recorded; iOS credential persistence checked | Distribution signing, physical devices, final-head both-platform regression and performance evidence |
+| Design quality | Research, philosophy, style-guide and lookbook drafts; prototype rejected as too chunky | Direction review, realistic screen studies, native interaction prototypes, accessible visual system and measured fluency |
 
 ## Verification boundaries
 
 - The first slice was manually exercised in Expo Go on iOS26.5 and Android35.
   Production checks read the local hub. Scripted playground mutations prove the
   native network/UI path, not real Evener daemon or provider execution.
-- Automated native tests exercise profile storage, the shared client handshake,
-  draft recovery, and shared store/service integration over a loopback socket.
+- Fresh verification on source `fabdb86db`: `npm test` in `mobile-native` passed
+  24 tests across five files; `npm run check` passed. Tests exercise profile
+  storage with a storage double, the shared handshake, draft recovery, creation
+  state, timeline grouping, and shared store/service integration over a loopback
+  socket. They do not establish SecureStore behavior on devices or native UI E2E.
+- Standalone runtime notes in
+  `.superpowers/sdd/2026-09-05-native-session-creation/standalone-runtime.md`
+  record real isolated hub + scripted provider creation on iOS and Android.
+  iOS send/steer/queue/stop manual evidence predates final hydration-race fixes;
+  Android running-turn action verification remains incomplete. These are
+  historical observations, not freshly repeated final-head manual results.
+- Current source anchors: `mobile-native/src/screens.tsx` (four-route shell,
+  first-page roster, composer), `ConnectionProvider.tsx` (one foreground client),
+  `newSession.ts` (creation state), and `TimelineItem.tsx` (plain text rendering).
+  The shared `mobile/src/services/attachments.ts` explicitly remains a pure
+  validator with no native file picker. Its existence is not attachment support.
 - Production session listing can take about 28 seconds and sometimes exceed the
   existing 30-second request limit. Reducing page size did not resolve this. A
   responsive app needs an investigation of the actual hub path before claiming

@@ -4,7 +4,7 @@
 
 Fluency and beauty are requirements of the mobile app, alongside capability and reliability. The current React Native prototype proves some workflows; it does not establish the visual direction. Jesse’s assessment of its chunky rows is the starting point for this work.
 
-Read the [philosophy](philosophy.md), [style guide](style-guide.md), and [annotated lookbook](lookbook.html). The [research ledger](sources.md) separates published evidence from our design judgments. This is a proposed direction, not an approved design or a claim that the app already meets it.
+Read the [philosophy](philosophy.md), [style guide](style-guide.md), and [annotated lookbook](lookbook.html). The [research ledger](sources.md) separates published evidence from our design judgments. The [workflow studies](workflow-studies.md) define realistic content and full-product scenarios for the next design step. This is a proposed direction, not an approved design or a claim that the app already meets it.
 
 ## Roadmap and review gates
 
