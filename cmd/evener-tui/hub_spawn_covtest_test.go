@@ -94,7 +94,7 @@ func TestCovUpdateSpawnKeyEnter(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeSpawn
 	m.openSpawnForm()
-	m.spawnHarnesses = []string{"evener", "codex"}
+	m.spawnHarnesses = []string{"evener", "external"}
 	m.setSpawnFocus(hubSpawnFieldHarness)
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
 	after := got.(hubModel)
@@ -160,7 +160,7 @@ func TestCovUpdateSpawnKeySpace(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeSpawn
 	m.openSpawnForm()
-	m.spawnHarnesses = []string{"evener", "codex"}
+	m.spawnHarnesses = []string{"evener", "external"}
 	m.setSpawnFocus(hubSpawnFieldHarness)
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	after := got.(hubModel)
@@ -299,51 +299,14 @@ func TestCovUpdateSpawnKeyNonPromptNoOp(t *testing.T) {
 
 // TestCovActivateSpawnModelField exercises the model activation paths.
 func TestCovActivateSpawnModelField(t *testing.T) {
-	// No models, not evener harness, with client: fetches models.
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			if params.Harness != "codex" {
-				t.Errorf("harness = %q, want codex", params.Harness)
-			}
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Model: "codex-large"}}}, nil
-		})
-	})
-	defer cleanup()
-	m := newHubModel(client, "http://hub.test")
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-	m.spawnModels = nil
-	m.spawnHarnessModels = nil
-	got, cmd := m.activateSpawnModelField()
-	if cmd == nil {
-		t.Fatal("should produce a fetch cmd for non-evener harness with client")
-	}
-	msg, ok := cmd().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "codex-large" {
-		t.Fatalf("model fetch result = %#v", msg)
-	}
-	if got.(hubModel).err != nil {
-		t.Fatalf("model activation set error before fetch: %v", got.(hubModel).err)
-	}
-
-	// No models, not evener harness, no client: sets error.
-	m = newHubModel(nil, "http://hub.test")
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-	got, _ = m.activateSpawnModelField()
-	after := got.(hubModel)
-	if after.err == nil {
-		t.Fatal("should set err for no models and no client")
-	}
-
-	// No models, evener harness: sets error.
-	m = newHubModel(nil, "http://hub.test")
+	// No models: sets error.
+	m := newHubModel(nil, "http://hub.test")
 	m.spawnHarness = "evener"
 	m.spawnHarnessKinds = map[string]string{"evener": "evener"}
-	got, _ = m.activateSpawnModelField()
-	after = got.(hubModel)
+	got, _ := m.activateSpawnModelField()
+	after := got.(hubModel)
 	if after.err == nil {
-		t.Fatal("should set err for no evener models")
+		t.Fatal("should set err for no models")
 	}
 
 	// Has models: opens picker.
@@ -386,17 +349,17 @@ func TestCovSubmitSpawnForm(t *testing.T) {
 
 	// Empty prompt with unsupported reason.
 	m = newHubModel(client, "http://hub.test")
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-	m.spawnEmptyTaskReasons = map[string]string{"codex": "codex requires a prompt"}
-	m.spawnEmptyTaskNext = map[string]string{"codex": "provide a prompt"}
+	m.spawnHarness = "external"
+	m.spawnHarnessKinds = map[string]string{"external": "external"}
+	m.spawnEmptyTaskReasons = map[string]string{"external": "external harness requires a prompt"}
+	m.spawnEmptyTaskNext = map[string]string{"external": "provide a prompt"}
 	got, _ = m.submitSpawnForm()
 	after = got.(hubModel)
 	if after.err == nil {
 		t.Fatal("should set err for empty task unsupported")
 	}
 
-	// Evener harness, empty model: error.
+	// Empty model: error.
 	m = newHubModel(client, "http://hub.test")
 	m.spawnHarness = "evener"
 	m.spawnHarnessKinds = map[string]string{"evener": "evener"}
@@ -469,12 +432,6 @@ func TestCovSpawnFieldHint(t *testing.T) {
 		t.Fatal("model hint should not be empty")
 	}
 
-	// Model hint with no models and non-evener harness.
-	m = hubModel{spawnFocus: hubSpawnFieldModel, spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}}
-	if got := m.spawnFieldHint(); got == "" {
-		t.Fatal("model hint should not be empty for codex")
-	}
-
 	m = hubModel{spawnFocus: hubSpawnFieldDir}
 	if got := m.spawnFieldHint(); got == "" {
 		t.Fatal("dir hint should not be empty")
@@ -499,10 +456,10 @@ func TestCovCloseSpawnForm(t *testing.T) {
 
 // TestCovCycleSpawnHarness exercises harness cycling.
 func TestCovCycleSpawnHarness(t *testing.T) {
-	m := hubModel{spawnHarness: "evener", spawnHarnesses: []string{"evener", "codex"}, spawnHarnessKinds: map[string]string{"evener": "evener", "codex": "codex"}}
+	m := hubModel{spawnHarness: "evener", spawnHarnesses: []string{"evener", "external"}, spawnHarnessKinds: map[string]string{"evener": "evener", "external": "external"}}
 	m.cycleSpawnHarness()
-	if m.spawnHarness != "codex" {
-		t.Fatalf("harness = %q, want codex", m.spawnHarness)
+	if m.spawnHarness != "external" {
+		t.Fatalf("harness = %q, want external", m.spawnHarness)
 	}
 
 	// Wrap around.
@@ -512,7 +469,7 @@ func TestCovCycleSpawnHarness(t *testing.T) {
 	}
 
 	// Harness not in list: falls to first.
-	m = hubModel{spawnHarness: "unknown", spawnHarnesses: []string{"evener", "codex"}, spawnHarnessKinds: map[string]string{"evener": "evener", "codex": "codex"}}
+	m = hubModel{spawnHarness: "unknown", spawnHarnesses: []string{"evener", "external"}, spawnHarnessKinds: map[string]string{"evener": "evener", "external": "external"}}
 	m.cycleSpawnHarness()
 	if m.spawnHarness != "evener" {
 		t.Fatalf("harness = %q, want evener (first)", m.spawnHarness)
@@ -528,36 +485,15 @@ func TestCovCycleSpawnHarness(t *testing.T) {
 
 // TestCovSpawnHarnessKind exercises the harness kind lookup.
 func TestCovSpawnHarnessKind(t *testing.T) {
-	m := hubModel{spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}}
-	if got := m.spawnHarnessKind(); got != "codex" {
-		t.Fatalf("kind = %q, want codex", got)
+	m := hubModel{spawnHarness: "external", spawnHarnessKinds: map[string]string{"external": "external"}}
+	if got := m.spawnHarnessKind(); got != "external" {
+		t.Fatalf("kind = %q, want external", got)
 	}
 
 	// Default to evener.
 	m = hubModel{spawnHarness: "unknown", spawnHarnessKinds: map[string]string{}}
 	if got := m.spawnHarnessKind(); got != "evener" {
 		t.Fatalf("kind = %q, want evener (default)", got)
-	}
-}
-
-// TestCovSpawnHarnessModelDisplay exercises the harness model display.
-func TestCovSpawnHarnessModelDisplay(t *testing.T) {
-	// Empty model.
-	m := hubModel{spawnHarness: "codex", spawnModel: ""}
-	if got := m.spawnHarnessModelDisplay(); got != "" {
-		t.Fatalf("display = %q, want empty", got)
-	}
-
-	// Model with slash (evener-style): returned as-is.
-	m = hubModel{spawnHarness: "codex", spawnModel: "openai/gpt-5"}
-	if got := m.spawnHarnessModelDisplay(); got != "openai/gpt-5" {
-		t.Fatalf("display = %q, want openai/gpt-5", got)
-	}
-
-	// Model without slash (harness-style): prefixed with harness.
-	m = hubModel{spawnHarness: "codex", spawnModel: "claude-4"}
-	if got := m.spawnHarnessModelDisplay(); got != "codex/claude-4" {
-		t.Fatalf("display = %q, want codex/claude-4", got)
 	}
 }
 
@@ -575,8 +511,8 @@ func TestCovSpawnView(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeSpawn
 	m.openSpawnForm()
-	m.spawnHarnesses = []string{"evener", "codex"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex": "codex"}
+	m.spawnHarnesses = []string{"evener", "external"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener", "external": "external"}
 	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "GPT 5"}}
 	m.width = 100
 	m.height = 40
@@ -602,16 +538,6 @@ func TestCovSpawnView(t *testing.T) {
 		t.Fatal("spawnView with overrides modal should not be empty")
 	}
 
-	// With codex harness and no model (harness default).
-	m.launchOverridesModal = nil
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-	m.spawnModel = ""
-	m.spawnHarnessModels = map[string][]tuipick.ModelPickerItem{}
-	got = m.spawnView()
-	if got == "" {
-		t.Fatal("spawnView with codex harness should not be empty")
-	}
 }
 
 // TestCovSpawnDirView exercises dir view rendering.
@@ -690,7 +616,7 @@ func TestCovSpawnModelDisabledReason(t *testing.T) {
 
 // TestCovSpawnEmptyTaskUnsupported exercises empty task reasons.
 func TestCovSpawnEmptyTaskUnsupportedReason(t *testing.T) {
-	m := hubModel{spawnHarness: "codex", spawnEmptyTaskReasons: map[string]string{"codex": "requires prompt"}}
+	m := hubModel{spawnHarness: "external", spawnEmptyTaskReasons: map[string]string{"external": "requires prompt"}}
 	if got := m.spawnEmptyTaskUnsupportedReason(); got != "requires prompt" {
 		t.Fatalf("reason = %q, want 'requires prompt'", got)
 	}
@@ -703,7 +629,7 @@ func TestCovSpawnEmptyTaskUnsupportedReason(t *testing.T) {
 }
 
 func TestCovSpawnEmptyTaskUnsupportedNextAction(t *testing.T) {
-	m := hubModel{spawnHarness: "codex", spawnEmptyTaskNext: map[string]string{"codex": "type a prompt"}}
+	m := hubModel{spawnHarness: "external", spawnEmptyTaskNext: map[string]string{"external": "type a prompt"}}
 	if got := m.spawnEmptyTaskUnsupportedNextAction(); got != "type a prompt" {
 		t.Fatalf("next = %q, want 'type a prompt'", got)
 	}
@@ -836,56 +762,24 @@ func TestCovSpawnRecentDirsVisible(t *testing.T) {
 
 // TestCovSpawnModelPickerTitle exercises picker title.
 func TestCovSpawnModelPickerTitle(t *testing.T) {
-	m := hubModel{spawnHarness: "evener", spawnHarnessKinds: map[string]string{"evener": "evener"}}
+	m := hubModel{}
 	if got := m.spawnModelPickerTitle(); got != "Select model" {
 		t.Fatalf("title = %q, want 'Select model'", got)
-	}
-
-	m = hubModel{spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}}
-	if got := m.spawnModelPickerTitle(); got != "Select codex model" {
-		t.Fatalf("title = %q, want 'Select codex model'", got)
 	}
 }
 
 // TestCovSpawnSelectableModels exercises model selection.
 func TestCovSpawnSelectableModels(t *testing.T) {
-	// Evener harness.
-	m := hubModel{
-		spawnHarness:       "evener",
-		spawnHarnessKinds:  map[string]string{"evener": "evener"},
-		spawnModels:        []tuipick.ModelPickerItem{{ID: "openai/gpt-5"}},
-		spawnHarnessModels: map[string][]tuipick.ModelPickerItem{"codex": {{ID: "codex/model"}}},
-	}
+	m := hubModel{spawnModels: []tuipick.ModelPickerItem{{ID: "openai/gpt-5"}}}
 	if got := m.spawnSelectableModels(); len(got) != 1 || got[0].ID != "openai/gpt-5" {
 		t.Fatalf("selectable models = %+v, want openai/gpt-5", got)
-	}
-
-	// Codex harness.
-	m.spawnHarness = "codex"
-	m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-	if got := m.spawnSelectableModels(); len(got) != 1 || got[0].ID != "codex/model" {
-		t.Fatalf("selectable models = %+v, want codex/model", got)
 	}
 }
 
 // TestCovSyncSpawnModelWithHarness exercises model syncing.
 func TestCovSyncSpawnModelWithHarness(t *testing.T) {
-	// Codex harness with slash model: clears.
-	m := hubModel{spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}, spawnModel: "openai/gpt-5"}
-	m.syncSpawnModelWithHarness()
-	if m.spawnModel != "" {
-		t.Fatalf("model = %q, want empty (cleared for codex)", m.spawnModel)
-	}
-
-	// Codex harness without slash model: keeps.
-	m = hubModel{spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}, spawnModel: "claude-4"}
-	m.syncSpawnModelWithHarness()
-	if m.spawnModel != "claude-4" {
-		t.Fatalf("model = %q, want claude-4 (kept)", m.spawnModel)
-	}
-
-	// Evener harness, empty model, has enabled models: picks first.
-	m = hubModel{
+	// Empty model with enabled models picks the first.
+	m := hubModel{
 		spawnHarness:      "evener",
 		spawnHarnessKinds: map[string]string{"evener": "evener"},
 		spawnModel:        "",
@@ -896,7 +790,7 @@ func TestCovSyncSpawnModelWithHarness(t *testing.T) {
 		t.Fatalf("model = %q, want openai/gpt-5 (first enabled)", m.spawnModel)
 	}
 
-	// Evener harness, already has model: keeps.
+	// An existing model is kept.
 	m = hubModel{
 		spawnHarness:      "evener",
 		spawnHarnessKinds: map[string]string{"evener": "evener"},
@@ -922,7 +816,7 @@ func TestCovSpawnProjectName(t *testing.T) {
 func TestCovResetSpawnForm(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.openSpawnForm()
-	m.spawnHarness = "codex"
+	m.spawnHarness = "external"
 	m.spawnModel = "test"
 	m.resetSpawnForm()
 	if m.spawnHarness != "evener" {
@@ -956,19 +850,6 @@ func TestCovOpenSpawnModelPicker(t *testing.T) {
 	}
 	if m.err != nil {
 		t.Fatalf("err should be cleared, got %v", m.err)
-	}
-}
-
-// TestCovSpawnHarnessUsesEvenerModels exercises the harness check.
-func TestCovSpawnHarnessUsesEvenerModels(t *testing.T) {
-	m := hubModel{spawnHarness: "evener", spawnHarnessKinds: map[string]string{"evener": "evener"}}
-	if !m.spawnHarnessUsesEvenerModels() {
-		t.Fatal("evener should use evener models")
-	}
-
-	m = hubModel{spawnHarness: "codex", spawnHarnessKinds: map[string]string{"codex": "codex"}}
-	if m.spawnHarnessUsesEvenerModels() {
-		t.Fatal("codex should not use evener models")
 	}
 }
 

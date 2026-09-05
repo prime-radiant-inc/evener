@@ -442,36 +442,6 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.spawnLaunchOverrides = nil // one-shot overrides are consumed only after success
 		return m, fetchHubSession(m.frames, m.client, ref)
-	case hubModelsMsg:
-		if msg.err != nil {
-			if m.mode == hubModeSpawn {
-				if msg.harness != "" && !m.spawnHarnessUsesEvenerModels() {
-					m.err = fmt.Errorf("%s models unavailable; using harness default: %w", msg.harness, msg.err)
-				} else {
-					m.err = fmt.Errorf("models failed: %w", msg.err)
-				}
-			}
-			return m, nil
-		}
-		if msg.harness != "" {
-			if m.spawnHarnessModels == nil {
-				m.spawnHarnessModels = map[string][]tuipick.ModelPickerItem{}
-			}
-			m.spawnHarnessModels[msg.harness] = msg.models
-			if m.mode == hubModeSpawn && m.spawnHarness == msg.harness {
-				if len(msg.models) == 0 {
-					m.err = fmt.Errorf("no %s models available; using harness default", msg.harness)
-					return m, nil
-				}
-				m.openSpawnModelPicker(msg.models)
-			}
-			return m, nil
-		}
-		m.spawnModels = msg.models
-		if m.mode == hubModeSpawn {
-			m.syncSpawnModelWithHarness()
-		}
-		return m, nil
 	case hubSessionModelsMsg:
 		if msg.err != nil {
 			m.removeTrailingSessionSystem("Fetching available models...")
@@ -568,7 +538,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spawnRecentDirs = msg.recentDirs
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
-			if msg.modelErr != nil && m.spawnHarnessUsesEvenerModels() {
+			if msg.modelErr != nil {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
 			cmd := m.requestSpawnPluginPreview()

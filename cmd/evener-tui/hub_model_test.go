@@ -179,21 +179,21 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 			RollupState: "idle",
 			Sessions: []hubTreeNode{
 				{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "evener", SourceLabel: "local", Model: "gpt-5", Live: true, UpdatedAt: 20},
-				{Ref: "codex-local:01BETA", SessionID: "01BETA", Title: "beta task", State: "active", Project: "evener", SourceLabel: "codex-local", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 10},
+				{Ref: "remote:01BETA", SessionID: "01BETA", Title: "beta task", State: "active", Project: "evener", SourceLabel: "remote", Model: "openai/gpt-5.5", Live: true, UpdatedAt: 10},
 			},
 		}, {
-			Key:         "codex",
-			Name:        "codex",
+			Key:         "remote",
+			Name:        "remote",
 			RollupState: "idle",
 			Sessions: []hubTreeNode{
-				{Ref: "codex:01GAMMA", SessionID: "01GAMMA", Title: "gamma task", State: "idle", Project: "codex", SourceLabel: "codex", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 5},
+				{Ref: "remote:01GAMMA", SessionID: "01GAMMA", Title: "gamma task", State: "idle", Project: "remote", SourceLabel: "remote", Model: "openai/gpt-5.5", Live: true, UpdatedAt: 5},
 			},
 		}},
 	}
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"Launch New Session", "▾", "▍", "alpha task", "codex-local"} {
+	for _, want := range []string{"Launch New Session", "▾", "▍", "alpha task", "remote"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard tree missing %q:\n%s", want, got)
 		}
@@ -450,12 +450,12 @@ func TestHubModelDashboardSortsByAttentionThenRecency(t *testing.T) {
 func TestHubModelDashboardShowsSourceLabels(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = hubTreeResponse{Live: []hubTreeNode{{
-		Ref: "codex-local:01LIVE", SessionID: "01LIVE", Title: "external task", State: "idle", Project: "evener", Model: "openai", Live: true,
+		Ref: "remote:01LIVE", SessionID: "01LIVE", Title: "external task", State: "idle", Project: "evener", Model: "openai", Live: true,
 	}}}
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	if !strings.Contains(got, "codex-local") {
+	if !strings.Contains(got, "remote") {
 		t.Fatalf("dashboard missing source label:\n%s", got)
 	}
 }
@@ -1102,7 +1102,7 @@ func TestHubModelBrowseFooterStillShowsEnterSend(t *testing.T) {
 	// Any ChipContext field switches the composer to the mode-aware hint bar
 	// that carries "enter send" (composer_panel.go's View); SourceLabel is
 	// the lightest trip.
-	m.detail.SourceLabel = "codex-local"
+	m.detail.SourceLabel = "remote"
 	m.width = 140
 	m.height = 40
 	m.session.width = 140
@@ -1353,12 +1353,12 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 	}
 }
 
-func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
+func TestHubModelSessionHeaderShowsSourceMetadata(t *testing.T) {
 	thread := appwire.Thread{
-		ID:            "01CODEX",
-		SessionID:     "01CODEX",
-		Source:        "codex-local",
-		Name:          "codex task",
+		ID:            "01REMOTE",
+		SessionID:     "01REMOTE",
+		Source:        "remote",
+		Name:          "remote task",
 		ModelProvider: "gpt-5.3-codex",
 		CWD:           "/tmp/evener",
 		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
@@ -1367,7 +1367,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 			{ID: "turn_2", Status: appwire.TurnStatusInProgress},
 		},
 		Evener: appwire.EvenerThread{
-			Ref:             "codex-local:01CODEX",
+			Ref:             "remote:01REMOTE",
 			Profile:         "openai",
 			ContextPressure: 0.73,
 			Capabilities:    appwire.ThreadCapabilities{Send: true, Steer: true},
@@ -1379,8 +1379,8 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 
 	got := m.sessionView()
 	for _, want := range []string{
-		"codex task",
-		"src codex-local",
+		"remote task",
+		"src remote",
 		"WORKING",
 		"model gpt-5.3-codex",
 		"dir /tmp/evener",
@@ -1395,14 +1395,14 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 
 func TestHubModelSessionHeaderShowsProviderWhenModelUnknown(t *testing.T) {
 	thread := appwire.Thread{
-		ID:        "01CODEX",
-		SessionID: "01CODEX",
-		Source:    "codex-local",
-		Name:      "codex replay",
+		ID:        "01REMOTE",
+		SessionID: "01REMOTE",
+		Source:    "remote",
+		Name:      "remote replay",
 		CWD:       "/tmp/evener",
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 		Evener: appwire.EvenerThread{
-			Ref:     "codex-local:01CODEX",
+			Ref:     "remote:01REMOTE",
 			Profile: "openai",
 		},
 	}
@@ -1423,9 +1423,9 @@ func TestHubModelSessionStatusLineUsesProfileWhenModelHasNoProviderPrefix(t *tes
 	m := newSessionHubModel(nil)
 	m.width = 120
 	m.detail = hubSessionDetail{
-		Ref:         "codex-local:01CODEX",
-		SourceLabel: "codex-local",
-		Title:       "codex task",
+		Ref:         "remote:01REMOTE",
+		SourceLabel: "remote",
+		Title:       "remote task",
 		State:       "idle",
 		Model:       "gpt-5.3-codex",
 		Profile:     "openai",
@@ -1461,8 +1461,8 @@ func TestHubModelSessionHeaderTruncatesLongLabels(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 64
 	m.detail = hubSessionDetail{
-		Ref:         "codex-local-with-long-name:01LONG",
-		SourceLabel: "codex-local-with-long-name",
+		Ref:         "remote-source-with-long-name:01LONG",
+		SourceLabel: "remote-source-with-long-name",
 		Title:       "review the very long generated migration transcript without overlap",
 		State:       "active",
 		Model:       "openai/gpt-5.3-super-long-model-name-for-terminal-testing",
@@ -1613,7 +1613,7 @@ func TestHubSpawnSendsHarnessSeparatelyFromModel(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 			gotSpawn = params
 			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
-				Ref: "codex:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true,
+				Ref: "external:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true,
 			}, "/tmp/evener")}, nil
 		})
 	})
@@ -1621,7 +1621,7 @@ func TestHubSpawnSendsHarnessSeparatelyFromModel(t *testing.T) {
 
 	cmd := sendHubSpawn(client, hubSpawnRequest{
 		Prompt:     "build the thing",
-		Harness:    "codex",
+		Harness:    "external",
 		Model:      "openai/gpt-5",
 		WorkingDir: "/tmp/evener",
 	})
@@ -1632,7 +1632,7 @@ func TestHubSpawnSendsHarnessSeparatelyFromModel(t *testing.T) {
 	if msg.err != nil {
 		t.Fatalf("spawn: %v", msg.err)
 	}
-	if gotSpawn.Harness != "codex" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
+	if gotSpawn.Harness != "external" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("spawn params=%+v", gotSpawn)
 	}
 }
@@ -1646,13 +1646,13 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
 				{ID: "evener", Label: "evener", Kind: "evener"},
-				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
+				{ID: "external", Label: "external", Kind: "external"},
 			}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 			gotSpawn = params
 			return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
-				Ref: "codex-local:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true,
+				Ref: "external:02NEW", SessionID: "02NEW", Title: "new session", State: "idle", Project: "evener", Live: true,
 			}, "/tmp/evener")}, nil
 		})
 	})
@@ -1676,12 +1676,12 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	form = updated.(hubModel)
 	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	form = updated.(hubModel)
-	if form.spawnModel != "" {
-		t.Fatalf("codex harness carried stale model %q", form.spawnModel)
+	if form.spawnHarness != "external" || form.spawnModel != "openai/gpt-5" {
+		t.Fatalf("harness=%q model=%q, want external with global model", form.spawnHarness, form.spawnModel)
 	}
 	view := form.spawnView()
-	if strings.Contains(view, "openai/gpt-5") {
-		t.Fatalf("codex harness offered evener model:\n%s", view)
+	if !strings.Contains(view, "openai/gpt-5") {
+		t.Fatalf("external harness did not retain global model:\n%s", view)
 	}
 	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	form = updated.(hubModel)
@@ -1693,105 +1693,8 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	if msg.err != nil {
 		t.Fatalf("spawn: %v", msg.err)
 	}
-	if gotSpawn.Harness != "codex-local" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "" {
+	if gotSpawn.Harness != "external" || gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("spawn params=%+v", gotSpawn)
-	}
-}
-
-func TestHubModelCodexSpawnSurvivesModelListFailure(t *testing.T) {
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			return appwire.ModelListResponse{}, appwire.Unavailable("models unavailable")
-		})
-		appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
-			return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{
-				{ID: "codex-local", Label: "codex-local", Kind: "codex"},
-			}}, nil
-		})
-	})
-	defer cleanup()
-
-	m := newHubModel(client, "http://hub.test")
-	m.tree = hubTreeResponse{Projects: []hubTreeProject{{
-		Key: "evener", Name: "evener", WorkingDir: "/tmp/evener",
-		Sessions: []hubTreeNode{{Ref: "local:01LIVE", SessionID: "01LIVE", Title: "live task", State: "idle", Project: "evener", Live: true}},
-	}}}
-	m.rows = buildDashboardRows(m.tree)
-	m.selected = 1
-
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	if cmd == nil {
-		t.Fatal("dashboard spawn should fetch spawn options")
-	}
-	updated, _ = updated.(hubModel).Update(cmd())
-	form := updated.(hubModel)
-	if form.err != nil {
-		t.Fatalf("codex spawn surfaced evener model-list error: %v", form.err)
-	}
-	if form.spawnHarness != "codex-local" || form.spawnHarnessKind() != "codex" {
-		t.Fatalf("spawn harness=%q kind=%q", form.spawnHarness, form.spawnHarnessKind())
-	}
-	if form.spawnModel != "" {
-		t.Fatalf("codex spawn retained model %q", form.spawnModel)
-	}
-	if view := form.spawnView(); !strings.Contains(view, "harness default") {
-		t.Fatalf("codex spawn should use harness default model:\n%s", view)
-	}
-}
-
-func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
-	var gotParams appwire.ModelListParams
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			gotParams = params
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
-		})
-	})
-	defer cleanup()
-
-	m := newHubModel(client, "http://hub.test")
-	m.openSpawnForm()
-	m.spawnHarnesses = []string{"evener", "codex-local"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex-local": "codex"}
-	m.spawnHarness = "codex-local"
-	m.spawnDir = "/tmp/evener"
-	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}
-	m.spawnModel = ""
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(hubModel)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(hubModel)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("codex model field should fetch harness models")
-	}
-	updated, _ = updated.(hubModel).Update(cmd())
-	got := updated.(hubModel)
-	if gotParams.Harness != "codex-local" {
-		t.Fatalf("model list params=%+v, want codex harness", gotParams)
-	}
-	if gotParams.CWD != "/tmp/evener" {
-		t.Fatalf("model list cwd=%q, want /tmp/evener", gotParams.CWD)
-	}
-	if got.spawnModelPicker == nil {
-		t.Fatalf("codex harness did not open model picker:\n%s", got.spawnView())
-	}
-	// Display is now the prettified bare name ("Gpt 5.3 Codex") with the
-	// provider on its own group header line ("CODEX-LOCAL") rather than a
-	// "provider/model" string — verify both, plus that the stale openai
-	// item set on m.spawnModels above didn't leak into the freshly-fetched
-	// codex-only picker.
-	if view := got.spawnModelPicker.View(); !strings.Contains(view, "CODEX-LOCAL") || !strings.Contains(view, "Gpt 5.3 Codex") || strings.Contains(view, "openai/gpt-5") {
-		t.Fatalf("codex harness picker should show only codex models:\n%s", view)
-	}
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	got = updated.(hubModel)
-	if got.spawnModel != "gpt-5.3-codex" {
-		t.Fatalf("codex harness selected model=%q, want raw codex model id", got.spawnModel)
-	}
-	if view := got.spawnView(); !strings.Contains(view, "codex-local/gpt-5.3-codex") {
-		t.Fatalf("codex spawn view should show harness/model relationship:\n%s", view)
 	}
 }
 
@@ -2060,11 +1963,11 @@ func TestHubModelSpawnPromptAcceptsHarnessAndModelLetters(t *testing.T) {
 }
 
 func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
-	var gotParams appwire.ModelListParams
+	modelListCalls := 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			gotParams = params
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			modelListCalls++
+			return appwire.ModelListResponse{}, nil
 		})
 	})
 	defer cleanup()
@@ -2072,8 +1975,8 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 	m := newHubModel(client, "http://hub.test")
 	m.openSpawnForm()
 	m.spawnDir = "/tmp/evener"
-	m.spawnHarnesses = []string{"evener", "codex-local"}
-	m.spawnHarnessKinds = map[string]string{"evener": "evener", "codex-local": "codex"}
+	m.spawnHarnesses = []string{"evener", "external"}
+	m.spawnHarnessKinds = map[string]string{"evener": "evener", "external": "external"}
 	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}
 	m.spawnModel = "openai/gpt-5"
 
@@ -2087,8 +1990,8 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 		t.Fatal("harness field change returned unexpected command")
 	}
 	form = updated.(hubModel)
-	if form.spawnHarness != "codex-local" || form.spawnModel != "" {
-		t.Fatalf("harness=%q model=%q, want codex-local with cleared model", form.spawnHarness, form.spawnModel)
+	if form.spawnHarness != "external" || form.spawnModel != "openai/gpt-5" {
+		t.Fatalf("harness=%q model=%q, want external with retained global model", form.spawnHarness, form.spawnModel)
 	}
 
 	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -2097,13 +2000,12 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 	}
 	form = updated.(hubModel)
 	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("model field should fetch codex harness models")
+	if cmd != nil {
+		t.Fatal("model field returned unexpected model-list command")
 	}
-	updated, _ = updated.(hubModel).Update(cmd())
 	form = updated.(hubModel)
-	if gotParams.Harness != "codex-local" || gotParams.CWD != "/tmp/evener" {
-		t.Fatalf("model list params=%+v, want codex harness in /tmp/evener", gotParams)
+	if modelListCalls != 0 {
+		t.Fatalf("model list calls=%d, want none for populated global catalog", modelListCalls)
 	}
 	if form.spawnModelPicker == nil {
 		t.Fatalf("model field did not open model picker:\n%s", form.spawnView())

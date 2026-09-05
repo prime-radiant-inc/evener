@@ -107,12 +107,6 @@ type hubSpawnMsg struct {
 	err  error
 }
 
-type hubModelsMsg struct {
-	harness string
-	models  []tuipick.ModelPickerItem
-	err     error
-}
-
 type hubSessionModelsMsg struct {
 	models []tuipick.ModelPickerItem
 	err    error
@@ -269,18 +263,6 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 			LaunchOverrides: req.LaunchOverrides,
 		})
 		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Evener.Ref}, err: err}
-	}
-}
-
-func fetchHubModelsForHarness(client *appwire.Client, harness string, workingDir string) tea.Cmd {
-	harness = strings.TrimSpace(harness)
-	workingDir = strings.TrimSpace(workingDir)
-	return func() tea.Msg {
-		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: harness, CWD: workingDir})
-		if err != nil {
-			return hubModelsMsg{harness: harness, err: err}
-		}
-		return hubModelsMsg{harness: harness, models: modelPickerItemsFromResponse(resp, harness != "")}
 	}
 }
 
