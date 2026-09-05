@@ -1418,15 +1418,6 @@ export interface SettingsAgentEntry {
   editPath?: string;
 }
 
-export interface SettingsCodexLaunchEntry {
-  id: string;
-  binary?: string;
-  workingDir?: string;
-  listen?: string;
-  timeoutMillis?: number;
-  envKeys?: string[];
-}
-
 export interface SettingsHubOverview {
   version?: string;
   commit?: string;
@@ -1453,7 +1444,6 @@ export interface SettingsOverviewResponse {
   hub?: SettingsHubOverview;
   storage?: SettingsStorageOverview;
   agents?: SettingsAgentEntry[];
-  codexLaunches?: SettingsCodexLaunchEntry[];
   mcpDiscovered?: SettingsMCPOverview;
 }
 

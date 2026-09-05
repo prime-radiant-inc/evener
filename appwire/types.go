@@ -106,10 +106,10 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
-	// MethodEvenerSettingsOverview returns the field bag behind six settings
+	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
-	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
-	// servers. See SettingsOverviewResponse's doc comment.
+	// hub/runtime, storage, agent roster, and probed MCP servers. See
+	// SettingsOverviewResponse's doc comment.
 	MethodEvenerSettingsOverview = "evener/settings/overview"
 	// MethodEvenerSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
@@ -3016,28 +3016,26 @@ type PluginSetAutoUpgradeParams struct {
 }
 
 // SettingsOverviewResponse is the result of evener/settings/overview: the field
-// bag behind six settings sections whose only data path today is Go-template
-// variables rendered server-side — General, Hub, Storage, Agents, Codex
-// launch, and the probed half of MCP servers (cmd/evener-hub/templates/
-// partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
-// replacing cmd/evener-hub/web_settings.go's settingsData for exactly those six
-// (the deletion wave removes the template path once the frontend ports off
-// it). Every field is sourced from the same computation the legacy template
-// used; see each sub-type's doc comment for the exact web_settings.go
-// citation. A field the legacy template never rendered is left off rather
-// than invented — also noted on the sub-type that would otherwise carry it.
+// bag behind five settings sections whose only data path today is Go-template
+// variables rendered server-side — General, Hub, Storage, Agents, and the
+// probed half of MCP servers (cmd/evener-hub/templates/partials/settings/
+// {general,hub,storage,agents,mcp}.html) — replacing cmd/evener-hub/
+// web_settings.go's settingsData for exactly those five. Every field is sourced
+// from the same computation the legacy template used; see each sub-type's doc
+// comment for the exact web_settings.go citation. A field the legacy template
+// never rendered is left off rather than invented — also noted on the sub-type
+// that would otherwise carry it.
 //
 // The other ten settings sections (providers/credentials, evener launch,
-// in-repo trust, per-project override, marketplaces/plugins, plugin/skill
-// dirs, the MCP config editable half, theme, transcript, display,
-// notifications) are out of scope: they already have their own wire methods
-// or land on a different task's new store. Nothing here is per-project.
+// in-repo trust, per-project override, marketplaces/plugins, plugin/skill dirs,
+// the MCP config editable half, theme, transcript, display, notifications) are
+// out of scope: they already have their own wire methods or land on a different
+// task's new store. Nothing here is per-project.
 type SettingsOverviewResponse struct {
-	Hub           *SettingsHubOverview       `json:"hub,omitempty"`
-	Storage       *SettingsStorageOverview   `json:"storage,omitempty"`
-	Agents        []SettingsAgentEntry       `json:"agents,omitempty"`
-	CodexLaunches []SettingsCodexLaunchEntry `json:"codexLaunches,omitempty"`
-	McpDiscovered *SettingsMCPOverview       `json:"mcpDiscovered,omitempty"`
+	Hub           *SettingsHubOverview     `json:"hub,omitempty"`
+	Storage       *SettingsStorageOverview `json:"storage,omitempty"`
+	Agents        []SettingsAgentEntry     `json:"agents,omitempty"`
+	McpDiscovered *SettingsMCPOverview     `json:"mcpDiscovered,omitempty"`
 }
 
 // SettingsHubOverview is the Settings → General / Settings → Hub section
@@ -3124,35 +3122,6 @@ type SettingsAgentEntry struct {
 	// shape parity with web_settings.go's agentDisplay.EditPath in case a
 	// future on-disk agent source populates it.
 	EditPath string `json:"editPath,omitempty"`
-}
-
-// SettingsCodexLaunchEntry is one row in Settings → Codex launch config
-// (cmd/evener-hub/templates/partials/settings/launch-codex.html): a read-only
-// display of one [[codex_launches]] hub.toml entry.
-// Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
-// codexlaunch.CodexLaunchConfig).
-//
-// Binary/WorkingDir/Listen/Timeout ride over the wire as their raw configured
-// value (empty/zero when unset) rather than the template's display-fallback
-// text ("codex", "(inherited)", "ws://127.0.0.1:0", "30s") — the frontend
-// applies the same fallback at render time, so the wire stays truthful about
-// what is actually configured.
-//
-// Args, BearerToken, and BearerTokenFile are intentionally excluded: Args is
-// never rendered by the template, and the bearer-token fields are live
-// secrets the credential-never-echo invariant forbids sending to the browser
-// — the template never renders them either. EnvKeys carries only the Env
-// map's keys, sorted, matching the template's own redaction ("Values are
-// redacted here.").
-type SettingsCodexLaunchEntry struct {
-	ID         string `json:"id"`
-	Binary     string `json:"binary,omitempty"`
-	WorkingDir string `json:"workingDir,omitempty"`
-	Listen     string `json:"listen,omitempty"`
-	// TimeoutMillis is Timeout in milliseconds, 0 when unset (the template's
-	// 30s default applies client-side, matching the other display fallbacks).
-	TimeoutMillis int64    `json:"timeoutMillis,omitempty"`
-	EnvKeys       []string `json:"envKeys,omitempty"`
 }
 
 // SettingsMCPServerEntry is one probed MCP server row in Settings → MCP

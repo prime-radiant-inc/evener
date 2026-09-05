@@ -2,29 +2,21 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 )
 
 // requestSettingsOverview dials hub, initializes the connection, and issues
-// evener/settings/overview, returning both the typed response and the raw
-// result bytes (the latter so security-sensitive assertions — e.g. a secret
-// never appearing on the wire — can inspect the actual JSON rather than only
-// what the typed struct happens to decode into).
-func requestSettingsOverview(t *testing.T, hubCfg hubcore.WebConfig) (appwire.SettingsOverviewResponse, json.RawMessage) {
+// evener/settings/overview, returning the typed response.
+func requestSettingsOverview(t *testing.T, hubCfg hubcore.WebConfig) appwire.SettingsOverviewResponse {
 	t.Helper()
 	hub := newHubRPCTestServer(t, hubCfg)
 	defer hub.Close()
@@ -34,15 +26,11 @@ func requestSettingsOverview(t *testing.T, hubCfg hubcore.WebConfig) (appwire.Se
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	var raw json.RawMessage
-	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsOverview, appwire.EmptyParams{}, &raw); err != nil {
+	var resp appwire.SettingsOverviewResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsOverview, appwire.EmptyParams{}, &resp); err != nil {
 		t.Fatalf("evener/settings/overview: %v", err)
 	}
-	var resp appwire.SettingsOverviewResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		t.Fatalf("decoding evener/settings/overview response: %v", err)
-	}
-	return resp, raw
+	return resp
 }
 
 // TestHubRPCSettingsOverview_HubAndStorage covers the General/Hub/Storage
@@ -146,7 +134,7 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
 	// ambient machine's ~/.config/evener/mcp.json.
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	})
 	if resp.Hub == nil {
@@ -164,7 +152,7 @@ func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 func TestHubRPCSettingsOverview_Agents(t *testing.T) {
 	// Hermetic: pin MCPConfigPath so this test never falls back to the
 	// ambient machine's ~/.config/evener/mcp.json.
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
 		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	})
@@ -184,61 +172,6 @@ func TestHubRPCSettingsOverview_Agents(t *testing.T) {
 	}
 }
 
-// TestHubRPCSettingsOverview_CodexLaunches covers a configured
-// [[codex_launches]] entry, and — the security-critical half — proves the
-// bearer token/file never reach the wire even as raw bytes, matching the
-// credential never-echo invariant the legacy template itself upholds (it
-// never renders BearerToken/BearerTokenFile either).
-func TestHubRPCSettingsOverview_CodexLaunches(t *testing.T) {
-	const secretToken = "sekrit-codex-bearer-token-xyz"
-	cfg := hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		// Hermetic: pin MCPConfigPath so this test never falls back to the
-		// ambient machine's ~/.config/evener/mcp.json (this test isn't about MCP).
-		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{
-			ID:              "codex-managed",
-			Binary:          "/usr/local/bin/codex",
-			WorkingDir:      "/repo",
-			Listen:          "ws://127.0.0.1:9190",
-			Timeout:         45 * time.Second,
-			Args:            []string{"--flag"},
-			Env:             map[string]string{"ZETA": "1", "ALPHA": "2"},
-			BearerToken:     secretToken,
-			BearerTokenFile: "/secrets/codex-token",
-		}},
-	}
-	resp, raw := requestSettingsOverview(t, cfg)
-
-	if len(resp.CodexLaunches) != 1 {
-		t.Fatalf("CodexLaunches = %+v, want 1 entry", resp.CodexLaunches)
-	}
-	got := resp.CodexLaunches[0]
-	want := appwire.SettingsCodexLaunchEntry{
-		ID:            "codex-managed",
-		Binary:        "/usr/local/bin/codex",
-		WorkingDir:    "/repo",
-		Listen:        "ws://127.0.0.1:9190",
-		TimeoutMillis: 45000,
-		// EnvKeys must come back sorted regardless of the source map's
-		// iteration order.
-		EnvKeys: []string{"ALPHA", "ZETA"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("CodexLaunches[0] = %+v, want %+v", got, want)
-	}
-
-	if strings.Contains(string(raw), secretToken) {
-		t.Fatal("evener/settings/overview response leaks the codex bearer token onto the wire")
-	}
-	if strings.Contains(string(raw), "/secrets/codex-token") {
-		t.Fatal("evener/settings/overview response leaks the codex bearer-token-file path onto the wire")
-	}
-	if strings.Contains(string(raw), "--flag") {
-		t.Error(`evener/settings/overview response includes codex launch Args, which the legacy template never rendered`)
-	}
-}
-
 // TestHubRPCSettingsOverview_MCPDiscovered exercises the real mcpprobe
 // integration (real command-present check, real refused-connection probe) —
 // no mocking of what the method reports on, matching writeMCPFixture /
@@ -250,7 +183,7 @@ func TestHubRPCSettingsOverview_MCPDiscovered(t *testing.T) {
 	dir := t.TempDir()
 	path := writeMCPFixture(t, dir, "true", refusedURL(t))
 
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
 		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: path,
 	})
@@ -284,7 +217,7 @@ func TestHubRPCSettingsOverview_MCPDiscovered(t *testing.T) {
 // missing MCP config file is the empty state, not an error — matching
 // discoverMCPsForSettings's own contract.
 func TestHubRPCSettingsOverview_MCPDiscoveredEmptyWhenConfigMissing(t *testing.T) {
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+	resp := requestSettingsOverview(t, hubcore.WebConfig{
 		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
 	})

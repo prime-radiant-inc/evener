@@ -169,7 +169,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
-| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
+| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
@@ -1395,7 +1395,6 @@ _(no fields)_
 | `hub` | `*appwire.SettingsHubOverview` | yes |  |
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
-| `codexLaunches` | `[]appwire.SettingsCodexLaunchEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
 
 
