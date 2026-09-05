@@ -1,5 +1,6 @@
 // Explicitly launched network fixture for native UI checks; no Evener or LLM runs.
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
@@ -10,7 +11,7 @@ import type {
 	TurnStartParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 
-export async function createDemoHub(port = 9196) {
+export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 	const server = new WebSocketServer({ host: "127.0.0.1", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -30,7 +31,24 @@ export async function createDemoHub(port = 9196) {
 		cwd: "/demonstration",
 		cliVersion: "demo",
 		source: "demo",
-		turns: [],
+		turns:
+			initialMarkdown === undefined
+				? []
+				: [
+						{
+							id: "demo-reference-turn",
+							status: "completed",
+							itemsView: "full",
+							items: [
+								{
+									id: "demo-reference-message",
+									type: "agentMessage",
+									status: "completed",
+									text: initialMarkdown,
+								},
+							],
+						},
+					],
 		evener: {
 			ref: "demo:playground",
 			instanceId: "demo-instance",
@@ -298,7 +316,12 @@ if (
 	process.argv[1] &&
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-	const hub = await createDemoHub();
+	const hub = await createDemoHub(
+		Number(process.env.EVENER_DEMO_PORT ?? 9196),
+		process.env.EVENER_DEMO_MARKDOWN
+			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
+			: undefined,
+	);
 	console.info(
 		`Scripted native UI demonstration: ${hub.origin} (no token, no LLM).`,
 	);
