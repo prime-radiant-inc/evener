@@ -1,0 +1,79 @@
+# Mobile style guide
+
+**Proposed foundations · 5 September 2026 · Review before implementation**
+
+These are Evener design proposals informed by the [research](sources.md). Numerical values are starting points for screen studies, not measured results or universal platform requirements.
+
+## Visual foundations
+
+| Element | Starting rule |
+|---|---|
+| Canvas | Quiet neutral surface; light `#FAFAF8`, dark `#121417` candidates |
+| Primary text | Light `#202326`, dark `#F1F2F3` candidates |
+| Secondary text | Light `#62676D`, dark `#A6ADB5` candidates; never use opacity alone as a contrast strategy |
+| Accent | Light `#315AD7`, dark `#9CB4FF` candidates; reserve strong filled accent for a primary action |
+| Dividers | Sparse, subtle separators between meaningful groups; not a box around every row |
+| Status | Semantic success, warning, danger and informational roles; always paired with words or symbols |
+| Typography | System fonts first; prose around 17 pt on iOS and 16 sp on Android, adapting to user settings |
+| Metadata | Around 13 platform text units at default size; grow with accessibility settings |
+| Code | Platform monospace, selectable and copyable; long lines scroll inside a bounded code region |
+| Spacing | A small 4/8/12/16/24/32 scale, adjusted for native control geometry |
+| Content inset | Begin at 16–20 logical units; align titles, text and controls consistently |
+| Radius | Follow component purpose and platform; ordinary transcript content has no enclosing radius |
+| Icons | Platform-appropriate symbols with consistent optical size and weight; labels for ambiguous actions |
+
+Validate every final foreground/background pair. Target 4.5:1 for ordinary text and 3:1 for essential non-text UI. The palette above is provisional; colors are not an accessibility certification. Use semantic tokens, including elevated surfaces and increased contrast variants, rather than scattered literals.
+
+## Density and hierarchy
+
+A session row should present title first, then a short useful preview or context line. A status indication can share that hierarchy; timestamps, hub names and counts should not all compete at the same size. Begin around 56–72 logical units for a two-line session row at default text size, then let content and accessibility determine height.
+
+Use at least 44 pt interactive regions on iOS as our proposed minimum and 48 dp on Android. The visible icon or text can be substantially smaller than its touch region. Do not add a full extra touch-sized margin around an already accessible row. Separate turns by roughly 24 units; keep related text and activity closer, around 8–12. These relationships matter more than rigid heights.
+
+## Component contracts
+
+### Navigation and hub identity
+
+Use the OS navigation structure, safe areas, back behavior, menus and sheets. The selected hub must be discoverable at the root and explicit in destination-sensitive actions. For aggregated lists, include a readable hub name. Keep normal connection health quiet; elevate loss of connectivity or uncertain delivery. Avoid a permanent strip of low-value status controls.
+
+### Conversation
+
+Assistant prose sits directly on the reading surface. Distinguish speakers with alignment, attribution and spacing; investigate a restrained user-message surface in screen studies. Render headings, lists, links, quotes, code and tables as content, with purposeful overflow handling. Do not repeat a large role label before every fragment of one response.
+
+Group routine activity with a concise, understandable summary and an accessible expansion control. Expanded content stays near its origin. Keep actionable errors, questions and approvals visible. A summary cannot erase warnings or pretend unfinished work has completed. Screen readers receive state and expansion semantics without announcing every streamed token.
+
+### Composer and running-session actions
+
+Keep the input and its main action visually unified. Respect safe areas and the actual keyboard transition. Use native text editing, selection and dictation affordances. Attachment controls and secondary actions must not overpower the text. While work is running, distinguish steer, queue and stop through clear action placement and labels; do not imply a send succeeded before confirmation.
+
+### Decisions and failures
+
+An approval shows the requested action, destination, relevant consequence and available choices together. Give dangerous actions appropriate emphasis without turning the entire conversation red. Questions remain answerable in context. A connection failure explains recovery; uncertain delivery offers reconciliation rather than blind repeated submission.
+
+### Lists and settings
+
+Prefer clear section titles and aligned rows over a card for each setting. Search, filtering, pagination and bulk operations need designed empty, loading and error states. Swipe actions supplement discoverable controls. Never require a gesture as the only way to perform a task.
+
+## Motion and fluency
+
+Use native interactive navigation and keyboard transitions wherever possible. Preserve gesture cancellation and OS back behavior. Content disclosures may begin with a short 180–240 ms transition, but adjust through device testing. Do not animate every token or move the viewport during active reading. Reduced motion uses stable replacements and avoids large spatial transitions.
+
+Measure long-list scrolling, streaming updates, keyboard opening and navigation on representative devices. Inspect dropped frames and input latency. At 60 Hz a frame has about 16.7 ms; at 120 Hz about 8.3 ms. These are budgets, not evidence that the app currently meets them. Avoid layering expensive visual effects before measuring their cost.
+
+## Platform adaptation
+
+| Concern | iOS | Android |
+|---|---|---|
+| Navigation | Native back gesture, navigation bars and modal conventions | Native back/predictive-back behavior and Material navigation conventions where supported |
+| Materials | System materials for appropriate navigation/control surfaces; no glass transcript cards | Material surface hierarchy and selective expressive emphasis |
+| Text and input | Dynamic Type, native editing and keyboard behavior | Font scaling, native editing and keyboard/inset behavior |
+| Actions | Familiar context menus and action sheets | Familiar menus and bottom sheets |
+| Shared contract | Same destinations, meaning, safeguards and restored context | Same destinations, meaning, safeguards and restored context |
+
+Native library support must be verified; a design aspiration is not proof that a React Native component implements an OS behavior.
+
+## Required review fixtures
+
+Use identical content across comparisons: a long session title; several hubs with overlapping names; a prose response with headings and code; a burst of tool activity; an approval; a question; a blocked operation; an offline session; uncertain delivery; a draft while switching sessions; keyboard open; largest accessibility text; screen-reader navigation; reduced motion; light and dark appearances.
+
+Record task completion, accidental taps, lost context, and reading interruptions during review. Proposed targets: no lost draft or reading position on ordinary return, no automatic scroll away from earlier content, and a visible path to the next required decision. Record failures as product work rather than explaining them away as polish.
