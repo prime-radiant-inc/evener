@@ -150,6 +150,35 @@ test.each([undefined, true, false])(
   },
 );
 
+test("a terminal abort rejects while a request callback is still withheld", async () => {
+  const storage = new MutationOutboxIndexedDB({ indexedDB: new IDBFactory() });
+  await storage.listOutbox();
+  const get = IDBObjectStore.prototype.get;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  vi.spyOn(IDBObjectStore.prototype, "get").mockImplementationOnce(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    request.addEventListener("success", () => this.transaction.abort());
+    hold = holdIndexedDBEvent(request, "success");
+    return request;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const failure = storage.enqueueIntent(intent).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  try {
+    await Promise.resolve();
+    if (!hold) throw new Error("write did not reach IndexedDB");
+    await hold.reached;
+    // Do not release the request callback or advance the watchdog clock.
+    expect(await failure).toBeInstanceOf(Error);
+    expect(await storage.listOutbox()).toEqual([]);
+  } finally {
+    hold?.release();
+    storage.close();
+  }
+});
+
 test("cancelling a stalled write rolls it back before the draft can be retried", async () => {
   const storage = new MutationOutboxIndexedDB({ indexedDB: new IDBFactory() });
   await storage.listOutbox();

@@ -500,12 +500,16 @@ export class MutationOutboxIndexedDB {
       }, STORAGE_WAIT_MS);
     });
     try {
+      // Bodies only await requests in this transaction, never timers or external
+      // work. Their continuations (and this synchronous fault seam) run before
+      // automatic commit, while failures can still abort the transaction.
       const work = body(transaction).then((result) => {
         if (operation) this.#beforeCommit?.(operation);
         return result;
       });
-      // Observe request and transaction failures together. An abort must
-      // release the caller even when a request callback never arrives.
+      // Promise.all rejects on either failure without waiting for the other
+      // input. A terminal abort therefore releases even a stalled body, while
+      // success requires both the result and the durable commit event.
       const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
       return result;
     } catch (error) {
