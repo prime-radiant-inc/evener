@@ -433,12 +433,16 @@ async function exerciseDirectoryPicker() {
   nameInput.form?.requestSubmit();
   const created = `${directoryRoot}/a-new-directory-with-a-long-readable-name`;
   const deadline = performance.now() + 10_000;
-  while (document.querySelector<HTMLInputElement>('input[aria-label="Path"]')?.value !== created || confirm.disabled) {
+  // The path can render before the effect restores focus to a persistent control.
+  while (
+    document.querySelector<HTMLInputElement>('input[aria-label="Path"]')?.value !== created ||
+    confirm.disabled ||
+    !dialog.contains(document.activeElement)
+  ) {
     if (performance.now() > deadline) throw new Error("Directory creation did not settle");
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
   measure("created");
-  if (!dialog.contains(document.activeElement)) failures.push("Creation lost dialog focus");
   confirm.click();
   await new Promise((resolve) => requestAnimationFrame(resolve));
   if (!trigger.textContent?.includes(created)) failures.push("Confirmed path was not stored on the launch form");
