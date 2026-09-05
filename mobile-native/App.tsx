@@ -16,16 +16,27 @@ import {
   SessionsScreen,
 } from "./src/screens";
 
+import { useColors } from "./src/ui";
+
 const Stack = createNativeStackNavigator<Routes>();
 
 export default function App() {
+  const colors = useColors();
   const dark = useColorScheme() === "dark";
   return (
     <SafeAreaProvider>
       <ConnectionProvider>
         <NavigationContainer theme={dark ? DarkTheme : DefaultTheme}>
           <StatusBar style={dark ? "light" : "dark"} />
-          <Stack.Navigator>
+          <Stack.Navigator
+            screenOptions={{
+              headerStyle: { backgroundColor: colors.background },
+              headerTintColor: colors.accent,
+              headerTitleStyle: { color: colors.text },
+              headerShadowVisible: false,
+              contentStyle: { backgroundColor: colors.background },
+            }}
+          >
             <Stack.Screen
               name="Hubs"
               component={HubsScreen}

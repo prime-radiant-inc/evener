@@ -1,25 +1,33 @@
 import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, useColorScheme } from "react-native";
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  useColorScheme,
+} from "react-native";
 
 export function useColors() {
   return useColorScheme() === "dark"
     ? {
-        background: "#101214",
-        surface: "#1d2024",
-        text: "#f3f4f6",
-        secondary: "#acb4bf",
-        border: "#3c434d",
-        accent: "#88b9ff",
+        background: "#121417",
+        surface: "#23272d",
+        text: "#f1f2f3",
+        secondary: "#a6adb5",
+        border: "#363b42",
+        accent: "#9cb4ff",
         error: "#ffaaa5",
+        onAccent: "#18244b",
       }
     : {
-        background: "#f8f9fb",
-        surface: "#ffffff",
-        text: "#17212e",
-        secondary: "#536174",
-        border: "#cbd2db",
-        accent: "#185bb7",
+        background: "#fafaf8",
+        surface: "#eeefeb",
+        text: "#202326",
+        secondary: "#62676d",
+        border: "#d8dcd9",
+        accent: "#315ad7",
         error: "#b52b25",
+        onAccent: "#ffffff",
       };
 }
 
@@ -29,12 +37,14 @@ export function Action({
   disabled = false,
   label,
   expanded,
+  tone = "accent",
 }: {
   children: string;
   onPress: () => void;
   disabled?: boolean;
   label?: string;
   expanded?: boolean;
+  tone?: "accent" | "quiet" | "primary";
 }) {
   const colors = useColors();
   return (
@@ -46,10 +56,27 @@ export function Action({
       onPress={onPress}
       style={({ pressed }) => [
         styles.action,
+        tone === "primary" && {
+          backgroundColor: colors.accent,
+          borderRadius: 24,
+          paddingHorizontal: 18,
+        },
         { opacity: disabled ? 0.4 : pressed ? 0.65 : 1 },
       ]}
     >
-      <Text style={{ color: colors.accent, fontSize: 17, fontWeight: "600" }}>
+      <Text
+        style={{
+          color:
+            tone === "primary"
+              ? colors.onAccent
+              : tone === "quiet"
+                ? colors.secondary
+                : colors.accent,
+          fontSize: 16,
+          fontWeight: tone === "quiet" ? "400" : "600",
+          flexShrink: 1,
+        }}
+      >
         {children}
       </Text>
     </Pressable>
@@ -59,18 +86,21 @@ export function Action({
 export function Copy({
   children,
   muted = false,
+  label,
 }: {
   children: ReactNode;
   muted?: boolean;
+  label?: string;
 }) {
   const colors = useColors();
   return (
     <Text
       selectable
+      accessibilityLabel={label}
       style={{
         color: muted ? colors.secondary : colors.text,
-        fontSize: 16,
-        lineHeight: 23,
+        fontSize: muted ? 13 : Platform.OS === "ios" ? 17 : 16,
+        lineHeight: muted ? 19 : 25,
       }}
     >
       {children}
@@ -109,7 +139,7 @@ export const styles = StyleSheet.create({
     minHeight: 48,
   },
   action: {
-    minHeight: 44,
+    minHeight: Platform.OS === "android" ? 48 : 44,
     justifyContent: "center",
     paddingHorizontal: 8,
     paddingVertical: 8,
