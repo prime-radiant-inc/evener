@@ -291,6 +291,16 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   useEffect(() => {
     if (hubError === null) setError(null);
   }, [hubError]);
+  // Finding 33: preflight and generation-fence rejections deliberately never
+  // set hubError, so the hubError transition above cannot clear a row error
+  // they left behind. Every confirmed hub payload (refresh, notification, or
+  // a later successful patch) supersedes the bindings that error described,
+  // so clear on the apply serial instead.
+  const appliedSerial = useKeybindingsStore((s) => s.appliedSerial);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appliedSerial is a deliberate trigger-only dep - the effect's whole job is to re-run on the serial bump
+  useEffect(() => {
+    setError(null);
+  }, [appliedSerial]);
   // Reset availability derives from the hub's RAW rules, not the validated
   // set: a persisted rule validation skips (reserved/malformed/conflicting)
   // never reaches `overrides`, but dropping it is exactly the meaningful

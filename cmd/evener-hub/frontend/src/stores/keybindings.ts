@@ -32,6 +32,11 @@ export interface KeybindingsStoreState {
   hubError: string | null;
   /** Revision of the last confirmed hub payload (0 = shipped defaults). */
   revision: number;
+  /** Bumps on every successful applyHubOverrides - a confirmed payload for
+   * the current generation. Row-level error clearing keys on this (finding
+   * 33): preflight and generation-fence rejections deliberately never set
+   * hubError, so the hubError transition alone cannot clear their errors. */
+  appliedSerial: number;
   /** The validated rules currently applied to the registry. */
   overrides: readonly OverrideRule[];
   /** The hub payload's rules VERBATIM, before validation filtering. The
@@ -69,6 +74,7 @@ function initialState(): Omit<KeybindingsStoreState, "refreshOverrides" | "patch
     hubLoading: false,
     hubError: null,
     revision: 0,
+    appliedSerial: 0,
     overrides: [],
     rawOverrides: [],
     warnings: [],
@@ -85,6 +91,12 @@ let activeReadyClient: AppwireClientLike | null = null;
 let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
+/** Set when an un-apply rolled back against a wedged registry (findings 31
+ * and 32): the overrides are STILL firing, so the rollback hubError is not
+ * stale and refreshFor's entry clear must not wipe it. Cleared by the next
+ * successful apply (which reconciles the registry past the wedge) and by
+ * resetKeybindingsStoreForTests. */
+let unapplyRolledBack = false;
 /** Set when a changed-notification is dropped because the current
  * generation has no confirmed state yet (finding 25): the refresh that
  * lands the state may carry a response PREDATING the dropped change, so a
@@ -151,12 +163,13 @@ function unapplyAllOverrides(): boolean {
   return true;
 }
 
-/** Surfaced when support loss could not un-apply the overrides (the restore
- * rolled back against a wedged registry): the overrides are still in effect
- * and the hub payload state is RETAINED, so the next connection change -
- * which re-runs setSupportFromConnection - gets a fresh attempt. */
+/** Surfaced when support loss or a client rewire could not un-apply the
+ * overrides (the restore rolled back against a wedged registry): the
+ * overrides are still in effect and the hub payload state is RETAINED, so
+ * the next refresh or connection change - which re-runs the un-apply or
+ * reconciles from the intact applied map - gets a fresh attempt. */
 const UNAPPLY_ROLLED_BACK_MESSAGE =
-  "Could not restore the built-in default shortcuts: a conflicting binding is holding a default chord. This hub's keybinding overrides are still in effect; restoring retries on the next connection change.";
+  "Could not restore the built-in default shortcuts: a conflicting binding is holding a default chord. This hub's keybinding overrides are still in effect; restoring retries on the next refresh or connection change.";
 
 /** Structural check for a wire payload (get result, changed params, patch
  * response, conflict `current`). The server's own validation already ran; this
@@ -267,6 +280,9 @@ function applyHubOverrides(payload: KeybindingsOverrides): void {
   const state = keybindingsStore.getState();
   if (payload.revision < state.revision) return;
   applyOverrideRules(payload.rules);
+  // The reconcile succeeded, so any rolled-back un-apply's wedge is cleared
+  // with it: the rollback hubError is now stale and may clear normally.
+  unapplyRolledBack = false;
   // A successful apply supersedes any earlier apply failure's hubError AND
   // any earlier patch's revision-race conflict - the store is now confirmed
   // at this payload either way. Clearing one without the other was the
@@ -280,6 +296,10 @@ function applyHubOverrides(payload: KeybindingsOverrides): void {
   keybindingsStore.setState({
     rawOverrides: payload.rules.map((rule) => ({ action: rule.action, chord: rule.chord })),
     revision: payload.revision,
+    // Row-level error clearing keys on this bump (finding 33): preflight and
+    // generation-fence rejections deliberately never set hubError, so the
+    // hubError transition alone cannot clear a row error they left behind.
+    appliedSerial: state.appliedSerial + 1,
     // Every call site is generation-guarded (refreshFor, the notification
     // wrapper, patchOverrides), so a successful apply confirms the state for
     // the CURRENT ready generation - editing and patching gate on this.
@@ -370,6 +390,7 @@ function setSupportFromConnection(): void {
     // BEFORE the setState - the character-key reconcile subscribes to the
     // store and must see the final registry shape (see unapplyAllOverrides).
     unrestored = !unapplyAllOverrides();
+    unapplyRolledBack = unrestored;
   }
   // The unsupported drop also discards the hub PAYLOAD state: retaining
   // loaded/revision/rawOverrides across a flap would let a later supported
@@ -399,7 +420,11 @@ function setSupportFromConnection(): void {
     keybindingsStore.setState({
       hubSupport: support,
       hubLoading: false,
-      hubError: unrestored ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
+      // A rolled-back un-apply's message survives the unknown window too
+      // (finding 32: a client swap re-runs this with support "unknown"
+      // before the new hub's features resolve, and the wedge it describes
+      // is still live in the registry).
+      hubError: unrestored || unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
       conflict: null,
       ...(dropHubState ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [] } : {}),
     });
@@ -439,7 +464,7 @@ function onNotification(notification: AnyNotification): void {
 async function refreshFor(client: AppwireClientLike, epoch: number): Promise<void> {
   if (!isCurrentReady(client, epoch) || currentSupport() !== "supported") return;
   const serial = ++refreshSerial;
-  keybindingsStore.setState({ hubLoading: true, hubError: null });
+  keybindingsStore.setState({ hubLoading: true, ...(unapplyRolledBack ? {} : { hubError: null }) });
   try {
     const result = await client.request("evener/settings/keybindings/get", {});
     if (!isCurrentReady(client, epoch) || serial !== refreshSerial || currentSupport() !== "supported") return;
@@ -485,16 +510,19 @@ function rewireClient(client: AppwireClientLike): void {
   // see the final registry shape (see unapplyAllOverrides). hubSupport is
   // connection-sourced, not hub state, so it is left to
   // setSupportFromConnection.
-  unapplyAllOverrides();
-  keybindingsStore.setState({
-    revision: 0,
-    overrides: [],
-    rawOverrides: [],
-    warnings: [],
-    hubLoading: false,
-    hubError: null,
-    conflict: null,
-  });
+  const unrestored = !unapplyAllOverrides();
+  unapplyRolledBack = unrestored;
+  if (!unrestored) {
+    keybindingsStore.setState({
+      revision: 0,
+      overrides: [],
+      rawOverrides: [],
+      warnings: [],
+      hubLoading: false,
+      hubError: null,
+      conflict: null,
+    });
+  }
   unwireReady = client.onReady(() => {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
@@ -502,6 +530,25 @@ function rewireClient(client: AppwireClientLike): void {
   if (client.state === "ready") {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
+  }
+  if (unrestored) {
+    // Finding 32 (mirror of finding 31's support-loss rollback): the restore
+    // rolled back against a wedged registry, so the OLD hub's overrides are
+    // still firing. Retain its confirmed payload (rawOverrides/overrides/
+    // warnings) so the display stays truthful and the new hub's incoming
+    // applies can reconcile from the intact applied map - but reset revision
+    // to 0: revision sequences are per-hub, and carrying the old hub's
+    // revision would eat the new hub's lower revisions via applyHubOverrides'
+    // stale guard. This setState comes AFTER the refresh kick above because
+    // refreshFor's entry clears hubError; when the refresh lands it either
+    // confirms (applyHubOverrides clears hubError) or re-fails the reconcile
+    // against the same wedge and surfaces its own hubError. hubLoading is
+    // left to the in-flight refresh.
+    keybindingsStore.setState({
+      revision: 0,
+      hubError: UNAPPLY_ROLLED_BACK_MESSAGE,
+      conflict: null,
+    });
   }
 }
 
@@ -729,6 +776,7 @@ export function resetKeybindingsStoreForTests(): void {
   refreshSerial += 1;
   patchSerial += 1;
   missedChangeNotification = false;
+  unapplyRolledBack = false;
   writeQueue = Promise.resolve();
   // Restore defaults for every applied override so the registry singleton
   // cannot leak overrides into the next test (the next test rebuilds the

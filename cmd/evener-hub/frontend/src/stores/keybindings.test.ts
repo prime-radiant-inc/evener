@@ -1826,3 +1826,70 @@ describe("keybindings store: unsupported write rejection", () => {
     expect(keybindingsStore.getState().hubError).toBeNull();
   });
 });
+
+describe("keybindings store: rewire rollback retention (finding 32)", () => {
+  test("a wedged un-apply on client replacement retains the old hub's payload, resets revision, and reconciles after the wedge clears", async () => {
+    const paletteDefault = defaultChordOf(ACTIONS.paletteOpen);
+    const clientA = new FakeClient("ready");
+    clientA.on("evener/settings/keybindings/get", () =>
+      overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+    );
+    await wireClient(clientA, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // Out-of-band wedge: squat palette.open's default chord with a foreign
+    // binding, so restoring the default during the rewire's un-apply throws
+    // and the unwind rolls back - the OLD hub's override keeps firing.
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: paletteDefault,
+    });
+
+    // Client B's refresh hangs, so the ONLY hubError in the first phase is
+    // the rewire's own rollback signal.
+    const clientB = new FakeClient("ready");
+    let resolveGet: ((payload: KeybindingsOverrides) => void) | undefined;
+    clientB.on(
+      "evener/settings/keybindings/get",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve) => {
+          resolveGet = resolve;
+        }),
+    );
+    connectionStore.getState().connect(clientB);
+    connectionStore.setState({
+      features: { ...(await clientB.connect()).features, keybindingsSettings: true },
+    });
+
+    const retained = keybindingsStore.getState();
+    // The display stays truthful: the payload that is STILL FIRING is the
+    // one shown (rawOverrides/overrides/warnings retained). revision resets
+    // to 0 regardless: revision sequences are per-hub, and carrying the old
+    // hub's revision would eat the new hub's lower revisions via
+    // applyHubOverrides' stale guard.
+    expect(retained.revision).toBe(0);
+    expect(retained.rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    // loaded still drops (invalidateReadyGeneration, pinned by the round-15
+    // wedged-unwind test): the retained payload is the OLD hub's, so editing
+    // must wait for the NEW hub's own confirmation - but the retained raw
+    // set keeps the display truthful about what is still firing.
+    expect(retained.loaded).toBe(false);
+    expect(retained.hubError).toContain("still in effect");
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // The wedge clears; hub B's refresh lands an EMPTY payload. The intact
+    // applied map lets the reconcile restore palette.open's default.
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    await waitFor(() => expect(resolveGet).toBeDefined());
+    resolveGet?.(overridesPayload(1, []));
+    await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+
+    expect(keybindingsStore.getState().revision).toBe(1);
+    expect(keybindingsStore.getState().rawOverrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+});

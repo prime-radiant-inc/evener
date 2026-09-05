@@ -1208,3 +1208,92 @@ test("a persisted rule skipped by validation shows Reset, and clicking it drops 
   });
   await waitFor(() => expect(within(rowFor("Toggle the sidebar")).queryByRole("button", { name: "Reset" })).toBeNull());
 });
+
+// Finding 33: a preflight rejection (a Reset that would re-conflict a
+// restored default) sets ONLY the row error - hubError stays null by design,
+// so the hubError transition cannot clear it. The next confirmed hub payload
+// (here a `changed` notification from an edit made elsewhere) supersedes the
+// bindings the error described, and the apply-serial bump clears the row error.
+test("a Reset preflight rejection's row error clears on the next confirmed payload", async () => {
+  const client = await wireEditableClient([
+    { action: ACTIONS.composerFocus, chord: "Control+K" },
+    { action: ACTIONS.paletteOpen, chord: "Control+P" },
+  ]);
+  render(<KeybindingsSection />);
+
+  // Reset on the palette row drops the palette override: the simulation
+  // restores palette.open's default Control+K, which composer's override
+  // still claims - an introduced conflict the hub write never sees.
+  const row = rowFor("Open the command palette");
+  await userEvent.setup().click(within(row).getByRole("button", { name: "Reset" }));
+  const alert = await within(row).findByRole("alert");
+  expect(alert.textContent).toContain(`already bound by "${ACTIONS.paletteOpen}"`);
+  expect(patchCallsOf(client)).toHaveLength(0);
+  expect(keybindingsStore.getState().hubError).toBeNull();
+
+  // Nothing hub-sourced follows on its own: the error persists until a
+  // confirmed payload lands (the composer rule was removed through another
+  // client), then clears with the apply.
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  });
+  await waitFor(() => expect(within(row).queryByRole("alert")).toBeNull());
+  expect(keybindingsStore.getState().hubError).toBeNull();
+});
+
+// Finding 33, fence half: a write QUEUED in a ready generation that a
+// support flap ends rejects at the call-time fence - throw-only, hubError
+// stays null by design (finding 22) - leaving a row error no hubError
+// transition can clear. The next confirmed payload clears it.
+test("a generation-fenced queued write's row error clears on the next confirmed payload", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/keybindings/get", () =>
+    overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]),
+  );
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  await wireClient(client, true);
+  render(<KeybindingsSection />);
+
+  // Write 1 (palette Unbind) hangs in flight; write 2 (composer Unbind)
+  // queues behind it in the same generation.
+  await userEvent.setup().click(within(rowFor("Open the command palette")).getByRole("button", { name: "Unbind" }));
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  await userEvent.setup().click(within(rowFor("Focus the composer")).getByRole("button", { name: "Unbind" }));
+
+  // A support flap ends the ready generation: the flap-back begins a NEW
+  // generation and re-refreshes (revision 3 again), confirming state - that
+  // apply-serial bump happens BEFORE either row error exists.
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: true },
+  });
+  await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
+
+  // Write 1's response lands in the DEAD generation (dropped, synthesized
+  // resolution); write 2 then executes and the call-time fence throws - the
+  // composer row shows the error while hubError stays null.
+  resolvePatch?.(overridesPayload(4, []));
+  const composerRow = rowFor("Focus the composer");
+  const alert = await within(composerRow).findByRole("alert");
+  expect(alert.textContent).toContain("unavailable");
+  expect(keybindingsStore.getState().hubError).toBeNull();
+  expect(patchCallsOf(client)).toHaveLength(1);
+
+  // A confirmed payload for the NEW generation supersedes the bindings the
+  // error described: the row error clears.
+  client.emitNotification({
+    method: "evener/settings/keybindings/changed",
+    params: overridesPayload(5, []),
+  });
+  await waitFor(() => expect(within(composerRow).queryByRole("alert")).toBeNull());
+});
