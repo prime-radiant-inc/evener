@@ -1152,6 +1152,26 @@ func TestLocalDaemonItemSnapshotBoundedToCompleteTransitions(t *testing.T) {
 			t.Fatalf("continued bounded disjoint cursor = %+v, want A,B", continued.Candidates.Candidates)
 		}
 	})
+
+	t.Run("full A,B then bounded disjoint C,D with rewritten hidden prefix", func(t *testing.T) {
+		source, _ := newLocalDaemonItemTransitionSource(t, []appwire.ThreadItem{item("X", 0), item("Y", 1)})
+		nativeIdentity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "daemon-incarnation", ProjectionVersion: 1}
+		nativeOlderCursor, err := appitempaging.EncodeCursor(nativeIdentity, appwire.ThreadItemPosition{Entry: 0, Item: 2})
+		if err != nil {
+			t.Fatalf("encode native older cursor: %v", err)
+		}
+		complete, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("A", 0), item("B", 1)}, ""))
+		if err != nil {
+			t.Fatalf("complete conversion: %v", err)
+		}
+		bounded, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "local:thread"}, read([]appwire.ThreadItem{item("C", 2), item("D", 3)}, nativeOlderCursor))
+		if err != nil {
+			t.Fatalf("bounded disjoint conversion: %v", err)
+		}
+		if bounded.Identity.Incarnation == complete.Identity.Incarnation {
+			t.Fatalf("rewritten hidden prefix preserved incarnation %q", bounded.Identity.Incarnation)
+		}
+	})
 }
 
 func TestLocalDaemonItemPagingIsolatesSharedWorkspaceAliases(t *testing.T) {

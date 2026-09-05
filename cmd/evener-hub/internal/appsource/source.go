@@ -116,7 +116,7 @@ func (s *CodexSource) ItemCandidatesFromRead(
 }
 
 func (s *LocalDaemonSource) ItemCandidatesFromRead(
-	_ context.Context,
+	ctx context.Context,
 	params appwire.ThreadReadParams,
 	response appwire.ThreadReadResponse,
 ) (ItemCandidateResult, error) {
@@ -144,9 +144,24 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 			// window. itemSnapshotStateAdvance already proved that window unchanged.
 			next.NativeCursor = ""
 		} else if previous.NativeCursor == "" {
-			// A prior complete snapshot has no native continuation token. When the
-			// bounded window is a proved advance, adopt its token without rotating.
-			next.NativeCursor = response.OlderCursor
+			// A position-advanced bounded window does not itself prove that the
+			// now-hidden complete prefix is unchanged. Validate that prefix through
+			// the new native continuation before adopting its token.
+			if previous.Prefix && len(candidates) > 0 {
+				first := candidates[0].Position
+				disjointAdvance := first.Entry > previous.LastPosition.Entry ||
+					(first.Entry == previous.LastPosition.Entry && first.Item > previous.LastPosition.Item)
+				if disjointAdvance {
+					unchanged, err := s.localDaemonHiddenPrefixUnchanged(ctx, resolved, params.ItemsView, response.OlderCursor, previous)
+					if err != nil {
+						return ItemCandidateResult{}, err
+					}
+					rotated = !unchanged
+				}
+			}
+			if !rotated {
+				next.NativeCursor = response.OlderCursor
+			}
 		} else {
 			if len(candidates) == 0 {
 				return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
@@ -396,6 +411,95 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 		Identity:   identity,
 		Exhausted:  response.NextCursor == "",
 	}, nil
+}
+
+func (s *LocalDaemonSource) localDaemonHiddenPrefixUnchanged(
+	ctx context.Context,
+	resolved localDaemonItemThread,
+	itemsView string,
+	nativeCursor string,
+	previous itemSnapshotState,
+) (bool, error) {
+	if previous.ItemCount <= 0 {
+		return false, nil
+	}
+	pages := make([][]appitempaging.TranscriptItemCandidate, 0, 1)
+	itemCount := 0
+	seenCursors := make(map[string]struct{})
+	for itemCount < previous.ItemCount {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if _, seen := seenCursors[nativeCursor]; seen {
+			return false, errors.New("local daemon hidden item prefix cursor cycle detected")
+		}
+		seenCursors[nativeCursor] = struct{}{}
+
+		remaining := previous.ItemCount - itemCount
+		response, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{
+			Ref:       resolved.routeRef,
+			ThreadID:  resolved.threadID,
+			Cursor:    nativeCursor,
+			ItemsView: itemsView,
+			PageUnit:  appwire.TranscriptPageUnitItem,
+			ItemLimit: remaining,
+		})
+		if err != nil {
+			return false, err
+		}
+		if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
+			return false, err
+		}
+		candidates, err := localDaemonItemCandidates(response.Data)
+		if err != nil {
+			return false, err
+		}
+		if err := appitempaging.ValidateCandidates(candidates); err != nil {
+			return false, err
+		}
+		if len(candidates) > remaining {
+			return false, nil
+		}
+		pages = append(pages, candidates)
+		itemCount += len(candidates)
+
+		if response.NextCursor == "" {
+			if itemCount != previous.ItemCount {
+				return false, nil
+			}
+			break
+		}
+		if len(candidates) == 0 {
+			return false, errors.New("local daemon hidden item prefix continuation made no progress")
+		}
+		boundary := candidates[0].Position
+		requestCanonical, err := appitempaging.RebaseCursor(nativeCursor, boundary)
+		if err != nil {
+			return false, err
+		}
+		nextCanonical, err := appitempaging.RebaseCursor(response.NextCursor, boundary)
+		if err != nil {
+			return false, err
+		}
+		if requestCanonical != nextCanonical {
+			return false, nil
+		}
+		if itemCount == previous.ItemCount {
+			// An additional continuation proves that the former complete snapshot
+			// omitted older history, even though the retained count matched.
+			return false, nil
+		}
+		nativeCursor = response.NextCursor
+	}
+
+	history := make([]appitempaging.TranscriptItemCandidate, 0, previous.ItemCount)
+	for pageIndex := range slices.Backward(pages) {
+		history = append(history, pages[pageIndex]...)
+	}
+	if err := appitempaging.ValidateCandidates(history); err != nil {
+		return false, nil
+	}
+	return itemSnapshotStateMatchesCompleteCandidates(previous, history), nil
 }
 
 func localDaemonCandidatesBefore(candidates []appitempaging.TranscriptItemCandidate, before appwire.ThreadItemPosition, limit int) []appitempaging.TranscriptItemCandidate {
