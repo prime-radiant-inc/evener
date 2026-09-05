@@ -202,7 +202,7 @@ export function DirectoryPicker({
       }
     >
       <div className={CLASS.browser}>
-        <aside className={CLASS.recents} aria-label="Recent directories">
+        <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
           {listRecents && <h3>Recent</h3>}
           {recents.map((path) => (
             <button
