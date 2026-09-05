@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -96,7 +97,14 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
 	s.emit(events.EventWarning, events.WarningData{
-		Message:           msg,
+		Message: msg,
+		// Same reasoning as warnOutputReduction: an informational context
+		// notice, with an explicit neutral title so the classifier's keyword
+		// fallback cannot stamp its generic "Evener error" title and
+		// session-log hint onto it.
+		Source:            string(diagnostic.SourceEvener),
+		Title:             "Context budget",
+		Hint:              "The conversation is nearing the model's context window; compaction will manage it. No action needed.",
 		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,
 		Percent:           pct,
@@ -1277,10 +1285,22 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 	if s == nil || profile == nil || !budget.LimitedOutput {
 		return
 	}
-	s.emit(events.EventWarning, warningDataFromError(fmt.Sprintf(
-		"Output allocation reduced for %s/%s: requested=%d admitted=%d",
-		profile.ID(), profile.Model(), budget.RequestedOutput, budget.AdmittedOutput,
-	), nil))
+	// An explicit neutral title and hint, both because this is budget
+	// arithmetic succeeding (not a failure) and because leaving them blank
+	// lets the diagnostic classifier's keyword fallback stamp its generic
+	// "Evener error" title and session-log hint onto the warning — which the
+	// Web UI renders as an error chip for a routine clamp. FromFields
+	// preserves a supplied title/hint verbatim, so this survives every
+	// re-derivation downstream (sendEvent enrichment, projector projection).
+	s.emit(events.EventWarning, events.WarningData{
+		Message: fmt.Sprintf(
+			"Output allocation reduced for %s/%s: requested=%d admitted=%d",
+			profile.ID(), profile.Model(), budget.RequestedOutput, budget.AdmittedOutput,
+		),
+		Source: string(diagnostic.SourceEvener),
+		Title:  "Context budget",
+		Hint:   "The model's output allocation was reduced to fit its context window. No action needed.",
+	})
 }
 
 func isLocalContextBudgetError(err error) bool {
