@@ -1312,7 +1312,11 @@ export function Composer({ ref }: ComposerProps) {
         </ConfirmDialog>
       )}
       {(!ended || showFollowUpCard) && (
-        <div className={CLASS.formAnchor}>
+        // data-composer is the hold-hints overlay's anchor (shell/holdhints):
+        // the composer.focus chip positions itself above this wrapper. The
+        // value carries this pane's session ref so the overlay can anchor to
+        // the FOCUSED pane's composer when several are mounted.
+        <div className={CLASS.formAnchor} data-composer={ref}>
           {/* Anchored above the control row inside the card below, opening
               upward the same way GoalControl's own popover does - see
               slashcompletionmenu.module.css's header comment. Mounted only

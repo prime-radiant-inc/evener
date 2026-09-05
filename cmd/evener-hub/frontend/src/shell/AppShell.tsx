@@ -22,9 +22,11 @@ import { navigationStore, useNavigationStore } from "../stores/navigation/store"
 import { isNavigationUnavailable, isSettledGone, keyID } from "../stores/navigation/types";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { DockRegion } from "./DockRegion";
+import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
@@ -32,7 +34,7 @@ import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { urlToPane } from "./routing";
+import { navigate, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -516,6 +518,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // cycling no-ops (fewer than two session panes): Alt+ArrowLeft is the
   // browser's Back shortcut, and declining would navigate the SPA's history
   // underneath a user who has one session open.
+  //
+  // ⌘, (settings.open, Phase 4a) joins this desktop-only group per the p4
+  // plan's mobile-inert constraint. Its behavior IS the palette "settings"
+  // command's - the action id reuses that command's id (keybindings/
+  // actions.ts), and navigate("/settings") is exactly its run body
+  // (shell/palette/commands.ts); same shared-seam precedent as
+  // next-needs-you above.
   useEffect(() => {
     if (isMobile) return undefined;
     installKeybindings();
@@ -523,6 +532,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
+      registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
       for (const dispose of unregister) dispose();
@@ -684,6 +694,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         />
         <ToastRegion />
         <CommandPalette />
+        {/* The cheatsheet overlay and the hold-modifier hints (Phase 4a):
+            desktop-only, so on a touch viewport no cheatsheet action is ever
+            registered and its trigger chords stay inert - RailHost's
+            rail.toggle no-registration pattern - and no hold-hint listener
+            is ever installed. */}
+        {!isMobile && <CheatsheetOverlay />}
+        {!isMobile && <HoldHints />}
         <div className={styles.content}>
           {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole

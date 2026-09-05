@@ -251,6 +251,13 @@ export function chordDisplayKeys(chord: Chord): string[] {
   return [...chord.modifiers.map((m) => MODIFIER_DISPLAY[m] ?? m), key];
 }
 
+/** One modifier's display label (Ctrl / ⌘ / verbatim) - the chordDisplayKeys
+ * mapping for the capture editor's modifier-only live preview, which has no
+ * key yet. */
+export function modifierDisplayKey(modifier: string): string {
+  return MODIFIER_DISPLAY[modifier] ?? modifier;
+}
+
 /** One press as speakable words: "⌘+K" on Apple platforms, "Ctrl+K" elsewhere. */
 export function formatChord(chord: Chord): string {
   return chordDisplayKeys(chord).join("+");

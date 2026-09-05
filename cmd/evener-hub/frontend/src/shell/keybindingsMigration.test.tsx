@@ -282,6 +282,21 @@ test("Mod+J fires while an input is focused", async () => {
   remove();
 });
 
+// settings.open (Phase 4a, the p4 plan's Design decision 2): ⌘, runs exactly
+// what the palette's "settings" command runs - navigate("/settings") - and
+// fires from editable targets (⌘, never collides with typing).
+test("Mod+, opens the Settings pane while an input is focused", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  const { input, remove } = focusedInput();
+
+  fireEvent.keyDown(input, { key: ",", metaKey: true });
+
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("settings"));
+  expect(window.location.pathname).toBe("/settings");
+  remove();
+});
+
 test("Mod+B is suppressed from editable targets (Ctrl+B keeps its emacs meaning)", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
@@ -351,6 +366,18 @@ test("Mod+I and Mod+J are suppressed while an [aria-modal] dialog is open", asyn
 
   expect(focusSpy).not.toHaveBeenCalled();
   expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ref_abc123" });
+  close();
+});
+
+test("Mod+, is suppressed while an [aria-modal] dialog is open (allowInModal: false)", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  const { inside, close } = openFakeModal();
+
+  fireEvent.keyDown(inside, { key: ",", metaKey: true });
+
+  expect(workspaceStore.getState().mainPane()?.type).not.toBe("settings");
+  expect(window.location.pathname).not.toBe("/settings");
   close();
 });
 

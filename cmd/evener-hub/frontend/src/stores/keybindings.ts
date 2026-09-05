@@ -167,14 +167,18 @@ function applyHubOverrides(payload: KeybindingsOverrides): void {
   const state = keybindingsStore.getState();
   if (payload.revision < state.revision) return;
   applyOverrideRules(payload.rules);
-  // A successful apply also supersedes any earlier apply failure's hubError.
+  // A successful apply supersedes any earlier apply failure's hubError AND
+  // any earlier patch's revision-race conflict - the store is now confirmed
+  // at this payload either way. Clearing one without the other was the
+  // parked 2b asymmetry: a stale conflict notice outlived the state it
+  // described (only a successful PATCH cleared it).
   // A GET payload carrying loadError (the hub's persisted state failed to
   // load; the fallback defaults are in effect and PATCH rejects) maps onto
   // hubError so the editing gate stays CLOSED with the diagnostic showing,
   // instead of flapping writable-then-failing on every save (roborev PR
   // #884 round 6). Broadcasts and patch responses never carry it, so an
   // ordinary apply clears hubError exactly as before.
-  keybindingsStore.setState({ revision: payload.revision, hubError: payload.loadError ?? null });
+  keybindingsStore.setState({ revision: payload.revision, hubError: payload.loadError ?? null, conflict: null });
 }
 
 function currentSupport(): "unknown" | "supported" | "unsupported" {
@@ -225,8 +229,11 @@ function setSupportFromConnection(): void {
     if (state.hubSupport !== support) keybindingsStore.setState({ hubSupport: support });
     return;
   }
-  if (state.hubSupport !== support || state.hubLoading || state.hubError !== null)
-    keybindingsStore.setState({ hubSupport: support, hubLoading: false, hubError: null });
+  // The conflict notice clears with hubError here too (the 2b clear
+  // asymmetry): a support drop disconnects the store from the hub state the
+  // conflict described, so keeping it would be as stale as keeping hubError.
+  if (state.hubSupport !== support || state.hubLoading || state.hubError !== null || state.conflict !== null)
+    keybindingsStore.setState({ hubSupport: support, hubLoading: false, hubError: null, conflict: null });
 }
 
 function onNotification(notification: AnyNotification): void {
@@ -355,6 +362,21 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       keybindingsStore.setState({ hubError: error });
       throw new Error(error);
     }
+    // Pre-flight semantic validation (the parked 2b minor the settings
+    // editor makes live): the SAME simulation the reconcile path runs on a
+    // confirmed payload, run BEFORE the hub write. A rule the reconcile
+    // would skip - unknown action, unparseable or platform-reserved chord,
+    // or a conflict on the simulated final map - would otherwise be accepted
+    // by the hub (the server validates structure only) and then silently not
+    // apply. Reject instead, with the validation layer's own message, and
+    // leave hubError/conflict untouched: nothing hub-sourced happened. The
+    // currently-applied set re-validates clean (it did at apply time and the
+    // reserved lists are platform-static), so a warning always names a rule
+    // this call introduced.
+    const preflight = validateOverrideRules(rules, keybindingsRegistry, undefined, new Set(appliedOverrides.keys()));
+    if (preflight.warnings.length > 0) {
+      throw new Error(preflight.warnings.map((warning) => warning.message).join("\n"));
+    }
     const token = ++patchSerial;
     try {
       const result = await client.request("evener/settings/keybindings/patch", {
@@ -368,7 +390,6 @@ export const keybindingsStore: StoreApi<KeybindingsStoreState> = createStore<Key
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
       applyHubOverrides(payload);
-      keybindingsStore.setState({ hubError: null, conflict: null });
       return payload;
     } catch (error) {
       if (token === patchSerial && isCurrentReady(client, generation)) {

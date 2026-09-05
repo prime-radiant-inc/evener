@@ -77,6 +77,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
         <button
           type="button"
           className={CLASS.chip}
+          data-rail-toggle=""
           aria-label={label}
           onClick={() => prefsStore.getState().setSidebarHidden(false)}
         >
