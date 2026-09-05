@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -430,15 +431,25 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		// A credential JSON stored under the instance name (a service-account
 		// key or an authorized_user file the hub accepted) outranks the ADC
 		// file, so a hub host needs neither gcloud nor variables (spec §4.2).
+		// A store entry that is not a JSON object — a stale API key left
+		// over from before this instance used gcp-adc, say — is not a
+		// credential this scheme can use; it must not shadow a working ADC
+		// file, so it falls through with a warning instead of being
+		// returned (roborev F2).
+		var warn []string
 		if r.creds != nil {
 			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
-				return Credential{Value: v, Source: "store"}, nil
+				if strings.HasPrefix(strings.TrimSpace(v), "{") && json.Valid([]byte(v)) {
+					return Credential{Value: v, Source: "store"}, nil
+				}
+				warn = append(warn, fmt.Sprintf("credentials-store entry for %q is not a credential JSON and is ignored for gcp-adc: clear it (evener/auth/apiKey/clear) or replace it with a service-account or authorized_user JSON", rec.name))
 			}
 		}
 		if adcAvailable(r.env) {
-			return Credential{Source: "adc"}, nil
+			return Credential{Source: "adc"}, warn
 		}
-		return none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
+		cred, reasons := none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
+		return cred, append(warn, reasons...)
 	}
 	if h.APIKey != "" {
 		v, missing := expandEnv(h.APIKey, r.env)

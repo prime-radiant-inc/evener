@@ -406,6 +406,53 @@ func TestCredential_GCPADCWithoutStoreOrFileIsNoneAndNamesTheRemedies(t *testing
 	}
 }
 
+// writeFakeADCFile writes an ADC file under env's HOME so adcAvailable(env)
+// reports true, the same technique golden_test.go's goldenRegistry uses.
+func writeFakeADCFile(t *testing.T, env map[string]string) {
+	t.Helper()
+	adc := filepath.Join(env["HOME"], ".config", "gcloud", "application_default_credentials.json")
+	if err := os.MkdirAll(filepath.Dir(adc), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adc, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (the stale store value must not shadow it)", inst, ok)
+	}
+	if joined := strings.Join(inst.Warnings, "; "); !strings.Contains(joined, "not a credential JSON") {
+		t.Fatalf("warnings = %q, want it to name the ignored store value", joined)
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
+func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithoutADC(t *testing.T) {
+	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "none" {
+		t.Fatalf("instance = %+v ok=%v; want source none", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"not a credential JSON", "gcloud auth application-default login"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+}
+
 func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
 	env := noADCEnv(t)
 	env["GOOGLE_VERTEX_PROJECT"], env["GOOGLE_VERTEX_LOCATION"] = "my-project", "global"
