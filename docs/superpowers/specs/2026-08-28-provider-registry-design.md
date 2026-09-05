@@ -1697,7 +1697,8 @@ GOOGLE_VERTEX_LOCATION = "global"
 ```
 
 TOML keys map onto the structs in §4 as follows: `base`, `inherit_models`,
-`api_key`, `api_key_env`, `headers`, `credential_headers`, `surface`,
+`inherit_models_matching`, `api_key`, `api_key_env`, `headers`,
+`credential_headers`, `surface`,
 `family`, `default_model`, `cheap_model` → `Provider` (the curated overlay
 alone may also set `implicit`, `name`, `doc`, and a top-level
 `default_order` array, which TOML tables could not order; those keys are a

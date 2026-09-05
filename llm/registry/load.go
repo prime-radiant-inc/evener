@@ -503,6 +503,7 @@ func cloneModel(m Model) Model {
 func cloneProviderView(p Provider) Provider {
 	out := p
 	out.InheritModels = clonePointer(p.InheritModels)
+	out.InheritModelsMatching = slices.Clone(p.InheritModelsMatching)
 	out.Implicit = clonePointer(p.Implicit)
 	out.Transport = cloneTransportView(p.Transport)
 	out.APIKeyEnv = slices.Clone(p.APIKeyEnv)
@@ -659,7 +660,8 @@ func setIfNonEmpty(dst *string, src string) {
 
 // fold overlays one layer's record onto rec (spec §4.1, §4.2): scalars set
 // if non-empty, maps key-wise, transports field-wise after preset expansion,
-// the cross-protocol rule, and inherit_models = false.
+// the cross-protocol rule, inherit_models = false, and
+// inherit_models_matching.
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
@@ -672,6 +674,16 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 		h.Models = map[string]Model{}
 		for i := range rec.layers {
 			rec.layers[i].rows = nil
+		}
+	}
+	if len(src.InheritModelsMatching) > 0 {
+		for id := range h.Models {
+			if !matchesAnyGlob(src.InheritModelsMatching, id) {
+				delete(h.Models, id)
+			}
+		}
+		for i := range rec.layers {
+			rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, src.InheritModelsMatching)
 		}
 	}
 	t, err := expandPreset(src.Transport, presets, where)
@@ -701,6 +713,9 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	if src.InheritModels != nil {
 		h.InheritModels = src.InheritModels
 	}
+	if src.InheritModelsMatching != nil {
+		h.InheritModelsMatching = slices.Clone(src.InheritModelsMatching)
+	}
 	if src.APIKeyEnv != nil {
 		h.APIKeyEnv = append([]string{}, src.APIKeyEnv...)
 	}
@@ -718,6 +733,22 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	}
 	rec.layers = append(rec.layers, layer)
 	return nil
+}
+
+// keepMatchingRows returns a fresh map holding only rows's entries whose id
+// matches at least one pattern (nil in, nil out): the caller's map may be
+// shared with a base record, so this never mutates rows in place.
+func keepMatchingRows(rows map[string]Model, patterns []string) map[string]Model {
+	if rows == nil {
+		return nil
+	}
+	out := make(map[string]Model, len(rows))
+	for id, m := range rows {
+		if matchesAnyGlob(patterns, id) {
+			out[id] = m
+		}
+	}
+	return out
 }
 
 // foldModel overlays one layer's row onto the merged row head. Hidden comes

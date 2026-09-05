@@ -138,11 +138,12 @@ func TestProvider_ReturnsIndependentValue(t *testing.T) {
 
 func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 	provider := Provider{
-		ID:            "example",
-		InheritModels: new(true),
-		Implicit:      new(true),
-		APIKeyEnv:     []string{"EXAMPLE_API_KEY"},
-		Headers:       map[string]string{"provider": "header"},
+		ID:                    "example",
+		InheritModels:         new(true),
+		InheritModelsMatching: []string{"alpha-*"},
+		Implicit:              new(true),
+		APIKeyEnv:             []string{"EXAMPLE_API_KEY"},
+		Headers:               map[string]string{"provider": "header"},
 		Transport: Transport{
 			Vars: map[string]string{"region": "test"},
 			Body: map[string]any{
@@ -180,6 +181,7 @@ func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 		t.Fatal("example provider is missing")
 	}
 	*got.InheritModels = false
+	got.InheritModelsMatching[0] = "changed"
 	got.APIKeyEnv[0] = "CHANGED"
 	got.Headers["provider"] = "changed"
 	got.Transport.Vars["region"] = "changed"
@@ -392,6 +394,102 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 	openai := r.curated["openai"]
 	if openai.head.Transport.CountTokensEndpoint != "/responses/input_tokens" || openai.head.Headers["OpenAI-Organization"] != "$OPENAI_ORG_ID" {
 		t.Fatalf("openai head: %+v", openai.head)
+	}
+}
+
+func TestLoad_InheritModelsMatchingKeepsOnlyMatchingBaseRows(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := overlayWith(`
+[providers.matchbase]
+implicit = true
+name = "Match Base"
+protocol = "openai-chat"
+surface = "generic"
+base_url = "https://example.test/v1"
+auth = "none"
+
+[providers.matchbase.models."alpha-1"]
+[providers.matchbase.models."alpha-2"]
+[providers.matchbase.models."beta-1"]
+
+[providers.matchderived]
+implicit = true
+name = "Match Derived"
+base = "matchbase"
+inherit_models_matching = ["alpha-*"]
+
+[providers.matchderived.models."gamma-9"]
+`)
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(overlay))
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := r.curated["matchderived"]
+	if derived == nil {
+		t.Fatal("matchderived missing")
+	}
+	if got, want := sortedKeys(derived.head.Models), []string{"alpha-1", "alpha-2", "gamma-9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("derived model ids = %v, want %v", got, want)
+	}
+	base := r.curated["matchbase"]
+	if _, ok := base.head.Models["beta-1"]; !ok {
+		t.Fatal("inherit_models_matching must not remove beta-1 from the base's own record")
+	}
+	if res, err := r.Resolve("matchbase/beta-1"); err != nil || res.Synthesized {
+		t.Fatalf("matchbase/beta-1 must still resolve as a real catalog row (no shared-map mutation): res=%+v err=%v", res, err)
+	}
+	p, ok := r.Provider("matchderived")
+	if !ok {
+		t.Fatal("matchderived provider missing")
+	}
+	if !reflect.DeepEqual(p.InheritModelsMatching, []string{"alpha-*"}) {
+		t.Fatalf("InheritModelsMatching = %v", p.InheritModelsMatching)
+	}
+	// beta-1 fell out of matchderived's catalog: an unresolvable id degrades
+	// to a synthesized pass-through row rather than an error (Resolve only
+	// hard-fails unknown ids on the Codex transport), so Synthesized is what
+	// proves the row is gone.
+	res, err := r.Resolve("matchderived/beta-1")
+	if err != nil {
+		t.Fatalf("matchderived/beta-1: %v", err)
+	}
+	if !res.Synthesized {
+		t.Fatalf("matchderived/beta-1 must not resolve as a real catalog row: %+v", res)
+	}
+}
+
+func TestLoad_InheritModelsMatchingValidation(t *testing.T) {
+	cases := map[string]string{
+		"no base": "[providers.x]\n" +
+			"inherit_models_matching = [\"alpha-*\"]\n",
+		"conflicts with inherit_models = false": "[providers.x]\n" +
+			"base = \"openai\"\n" +
+			"inherit_models = false\n" +
+			"inherit_models_matching = [\"alpha-*\"]\n",
+		"empty pattern": "[providers.x]\n" +
+			"base = \"openai\"\n" +
+			"inherit_models_matching = [\"\"]\n",
+	}
+	wantSubstr := map[string]string{
+		"no base":                               "inherit_models_matching needs base",
+		"conflicts with inherit_models = false": "conflicts with inherit_models = false",
+		"empty pattern":                         "empty pattern",
+	}
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
+				WithOverlay(overlayWith(cfg)))
+			if err == nil || !strings.Contains(err.Error(), wantSubstr[name]) {
+				t.Fatalf("%s: err = %v, want it to contain %q", name, err, wantSubstr[name])
+			}
+		})
 	}
 }
 

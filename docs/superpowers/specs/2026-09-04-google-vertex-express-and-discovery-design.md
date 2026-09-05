@@ -96,9 +96,12 @@ response as the fixture file; this list is what it must contain.
 ## 1. `google-vertex-express` — the API-key provider
 
 A curated implicit provider in `llm/registry/data/providers_overlay.toml`.
-It is built on `google`, not `google-vertex`: that yields exactly the Gemini
-rows (no Claude rows to hide — `hidden` is not an overlay key), the `google`
-protocol and surface, and the `{BASE_URL}` variable pattern every other
+It is built on `google`, not `google-vertex`: that yields the `google`
+protocol and surface and no Claude rows; google's catalog also carries
+Gemma, Lyria, and Deep Research rows, which the express endpoint does not
+serve (verified 2026-09-05: 404 for all three with the express key), so
+`inherit_models_matching = ["gemini-*"]` narrows the inherited rows to
+Gemini. It also yields the `{BASE_URL}` variable pattern every other
 implicit provider uses, so the hub's add dialog shows it the same optional
 base-URL override it shows for `google`.
 
@@ -108,6 +111,7 @@ implicit = true
 name = "Google Vertex (API key)"
 base = "google"
 inherit_models = true
+inherit_models_matching = ["gemini-*"]
 api_key_env = ["GOOGLE_VERTEX_API_KEY"]
 transport = "vertex-gemini"
 auth = "header"
@@ -132,6 +136,9 @@ How the layers combine (all existing behaviour, `llm/registry/load.go`):
   nil`), so `GEMINI_API_KEY` / `GOOGLE_API_KEY` never make this instance
   exist. `vars` / `vars_env` merge key-wise, so `BASE_URL` is overridden and
   no other variable leaks in.
+- `inherit_models_matching` (overlay key, `fold`) drops every inherited row
+  whose id does not match `gemini-*`; rows the provider declares itself are
+  unaffected.
 - `v1` rather than `v1beta1`, to match `google-vertex`'s base URL. Both work
   (verified).
 - `web_search = true` is explicit because the first-party gate

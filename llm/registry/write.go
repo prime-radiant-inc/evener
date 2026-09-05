@@ -54,6 +54,9 @@ func providerTable(p Provider) map[string]any {
 	if p.InheritModels != nil {
 		t["inherit_models"] = *p.InheritModels
 	}
+	if len(p.InheritModelsMatching) > 0 {
+		t["inherit_models_matching"] = p.InheritModelsMatching
+	}
 	setString(t, "protocol", p.Protocol)
 	setString(t, "surface", p.Surface)
 	setString(t, "family", p.Family)

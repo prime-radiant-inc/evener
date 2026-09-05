@@ -383,8 +383,9 @@ per-model overrides (a custom `context_window`/`effort_values`/`default_effort`/
 `thinking_format` on one model id) — there's no separate worked example for
 that, this is it.
 
-Key mapping: `base`, `inherit_models`, `api_key`, `api_key_env`, `headers`,
-`credential_headers`, `surface`, `family`, `default_model`, `cheap_model` →
+Key mapping: `base`, `inherit_models`, `inherit_models_matching`, `api_key`,
+`api_key_env`, `headers`, `credential_headers`, `surface`, `family`,
+`default_model`, `cheap_model` →
 `Provider`; `transport`, `base_url`, `host_rule`, `auth`, `auth_header`,
 `endpoint`, `stream_endpoint`, `models_endpoint`, `count_tokens_endpoint`,
 `vars`, `vars_env`, `body` → `Provider.Transport`; `protocol` →
@@ -394,6 +395,11 @@ instance level → `Provider.Caps`, or inside
 `wire_id`, `family`, `protocol`, `surface`, `headers`, and the transport keys
 there too). A top-level `[models."<glob>"]` table is accepted in both the
 curated overlay and `providers.toml`.
+
+`inherit_models_matching = ["<glob>", …]` keeps only the inherited rows
+whose id matches a glob (`*` as in `[providers.X.models."<glob>"]`); the
+provider's own rows are always kept. The curated `google-vertex-express` row
+uses it to carry only google's `gemini-*` rows.
 
 Auxiliary calls (session naming, summarization) resolve an explicitly
 configured route first, then the instance's `cheap_model`, and otherwise run
@@ -522,9 +528,11 @@ Sonnet 4.6 gets a `Warnings` entry.
 **Vertex express mode** (`google-vertex-express`) is the same Gemini
 publisher endpoints addressed without a project or location and
 authenticated with a Google Cloud API key (`x-goog-api-key`). It is built on
-`google`, so it carries exactly the Gemini catalog rows; Claude is not
-reachable this way. API keys are rejected by the publisher-model listing, so
-express instances never list live.
+`google` and narrowed to its `gemini-*` rows (`inherit_models_matching`):
+google's catalog also carries Gemma, Lyria, and Deep Research rows, which the
+express endpoint does not serve, and Claude is not reachable this way. API
+keys are rejected by the publisher-model listing, so express instances never
+list live.
 
 ## The Codex transport
 

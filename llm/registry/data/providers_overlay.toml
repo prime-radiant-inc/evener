@@ -308,14 +308,17 @@ web_search = true
 # Vertex AI in express mode (spec 2026-09-04-google-vertex-express-and-discovery
 # §1): the same Gemini publisher endpoints as google-vertex, addressed
 # without a project or location and authenticated with a Google Cloud API
-# key instead of ADC. Built on google so it carries exactly the Gemini rows;
-# the express key cannot call the publisher-model listing (401 by policy),
-# so models_endpoint stays "-" and discovery is catalog-only.
+# key instead of ADC. Built on google and narrowed to its gemini-* rows
+# (google also carries Gemma, Lyria, and Deep Research rows, which the
+# express endpoint does not serve); the express key cannot call the
+# publisher-model listing (401 by policy), so models_endpoint stays "-" and
+# discovery is catalog-only.
 [providers."google-vertex-express"]
 implicit = true
 name = "Google Vertex (API key)"
 base = "google"
 inherit_models = true
+inherit_models_matching = ["gemini-*"]
 api_key_env = ["GOOGLE_VERTEX_API_KEY"]
 transport = "vertex-gemini"
 auth = "header"

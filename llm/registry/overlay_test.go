@@ -318,9 +318,12 @@ func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
 	if p.DefaultModel != "gemini-3.8-flash" || p.CheapModel != "gemini-2.5-flash-lite" {
 		t.Fatalf("defaults: %q %q", p.DefaultModel, p.CheapModel)
 	}
+	if !reflect.DeepEqual(p.InheritModelsMatching, []string{"gemini-*"}) {
+		t.Fatalf("InheritModelsMatching = %v", p.InheritModelsMatching)
+	}
 	for id := range p.Models {
-		if strings.HasPrefix(id, "claude") {
-			t.Fatalf("express row inherited a Claude row %q; it must be Gemini-only", id)
+		if !strings.HasPrefix(id, "gemini-") {
+			t.Fatalf("express row carries non-Gemini row %q", id)
 		}
 	}
 	if _, ok := p.Models["gemini-2.5-flash"]; !ok {
@@ -336,6 +339,41 @@ func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
 	}
 	if !BoolValue(res.Caps.WebSearch) {
 		t.Fatalf("web_search must survive on the express row: %v", res.Warnings)
+	}
+}
+
+func TestEmbedded_GoogleVertexExpressIsGeminiOnly(t *testing.T) {
+	r := embeddedLoad(t)
+	p, ok := r.Provider("google-vertex-express")
+	if !ok {
+		t.Fatal("google-vertex-express: not a curated provider")
+	}
+	if _, ok := p.Models["gemini-3.8-flash"]; !ok {
+		t.Fatal("express row must carry gemini-3.8-flash")
+	}
+	for _, id := range []string{"gemma-4-31b-it", "lyria-3-pro-preview", "deep-research-preview-04-2026"} {
+		if _, ok := p.Models[id]; ok {
+			t.Fatalf("express row must not carry google's non-Gemini row %q", id)
+		}
+	}
+	for id := range p.Models {
+		if !strings.HasPrefix(id, "gemini-") {
+			t.Fatalf("express row carries non-Gemini row %q", id)
+		}
+	}
+	google, ok := r.Provider("google")
+	if !ok {
+		t.Fatal("google: not a curated provider")
+	}
+	sawNonGemini := false
+	for id := range google.Models {
+		if !strings.HasPrefix(id, "gemini-") {
+			sawNonGemini = true
+			break
+		}
+	}
+	if !sawNonGemini {
+		t.Fatal("google's own catalog must carry at least one non-Gemini row, or this test proves nothing")
 	}
 }
 
