@@ -64,4 +64,16 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	if !col.contains("Context usage at") {
 		t.Fatalf("no context-usage warning emitted; got %v", col.messages())
 	}
+	// The informational notice must not carry the diagnostic classifier's
+	// generic error title/hint (final_fix_warning_test.go's output-reduction
+	// test covers the same contract for the clamp warning): the Web UI renders
+	// the title on the warning chip, and "Evener error" there reads as a
+	// failure for what is routine context accounting.
+	for _, w := range col.warnings() {
+		if strings.Contains(w.Message, "Context usage at") {
+			if w.Title == "Evener error" || strings.Contains(strings.ToLower(w.Hint), "session log") {
+				t.Fatalf("context-usage warning classified as an error: title=%q hint=%q", w.Title, w.Hint)
+			}
+		}
+	}
 }
