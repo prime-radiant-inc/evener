@@ -767,6 +767,32 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	e.scratchMu.Unlock()
 	_ = owned.Retain()
 	_ = unsandboxed.Retain()
+	// The file-tool layers each env built around the scratch it held are stale
+	// now; retire them through the same drain a rebuild uses. The source may
+	// never be touched again (a clone discarded on exit), so without this its
+	// root descriptors would stay open for the daemon's uptime.
+	from.retireStaleFileToolLayers()
+	e.retireStaleFileToolLayers()
+}
+
+// retireStaleFileToolLayers retires every cached file-tool layer whose scratch
+// root no longer matches this env's effective scratch path — the layers a
+// scratch move left behind — so they close once drained instead of waiting
+// for a lookup that may never come.
+func (e *LocalExecutionEnvironment) retireStaleFileToolLayers() {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	scratch := e.sessionScratchPath()
+	if e.sbfs != nil && e.sbfsScratch != scratch {
+		e.retireFileToolLayerLocked(e.sbfs)
+		e.sbfs = nil
+		e.sbfsScratch = ""
+	}
+	if e.scratchFS != nil && e.scratchFSRoot != scratch {
+		e.retireFileToolLayerLocked(e.scratchFS)
+		e.scratchFS = nil
+		e.scratchFSRoot = ""
+	}
 }
 
 // filesystem returns the environment's filesystem, defaulting to the OS

@@ -728,3 +728,68 @@ func TestRetiredFileToolLayersAreReclaimedOnceDrained(t *testing.T) {
 		t.Errorf("from retains %d replaced layers holding %d root fds after the held operation completed, want none", layers, fds)
 	}
 }
+
+// openRootFdsOf counts the root descriptors env's file-tool layers, current
+// and retired, still hold open.
+func openRootFdsOf(e *LocalExecutionEnvironment) int {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	fds := 0
+	for _, layer := range append([]*sandboxFS{e.sbfs, e.scratchFS}, e.retiredFS...) {
+		if layer == nil {
+			continue
+		}
+		layer.mu.Lock()
+		fds += len(layer.rootFds)
+		layer.mu.Unlock()
+	}
+	return fds
+}
+
+// A worktree exit discards the clone the session entered on, and nothing
+// touches that clone again. The layers its file tools built around the
+// scratch it was holding have to go with the scratch when ownership moves
+// back, through the same drain (closed once no operation holds them), or
+// every enter/exit cycle leaks the clone's root descriptors.
+func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
+	if runtimeGOOS != "linux" && runtimeGOOS != "darwin" {
+		t.Skip("the unsandboxed scratch layer is linux/darwin only")
+	}
+	shapes := map[string]func(t *testing.T, worktree string) *LocalExecutionEnvironment{
+		"unsandboxed": func(t *testing.T, worktree string) *LocalExecutionEnvironment {
+			env := NewLocalExecutionEnvironment(worktree)
+			t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+			if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+				t.Fatalf("ExecCommand: %v", err)
+			}
+			return env
+		},
+		"confined without a wrapper": readConfinedEnvAt,
+	}
+	for name, build := range shapes {
+		t.Run(name, func(t *testing.T) {
+			owner := build(t, t.TempDir())
+			lane := t.TempDir()
+			var discarded []*LocalExecutionEnvironment
+			for range 200 {
+				clone := owner.WithWorkingDirectory(lane)
+				clone.AdoptSessionScratch(owner)
+				if _, err := clone.WriteFile(filepath.Join(clone.SessionScratchDir(), "cycle.txt"), "x\n"); err != nil {
+					t.Fatalf("write_file on the entered clone: %v", err)
+				}
+				owner.AdoptSessionScratch(clone)
+				discarded = append(discarded, clone)
+			}
+			open := 0
+			for _, clone := range discarded {
+				open += openRootFdsOf(clone)
+			}
+			if open != 0 {
+				t.Errorf("200 discarded clones still hold %d root fds open, want none", open)
+			}
+			if _, err := owner.WriteFile(filepath.Join(owner.SessionScratchDir(), "after.txt"), "x\n"); err != nil {
+				t.Errorf("write_file on the owner after the cycles: %v", err)
+			}
+		})
+	}
+}
