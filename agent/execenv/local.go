@@ -452,12 +452,17 @@ type gitRootCache struct {
 }
 
 // lookup memoizes compute's answer for cwd, but ONLY when compute calls it
-// definitive. A resolution that never reached a verdict — a cancelled or
-// expired context, a git that could not be run — says nothing about cwd, and
-// caching it would make this environment treat cwd as non-git for the rest of
-// its life, long after the request whose cancellation caused it is gone. A
-// negative answer git actually gave ("not a repository"), or one the filesystem
-// gave structurally, is definitive and is cached like any other.
+// definitive. A resolution that never reached a verdict says nothing about cwd,
+// and caching it would make this environment treat cwd as non-git for the rest
+// of its life, long after the request whose cancellation caused it is gone.
+//
+// Definitive is not the same as successful, and the distinction matters in both
+// directions. A negative answer git itself gave ("not a repository", reported as
+// the process's non-zero exit) and an absence the filesystem actually reported
+// are definitive and cached like any other answer — without that, a directory
+// whose answer can never change re-forks git on every resolution. A cancelled or
+// expired context, a git that could not be run, and a stat that failed for any
+// reason other than absence are not.
 func (c *gitRootCache) lookup(cwd string, compute func() (root string, definitive bool)) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

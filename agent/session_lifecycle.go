@@ -159,7 +159,9 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 
 // beginEnvWork admits work that runs commands on the session's execution
 // environment and must therefore finish before Close reaps that environment's
-// process table. It is the beginDispose idiom again — the closing check AND the
+// process table: a whole manage_worktree call at its dispatch, and the rollback
+// a refused or failed operation owes after its swap has already released the
+// swap's own admission. It is the beginDispose idiom again — the closing check AND the
 // envWorkWG Add happen under one s.mu hold, so a successful Add happens-before
 // Close()'s join. A true return MUST be paired with a (deferred) endEnvWork().
 //
@@ -222,8 +224,13 @@ func (s *Session) outstandingEnvWork() []string {
 // before the close cleans the environment, and says what it walked past when
 // the shared close budget expires first.
 //
-// The two kinds of admission reach this join by different routes:
+// The three kinds of admission reach this join by different routes:
 //
+//   - A whole OPERATION, admitted at the manage_worktree dispatch, runs its git
+//     on the request context of the tool call. A close cancels the turn context
+//     that call descends from, so it stops of its own accord — but only the
+//     operations that reach a cancellation point do, and an operation that has
+//     already committed to a git command finishes it.
 //   - A SWAP's refresh runs under the session's own context, which this close
 //     cancelled in its step 2, well before reaching here. It stops on its own.
 //   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
@@ -445,17 +452,20 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
 		}
 
-		// Join the environment work admitted before `closing` was set: a swap's
-		// refresh, and the rollback a refused or failed worktree op still owes
-		// after that swap returned. Both fork git on the session's shared
-		// process table, and both are work a close CAUSED — walking past them
+		// Join the environment work admitted before `closing` was set: a whole
+		// manage_worktree call (admitted at its dispatch, which is the one entry
+		// every operation passes through), the refresh of any swap that call
+		// performs, and the rollback a refused or failed operation still owes
+		// after that swap returned. All of them fork git on the session's shared
+		// process table, and the last is work a close CAUSED — walking past them
 		// would tear the environment down mid-command and leave behind the very
 		// lane the rollback was removing. A swap's refresh stops on the session
 		// context cancelled in step 2 above; a rollback is deliberately detached
-		// from it and bounded by a budget of its own, so this join is the
-		// backstop over both (see joinEnvWorkWithinCloseBudget). It runs for a
-		// child close too (cleanupEnv false): no such work may outlive the
-		// session that admitted it.
+		// from it and bounded by a budget of its own; an operation stops wherever
+		// its own request context is checked. This join is the backstop over all
+		// three (see joinEnvWorkWithinCloseBudget). It runs for a child close too
+		// (cleanupEnv false): no such work may outlive the session that admitted
+		// it.
 		s.joinEnvWorkWithinCloseBudget(budgetCtx)
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).

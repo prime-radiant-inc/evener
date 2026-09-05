@@ -62,11 +62,6 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 	return root
 }
 
-// gitRootUncached resolves cwd's working-tree root. definitive says whether the
-// answer is one to remember: a structural resolution and a verdict git itself
-// returned are, while a fork that never ran or never finished — ctx cancelled or
-// expired, git missing, working directory unusable — is not (see
-// gitRootCache.lookup).
 // gitAnswered reports whether err from a git invocation is git's OWN answer — a
 // process that ran and chose its exit status — rather than a failure to obtain
 // an answer at all. It is what decides whether a resolution may be memoized
@@ -95,9 +90,17 @@ func gitAnswered(ctx context.Context, err error) bool {
 	if !ok {
 		return false
 	}
-	return exitErr.ProcessState != nil && exitErr.ProcessState.Exited()
+	// Exited() is promoted from the embedded *os.ProcessState, which a
+	// hand-built ExitError could leave nil.
+	return exitErr.ProcessState != nil && exitErr.Exited()
 }
 
+// gitRootUncached resolves cwd's working-tree root. definitive says whether the
+// answer is one to remember (see gitRootCache.lookup): a structural resolution,
+// an absence the filesystem actually reported, and a verdict git itself returned
+// all are. A fork that never ran or never finished is not, and neither is a
+// filesystem that could not answer — see gitAnswered and hasGitEntryAncestor for
+// the two classifications this composes.
 func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
 		if structural, ok := structuralWorktreeRoot(cwd); ok {
