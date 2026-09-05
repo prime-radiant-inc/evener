@@ -29,3 +29,7 @@ The capability inventory remains in `docs/superpowers/specs/2026-09-05-native-mo
 ## Open design judgments
 
 The proposed direction is quiet typography and restrained chrome, with stronger emphasis for actions that need attention. Screen studies must establish the exact conversation treatment, session-row density, and primary navigation. Tokens in the guide are starting values to test, not reasons to force a poor layout.
+
+## Direct agent-product research
+
+The [Codex/ChatGPT and Claude Code visual comparisons](agent-mobile-lookbook.html) and [community evidence](agent-mobile-research.md) extend the initial research with actual agent screens and dated public feedback. The lookbook server is bound to all IPv4 interfaces on port 8766 at Jesse’s request; use `http://m5.local:8766/lookbook.html` on the local network. It serves this design directory.
