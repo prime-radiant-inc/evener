@@ -226,7 +226,7 @@ type NavigationCapability struct {
 // and Limit are pointers so an explicit zero remains distinguishable from an
 // omitted page parameter on the wire.
 type NavigationReadParams struct {
-	RepresentationVersion uint8               `json:"representationVersion,omitempty"`
+	RepresentationVersion uint8               `json:"representationVersion"`
 	Resource              string              `json:"resource"`
 	Section               string              `json:"section,omitempty"`
 	SectionID             string              `json:"sectionId,omitempty"`

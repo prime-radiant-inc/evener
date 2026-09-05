@@ -276,7 +276,7 @@ func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal unpaged params: %v", err)
 	}
-	if got, want := string(withoutPage), `{"resource":"manifest"}`; got != want {
+	if got, want := string(withoutPage), `{"representationVersion":0,"resource":"manifest"}`; got != want {
 		t.Fatalf("omitted paging = %s, want %s", got, want)
 	}
 
@@ -331,6 +331,19 @@ func TestNavigationReadParamsRequiresRepresentationVersion2(t *testing.T) {
 	var params NavigationReadParams
 	if err := json.Unmarshal([]byte(`{"resource":"manifest","representationVersion":2}`), &params); err != nil {
 		t.Fatalf("Unmarshal(v2) = %v, want nil", err)
+	}
+	// The discriminator is required on the wire: marshaling must always emit
+	// it so callers cannot serialize a request the server rejects.
+	raw, err := json.Marshal(NavigationReadParams{Resource: "manifest"})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal params fields: %v", err)
+	}
+	if _, ok := fields["representationVersion"]; !ok {
+		t.Fatalf("representationVersion omitted in %s, want required discriminator", raw)
 	}
 }
 

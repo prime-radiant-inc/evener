@@ -1076,7 +1076,7 @@ export interface NavigationReadBase {
 }
 
 export interface NavigationReadParams {
-  representationVersion?: number;
+  representationVersion: number;
   resource: string;
   section?: string;
   sectionId?: string;

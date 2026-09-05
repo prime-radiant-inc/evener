@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
-import { selectRailModel } from "./selectors";
+import { relativeAge, selectRailModel } from "./selectors";
 import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -60,6 +60,32 @@ test("normalized selector preserves unchanged entity and node identity", () => {
   const after = selectRailModel(state);
   expect(after.sessions.get(secondEntityKey)).toBe(before.sessions.get(secondEntityKey));
   expect(after.nodes.get(secondEntityKey)).toBe(before.nodes.get(secondEntityKey));
+});
+
+test("normalized rail sessions derive display age from updated_at", () => {
+  const updatedAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
+  const snapshot = {
+    metadata: {},
+    entities: [
+      { key: firstEntityKey, kind: "session", value: { ref: "s1", title: "one", updated_at: updatedAt, children: [] } },
+    ],
+    containers: [
+      {
+        key: navigationRootContainerKey(key, "sessions"),
+        owner: { kind: "resource_root", slot: "sessions" },
+        children: [firstEntityKey],
+      },
+    ],
+  };
+  const model = selectRailModel({
+    key,
+    graph: normalizedGraphFromSnapshot(snapshot),
+    version: { generationId: "g", revision: 1, etag: "tag" },
+    presence: "present",
+  });
+  expect(model.sessions.get(firstEntityKey)?.age).toBe("1h");
+  expect(relativeAge(undefined)).toBeUndefined();
+  expect(relativeAge("not-a-timestamp")).toBeUndefined();
 });
 
 test("rail materialization is bottom-up, immutable, and preserves unrelated node arrays", () => {

@@ -14,6 +14,21 @@ import {
 
 export { nextNavigationOffset } from "./types";
 
+/** Relative display age for a session's updated_at, mirroring the rail's
+ * long-standing row contract (now/m/h/d). Computed at adapter time like the
+ * v1 path did, so staleness semantics are unchanged: a new value arrives
+ * with new data. */
+export function relativeAge(updatedAt?: string): string | undefined {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return undefined;
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 function normalizedRootCount(resource: ResourceState, slot: string): number | undefined {
   const normalized = resource.normalized;
   if (!normalized) return undefined;
@@ -317,6 +332,7 @@ export function selectRailModel(
       ...(value as unknown as RailSession),
       ...context,
       row_id: entity.key,
+      age: relativeAge(typeof value.updated_at === "string" ? value.updated_at : undefined),
       children: frozenChildren,
     }) as unknown as RailSession;
     normalizedSessionCache.set(

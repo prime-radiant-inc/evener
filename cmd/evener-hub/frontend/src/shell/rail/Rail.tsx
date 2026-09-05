@@ -21,6 +21,7 @@ import type {
 import { useConnectionStore } from "../../stores/connection";
 import {
   nextNavigationOffset,
+  relativeAge,
   selectAttentionSummary,
   selectPinSectionSummaries,
   selectPinSections,
@@ -305,16 +306,6 @@ interface RevealRequestGuard {
   token: symbol;
 }
 
-function relativeAge(updatedAt?: string): string | undefined {
-  if (!updatedAt) return undefined;
-  const timestamp = Date.parse(updatedAt);
-  if (!Number.isFinite(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return "now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 function summarySession(
   summary: NavigationSessionSummary,
   scope: string,

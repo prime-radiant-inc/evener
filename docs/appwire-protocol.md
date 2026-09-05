@@ -1103,7 +1103,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `representationVersion` | `uint8` | yes |  |
+| `representationVersion` | `uint8` |  |  |
 | `resource` | `string` |  |  |
 | `section` | `string` | yes |  |
 | `sectionId` | `string` | yes |  |
