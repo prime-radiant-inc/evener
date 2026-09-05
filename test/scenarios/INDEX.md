@@ -488,13 +488,6 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   at the one canonical `/s/local:<session-id>` ref (the single ref form
   commit `8cea30ca6` settled on), and clicking the same row again does
   not open a second copy of the session beside the first.
-- `codex-sidebar-open.md` — a Codex row opens through the
-  source-qualified `/s/<source>:<thread-id>` route into that thread's
-  workspace, rather than collapsing to a bare local session id.
-- `codex-sidebar-drive.md` — the opened Codex workspace exposes the
-  action its source advertises, and the source's own logs show the click
-  routed back to the exact `source:thread-id` the row named, with no
-  fallback to a local session or a different thread.
 - `sidebar-project-order-lastactivity-feel.md` — a just-touched project
   surfaces at the top, promptly. The `LastActivity` comparator is
   already pinned by hubcore fuzz scenarios, so this card covers the

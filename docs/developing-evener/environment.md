@@ -33,7 +33,6 @@ set them by hand.
 | Variable | Description |
 |---|---|
 | `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
-| `EVENER_HUB_SPAWNED_CODEX` | Set by `evener hub` for spawned Codex app-server processes. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
 | `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
 | `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |

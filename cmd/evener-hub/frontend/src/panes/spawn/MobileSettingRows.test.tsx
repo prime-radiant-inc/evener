@@ -15,7 +15,7 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     harness: "evener",
     harnessOptions: [
       { value: "evener", label: "evener" },
-      { value: "codex-cli", label: "codex-cli" },
+      { value: "external", label: "external" },
     ],
     onHarnessChange: vi.fn(),
     cwd: "/tmp/project",
@@ -93,9 +93,9 @@ test("option sheets commit a selection and return focus to the row", async () =>
   const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose harness" });
-  await user.click(within(dialog).getByRole("button", { name: "codex-cli" }));
+  await user.click(within(dialog).getByRole("button", { name: "external" }));
 
-  expect(onHarnessChange).toHaveBeenCalledWith("codex-cli");
+  expect(onHarnessChange).toHaveBeenCalledWith("external");
   expect(screen.queryByRole("dialog", { name: "Choose harness" })).toBeNull();
   expect(document.activeElement).toBe(within(row).getByRole("button"));
 });

@@ -1237,8 +1237,8 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // reads it back, which is how a running session came to show no Steer,
         // no Stop and a dead Send until the page was reloaded (kata 06t8).
         // Same absent-means-no-update rule as the count above: a source that
-        // state-gates nothing (the Codex bridge) sends none, and clearing on
-        // absence would strip the session of every action it advertised.
+        // omits the capability sends none, and clearing on absence would strip
+        // the session of every action it advertised.
         capabilities: n.params.capabilities ?? model.capabilities,
         capabilitySource: n.params.capabilities ? "statusFrame" : model.capabilitySource,
         lastFrameAt: now,

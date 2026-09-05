@@ -127,8 +127,8 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 }
 
 // localSessionCWD resolves a local session's working directory from the past
-// index or live roster. Non-local (remote/codex) refs are out of scope and
-// return false.
+// index or live roster. /doc/image is local-session-only; non-local refs return
+// false.
 func (s *WebServer) localSessionCWD(session string) (string, bool) {
 	if !isLocalRouteID(session) {
 		return "", false

@@ -256,10 +256,8 @@ test("friendlyLaunchErrorMessage passes wrapped and resume-advice messages throu
     "session s1 is still held by live daemon pid 42. Stop it and resume again. Replacement spawn failed: provider credentials missing for openai: set via evener/auth/apiKey/set or set the matching env var";
   expect(friendlyLaunchErrorMessage(new WireError(wrapped, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(wrapped);
   expect(
-    friendlyLaunchErrorMessage(
-      new WireError("codex launch not configured: src1", -32014, { evenerErrorInfo: "hubLaunch" }),
-    ),
-  ).toBe("codex launch not configured: src1");
+    friendlyLaunchErrorMessage(new WireError("external launch failed: src1", -32014, { evenerErrorInfo: "hubLaunch" })),
+  ).toBe("external launch failed: src1");
 });
 
 test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed connection", () => {

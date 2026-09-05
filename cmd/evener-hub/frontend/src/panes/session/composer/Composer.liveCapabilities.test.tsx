@@ -17,8 +17,8 @@
 //
 // thread/status/changed carries the matching set now, so this file drives the
 // real frame sequence a resumed session produces and asserts the controls
-// follow it. Absent capabilities still mean "no update" (the Codex bridge
-// state-gates nothing and sends none), which is its own case below.
+// follow it. Absent capabilities still mean "no update" for a source that
+// omits the capability, which is its own case below.
 //
 // The close frame is the same defect at the other end of a session's life
 // (kata pk2d) and the last cases here are its own: a daemon cannot describe
@@ -377,9 +377,8 @@ test("the turn ending puts the controls back to a plain send", async () => {
 });
 
 // Absent means "no update", exactly like the failure count riding on the same
-// notification: a source that does not state-gate its capabilities (the Codex
-// bridge) sends none, and clearing the set on absence would strip a session of
-// every action its hydrate advertised.
+// notification: a source that omits the capability sends none, and clearing the
+// set on absence would strip a session of every action its hydrate advertised.
 test("a status change with no capabilities leaves the advertised set alone", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(true));
 
