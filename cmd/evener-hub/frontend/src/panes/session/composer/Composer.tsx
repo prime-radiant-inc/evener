@@ -64,7 +64,7 @@ import { type BuiltinMatch, matchBuiltinInvocation, runBuiltinCommand } from "./
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
-import { clearDraft, readDraft, writeDraft } from "./draft";
+import { clearDraft, clearPersistedDraft, markDraftEdited, readDraft, readDraftRevision, writeDraft } from "./draft";
 import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
@@ -175,7 +175,9 @@ export function Composer({ ref }: ComposerProps) {
   // still clear the composer (only if unchanged since THAT read, mirroring
   // clearIfUnchanged's own submittedText snapshot for the classic drain
   // path below).
-  const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number>; revision: number } | null>(null);
+  const lastDrainSnapshotRef = useRef<{ text: string; attachments: PendingAttachment[]; revision: number } | null>(
+    null,
+  );
   // Tracks edits within this mount, including recovery drafts whose persistence
   // writes can finish without an edit. Commit notifications only update the
   // display; they must still let this mount remove its submitted attachments.
@@ -310,9 +312,10 @@ export function Composer({ ref }: ComposerProps) {
   const editText = useCallback(
     (nextText: string): void => {
       draftEditRevisionRef.current += 1;
+      if (activeRecoveryIdRef.current !== null) markDraftEdited(ref);
       updateText(nextText);
     },
-    [updateText],
+    [ref, updateText],
   );
 
   useLayoutEffect(() => {
@@ -320,8 +323,33 @@ export function Composer({ ref }: ComposerProps) {
     // Re-read at subscription time so a commit between render and mount
     // cannot leave an already-cleared sticky draft in a fresh composer.
     updateText(readDraft(ref));
-    const unsubscribe = subscribeComposerSubmissionCommitted((targetRef, submittedText) => {
-      if (targetRef === ref && activeRecoveryIdRef.current === null && textRef.current === submittedText) {
+    const unsubscribe = subscribeComposerSubmissionCommitted((targetRef, submittedText, recovery) => {
+      if (targetRef !== ref) return;
+      if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
+        recoveryOwnsLocalDraftRef.current = false;
+        recoveryWriteVersionRef.current += 1;
+        recoveryReplacementEpochRef.current += 1;
+        setActiveRecoveryId(null);
+        if (recovery.draftUnchanged && textRef.current === submittedText) updateText("");
+        // Restoring the same recovery in another mount recreates its items.
+        // Match the submitted payload under that recovery owner; newly staged
+        // items have distinct markers, and replacing the draft exits ownership.
+        const markers = new Set(
+          attachmentItemsRef.current
+            .filter((item) =>
+              recovery.attachments.some(
+                (submitted) =>
+                  submitted.marker === item.marker &&
+                  submitted.data === item.data &&
+                  submitted.name === item.name &&
+                  submitted.mediaType === item.mediaType,
+              ),
+            )
+            .map((item) => item.marker),
+        );
+        clearSubmittedAttachmentsRef.current(markers);
+        writeDraft(ref, textRef.current);
+      } else if (!recovery && activeRecoveryIdRef.current === null && textRef.current === submittedText) {
         updateText("");
       }
     });
@@ -329,7 +357,7 @@ export function Composer({ ref }: ComposerProps) {
       mountedRef.current = false;
       unsubscribe();
     };
-  }, [ref, updateText]);
+  }, [ref, setActiveRecoveryId, updateText]);
 
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
@@ -371,6 +399,8 @@ export function Composer({ ref }: ComposerProps) {
   const attachments = useAttachments(textEditor);
   const attachmentItemsRef = useRef(attachments.items);
   attachmentItemsRef.current = attachments.items;
+  const clearSubmittedAttachmentsRef = useRef(attachments.clearSubmitted);
+  clearSubmittedAttachmentsRef.current = attachments.clearSubmitted;
   const recoveryEntries = useRecoveryEntries(ref);
 
   const replaceComposerWithGoalDraft = (objective: string): void => {
@@ -431,6 +461,7 @@ export function Composer({ ref }: ComposerProps) {
     ): Promise<void> => {
       const version = ++recoveryWriteVersionRef.current;
       const replacementEpoch = recoveryReplacementEpochRef.current;
+      const draftRevision = readDraftRevision(ref);
       const operation = recoveryWrites.current
         .catch(() => undefined)
         .then(async () => {
@@ -448,12 +479,13 @@ export function Composer({ ref }: ComposerProps) {
             );
             if (
               activeRecoveryIdRef.current === clientMutationId &&
+              readDraftRevision(ref) === draftRevision &&
               textRef.current.trim() === "" &&
               attachmentItemsRef.current.length === 0
             ) {
               recoveryOwnsLocalDraftRef.current = false;
               setActiveRecoveryId(null);
-              clearDraft(ref);
+              clearPersistedDraft(ref);
             }
             return;
           }
@@ -462,10 +494,11 @@ export function Composer({ ref }: ComposerProps) {
             updated &&
             recoveryOwnsLocalDraftRef.current &&
             recoveryWriteVersionRef.current === version &&
+            readDraftRevision(ref) === draftRevision &&
             activeRecoveryIdRef.current === clientMutationId
           ) {
             recoveryOwnsLocalDraftRef.current = false;
-            clearDraft(ref);
+            clearPersistedDraft(ref);
           }
         });
       recoveryWrites.current = operation;
@@ -506,9 +539,12 @@ export function Composer({ ref }: ComposerProps) {
     const recovered = recoveryComposerDraft(record);
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(record.clientMutationId);
-    editText(recovered.text);
+    // Restoration replaces this mount's local owner without editing the
+    // shared recovery draft that an earlier mount may still be submitting.
+    draftEditRevisionRef.current += 1;
+    updateText(recovered.text);
     attachments.replaceWithSettled(recovered.attachments);
-    clearDraft(ref);
+    clearPersistedDraft(ref);
     cursorToRestoreRef.current = recovered.text.length;
   }, [
     activeRecoveryId,
@@ -517,7 +553,7 @@ export function Composer({ ref }: ComposerProps) {
     recoveryEntries,
     ref,
     setActiveRecoveryId,
-    editText,
+    updateText,
   ]);
 
   // askPending gates hiding/inerting the input row below (AskDock's own
@@ -798,9 +834,18 @@ export function Composer({ ref }: ComposerProps) {
   // getComposerText before it starts the drain's durable write.
   function handleDrainSuccess(): void {
     const snapshot = lastDrainSnapshotRef.current;
-    if (snapshot && clearIfUnchanged(snapshot.text, snapshot.revision)) {
-      attachments.clearSubmitted(snapshot.markers);
-    }
+    if (!snapshot || !mountedRef.current) return;
+    clearIfUnchanged(snapshot.text, snapshot.revision);
+    clearSubmittedAttachments(snapshot.attachments);
+  }
+
+  function clearSubmittedAttachments(submitted: PendingAttachment[]): void {
+    // Text edits do not replace an attachment. Object identity distinguishes
+    // the submitted item from a replacement that reuses its marker number.
+    const markers = new Set(
+      attachmentItemsRef.current.filter((item) => submitted.includes(item)).map((item) => item.marker),
+    );
+    attachments.clearSubmitted(markers);
   }
 
   // restoreTextToComposer implements the shared "put text back into the
@@ -873,14 +918,17 @@ export function Composer({ ref }: ComposerProps) {
   // image missing (toInputAttachments() itself only ever filters incomplete
   // items without signaling it - see that function's own doc comment) - see
   // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text, edit revision, and the currently-staged marker set) so
+  // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
   // handleDrainSuccess can later tell whether the composer changed between
   // THIS read and the drain actually resolving - QueueStrip only ever calls
   // this once per handleDrain invocation, immediately before starting the
   // request, so the snapshot always reflects exactly what that drain sent.
   function getComposerText() {
-    const markers = new Set(attachments.items.map((item) => item.marker));
-    lastDrainSnapshotRef.current = { text: textRef.current, markers, revision: draftEditRevisionRef.current };
+    lastDrainSnapshotRef.current = {
+      text: textRef.current,
+      attachments: attachments.items,
+      revision: draftEditRevisionRef.current,
+    };
     return {
       text: textRef.current,
       attachments: attachments.toInputAttachments(),
@@ -907,7 +955,7 @@ export function Composer({ ref }: ComposerProps) {
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = textRef.current;
-    const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
+    const submittedAttachments = attachments.items;
     const submittedRevision = draftEditRevisionRef.current;
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
@@ -920,6 +968,7 @@ export function Composer({ ref }: ComposerProps) {
           method: kind,
           text: submittedText,
           attachments: payload,
+          recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
@@ -938,15 +987,9 @@ export function Composer({ ref }: ComposerProps) {
         },
       );
       if (!mountedRef.current) return;
-      if (submittedRecoveryId !== null && activeRecoveryIdRef.current === submittedRecoveryId) {
-        recoveryOwnsLocalDraftRef.current = false;
-        setActiveRecoveryId(null);
-        if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-        if (draftEditRevisionRef.current !== submittedRevision) writeDraft(ref, textRef.current);
-      }
-      if (clearIfUnchanged(submittedText, submittedRevision)) {
-        attachments.clearSubmitted(submittedMarkers);
-      }
+      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+      clearIfUnchanged(submittedText, submittedRevision);
+      clearSubmittedAttachments(submittedAttachments);
     } catch {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.

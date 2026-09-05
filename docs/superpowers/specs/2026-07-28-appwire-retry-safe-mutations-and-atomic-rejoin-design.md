@@ -787,9 +787,13 @@ send of the same pending draft. Successful completion clears sticky text only if
 its revision and text still match the submitted draft. Edits advance the revision
 even when they produce identical text or reuse image markers; remounts preserve
 it. A retired composer cannot clear a newer mount's draft or attachments.
-Mounted composers also capture an edit revision for both text and attachment
-cleanup, including recovery drafts. Persistence updates and commit display
-notifications do not count as edits; editing away and back to identical text does.
+Mounted composers also capture an edit revision for text cleanup, including
+recovery drafts. Submitted attachments are removed independently of text edits;
+newly staged items and explicit replacements survive even if they reuse markers.
+Recovery completion carries its consumed recovery ID to the current mount, which
+exits that recovery owner and preserves newer text as an ordinary draft.
+Persistence updates, recovery restoration, and commit display notifications do
+not count as shared draft edits; editing away and back to identical text does.
 
 This page-lifetime guard is not a durable draft-to-mutation identity. Sticky
 composer drafts currently persist text separately from the outbox; a full reload

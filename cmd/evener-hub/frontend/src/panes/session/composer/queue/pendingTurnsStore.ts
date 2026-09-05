@@ -227,10 +227,17 @@ export interface SubmitWithPendingTrackingOptions {
   method: PendingMethod;
   text: string;
   attachments?: InputAttachment[];
+  recoveryId?: string;
   onFailure: (error: unknown) => void;
 }
 
-type SubmissionCommittedListener = (ref: string, text: string) => void;
+interface RecoverySubmissionCommit {
+  clientMutationId: string;
+  draftUnchanged: boolean;
+  attachments: InputAttachment[];
+}
+
+type SubmissionCommittedListener = (ref: string, text: string, recovery?: RecoverySubmissionCommit) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
 export function subscribeComposerSubmissionCommitted(listener: SubmissionCommittedListener): () => void {
@@ -272,15 +279,23 @@ export function submitWithPendingTracking(
         }
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
-        if (
-          epoch === refreshEpoch &&
-          readDraftRevision(opts.ref) === draftRevision &&
-          readDraft(opts.ref) === opts.text
-        ) {
-          clearDraft(opts.ref);
+        const draftUnchanged = readDraftRevision(opts.ref) === draftRevision;
+        const clearStoredDraft = draftUnchanged && readDraft(opts.ref) === opts.text;
+        if (epoch === refreshEpoch && (clearStoredDraft || opts.recoveryId)) {
+          if (clearStoredDraft) clearDraft(opts.ref);
           for (const listener of submissionCommittedListeners) {
             try {
-              listener(opts.ref, opts.text);
+              listener(
+                opts.ref,
+                opts.text,
+                opts.recoveryId
+                  ? {
+                      clientMutationId: opts.recoveryId,
+                      draftUnchanged,
+                      attachments: opts.attachments ?? [],
+                    }
+                  : undefined,
+              );
             } catch (error) {
               console.error("Composer submission listener failed", error);
             }
