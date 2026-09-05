@@ -1047,12 +1047,14 @@ func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *test
 
 func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		systemPrompt string
-		wantEntry    uint64
+		name                string
+		systemPrompt        string
+		skipZeroItemEntries bool
+		wantEntry           uint64
 	}{
 		{name: "without prelude", wantEntry: 1},
 		{name: "with prelude", systemPrompt: "system", wantEntry: 2},
+		{name: "with skipped zero-item entries", skipZeroItemEntries: true, wantEntry: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "descendant.transcript.jsonl")
@@ -1060,10 +1062,15 @@ func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjecti
 			if err != nil {
 				t.Fatalf("NewWriter: %v", err)
 			}
-			for _, turn := range []schema.Turn{
+			history := []schema.Turn{
 				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
 				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
-			} {
+			}
+			if tc.skipZeroItemEntries {
+				history = append([]schema.Turn{{Kind: schema.TurnCheckpoint}}, history...)
+				history = append(history, schema.Turn{Kind: schema.TurnSummary})
+			}
+			for _, turn := range history {
 				if err := tw.Append(turn); err != nil {
 					t.Fatalf("Append history: %v", err)
 				}
