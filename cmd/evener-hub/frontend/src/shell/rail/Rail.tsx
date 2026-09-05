@@ -78,10 +78,8 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
-  brandSpacer: requireClass(styles.brandSpacer, "Rail.module.css", "brandSpacer"),
+  brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
-  footer: requireClass(styles.footer, "Rail.module.css", "footer"),
-  footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
@@ -1077,8 +1075,16 @@ function NavigationRail({
       )}
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
+          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "evener"}</span>
           {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
-          <span className={CLASS.brandSpacer} />
+          <IconButton
+            data-testid="rail-settings"
+            label="Settings"
+            icon={<span aria-hidden="true">⚙</span>}
+            variant="quiet"
+            size="md"
+            onClick={() => navigate("/settings")}
+          />
           <Tooltip label="Search sessions and commands">
             <IconButton
               data-testid="rail-search"
@@ -1183,17 +1189,6 @@ function NavigationRail({
             )}
           </>
         )}
-      </div>
-      <div className={CLASS.footer}>
-        <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "evener"}</span>
-        <IconButton
-          data-testid="rail-settings"
-          label="Settings"
-          icon={<span aria-hidden="true">⚙</span>}
-          variant="quiet"
-          size="md"
-          onClick={() => navigate("/settings")}
-        />
       </div>
       {sectionRenameTarget && (
         <Dialog
