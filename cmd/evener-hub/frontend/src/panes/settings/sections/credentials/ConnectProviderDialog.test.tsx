@@ -153,19 +153,37 @@ describe("ConnectProviderDialog", () => {
   });
 
   test("registry diagnostics remain visible and writesRefused disables adding an instance", async () => {
+    const userLayer = "user layer: /Users/jesse/.config/evener/providers.toml";
     connectFakeClient({
       instances: [],
       availableProviders: [
         { id: "anthropic", name: "Anthropic", protocol: "anthropic", auth: "bearer", implicit: false },
       ],
-      diagnostics: ['providers.toml: unknown key "type"'],
+      diagnostics: [userLayer, 'providers.toml: unknown key "type"'],
+      userLayer,
       writesRefused: true,
     });
     render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
 
     await screen.findByText('providers.toml: unknown key "type"');
+    expect(screen.queryByText(userLayer)).toBeNull();
     const add = screen.getByRole("button", { name: "Add provider instance" }) as HTMLButtonElement;
     expect(add.disabled).toBe(true);
+  });
+
+  test("a healthy user-layer location is not presented as a provider warning", async () => {
+    const userLayer = "user layer: /Users/jesse/.config/evener/providers.toml";
+    connectFakeClient({
+      instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
+      availableProviders: [],
+      diagnostics: [userLayer],
+      userLayer,
+    });
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+
+    await screen.findByRole("dialog", { name: "Connect provider" });
+    expect(screen.queryByRole("list", { name: "Provider warnings" })).toBeNull();
+    expect(screen.queryByText(userLayer)).toBeNull();
   });
 
   test("a failed credential test stays open with a safe message and can be retried", async () => {

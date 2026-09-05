@@ -36,7 +36,8 @@ export interface ConnectProviderDialogProps {
 }
 
 export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderDialogProps) {
-  const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
+  const { instances, availableProviders, diagnostics, userLayer, writesRefused, loading, error, fetch } =
+    useCredentialsStore();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [testState, setTestState] = useState<{
     name: string;
@@ -177,6 +178,7 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
   }
 
   const visibleInstances = instances.filter((instance) => !instance.hidden);
+  const onboardingDiagnostics = diagnostics.filter((diagnostic) => !userLayer || diagnostic !== userLayer);
 
   return (
     <Dialog open onClose={closeDialog} title="Connect provider">
@@ -193,9 +195,9 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
             </Button>
           </div>
         )}
-        {diagnostics.length > 0 && (
+        {onboardingDiagnostics.length > 0 && (
           <ul className={CLASS.diagnostics} aria-label="Provider warnings">
-            {diagnostics.map((diagnostic, index) => (
+            {onboardingDiagnostics.map((diagnostic, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: registry diagnostics are an unordered list without stable identities
               <li key={index}>{diagnostic}</li>
             ))}
