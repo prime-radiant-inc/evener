@@ -1,6 +1,6 @@
 # Evener mobile design
 
-**Draft for Jesse’s review · 5 September 2026**
+**Direction approved; implementation in progress · 5 September 2026**
 
 Fluency and beauty are requirements of the mobile app, alongside capability and reliability. The current React Native prototype proves some workflows; it does not establish the visual direction. Jesse’s assessment of its chunky rows is the starting point for this work.
 
@@ -33,3 +33,7 @@ The proposed direction is quiet typography and restrained chrome, with stronger 
 ## Direct agent-product research
 
 The [Codex/ChatGPT and Claude Code visual comparisons](agent-mobile-lookbook.html) and [community evidence](agent-mobile-research.md) extend the initial research with actual agent screens and dated public feedback. The lookbook server is bound to all IPv4 interfaces on port 8766 at Jesse’s request; use `http://m5.local:8766/lookbook.html` on the local network. It serves this design directory.
+
+## Screen studies and first native visual slice
+
+Jesse approved the researched direction and delegated routine choices while in meetings. [Screen studies](screen-studies.html) show the proposed session list, reading, decision and keyboard-open compositions. The [implementation plan](../../superpowers/plans/2026-09-05-native-mobile-visual-foundations.md) applies the existing native list/conversation hierarchy first; illustrated search, rich Markdown and approval controls do not claim implemented capability.
