@@ -403,6 +403,12 @@ function setSupportFromConnection(): void {
   // behavior with no way to re-drive reconciliation - retain the hub state
   // and surface a retryable hubError instead (finding 31). The setState
   // stays AFTER the registry mutation, per the reconcile ordering contract.
+  // Even on the rollback the REVISION resets (finding 34, aligned with the
+  // rewire path's finding 32): revision numbering is hub-scoped, so a
+  // retained old revision would let applyHubOverrides' stale guard silently
+  // discard a flap-back refresh carrying a LOWER revision (a restored
+  // backup, a reset state file), stranding the rollback state indefinitely.
+  // The raw set stays retained either way - it is what re-drives the retry.
   const dropHubState =
     support === "unsupported" &&
     !unrestored &&
@@ -427,6 +433,7 @@ function setSupportFromConnection(): void {
       hubError: unrestored || unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
       conflict: null,
       ...(dropHubState ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [] } : {}),
+      ...(unrestored ? { revision: 0 } : {}),
     });
 }
 

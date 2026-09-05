@@ -1297,3 +1297,37 @@ test("a generation-fenced queued write's row error clears on the next confirmed 
   });
   await waitFor(() => expect(within(composerRow).queryByRole("alert")).toBeNull());
 });
+
+// Finding 35: after an un-apply ROLLBACK on support loss the hubError alert
+// reports the old overrides still in effect; the status line must not
+// contradict it by claiming the built-in defaults. (Clean unsupported keeps
+// the defaults wording - pinned by the pre-existing "does not support synced
+// keybinding overrides" test.)
+test("a wedged support loss keeps the overrides firing and the status does not claim the defaults are in effect", async () => {
+  const client = await wireEditableClient([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+  render(<KeybindingsSection />);
+
+  // The wedge: a foreign binding squatting palette.open's DEFAULT chord, so
+  // the support drop's un-apply restore exact-matches, throws, and rolls
+  // back. palette.open's default is $mod+K with legacyEitherMod, so the
+  // restored base serializes "Control+[Meta]+K" (Meta OPTIONAL).
+  keybindingsRegistry.getState().registerBinding({
+    id: "foreign.squatter",
+    actionId: "foreign.action",
+    chord: "Control+[Meta]+K",
+  });
+  connectionStore.setState({
+    features: { ...(await client.connect()).features, keybindingsSettings: false },
+  });
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("still in effect");
+  const status = screen.getByRole("status");
+  expect(status.textContent).not.toContain("built-in defaults are in effect");
+  expect(status.textContent).toContain("still in effect");
+  // ...and the listing backs it up: the palette override is still firing
+  // and still marked Customized.
+  const row = rowFor("Open the command palette");
+  expect(within(row).getByText("Customized")).toBeTruthy();
+  expect(within(row).getByText("P")).toBeTruthy();
+});

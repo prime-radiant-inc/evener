@@ -479,7 +479,13 @@ export function KeybindingsSection() {
   if (hubSupport === "unknown") {
     status = "Waiting for the hub connection to report keybindings support.";
   } else if (hubSupport === "unsupported") {
-    status = "This hub does not support synced keybinding overrides. The built-in defaults are in effect.";
+    // Finding 35: after an un-apply ROLLBACK the hubError alert says the
+    // old overrides are still in effect - the status must not contradict it
+    // by claiming the built-in defaults.
+    status =
+      hubError === null
+        ? "This hub does not support synced keybinding overrides. The built-in defaults are in effect."
+        : "This hub does not support synced keybinding overrides. The previously synced overrides are still in effect; restoring the built-in defaults is retried on the next connection change.";
   } else if (hubLoading || !loaded) {
     // The stale-hub window: a client replacement reset the loaded state and
     // the new hub's refresh has not landed (or failed - the alert below

@@ -1033,7 +1033,12 @@ describe("keybindings store: support loss", () => {
     // once the wedge clears) and the error says so, retryably.
     const retained = keybindingsStore.getState();
     expect(retained.loaded).toBe(true);
-    expect(retained.revision).toBe(3);
+    // revision RESETS to 0 even on the rollback (finding 34): revision
+    // numbering is hub-scoped, and a retained old-hub revision would let
+    // the stale guard discard a flap-back refresh carrying a LOWER
+    // revision, stranding the rollback state. The raw set stays retained -
+    // it is what re-drives the retry.
+    expect(retained.revision).toBe(0);
     expect(retained.rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
     expect(retained.hubError).toContain("still in effect");
 
@@ -1050,6 +1055,77 @@ describe("keybindings store: support loss", () => {
     expect(reset.loaded).toBe(false);
     expect(reset.revision).toBe(0);
     expect(reset.rawOverrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("a support-loss rollback resets revision, so a LOWER-revision flap-back refresh applies and reconciles (finding 34)", async () => {
+    let payload = overridesPayload(5, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => payload);
+    await wireClient(client, true);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // The wedge (a foreign binding squatting palette.open's default chord)
+    // rolls the support drop's un-apply back: the override keeps firing.
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    const rolled = keybindingsStore.getState();
+    expect(rolled.hubSupport).toBe("unsupported");
+    expect(rolled.hubError).toContain("still in effect");
+    expect(rolled.rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    expect(rolled.revision).toBe(0);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([`${ACTIONS.paletteOpen}#override`]);
+
+    // Unwedge, then flap back: the hub's state was reset elsewhere, so the
+    // refresh carries a LOWER revision than the pre-drop state. It must
+    // APPLY (not be eaten by the stale guard against the retained
+    // revision), clearing the rollback error and reconciling the registry.
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    payload = overridesPayload(2, []);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().hubError).toBeNull());
+    expect(keybindingsStore.getState().revision).toBe(2);
+    expect(keybindingsStore.getState().rawOverrides).toEqual([]);
+    expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
+      ACTIONS.paletteOpen,
+      `${ACTIONS.paletteOpen}#mod-twin`,
+    ]);
+  });
+
+  test("a flap-back refresh with a HIGHER revision still applies after a support-loss rollback (regression)", async () => {
+    let payload = overridesPayload(3, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]);
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => payload);
+    await wireClient(client, true);
+
+    keybindingsRegistry.getState().registerBinding({
+      id: "foreign.squatter",
+      actionId: "foreign.action",
+      chord: "Control+[Meta]+K",
+    });
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: false },
+    });
+    expect(keybindingsStore.getState().hubError).toContain("still in effect");
+
+    keybindingsRegistry.getState().unregisterBinding("foreign.squatter");
+    payload = overridesPayload(7, []);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, keybindingsSettings: true },
+    });
+    await waitFor(() => expect(keybindingsStore.getState().revision).toBe(7));
+    expect(keybindingsStore.getState().hubError).toBeNull();
     expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
       ACTIONS.paletteOpen,
       `${ACTIONS.paletteOpen}#mod-twin`,
