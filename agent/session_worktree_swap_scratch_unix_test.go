@@ -345,3 +345,62 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 		t.Errorf("the scratch %s lease is still held after the close: no environment the session closes owns it", scratch)
 	}
 }
+
+// The enter's swap installs the new environment, and the environment it
+// leaves is recorded as parked (worktreeRestoreEnv) only afterwards. A close
+// landing in between cleans the new environment and sees nothing parked, so a
+// child sharing the old environment that minted a scratch there after the
+// move leaves a lease nothing releases. The parked environment has to be
+// published under the same lock hold that installs the new one.
+func TestWorktreeSwap_CloseBetweenInstallAndRecordRetainsTheOldEnvironmentScratch(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("root command on the launch environment: %v", err)
+	}
+	first := launch.SessionScratchDir()
+	if first == "" {
+		t.Fatal("the root's command minted no session scratch")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(first) })
+	var second string
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.enterWorktreeAfterSwap = func() {
+		// What a child sharing the old environment does after the move: its
+		// command mints a scratch on the object the enter just emptied.
+		if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("child command on the old environment: %v", err)
+		}
+		second = launch.SessionScratchDir()
+		// The close runs to completion here: this is the interval between the
+		// install and the record, and close must find the parked environment.
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		<-closeDone
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if second == "" || second == first {
+		t.Fatalf("old environment scratch after the move = %q, want a fresh one beside %q", second, first)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(second) })
+
+	for name, dir := range map[string]string{"session": first, "old environment": second} {
+		if _, statErr := os.Stat(dir); statErr != nil {
+			t.Errorf("the %s scratch %s was removed, want it retained for the handoff: %v", name, dir, statErr)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
+		}
+	}
+}

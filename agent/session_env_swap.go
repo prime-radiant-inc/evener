@@ -39,7 +39,15 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // what next adopted (lease released, directory kept, the handoff a close makes)
 // and returns errSwapWhileClosing for the op to surface. Both `closing` and the
 // install are written under s.mu, so one of the two always sees the other.
-func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) error {
+//
+// record, when non-nil, runs under the same s.mu hold that installs next, so
+// the session's worktree occupancy — above all the environment an enter parks
+// (worktreeRestoreEnv), whose scratch close retains — is published atomically
+// with the swap. A close then observes either the pre-swap state entirely or
+// the post-swap state with its parked environment set, never an installed
+// next with nothing parked: in that gap a child sharing the old environment
+// could mint a scratch there that nothing would ever release.
+func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, record func()) error {
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
 	// it: the git snapshot and the pre-warm below spawn through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
@@ -100,6 +108,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment) err
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
 	s.env = next
 	s.envInfo = ei
+	if record != nil {
+		record()
+	}
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()

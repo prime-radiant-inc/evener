@@ -502,6 +502,12 @@ type testConfig struct {
 	// production.
 	swapEnvAfterAdopt func()
 
+	// enterWorktreeAfterSwap observes the point in enterWorktree right after
+	// the environment swap returned, so a test can begin a close there and
+	// prove the parked restore environment was published with the install.
+	// Nil in production.
+	enterWorktreeAfterSwap func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta

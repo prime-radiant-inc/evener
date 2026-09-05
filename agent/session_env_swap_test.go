@@ -55,7 +55,7 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != repoDir {
 		t.Fatalf("currentEnv().WorkingDirectory() = %q, want %q", got, repoDir)
@@ -124,7 +124,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	sess.mu.Lock()
 	ei := sess.envInfo
@@ -278,7 +278,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 
 	// The watcher window spans the whole call, including step 2's locked
 	// section and its first post-swap prompt render.
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 	close(stop)
 	<-done
 
@@ -322,9 +322,9 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Go(func() {
 		for i := range swapIterations {
 			if i%2 == 0 {
-				sess.swapEnvAndRefresh(envA)
+				sess.swapEnvAndRefresh(envA, nil)
 			} else {
-				sess.swapEnvAndRefresh(envB)
+				sess.swapEnvAndRefresh(envB, nil)
 			}
 		}
 	})

@@ -741,17 +741,21 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 		return err
 	}
 
-	if err := s.swapEnvAndRefresh(next); err != nil {
+	// The occupancy is recorded under the swap's own install lock hold: the
+	// parked environment must be visible to a close the moment next is.
+	record := func() {
+		if saveRestore {
+			s.worktreeRestoreEnv = prior
+		}
+		s.worktreeCurrentPath = path
+		s.worktreeCurrentManaged = managed
+	}
+	if err := s.swapEnvAndRefresh(next, record); err != nil {
 		return err
 	}
-
-	s.mu.Lock()
-	if saveRestore {
-		s.worktreeRestoreEnv = prior
+	if hook := s.cfg.testOnly.enterWorktreeAfterSwap; hook != nil {
+		hook()
 	}
-	s.worktreeCurrentPath = path
-	s.worktreeCurrentManaged = managed
-	s.mu.Unlock()
 	return nil
 }
 
@@ -770,17 +774,15 @@ func (s *Session) exitWorktree() (string, bool, error) {
 		return "", false, nil
 	}
 
-	if err := s.swapEnvAndRefresh(restore); err != nil {
+	record := func() {
+		s.worktreeRestoreEnv = nil
+		s.worktreeCurrentPath = ""
+		s.worktreeCurrentManaged = false
+	}
+	if err := s.swapEnvAndRefresh(restore, record); err != nil {
 		return "", false, err
 	}
-
-	s.mu.Lock()
-	s.worktreeRestoreEnv = nil
-	s.worktreeCurrentPath = ""
-	s.worktreeCurrentManaged = false
-	root := restore.WorkingDirectory()
-	s.mu.Unlock()
-	return root, true, nil
+	return restore.WorkingDirectory(), true, nil
 }
 
 // liveWorkUnder implements worktreeGuard.liveWorkUnder() (spec §7): live
