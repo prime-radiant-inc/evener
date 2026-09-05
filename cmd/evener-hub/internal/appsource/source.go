@@ -170,10 +170,8 @@ const localDaemonItemCursorProjectionVersion uint16 = 1
 var localDaemonItemIncarnationSequence atomic.Uint64
 
 type localDaemonItemSnapshot struct {
-	ThreadRef   string
-	Incarnation string
-	Candidates  []appitempaging.TranscriptItemCandidate
-	state       itemSnapshotState
+	Candidates []appitempaging.TranscriptItemCandidate
+	state      itemSnapshotState
 }
 
 // ReadItemCandidates materializes the daemon's authenticated legacy turn view
@@ -369,6 +367,7 @@ func (s *LocalDaemonSource) ListItemCandidates(ctx context.Context, params appwi
 // beginning. Counts alone cannot identify an anchored prefix across an append gap.
 func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolved localDaemonItemThread, itemsView, nativeCursor string, current []appitempaging.TranscriptItemCandidate, remaining int) ([]appitempaging.TranscriptItemCandidate, error) {
 	pages := [][]appitempaging.TranscriptItemCandidate{current}
+	count := len(current)
 	seen := make(map[string]bool)
 	for nativeCursor != "" {
 		if err := ctx.Err(); err != nil {
@@ -425,9 +424,13 @@ func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolv
 			remaining = appwire.TranscriptItemPageLimit
 		}
 		pages = append(pages, candidates)
+		count += len(candidates)
 		nativeCursor = response.NextCursor
 	}
 	var history []appitempaging.TranscriptItemCandidate
+	if count > 0 {
+		history = make([]appitempaging.TranscriptItemCandidate, 0, count)
+	}
 	for i := range slices.Backward(pages) {
 		history = append(history, pages[i]...)
 	}
@@ -453,8 +456,8 @@ func localDaemonCandidatesBefore(candidates []appitempaging.TranscriptItemCandid
 
 func localDaemonItemSnapshotIdentity(snapshot localDaemonItemSnapshot) appitempaging.CursorIdentity {
 	return appitempaging.CursorIdentity{
-		ThreadRef:         snapshot.ThreadRef,
-		Incarnation:       snapshot.Incarnation,
+		ThreadRef:         snapshot.state.ThreadRef,
+		Incarnation:       snapshot.state.Incarnation,
 		ProjectionVersion: localDaemonItemCursorProjectionVersion,
 	}
 }
@@ -515,10 +518,8 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 		return localDaemonItemSnapshot{}, err
 	}
 	current := localDaemonItemSnapshot{
-		ThreadRef:   resolved.pagingRef,
-		Incarnation: incarnation,
-		Candidates:  candidates,
-		state:       next,
+		Candidates: candidates,
+		state:      next,
 	}
 	return current, nil
 }
