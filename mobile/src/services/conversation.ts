@@ -11,9 +11,8 @@
 // wire. A server-reported actionUnavailable triggers a non-subscribing
 // capability re-read so the store's cached capabilities stay fresh.
 //
-// Generation safety is enforced by the store, not the service: the service is
-// stateless across opens (it holds only the current ref and last-read
-// capabilities). The store owns profile/connection/conversation generations.
+// The service guards its current identity and capabilities with open epochs;
+// the store owns profile/connection/conversation generations and view publication.
 
 import type { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/client";
 import type {
@@ -318,6 +317,13 @@ export function createConversationService(
   // Retain the instance shown by the full read; a capability-only refresh
   // must not redirect a draft to a replacement session.
   let instanceId: string | null = null;
+  let threadId: string | null = null;
+  let capabilityRevision = 0;
+  let opening: {
+    ref: string;
+    threadId: string | null;
+    pushed: { threadId: string; caps: ThreadCapabilities } | null;
+  } | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
 
@@ -328,7 +334,12 @@ export function createConversationService(
   // resolving after close/reopen) no-ops against the live pair.
   let openEpoch = 0;
 
-  function beginOpen(): number {
+  function beginOpen(threadRef: string): number {
+    opening = {
+      ref: threadRef,
+      threadId: ref === threadRef ? threadId : null,
+      pushed: null,
+    };
     // Starting a new open invalidates the prior epoch and clears BOTH ref
     // and capabilities before the await, so the service is truly fail-closed
     // while the read is in flight: no mutation or requireRef-only operation
@@ -339,8 +350,19 @@ export function createConversationService(
     const epoch = openEpoch;
     ref = null;
     instanceId = null;
+    threadId = null;
     capabilities = null;
     return epoch;
+  }
+
+  function readWithPushedCapabilities(thread: Thread, epoch: number): Thread {
+    extractCapabilities(thread.evener.capabilities);
+    const pushed = opening?.pushed;
+    if (openEpoch !== epoch || pushed?.threadId !== thread.id) return thread;
+    return {
+      ...thread,
+      evener: { ...thread.evener, capabilities: pushed.caps },
+    };
   }
 
   function requireRef(): string {
@@ -364,13 +386,14 @@ export function createConversationService(
   // ref === threadRef). A refresh started while pending or closed (ref=null)
   // may never activate the pending/failed ref: startRef !== threadRef, so the
   // cache is left untouched. The requested capabilities are always returned to
-  // the caller (generation-safe store) even when stale.
+  // the caller (generation-safe store), unless a newer push superseded the read.
   async function refreshCapabilities(
     threadRef: string,
   ): Promise<ThreadCapabilities | null> {
     const epoch = openEpoch;
     const requestedRef = threadRef;
     const startRef = ref;
+    const startCapabilityRevision = capabilityRevision;
     const response: ThreadReadResponse = await client.request("thread/read", {
       ref: threadRef,
       includeTurns: false,
@@ -382,11 +405,12 @@ export function createConversationService(
     if (
       startRef === requestedRef &&
       openEpoch === epoch &&
-      ref === requestedRef
+      ref === requestedRef &&
+      capabilityRevision === startCapabilityRevision
     ) {
       capabilities = refreshed;
     }
-    return refreshed;
+    return capabilityRevision === startCapabilityRevision ? refreshed : null;
   }
 
   // withCapabilityRefresh wraps a mutation: if the server rejects with
@@ -409,7 +433,7 @@ export function createConversationService(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
-      const epoch = beginOpen();
+      const epoch = beginOpen(threadRef);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -420,22 +444,25 @@ export function createConversationService(
       // pair — a throw here leaves ref+capabilities null/fail-closed. Only
       // commit the pair after projection succeeds and the epoch is still
       // current; a stale successful result returns without committing.
-      const conversation = projectThread(response.thread);
-      const caps = extractCapabilities(response.thread.evener.capabilities);
+      const thread = readWithPushedCapabilities(response.thread, epoch);
+      const conversation = projectThread(thread);
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
       if (openEpoch === epoch) {
         instanceId = readInstanceId;
+        threadId = response.thread.id;
         ref = threadRef;
         capabilities = caps;
+        opening = null;
       }
       return conversation;
     },
 
     async readProjection(threadRef) {
-      const epoch = beginOpen();
+      const epoch = beginOpen(threadRef);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -448,18 +475,21 @@ export function createConversationService(
       // response) leaves ref+capabilities null/fail-closed. Only commit the
       // pair after all projection succeeds and the epoch is still current;
       // a stale successful result returns without committing.
-      const conversation = projectThread(response.thread);
-      const activity = activityService.projectActivity(response.thread);
+      const thread = readWithPushedCapabilities(response.thread, epoch);
+      const conversation = projectThread(thread);
+      const activity = activityService.projectActivity(thread);
       const olderCursor = response.olderCursor ?? null;
-      const caps = extractCapabilities(response.thread.evener.capabilities);
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
       if (openEpoch === epoch) {
         instanceId = readInstanceId;
+        threadId = response.thread.id;
         ref = threadRef;
         capabilities = caps;
+        opening = null;
       }
       return {
         conversation,
@@ -488,7 +518,30 @@ export function createConversationService(
       if (notificationUnsub !== null) {
         notificationUnsub();
       }
-      notificationUnsub = client.onNotification(handler);
+      notificationUnsub = client.onNotification((notification) => {
+        if (notification.method === "thread/status/changed") {
+          const params = notification.params;
+          const committed =
+            ref !== null && params.ref === ref && params.threadId === threadId;
+          const pending =
+            opening !== null &&
+            params.ref === opening.ref &&
+            (opening.threadId === null || params.threadId === opening.threadId);
+          if ((committed || pending) && params.capabilities !== undefined) {
+            // Preserve pushes during hydration without permitting mutations until its read succeeds.
+            try {
+              const next = extractCapabilities(params.capabilities);
+              if (committed) capabilities = next;
+              if (pending && opening)
+                opening.pushed = { threadId: params.threadId, caps: next };
+              capabilityRevision++;
+            } catch {
+              return;
+            }
+          }
+        }
+        handler(notification);
+      });
       return () => {
         if (notificationUnsub !== null) {
           notificationUnsub();
@@ -664,8 +717,10 @@ export function createConversationService(
       // Increment the epoch and clear the pair so a refresh that was in
       // flight before close cannot republish into the closed service.
       openEpoch += 1;
+      opening = null;
       ref = null;
       instanceId = null;
+      threadId = null;
       capabilities = null;
     },
   };

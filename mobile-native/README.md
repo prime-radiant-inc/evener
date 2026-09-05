@@ -2,7 +2,7 @@
 
 A small Expo / React Native client for iOS and Android. The initial app saves
 multiple named hubs, lists recent sessions, creates sessions, reads a plain-text
-conversation, and exposes capability-gated send/stop. The existing AppWire client and mobile
+conversation, and exposes capability-gated send, steer, queue, and stop. The existing AppWire client and mobile
 services/state are reused directly. The Tauri app remains in `../mobile` as a
 reference; it is not loaded by the native bundle.
 
