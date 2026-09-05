@@ -2124,6 +2124,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             continue;
           }
           if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
+          // Release is terminal even when the failed read belongs to an old
+          // connection. A reconnect cannot re-arm a pane that no longer exists.
+          if (!lifecycleActive) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
@@ -2131,12 +2134,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
             client = await requireReadyClient();
+            if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }
-          // Release is terminal for this owner generation: this call's claim is
-          // already gone, so there is nothing left to retry or to report.
-          if (!lifecycleActive) return;
           // Same client, same ready epoch: the read failed in transport, not
           // because this pane lost the ref. The failed attempt owns one
           // scheduled retry for this owner generation, and every concurrent
@@ -2153,6 +2154,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (threadsStore.getState().threads.has(ref)) return;
 
         client = await requireReadyClient();
+        if ((refCounts.get(ref) ?? 0) <= 0) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }

@@ -1972,6 +1972,60 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
+  test.each([true, false])(
+    "a released read cannot resume on a replacement connection (release first: %s)",
+    async (releaseFirst) => {
+      const original = connectFakeClient();
+      let rejectRead: ((error: Error) => void) | undefined;
+      const started = nextHandledRequest(
+        original,
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((_resolve, reject) => {
+            rejectRead = reject;
+          }),
+      );
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await started;
+      if (releaseFirst) threadsStore.getState().releaseThread("ref_a");
+
+      const replacement = new FakeClient("connecting");
+      replacement.on("thread/read", () => readResponse("ref_a"));
+      connectionStore.getState().connect(replacement);
+      rejectRead?.(new Error("old connection failed"));
+      if (!releaseFirst) {
+        await settleCallerContinuations();
+        threadsStore.getState().releaseThread("ref_a");
+      }
+      replacement.emitReady();
+      await ensuring;
+
+      expect(replacement.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    },
+  );
+
+  test("a released retry owner cannot resume after replacement readiness", async () => {
+    const original = connectFakeClient();
+    const started = nextHandledRequest(original, "thread/read", () => {
+      throw new RequestTimeoutError("initial read failed");
+    });
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await started;
+    await settleCallerContinuations();
+
+    const replacement = new FakeClient("connecting");
+    replacement.on("thread/read", () => readResponse("ref_a"));
+    connectionStore.getState().connect(replacement);
+    await settleCallerContinuations();
+    threadsStore.getState().releaseThread("ref_a");
+    replacement.emitReady();
+    await ensuring;
+
+    expect(replacement.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
   test("last release retires a pending hydrate before an immediate re-ensure starts a new lifecycle", async () => {
     const fake = connectFakeClient();
     const reads: Array<(response: ThreadReadResponse) => void> = [];
