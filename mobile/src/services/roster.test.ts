@@ -115,6 +115,85 @@ function makeThreads(count: number, prefix = "t"): Thread[] {
 // --- tests ------------------------------------------------------------------
 
 describe("RosterService", () => {
+  it("returns one navigable session per canonical ref, retaining the first row and server order", async () => {
+    const client = new ScriptedClient();
+    const rows = makeThreads(3);
+    const first = rows[0] as Thread;
+    const distinct = rows[1] as Thread;
+    const duplicate = {
+      ...first,
+      id: "another-thread-id",
+      name: "Duplicate title",
+    };
+    client.on(
+      "thread/list",
+      () => ({ data: [first, duplicate, distinct] }) as ThreadListResponse,
+    );
+    const result = await createRosterService(client, 2).list();
+    expect(
+      result.threads.map((row) => ({ ref: row.ref, title: row.title })),
+    ).toEqual([
+      { ref: "ref-t-0", title: "Session 0" },
+      { ref: "ref-t-1", title: "Session 1" },
+    ]);
+    // The hub returned the overflow probe; unseen rows may contain more sessions.
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("deduplicates within a short page without inventing an overflow", async () => {
+    const client = new ScriptedClient();
+    const first = makeThread();
+    client.on(
+      "thread/list",
+      () =>
+        ({
+          data: [first, { ...first, id: "duplicate" }],
+        }) as ThreadListResponse,
+    );
+    const result = await createRosterService(client).list();
+    expect(result.threads).toHaveLength(1);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it.each([50, 51])(
+    "bounds a custom page when the hub returns %i rows",
+    async (count) => {
+      const client = new ScriptedClient();
+      client.on(
+        "thread/list",
+        () => ({ data: makeThreads(count) }) as ThreadListResponse,
+      );
+      const service = createRosterService(client, 50);
+      const result = await service.list();
+      expect(client.requests).toEqual([
+        { method: "thread/list", params: { limit: 51 } },
+      ]);
+      expect(result.threads).toHaveLength(50);
+      expect(result.threads[49]?.ref).toBe("ref-t-49");
+      expect(result.hasMore).toBe(count > 50);
+    },
+  );
+
+  it.each([0, -1, 501, 1.5, NaN, Infinity])(
+    "rejects invalid page size %s before any request",
+    (pageSize) => {
+      const client = new ScriptedClient();
+      expect(() => createRosterService(client, pageSize)).toThrow(RangeError);
+      expect(client.requests).toHaveLength(0);
+    },
+  );
+
+  it("accepts a single-row page", async () => {
+    const client = new ScriptedClient();
+    client.on(
+      "thread/list",
+      () => ({ data: makeThreads(2) }) as ThreadListResponse,
+    );
+    const result = await createRosterService(client, 1).list();
+    expect(result.threads).toHaveLength(1);
+    expect(result.hasMore).toBe(true);
+  });
+
   it("list() calls thread/list with { limit: 501 }", async () => {
     const client = new ScriptedClient();
     client.on("thread/list", () => ({ data: [] }) as ThreadListResponse);
