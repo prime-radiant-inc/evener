@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import type { AuthLoginCompleteResponse, InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -36,6 +37,34 @@ afterEach(() => {
 });
 
 describe("OAuthRedirectDialog", () => {
+  test("a dismissed redirect editor ignores a late completion", async () => {
+    const fake = connectFakeClient();
+    let complete!: (value: AuthLoginCompleteResponse) => void;
+    fake.on(
+      "evener/auth/login/complete",
+      () =>
+        new Promise<AuthLoginCompleteResponse>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const list = vi.fn(() => ({ instances: [], availableProviders: [] }));
+    fake.on("evener/instance/list", list);
+    const onSuccess = vi.fn();
+    const { unmount } = render(
+      <OAuthRedirectDialog name="work" flowId="flow" authUrl="https://x" onCancel={() => {}} onSuccess={onSuccess} />,
+    );
+    await userEvent.setup().type(screen.getByLabelText("Redirect URL"), "https://redirect?code=1");
+    await act(async () => fireEvent.submit(screen.getByRole("button", { name: "Finish" }).closest("form")!));
+    unmount();
+    await act(async () =>
+      complete({
+        status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
+      }),
+    );
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+  });
+
   test("shows a re-open link to the authorize URL", () => {
     connectFakeClient();
     render(
@@ -173,6 +202,37 @@ describe("DeviceCodeDialog", () => {
     expect(sendButton.disabled).toBe(false);
     await user.click(sendButton);
     expect(openSpy).toHaveBeenCalledWith("https://verify", "_blank", "noopener");
+  });
+
+  test("a dismissed device editor ignores success after its refresh completes", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    fake.on("evener/auth/device/poll", () => ({ state: "authorized" }));
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const onSuccess = vi.fn();
+    const { unmount } = render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow"
+        userCode="CODE"
+        verificationUrl="https://x"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+        onRestart={() => {}}
+      />,
+    );
+    await advanceTime(1000);
+    unmount();
+    await act(async () => finishRead({ instances: [], availableProviders: [] }));
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   test("polling: authorized stops polling, fetches, toasts, and calls onSuccess", async () => {

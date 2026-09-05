@@ -2,10 +2,10 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
 
@@ -79,6 +79,63 @@ describe("ConnectProviderDialog", () => {
       expect(credentialsStore.getState().loading).toBe(false);
     },
   );
+
+  test.each(["save", "refresh"])(
+    "a dismissed key editor cannot close a new draft after its %s finishes",
+    async (phase) => {
+      const row = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+      const list = { instances: [row], availableProviders: [] };
+      const fake = connectFakeClient(list);
+      const save = deferred<AuthStatusResponse>();
+      const refresh = deferred<InstanceListResponse>();
+      fake.on("evener/auth/apiKey/set", () => save.promise);
+      render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Set API key" }));
+      await user.type(screen.getByLabelText("API key for work"), "old-key");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      const saved: AuthStatusResponse = {
+        provider: "work",
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+      };
+      if (phase === "refresh") {
+        fake.on("evener/instance/list", () => refresh.promise);
+        await act(async () => {
+          save.resolve(saved);
+          await save.promise;
+        });
+      }
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      if (phase === "refresh") {
+        fake.on("evener/instance/list", () => list);
+        await act(async () => credentialsStore.getState().fetch());
+      }
+      await user.click(await screen.findByRole("button", { name: "Set API key" }));
+      await user.type(screen.getByLabelText("API key for work"), "new-draft");
+      await act(async () => {
+        save.resolve(saved);
+        refresh.resolve(list);
+        await save.promise;
+        await refresh.promise;
+      });
+      expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "new-draft");
+      expect(getToasts().some((toast) => toast.kind === "success")).toBe(false);
+    },
+  );
+
+  test("a removed API-key instance does not reopen its editor when restored", async () => {
+    const row = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+    connectFakeClient({ instances: [row], availableProviders: [] });
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Set API key" }));
+    await act(async () => credentialsStore.setState({ instances: [] }));
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+    await act(async () => credentialsStore.setState({ instances: [row] }));
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+  });
 
   test("saving an API key still requires an explicit successful credential test", async () => {
     const anthropic = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });

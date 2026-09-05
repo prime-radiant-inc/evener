@@ -106,6 +106,15 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     );
   }, [instances]);
 
+  useEffect(() => {
+    setOpenEditor((editor) =>
+      editor?.kind === "apiKey" &&
+      !instances.some((instance) => instance.name === editor.name && (instance.authModes ?? []).includes("apiKey"))
+        ? null
+        : editor,
+    );
+  }, [instances]);
+
   const closeEditor = useCallback(() => {
     operationVersion.current += 1;
     setTestState(null);
