@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -199,4 +200,69 @@ func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
 		t.Error("the close cleaned the session's environment while the refused create's rollback was still running")
 	}
 	assertLaneRolledBack(t, sr, r, "lane", path, sidecar)
+}
+
+// A create's admission spans the whole operation, so it is named for the
+// operation; once the rollback starts, the name has to follow. Without that
+// rename a close whose budget expires mid-rollback names the create rather
+// than the cleanup that is actually running on the environment it is about to
+// reap — pointing whoever reads the warning at the wrong thing.
+func TestWorktreeCreate_FenceWarningNamesTheRollbackOnceItHasStarted(t *testing.T) {
+	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	path, _ := createLaneExpectations(t, r, "lane")
+	warnings := collectWarningsUntilClosed(r.s)
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	rollbackStarted := make(chan struct{})
+	var holding atomic.Bool
+
+	// The rollback's lane unlock runs after the admission has been relabelled.
+	// Signal from there, then hold past the whole budget so the fence gives up
+	// while the rollback is the thing in flight.
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == path &&
+				holding.CompareAndSwap(false, true) {
+				close(rollbackStarted)
+				time.Sleep(2 * LaneClosePassBudget)
+			}
+			return inner(args...)
+		}
+	}
+	// Not armCloseDuringSwap: the close is held at its dispose/sweep join until
+	// the rollback is under way, so it cannot reach the fence before the rename
+	// it is meant to observe.
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+		close(closeBegun)
+		<-rollbackStarted
+	}
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Fatal("create succeeded while the session closed under its swap, want a refusal")
+	}
+	if !holding.Load() {
+		t.Fatal("the rollback never ran its lane unlock; the test observed nothing")
+	}
+	found := fenceWarnings(<-warnings)
+	if len(found) != 1 {
+		t.Fatalf("fence warnings = %q, want exactly one naming the rollback the close walked past", found)
+	}
+	if want := "create rollback for " + path; !strings.Contains(found[0], want) {
+		t.Errorf("fence warning %q does not say %q: the admission kept its operation label through the rollback", found[0], want)
+	}
 }

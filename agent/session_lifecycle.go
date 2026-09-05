@@ -240,14 +240,22 @@ func (s *Session) outstandingEnvWork() []string {
 // (spec §P0) exists so a whole close is bounded, and this join is a participant
 // in it, not an exception: giving rollback admissions their own full budget
 // would let one refused create roughly double a shutdown, which is the
-// unbounded-fence failure in slower motion. And the gap does not bite in
-// practice — a rollback of a just-created, still-empty lane is three git
+// unbounded-fence failure in slower motion. And when time is left the gap
+// rarely bites — a rollback of a just-created, still-empty lane is three git
 // commands and a sidecar unlink, and only approaches its ceiling when git is
-// already wedged, which is exactly the case the bound exists for. If the two
-// ever do need reconciling, the move is to shorten the ROLLBACK's budget (it
-// cleans up an empty lane; it is not a disposal pass) rather than lengthen the
-// close — a budget change, and its own decision, not something to smuggle in
-// here.
+// already wedged, which is exactly the case the bound exists for.
+//
+// Sometimes there is no time left at all, and then a perfectly healthy rollback
+// is walked past: a close whose delegate-tree stop was hopeless calls
+// cancelBudget() outright, so the join below is zero-length by the time it
+// runs. That is the deliberate order of a shutdown that has already given up on
+// one subtree — but it is why the warning matters, and why it must name a real
+// admission rather than fire on every such close.
+//
+// If the two budgets ever do need reconciling, the move is to shorten the
+// ROLLBACK's (it cleans up an empty lane; it is not a disposal pass) rather
+// than lengthen the close — a budget change, and its own decision, not
+// something to smuggle in here.
 //
 // Walking past is the lesser failure either way. But the cleanup below is about
 // to reap the process table under whatever is still running, which must not

@@ -416,9 +416,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
-	oldBudget := LaneClosePassBudget
-	LaneClosePassBudget = 200 * time.Millisecond
-	t.Cleanup(func() { LaneClosePassBudget = oldBudget })
+	shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -463,6 +461,17 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 	if strings.Contains(fence, "rollback") {
 		t.Errorf("fence warning %q calls the create a rollback while its swap is still in flight and nothing has been rolled back", fence)
 	}
+}
+
+// shortenCloseCascadeBudget cuts the shared close-cascade budget for one test
+// and restores it afterwards, so a fence test can watch the join give up
+// without waiting out the production thirty seconds. LaneClosePassBudget is
+// the package var both ensureCloseBudget and worktreeCleanupRun read.
+func shortenCloseCascadeBudget(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := LaneClosePassBudget
+	LaneClosePassBudget = d
+	t.Cleanup(func() { LaneClosePassBudget = old })
 }
 
 // collectWarningsUntilClosed drains every EventWarning off sess until its close
