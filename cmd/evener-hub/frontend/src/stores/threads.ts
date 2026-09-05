@@ -820,6 +820,12 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
 // and inflightModelsList is always cleared in a `finally` so a failed call
 // never poisons the next one with a repeated rejection.
 let modelsCache: ModelListResponse | null = null;
+// modelsEpoch advances on every evener/auth/updated: a credential change can
+// make models discoverable (a stored Vertex credential JSON enables the
+// publisher-model listing) or take them away, so a listing cached before it
+// is stale, and a listing still in flight answers the old credentials and
+// must not become the cache either.
+let modelsEpoch = 0;
 let inflightModelsList: Promise<ModelListResponse> | null = null;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
@@ -1474,6 +1480,11 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
+  }
+  if (n.method === "evener/auth/updated") {
+    modelsEpoch += 1;
+    modelsCache = null;
+    inflightModelsList = null;
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -2517,6 +2528,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // No mapConflict here: model/list is a read-only listing with no
     // turn-CAS concept (verified against every server-side handler - see
     // this file's own describe block for the exact citations).
+    const epoch = modelsEpoch;
     const request = (async () => {
       const client = await requireReadyClient();
       return client.request("model/list", {});
@@ -2524,10 +2536,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     if (!refresh) inflightModelsList = request;
     try {
       const resp = await request;
-      modelsCache = resp;
+      if (epoch === modelsEpoch) modelsCache = resp;
       return resp;
     } finally {
-      if (!refresh) inflightModelsList = null;
+      if (!refresh && inflightModelsList === request) inflightModelsList = null;
     }
   },
 

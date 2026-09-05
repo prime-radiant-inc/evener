@@ -4692,6 +4692,52 @@ describe("useThreadsStore.listModels", () => {
     expect(b).toEqual(modelListResponse());
   });
 
+  test("evener/auth/updated clears the cache so the next call re-requests", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    fake.on("model/list", () => {
+      call += 1;
+      return { data: [{ provider: "google-vertex", model: `model-${call}` }] };
+    });
+
+    const before = await threadsStore.getState().listModels();
+    // A stored credential can make new models discoverable (a Vertex
+    // credential JSON enables the publisher-model listing), so the listing
+    // cached before it is stale.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const after = await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(before.data[0]?.model).toBe("model-1");
+    expect(after.data[0]?.model).toBe("model-2");
+  });
+
+  test("a listing in flight when evener/auth/updated arrives does not repopulate the cache", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    let releaseFirst: (() => void) | undefined;
+    fake.on("model/list", () => {
+      call += 1;
+      if (call === 1) {
+        return new Promise<ModelListResponse>((resolve) => {
+          releaseFirst = () => resolve({ data: [{ provider: "google-vertex", model: "stale" }] });
+        });
+      }
+      return { data: [{ provider: "google-vertex", model: "fresh" }] };
+    });
+
+    const first = threadsStore.getState().listModels();
+    for (let i = 0; i < 50 && !releaseFirst; i++) await Promise.resolve();
+    if (!releaseFirst) throw new Error("the first model/list request never reached the fake client");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    releaseFirst();
+    await first;
+    const after = await threadsStore.getState().listModels();
+
+    expect(after.data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
   test("refresh:true bypasses the cache and issues a fresh request", async () => {
     const fake = connectFakeClient();
     let call = 0;
