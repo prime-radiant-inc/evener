@@ -191,11 +191,14 @@ type LocalExecutionEnvironment struct {
 // is FileToolConfined, not Enforced: a write-blocked off policy (a read-only
 // delegate on a host with no sandbox backend) has no OS sandbox but still confines
 // the file tools, which are then the only thing holding its write boundary. The
-// sandboxFS is built once and cached. It folds in the concrete per-session scratch
-// directory (sessionScratchPath) so the file tools reach the SAME scratch dir a
-// spawned shell command gets via $TMPDIR — regardless of which policy-replacement
-// path built it (EnableSandbox, WithWorkingDirectory's re-root, UseControlPolicy),
-// since they all funnel through this single lazy builder.
+// sandboxFS is built lazily and cached, and rebuilt when the session's scratch
+// has moved since (AdoptSessionScratch): it folds in the concrete per-session
+// scratch directory (sessionScratchPath) so the file tools reach the SAME scratch
+// dir a spawned shell command gets via $TMPDIR — regardless of which
+// policy-replacement path built it (EnableSandbox, WithWorkingDirectory's
+// re-root, UseControlPolicy), since they all funnel through this single lazy
+// builder. The layer returned is acquired for the caller's operation; the caller
+// releases it when the operation completes (sandboxFS.release).
 func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil
