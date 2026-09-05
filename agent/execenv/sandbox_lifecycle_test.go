@@ -649,3 +649,73 @@ func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testin
 
 	assertFileToolsShareTheShellScratch(t, from)
 }
+
+// retiredLayerFootprint reports how many replaced layers env still holds and
+// how many root descriptors they keep open between them.
+func retiredLayerFootprint(e *LocalExecutionEnvironment) (layers, fds int) {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	for _, layer := range e.retiredFS {
+		layer.mu.Lock()
+		fds += len(layer.rootFds)
+		layer.mu.Unlock()
+	}
+	return len(e.retiredFS), fds
+}
+
+// A session that enters and exits worktrees repeatedly moves its scratch on
+// every swap, and a file tool in between rebuilds the layer each time. A
+// replaced layer stays open only while an operation still holds it; once every
+// operation on it has completed it is reclaimed at the next rebuild, so the
+// retired set is bounded by the operations in flight, not by the number of
+// swaps — and an operation that is in flight across a rebuild still completes
+// against the root it started with.
+func TestRetiredFileToolLayersAreReclaimedOnceDrained(t *testing.T) {
+	from := writeBlockedEnvAt(t, t.TempDir())
+	to := writeBlockedEnvAt(t, t.TempDir())
+	to.DisposeSandboxScratch()
+	first := from.SessionScratchDir()
+	if _, err := from.WriteFile(filepath.Join(first, "held.txt"), "held\n"); err != nil {
+		t.Fatalf("write_file into the owned scratch: %v", err)
+	}
+	// An operation in flight across every rebuild below: it holds the layer
+	// built around the scratch from owns now.
+	held := from.sandbox()
+	if held == nil {
+		t.Fatal("a confined env built no file-tool layer")
+	}
+
+	// Every move changes both environments' effective scratch path, and the
+	// file tool that follows on each rebuilds that environment's layer.
+	for range 200 {
+		to.AdoptSessionScratch(from)
+		_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+		_, _ = to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil)
+		from.AdoptSessionScratch(to)
+		_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+		_, _ = to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil)
+	}
+
+	heldFds := func() int {
+		held.mu.Lock()
+		defer held.mu.Unlock()
+		return len(held.rootFds)
+	}()
+	if layers, fds := retiredLayerFootprint(from); layers > 1 || fds > heldFds {
+		t.Errorf("from retains %d replaced layers holding %d root fds after 200 moves, want at most the one layer (%d fds) an operation still holds", layers, fds, heldFds)
+	}
+	if layers, fds := retiredLayerFootprint(to); layers != 0 || fds != 0 {
+		t.Errorf("to retains %d replaced layers holding %d root fds after 200 moves, want none: nothing holds them", layers, fds)
+	}
+	if b, err := held.readFile("read_file", filepath.Join(first, "held.txt")); err != nil || string(b) != "held\n" {
+		t.Errorf("the held layer no longer completes against its old root: got %q err %v", b, err)
+	}
+
+	// Released, the held layer is reclaimed at the next rebuild.
+	held.release()
+	to.AdoptSessionScratch(from)
+	_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+	if layers, fds := retiredLayerFootprint(from); layers != 0 || fds != 0 {
+		t.Errorf("from retains %d replaced layers holding %d root fds after the held operation completed, want none", layers, fds)
+	}
+}

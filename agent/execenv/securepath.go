@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/sandbox"
 )
@@ -66,6 +67,33 @@ type sandboxFS struct {
 
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
+
+	// inUse counts the file-tool operations currently holding this layer: the
+	// environment acquires it for an operation under sbMu when it hands the
+	// layer out, and the operation releases it on completion. A layer a rebuild
+	// replaced is closed only once this drops to zero (see
+	// LocalExecutionEnvironment.retiredFS).
+	inUse atomic.Int32
+}
+
+// acquire records an operation holding s; nil-safe so a caller can pair it
+// unconditionally with release.
+func (s *sandboxFS) acquire() {
+	if s != nil {
+		s.inUse.Add(1)
+	}
+}
+
+// release records the completion of an operation acquire counted.
+func (s *sandboxFS) release() {
+	if s != nil {
+		s.inUse.Add(-1)
+	}
+}
+
+// drained reports whether no operation holds s.
+func (s *sandboxFS) drained() bool {
+	return s.inUse.Load() == 0
 }
 
 // isGranted reports whether abs is exactly this fs's single per-invocation granted

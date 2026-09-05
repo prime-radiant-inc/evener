@@ -111,10 +111,12 @@ type LocalExecutionEnvironment struct {
 	// it is closed with sbfs during environment teardown or policy replacement.
 	scratchFS     *sandboxFS
 	scratchFSRoot string
-	// retiredFS holds layers a rebuild replaced. A layer's close is not safe
-	// against a file-tool operation still using it (sandboxFS.close), so a
-	// rebuild retires the old layer instead and teardown closes them all, once
-	// every file tool for the environment has returned.
+	// retiredFS holds layers a rebuild replaced that an operation still holds.
+	// A layer's close is not safe against a file-tool operation still using it
+	// (sandboxFS.close), so a rebuild retires the old layer and closes, at that
+	// moment, every retired layer whose operations have all completed
+	// (sandboxFS.inUse); the set is therefore bounded by the operations in
+	// flight, not by the number of rebuilds. Teardown closes whatever is left.
 	retiredFS []*sandboxFS
 
 	// sandboxReRootErr records a fail-closed re-root refusal from the
@@ -202,7 +204,7 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 	defer e.sbMu.Unlock()
 	scratch := e.sessionScratchPath()
 	if e.sbfs != nil && e.sbfsScratch != scratch {
-		e.retiredFS = append(e.retiredFS, e.sbfs)
+		e.retireFileToolLayerLocked(e.sbfs)
 		e.sbfs = nil
 	}
 	if e.sbfs == nil {
@@ -210,7 +212,29 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 		e.sbfs.grant = e.sandboxGrant
 		e.sbfsScratch = scratch
 	}
+	e.sbfs.acquire()
 	return e.sbfs
+}
+
+// retireFileToolLayerLocked takes a replaced layer out of service: it is closed
+// now if no operation holds it, otherwise kept until a later retirement finds
+// it drained. Every retired layer is re-examined on each call, which keeps the
+// retired set bounded by the operations in flight. The caller holds sbMu, and
+// since a layer is acquired only under sbMu while it is current, a retired
+// layer that is drained can never be acquired again.
+func (e *LocalExecutionEnvironment) retireFileToolLayerLocked(layer *sandboxFS) {
+	retired := e.retiredFS[:0]
+	for _, candidate := range append(e.retiredFS, layer) {
+		if candidate.drained() {
+			candidate.close()
+			continue
+		}
+		retired = append(retired, candidate)
+	}
+	e.retiredFS = retired
+	if len(e.retiredFS) == 0 {
+		e.retiredFS = nil
+	}
 }
 
 // sessionScratchPath returns the concrete per-session scratch directory this
@@ -283,10 +307,11 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 	e.sbMu.Lock()
 	defer e.sbMu.Unlock()
 	if e.scratchFS != nil && e.scratchFSRoot == root {
+		e.scratchFS.acquire()
 		return e.scratchFS
 	}
 	if e.scratchFS != nil {
-		e.retiredFS = append(e.retiredFS, e.scratchFS)
+		e.retireFileToolLayerLocked(e.scratchFS)
 		e.scratchFS = nil
 		e.scratchFSRoot = ""
 	}
@@ -297,6 +322,7 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 	}
 	e.scratchFS = sfs
 	e.scratchFSRoot = root
+	sfs.acquire()
 	return sfs
 }
 
@@ -1089,6 +1115,7 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	if sfs == nil {
 		sfs = e.scratchSandboxFor(abs)
 	}
+	defer sfs.release()
 	if sfs != nil {
 		// Sandboxed or explicitly granted scratch: race-safe fd read
 		// (symlink-refusing, root/denylist-checked).
@@ -1202,6 +1229,7 @@ func readFileNotFoundSuggestion(absPath string) string {
 // human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
 		// missing parents beneath the same root); read-only mode / out-of-root /
 		// masked / git-protected targets return a typed denial.
@@ -1212,6 +1240,7 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		defer sfs.release()
 		if err := sfs.writeFile("write_file", abs, []byte(content), 0o644); err != nil {
 			return "", err
 		}
@@ -1246,6 +1275,7 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 	} else {
 		abs = e.resolve(path)
 	}
+	defer sfs.release()
 	if sfs != nil {
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
@@ -1449,6 +1479,7 @@ func detectDocumentFormat(path string, data []byte) string {
 // relative to RootDir).
 func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		return sfs.exists("file_exists", e.resolve(path))
 	}
 	_, err := os.Stat(e.resolve(path))
@@ -1464,6 +1495,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 		depth = 1
 	}
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath its
 		// parent fd with O_NOFOLLOW; masked entries skipped; symlinks not followed).
 		return sfs.listDir("list_dir", e.resolve(path), depth)
@@ -1558,6 +1590,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		base = filepath.Join(e.RootDir, base)
 	}
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
@@ -1679,6 +1712,7 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	}
 
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		// Sandboxed sessions always use the denylist-aware, symlink-refusing native
 		// walk, EVEN when ripgrep is present. The rg subprocess is still UNCONFINED
 		// in M2 — only its base is policy-checked, so it would read masked/denylisted
