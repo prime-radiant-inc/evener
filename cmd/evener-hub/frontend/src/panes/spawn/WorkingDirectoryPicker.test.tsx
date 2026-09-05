@@ -137,3 +137,29 @@ test.each(["pending", "failed"])("a validated directory remains selectable when 
   await user.click(confirm);
   expect(onPick).toHaveBeenCalledWith("/work");
 });
+
+test("a created directory can be selected while its listing is pending", async () => {
+  const { user, onPick } = setup({
+    complete: (prefix) => (prefix === "/work/" ? Promise.resolve([]) : new Promise(() => {})),
+  });
+  const newFolder = screen.getByRole("button", { name: "New folder" });
+  await waitFor(() => expect((newFolder as HTMLButtonElement).disabled).toBe(false));
+  await user.click(newFolder);
+  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "new project{Enter}");
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Path" }) as HTMLInputElement).value).toBe("/work/new project"),
+  );
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
+  expect(onPick).toHaveBeenCalledWith("/work/new project");
+});
+
+test("first path focus lets typing replace the initial directory", async () => {
+  const { user } = setup();
+  await screen.findByRole("button", { name: "Open /work/app" });
+  const input = screen.getByRole("textbox", { name: "Path" });
+  await user.click(input);
+  await user.keyboard("/replacement");
+  expect((input as HTMLInputElement).value).toBe("/replacement");
+});

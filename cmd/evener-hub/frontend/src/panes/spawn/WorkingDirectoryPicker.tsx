@@ -72,6 +72,7 @@ export function WorkingDirectoryPicker({
   const request = useRef(0);
   const mounted = useRef(true);
   const pathInput = useRef<HTMLInputElement>(null);
+  const pathFocused = useRef(false);
   const goButton = useRef<HTMLButtonElement>(null);
   const nameInput = useRef<HTMLInputElement>(null);
   const wasCreating = useRef(false);
@@ -139,6 +140,8 @@ export function WorkingDirectoryPicker({
   }, [creating, busy]);
 
   const ready = validated && typed === current && !busy;
+  // Paths belong to the Linux/macOS hub, regardless of the browser OS.
+  // Match the shared path helpers and supported hub builds in .goreleaser.yml.
   const segments = current.split("/").filter(Boolean);
   const crumbs = segments.map((label, index) => ({
     label,
@@ -163,7 +166,8 @@ export function WorkingDirectoryPicker({
     try {
       await createDirectory(path);
       if (!mounted.current) return;
-      await browse(path);
+      // Creation is complete; browsing owns validation and listing independently.
+      void browse(path);
     } catch (err) {
       if (mounted.current) setError(friendlyErrorMessage(err));
     } finally {
@@ -265,6 +269,12 @@ export function WorkingDirectoryPicker({
               spellCheck={false}
               autoComplete="off"
               disabled={busy}
+              onFocus={(event) => {
+                if (!pathFocused.current) {
+                  pathFocused.current = true;
+                  event.currentTarget.select();
+                }
+              }}
               onChange={(event) => {
                 request.current++;
                 setTyped(event.target.value);
