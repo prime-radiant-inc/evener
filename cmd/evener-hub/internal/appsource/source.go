@@ -489,15 +489,28 @@ func (s *LocalDaemonSource) advanceLocalDaemonItemSnapshot(ctx context.Context, 
 		return next, false, ctx.Err()
 	}
 	if err != nil {
-		if wire, ok := errors.AsType[appwire.WireError](err); ok {
-			data, ok := wire.Data.(appwire.ErrorData)
-			if ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale {
-				return next, false, nil
-			}
+		if localDaemonItemCursorStale(err) {
+			return next, false, nil
 		}
 		return next, false, err
 	}
 	return next, itemSnapshotStateMatchesCompleteCandidates(next, history), nil
+}
+
+func localDaemonItemCursorStale(err error) bool {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
+	case map[string]any:
+		info, ok := data["evenerErrorInfo"].(string)
+		return ok && info == string(appwire.ErrorTranscriptItemCursorStale)
+	default:
+		return false
+	}
 }
 
 type localDaemonItemThread struct {

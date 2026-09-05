@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -14,12 +16,13 @@ import (
 // inverseNativeFixture serves exclusive native item pages and complete legacy
 // materializations, with a fresh transport per RPC and real cursor validation.
 type inverseNativeFixture struct {
-	items    []appwire.ThreadItem
-	complete []appwire.ThreadItem
-	identity appitempaging.CursorIdentity
-	requests []appwire.ThreadTurnsListParams
-	failure  error
-	cancel   context.CancelFunc
+	items      []appwire.ThreadItem
+	complete   []appwire.ThreadItem
+	identity   appitempaging.CursorIdentity
+	requests   []appwire.ThreadTurnsListParams
+	failure    error
+	cancel     context.CancelFunc
+	jsonErrors bool
 }
 
 func (f *inverseNativeFixture) dial(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
@@ -43,7 +46,19 @@ func (f *inverseNativeFixture) dial(context.Context, string, *http.Client, http.
 			if !ok {
 				return err
 			}
-			transport.recv <- appwire.ErrorMessage(request.ID, wire)
+			message := appwire.ErrorMessage(request.ID, wire)
+			if f.jsonErrors {
+				encoded, err := json.Marshal(message)
+				if err != nil {
+					return err
+				}
+				var decoded appwire.Message
+				if err := json.Unmarshal(encoded, &decoded); err != nil {
+					return err
+				}
+				message = decoded
+			}
+			transport.recv <- message
 		} else {
 			transport.recv <- appwire.ResponseMessage(request.ID, response)
 		}
@@ -150,11 +165,21 @@ func TestInverseNativeFixtureControls(t *testing.T) {
 	fixture.identity.Incarnation = "v2"
 	_, err = source.ListTurns(t.Context(), params)
 	requireInverseStale(t, err)
+	fixture.jsonErrors = true
+	_, err = source.ListTurns(t.Context(), params)
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("want JSON-decoded stale wire error, got %v", err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["evenerErrorInfo"] != string(appwire.ErrorTranscriptItemCursorStale) {
+		t.Fatalf("want JSON-decoded stale metadata, got %T: %+v", wire.Data, wire.Data)
+	}
 }
 
 func TestBoundedToCompleteAuthenticatesNativeHistory(t *testing.T) {
 	for _, caller := range []string{"conversion", "materialized"} {
-		for _, change := range []string{"append", "large_append", "retired_native", "hidden_disagreement", "hidden_insertion", "hidden_deletion", "span_rewrite"} {
+		for _, change := range []string{"append", "large_append", "retired_native", "retired_native_json", "hidden_disagreement", "hidden_insertion", "hidden_deletion", "span_rewrite"} {
 			t.Run(caller+"/"+change, func(t *testing.T) {
 				count, start, end := 5, 2, 4
 				appendOnly := change == "append" || change == "large_append"
@@ -190,9 +215,10 @@ func TestBoundedToCompleteAuthenticatesNativeHistory(t *testing.T) {
 				if change == "hidden_deletion" {
 					current = all[1:4]
 				}
-				if change == "retired_native" {
+				if change == "retired_native" || change == "retired_native_json" {
 					fixture.identity.Incarnation = "v2"
 					fixture.items = current
+					fixture.jsonErrors = change == "retired_native_json"
 				}
 				if change == "span_rewrite" {
 					current[2].TranscriptKey = "rewritten-span"
@@ -268,7 +294,7 @@ func TestSecondDisjointThenCompleteAppendPreservesIdentity(t *testing.T) {
 
 func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 	for _, caller := range []string{"conversion", "materialized"} {
-		for _, failure := range []string{"cancellation", "transport", "protocol"} {
+		for _, failure := range []string{"cancellation", "transport", "protocol", "transport_json", "protocol_json", "wrong_code", "wrong_code_json", "wrong_info_json", "message_only_json"} {
 			t.Run(caller+"/"+failure, func(t *testing.T) {
 				all := correctionItems(4)
 				source, _ := newLocalDaemonItemTransitionSource(t, nil)
@@ -285,9 +311,23 @@ func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 				if failure == "cancellation" {
 					fixture.cancel = cancel
 				} else {
+					fixture.jsonErrors = strings.HasSuffix(failure, "_json")
 					fixture.failure = appwire.WireError{Code: appwire.CodeUnavailable, Message: "native proof unavailable"}
-					if failure == "protocol" {
+					switch strings.TrimSuffix(failure, "_json") {
+					case "protocol":
 						fixture.failure = appwire.InvalidParams("native proof invalid")
+					case "wrong_code":
+						wire := appwire.TranscriptItemCursorStale()
+						wire.Code = appwire.CodeUnavailable
+						fixture.failure = wire
+					case "wrong_info":
+						wire := appwire.TranscriptItemCursorStale()
+						wire.Data = map[string]any{"evenerErrorInfo": "notCursorStale", "detail": "preserve me"}
+						fixture.failure = wire
+					case "message_only":
+						wire := appwire.TranscriptItemCursorStale()
+						wire.Data = nil
+						fixture.failure = wire
 					}
 				}
 				var proofError error
@@ -308,7 +348,7 @@ func TestInverseNativeProofErrorPreservesSnapshot(t *testing.T) {
 				}
 				if failure != "cancellation" {
 					var got, want appwire.WireError
-					if !errors.As(err, &got) || !errors.As(proofError, &want) || got.Code != want.Code || got.Message != want.Message {
+					if !errors.As(err, &got) || !errors.As(proofError, &want) || !reflect.DeepEqual(got, want) {
 						t.Errorf("native proof error changed: %v, want %v", err, proofError)
 					}
 				}
