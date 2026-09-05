@@ -23,6 +23,8 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     complete: vi.fn(async () => []),
     listRecents: vi.fn(async () => []),
     fallbackDir: "/tmp",
+    validatePath: async (path) => ({ valid: true, path }),
+    createDirectory: async () => {},
     onCwdPanelClose: vi.fn(),
     branch: "main",
     reasoningEffort: "",
@@ -100,16 +102,17 @@ test("option sheets commit a selection and return focus to the row", async () =>
   expect(document.activeElement).toBe(within(row).getByRole("button"));
 });
 
-test("the working-directory sheet uses the existing path panel and closes with Escape", async () => {
+test("browsing a directory and cancelling preserves the session directory", async () => {
   const user = userEvent.setup();
   const onCwdChange = vi.fn();
-  renderRows({ onCwdChange });
+  renderRows({ onCwdChange, complete: async () => ["/tmp/project/child"] });
 
   const rowButton = screen.getByRole("button", { name: "Working directory: /tmp/project" });
   const row = rowButton.parentElement!;
   await user.click(rowButton);
   const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
+  await user.click(await within(dialog).findByText("child"));
+  expect(onCwdChange).not.toHaveBeenCalled();
   await user.keyboard("{Escape}");
 
   expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
@@ -129,14 +132,16 @@ test("selecting a recent working directory stamps the committed value, not the p
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
   const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  await user.click(await within(dialog).findByRole("option", { name: /new\/project/ }));
+  await user.click(await within(dialog).findByRole("button", { name: "Open recent /new/project" }));
 
+  expect(onCwdChange).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole("button", { name: "Use this folder" }));
   expect(onCwdChange).toHaveBeenLastCalledWith("/new/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
 });
 
-test("pressing Enter on a typed working directory stamps the committed value, not the previous cwd", async () => {
+test("confirming a typed working directory stamps the committed value, not the previous cwd", async () => {
   const user = userEvent.setup();
   localStorage.setItem(GLOBAL_LAST_WORKING_DIR_KEY, "/old/project");
   const onCwdChange = vi.fn();
@@ -148,8 +153,10 @@ test("pressing Enter on a typed working directory stamps the committed value, no
 
   await user.click(screen.getByRole("button", { name: "Working directory: /old/project" }));
   const dialog = await screen.findByRole("dialog", { name: "Choose working directory" });
-  expect(within(dialog).getByRole("combobox", { name: "Path" })).toBeTruthy();
-  await user.keyboard("/new/typed/project{Enter}");
+  const pathInput = within(dialog).getByRole("textbox", { name: "Path" });
+  await user.clear(pathInput);
+  await user.type(pathInput, "/new/typed/project{Enter}");
+  await user.click(within(dialog).getByRole("button", { name: "Use this folder" }));
 
   expect(onCwdChange).toHaveBeenLastCalledWith("/new/typed/project");
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).toBe("/new/typed/project");

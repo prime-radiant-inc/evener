@@ -123,13 +123,11 @@ function renderSpawn(client: FakeClient) {
   );
 }
 
-// The working directory is a PathField: the closed field is a trigger holding
-// the path as text, and the value is entered inside its browse panel (which is
-// portaled to document.body, so it is queried from `screen`, not the form).
+// The working directory is changed through an explicit-confirmation picker.
 const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
 function workingDir(): HTMLElement {
-  return screen.getByLabelText("Working directory");
+  return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
 }
 
 // The DESKTOP Model field's closed trigger (ModelField -> ModelCatalog): a
@@ -156,10 +154,12 @@ function expectWorkingDir(path: string): void {
 
 async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: string): Promise<void> {
   await user.click(workingDir());
-  // The panel opens pre-filled and fully selected, so typing replaces whatever
-  // was there; Enter with no row highlighted commits the typed literal.
-  await screen.findByRole("combobox", { name: "Path" });
-  await user.keyboard(`${path}{Enter}`);
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, `${path}{Enter}`);
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
 }
 
 /** Waits for the mount-time catalogs to land. The Advanced-options toggle is
@@ -193,22 +193,28 @@ afterEach(() => {
 // Prompt card first, taking the page's slack; ONE configuration row beneath it
 // (working directory, model, effort); harness in Advanced options.
 
-test("the prompt card leads the page, ahead of every configuration field", async () => {
+test("the directory is established before composing the prompt", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const card = screen.getByTestId("spawn-prompt-card");
-  const dir = screen.getByLabelText("Working directory");
-  // DOCUMENT_POSITION_FOLLOWING (4): the directory field comes AFTER the card in
-  // document order - see MDN's Node.compareDocumentPosition bitmask.
-  expect(card.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
+  expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the desktop directory trigger announces the confirmed path", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
 test("the configuration row is working directory, model and effort - and nothing else", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.getByLabelText("Working directory")).toBeTruthy();
+  expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" })).toBeTruthy();
   expect(screen.getAllByText("Model").length).toBeGreaterThan(0);
   expect(screen.getByLabelText("Effort")).toBeTruthy();
 });
@@ -617,10 +623,10 @@ test("a missing working directory still exposes plugin selection before Create &
       error: "stat /tmp/new: no such file or directory",
     }));
   });
+  window.history.pushState({}, "", "/new?dir=/tmp/new");
   renderSpawn(fake);
   await settled();
 
-  await setWorkingDir(user, "/tmp/new");
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() =>
@@ -923,9 +929,9 @@ test("clearing an invalid selection after preview failure reaches Create & start
     }));
   });
   connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/new");
   renderSpawn(fake);
   await settled();
-  await setWorkingDir(user, "/tmp/new");
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() =>
@@ -1078,59 +1084,35 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed by hand");
 });
 
-// Spec 3.7: browsing writes the working-directory field continuously, so the
-// last-used-directory global is stamped once when the panel closes rather than
-// on every browse step.
-test("stamps the last-working-directory global when the browse panel closes", async () => {
+test("only confirming a directory updates the launch defaults", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
   await settled();
-
   await user.click(workingDir());
-  await screen.findByRole("combobox", { name: "Path" });
-  // Browsing alone must not stamp - only the close does.
-  await user.click(await screen.findByText("src"));
+  await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
-
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src"));
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src");
 });
 
-// kata cp3m: Escape closes the working-directory browse popover only - the
-// popover's own Escape handler (widgets/popover) both preventDefault()s and
-// stopPropagation()s (verified live: a document/window-level listener never
-// even sees the keydown), so it must never reach a form-level or route-level
-// handler and discard the draft or navigate the pane away. Live reproduction
-// against a real build (headless AND headed Chrome, mouse-click and
-// keyboard-commit directory selection, with and without a model chosen
-// first) did not reproduce the kata's reported discard; this regression test
-// locks the correct behavior in place either way - prompt, model, and
-// working directory all survive Escape, and no navigation occurs.
-test("kata cp3m: Escape after selecting a working directory closes only the popover - the draft survives", async () => {
+test("Escape discards directory browsing while preserving the prompt and launch directory", async () => {
   const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=%2Ftmp%2Fproject");
   const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
   await settled();
-
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "my important draft text");
   await user.click(workingDir());
-  await screen.findByRole("combobox", { name: "Path" });
-  await user.click(await screen.findByText("src"));
-  expectWorkingDir("/tmp/project/src");
-
-  const pathnameBeforeEscape = window.location.pathname;
+  await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
+  const pathname = window.location.pathname;
   await user.keyboard("{Escape}");
-
-  // The popover is gone...
-  await waitFor(() => expect(screen.queryByRole("combobox", { name: "Path" })).toBeNull());
-  // ...but nothing else moved: no submit was attempted, no navigation
-  // happened, and every field the user had already filled in is untouched.
+  expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
-  expect(window.location.pathname).toBe(pathnameBeforeEscape);
+  expect(window.location.pathname).toBe(pathname);
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe(
     "my important draft text",
   );
-  expectWorkingDir("/tmp/project/src");
+  expectWorkingDir("/tmp/project");
 });
 
 // The read side of that same global (spec 3.4): with no ?dir= prefill and no
@@ -1147,7 +1129,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
   expectWorkingDir("Working directory");
 
   await user.click(workingDir());
-  await screen.findByRole("combobox", { name: "Path" });
+  await screen.findByRole("textbox", { name: "Path" });
 
   await waitFor(() => expect(complete.mock.calls.map(([params]) => params.prefix)).toContain("/home/me/lastone/"));
 });
@@ -1170,8 +1152,8 @@ test("survives a null data payload from either list RPC", async () => {
   await user.click(workingDir());
 
   // The panel is up, listing nothing, rather than having thrown its tree away.
-  expect(await screen.findByRole("combobox", { name: "Path" })).toBeTruthy();
-  expect(await screen.findByText("Nothing here.")).toBeTruthy();
+  expect(await screen.findByRole("textbox", { name: "Path" })).toBeTruthy();
+  expect(await screen.findByText("No subfolders to display.")).toBeTruthy();
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
@@ -1184,11 +1166,11 @@ test("offers to create a missing directory, then creates it and spawns", async (
     }));
     f.on("evener/dirs/create", () => ({ path: "/tmp/new", created: true }));
   });
+  window.history.pushState({}, "", "/new?dir=/tmp/new");
   renderSpawn(fake);
   await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
-  await setWorkingDir(user, "/tmp/new");
   await user.click(screen.getByTestId("spawn-submit"));
 
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
@@ -1212,11 +1194,11 @@ test("aborts with the validator message for a non-fixable working dir, then a co
         : { path: "/etc/hosts", valid: false, error: "path is not a directory" },
     );
   });
+  window.history.pushState({}, "", "/new?dir=/etc/hosts");
   renderSpawn(fake);
   await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
-  await setWorkingDir(user, "/etc/hosts");
   await user.click(screen.getByTestId("spawn-submit"));
 
   expect(await screen.findByText("path is not a directory")).toBeTruthy();
@@ -2297,21 +2279,54 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   expect(started?.reasoningEffort ?? "").toBe(displayed);
 });
 
-// The Effort ladder needs the scoped model catalog. The loader is keyed by
-// harness+cwd, but its request is debounced so every character typed into the
-// working-directory path does not issue a separate model/list RPC.
-test("typing a working directory does not reload the model catalog per keystroke", async () => {
+// The model catalog follows the committed directory, not the picker's draft.
+test("typing a working directory reloads the model catalog only after confirmation", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "model/list")).toBe(true));
 
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
-  await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
-  await settled();
+  await user.click(workingDir());
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/tmp/some/project{Enter}");
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(baseline);
+  await user.click(confirm);
 
-  // 17 characters typed. One reload for the settled path is the contract; a
-  // reload per character is the defect.
-  const perKeystroke = fake.calls.filter((call) => call.method === "model/list").length - baseline;
-  expect(perKeystroke).toBeLessThanOrEqual(1);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "model/list").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/some/project",
+    }),
+  );
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(baseline + 1);
+});
+
+test.each(["desktop", "mobile"])("%s directory picker follows route directory changes while open", async (surface) => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
+  renderSpawn(readyClient());
+  await waitFor(() => expectWorkingDir("/home/me/app"));
+  await user.click(
+    surface === "desktop"
+      ? workingDir()
+      : screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }),
+  );
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/uncommitted");
+  act(() => {
+    window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Path" }) as HTMLInputElement).value).toBe("/home/other"),
+  );
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
+  expectWorkingDir("/home/other");
 });
