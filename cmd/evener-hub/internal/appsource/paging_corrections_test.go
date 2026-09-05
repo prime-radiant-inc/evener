@@ -33,6 +33,7 @@ func TestCompleteToBoundedAuthenticatesHistory(t *testing.T) {
 		rewrite            bool
 	}{
 		{"overlapping_hidden_rewrite", 4, 5, 3, true},
+		{"overlapping_append", 4, 5, 3, false},
 		{"large_append_gap", 2, 102, 40, false},
 		{"public_page_limit", 41, 81, 40, false},
 	} {
@@ -176,6 +177,80 @@ func TestCanceledSourceReadAndListPreserveLRU(t *testing.T) {
 			}
 			if source.itemSnapshots.order.Front().Value.(itemSnapshotStateEntry).key != "other" {
 				t.Fatal("cancellation touched LRU")
+			}
+		})
+	}
+}
+
+func TestNewDaemonBoundedReadRotatesWithoutOldPrefixProof(t *testing.T) {
+	source, _ := newLocalDaemonItemTransitionSource(t, nil)
+	params := appwire.ThreadReadParams{Ref: "local:thread"}
+	first, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(correctionItems(2), ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := source.entries()
+	entries[0].Entry.InstanceID = "replacement-daemon"
+	source.entries = func() []LocalDaemonEntry { return entries }
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		return nil, errors.New("new daemon must not authenticate old daemon history")
+	}
+	all := correctionItems(4)
+	native, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "new-native", ProjectionVersion: 1}, *all[2].Position)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[2:], native))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Identity == first.Identity {
+		t.Fatal("replacement daemon retained old identity")
+	}
+}
+
+func TestNativeProofFailurePreservesSnapshot(t *testing.T) {
+	for _, kind := range []string{"cycle", "no_progress", "cancellation"} {
+		t.Run(kind, func(t *testing.T) {
+			source, _ := newLocalDaemonItemTransitionSource(t, nil)
+			params := appwire.ThreadReadParams{Ref: "local:thread"}
+			all := correctionItems(6)
+			if _, err := source.ItemCandidatesFromRead(t.Context(), params, correctionRead(all[:4], "")); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := source.itemSnapshots.peek("local:thread")
+			source.itemSnapshots.put("other", itemSnapshotState{ThreadRef: "other"})
+			native, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "native", ProjectionVersion: 1}, *all[4].Position)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+				return respondingTransport(func(method string) (any, error) {
+					if method != appwire.MethodThreadTurnsList {
+						return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion}, nil
+					}
+					items := all[2:4]
+					if kind == "no_progress" {
+						items = nil
+					}
+					if kind == "cancellation" {
+						cancel()
+					}
+					return appwire.ThreadTurnsListResponse{PageUnit: appwire.TranscriptPageUnitItem, Data: []appwire.Turn{{ID: "turn-1", Items: items, ItemsView: appwire.TurnItemsViewFragment}}, NextCursor: native}, nil
+				}), nil
+			}
+			_, err = source.ItemCandidatesFromRead(ctx, params, correctionRead(all[4:], native))
+			if err == nil {
+				t.Fatal("invalid or canceled proof succeeded")
+			}
+			if kind == "cancellation" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v", err)
+			}
+			after, _ := source.itemSnapshots.peek("local:thread")
+			if before != after || source.itemSnapshots.order.Front().Value.(itemSnapshotStateEntry).key != "other" {
+				t.Fatal("failed proof changed snapshot or LRU")
 			}
 		})
 	}

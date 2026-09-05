@@ -104,7 +104,7 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	complete := response.OlderCursor == ""
 	// A bounded window alone cannot authenticate a formerly complete prefix,
 	// even when it overlaps the retained tail. Follow its actual continuation.
-	if exists && previous.Prefix && previous.NativeCursor == "" && !complete {
+	if exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && previous.NativeCursor == "" && !complete {
 		observed, err = s.localDaemonHiddenHistory(ctx, resolved, params.ItemsView, response.OlderCursor, candidates, previous.ItemCount)
 		if err != nil {
 			return ItemCandidateResult{}, err
