@@ -800,6 +800,11 @@ export function ConversationScreen({
     !pending &&
     !settingsPending;
   const questions = batches.flatMap((batch) => batch.questions);
+  const canCompose =
+    !conversation ||
+    (["send", "steer", "queue", "goal"] as const).some(
+      (action) => conversation.capabilities[action],
+    );
   const goalCommand = goalObjective(
     draft.record.draft,
     draft.record.images?.length,
@@ -1183,10 +1188,10 @@ export function ConversationScreen({
               marginBottom: 8,
               padding: 12,
               gap: 8,
-              borderWidth: 1,
-              borderRadius: 22,
+              borderWidth: canCompose ? 1 : 0,
+              borderRadius: canCompose ? 22 : 0,
               borderColor: colors.border,
-              backgroundColor: colors.surface,
+              backgroundColor: canCompose ? colors.surface : colors.background,
             },
           ]}
         >
@@ -1235,11 +1240,11 @@ export function ConversationScreen({
               {`Goal · ${conversation.goal.status}`}
             </Action>
           ) : null}
-          {questions.length === 0 ? (
+          {canCompose && questions.length === 0 ? (
             <ImageAttachments document={document} selection={imageSelection} />
           ) : null}
           <ErrorMessage message={imageState.error} />
-          {questions.length === 0 ? (
+          {canCompose && questions.length === 0 ? (
             <TextInput
               ref={composerInput}
               accessibilityLabel="Message"
@@ -1269,7 +1274,7 @@ export function ConversationScreen({
               { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
             ]}
           >
-            {questions.length === 0 ? (
+            {canCompose && questions.length === 0 ? (
               <Action
                 tone="quiet"
                 label="Attach images"
@@ -1282,7 +1287,7 @@ export function ConversationScreen({
                 {imageState.busy ? "Processing…" : "+"}
               </Action>
             ) : null}
-            {conversation ? (
+            {conversation && canCompose ? (
               <ComposerSettings
                 conversation={conversation}
                 disabled={!ready || !controls || draft.submitting}
@@ -1356,7 +1361,7 @@ export function ConversationScreen({
                 Stop
               </Action>
             ) : null}
-            {questions.length === 0 && goalCommand !== null ? (
+            {canCompose && questions.length === 0 && goalCommand !== null ? (
               <Action
                 tone="primary"
                 disabled={
@@ -1376,7 +1381,9 @@ export function ConversationScreen({
             ) : null}
             {goalCommand === null &&
               (["send", "steer", "queue"] as const).map((kind) =>
-                questions.length === 0 && conversation?.capabilities[kind] ? (
+                canCompose &&
+                questions.length === 0 &&
+                conversation?.capabilities[kind] ? (
                   <Action
                     key={kind}
                     tone={
