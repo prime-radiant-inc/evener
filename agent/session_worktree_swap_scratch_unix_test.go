@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 )
@@ -362,9 +363,19 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 // interval between the install and the record — since the record joined the
 // install's lock hold there is no such interval, and a seam between them
 // would have to release the very lock that closes it.
+//
+// The hook releases as soon as the close has BEGUN, never waiting for it to
+// return. Waiting would deadlock the two against each other: this hook runs
+// inside the manage_worktree handler, which holds the dispatch admission on the
+// close fence, so a close blocked on that join cannot finish and the hook
+// blocked on the close cannot release it. Only the close budget breaks the tie,
+// thirty seconds later and with a fence warning that means the opposite of what
+// it says here. The assertions below pin both.
 func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *testing.T) {
+	started := time.Now()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
+	warnings := collectWarningsUntilClosed(r.s)
 	launch := currentLocalEnv(t, r.s)
 	if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
 		t.Fatalf("root command on the launch environment: %v", err)
@@ -397,14 +408,14 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 			t.Errorf("child command on the parked environment: %v", err)
 		}
 		second = launch.SessionScratchDir()
-		// The close runs to completion here, concurrently with the enter's
-		// tail, and has to find the parked environment.
+		// The close begins here, concurrently with the enter's tail, and has to
+		// find the parked environment. Released at closeBegun: see the deadlock
+		// this hook must not create, above.
 		go func() {
 			defer close(closeDone)
 			r.s.Close()
 		}()
 		<-closeBegun
-		<-closeDone
 	}
 
 	_, err := r.create(t, map[string]any{"name": "lane"})
@@ -424,6 +435,17 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 		if scratchLeaseHeld(t, dir) {
 			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
 		}
+	}
+	// The close drained its fence join instead of giving up on it. Both of
+	// these are tripwires for the same regression — a hook that holds the
+	// dispatch admission until the close returns — which costs the whole
+	// LaneClosePassBudget and reports work it walked past that was never
+	// stuck. A healthy run here is well under a second.
+	if got := fenceWarnings(<-warnings); len(got) != 0 {
+		t.Errorf("the close gave up on its environment-work fence: %q", got)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("the test took %s; the close waited out its budget instead of joining promptly", elapsed)
 	}
 }
 
