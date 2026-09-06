@@ -6,8 +6,8 @@ Use `react-native-enriched-markdown` 1.0.2 after evaluating its published API an
 
 Open valid HTTP(S) links through the OS. Long press reveals the exact target with copy/open actions. Unsupported local paths remain copyable and explain that a hub-file viewer is still required; never guess that a host path refers to this phone. Native code copy uses the renderer. Full-response copy preserves original Markdown. No bearer credentials are forwarded to external images.
 
-- [ ] Add renderer and clipboard, inspect native install and build compatibility.
-- [ ] Test link-target behavior and wire rendering with matching light/dark styles, read-only task lists, uncapped font scaling and no token-by-token accessibility announcements.
+- [x] Add renderer and clipboard, inspect native install and build compatibility.
+- [x] Test link-target behavior and wire rendering with matching light/dark styles, read-only task lists, uncapped font scaling and no token-by-token accessibility announcements.
 - [ ] Exercise real native content: headings, lists, links, quotes, code, tables, incomplete Markdown and streaming updates. Verify code copy, link actions, selection, overflow, large text and both appearances on both platforms.
 - [ ] Review and record exact checks, source/build identity, screenshots and remaining limitations.
 
@@ -16,3 +16,5 @@ Sources read 5 September 2026: [maintainer README](https://github.com/software-m
 ## Native control correction
 
 The installed renderer measured its code-copy button at roughly 27dp on Android. Keep a two-file `patch-package` patch against exact version 1.0.2: header and button minimum 48dp on Android and 44pt on iOS, center header labels, and update both native measurement paths. `postinstall` must fail if the patch cannot apply. The patch was reproduced from pristine package sources and independently reviewed. Verify geometry and code-copy behavior after rebuilding; do not infer the patched binary from source alone.
+
+Runtime progress and outstanding manual checks are recorded in [Markdown evidence](../../design/mobile/markdown-evidence.md).
