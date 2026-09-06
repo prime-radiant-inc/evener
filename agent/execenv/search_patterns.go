@@ -127,11 +127,24 @@ type globBudgetError struct {
 	op        string
 }
 
+// advice names the lever that actually makes the walk smaller, which differs
+// by operation. A glob's pattern decides how much of the tree gets listed, so
+// tightening it is the first thing to try. A grep's pattern is a regex matched
+// against file contents after the walk has already listed everything, so
+// narrowing it changes nothing about the listings; only a smaller base
+// directory does.
+func (e *globBudgetError) advice() string {
+	if e.op == "grep" {
+		return "narrow the base directory"
+	}
+	return "narrow the pattern or its base directory"
+}
+
 func (e *globBudgetError) Error() string {
 	if !e.cycleSafe {
-		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; narrow the pattern or its base directory", e.op, e.listings, e.budget)
+		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.listings, e.budget, e.advice())
 	}
-	return fmt.Sprintf("%s walk made %d directory listings, past the budget of %d for one call: narrow the pattern or its base directory", e.op, e.listings, e.budget)
+	return fmt.Sprintf("%s walk made %d directory listings, past the budget of %d for one call: %s", e.op, e.listings, e.budget, e.advice())
 }
 
 // match reports whether the walk may keep the next match, so the caller can
