@@ -358,3 +358,74 @@ it("scopes project reads and writes and refuses global-only fields", async () =>
   for (const read of reads)
     expect(read.params).toEqual({ cwd: "/project-fixture", layer: "project" });
 });
+
+it("trusts only the reviewed repository hash and confirms with independent resolve", async () => {
+  const f = fixture("project", "/repo");
+  const request = f.io.request;
+  let trusted = false;
+  f.io.request = async (method, params) => {
+    if (method === "evener/launch/trustRepo") {
+      trusted = true;
+      throw Error("mutation reply lost");
+    }
+    const result = await request(method, params);
+    if (method === "evener/launch/resolve")
+      return {
+        ...(result as LaunchConfigResolved),
+        repo: {
+          path: "/repo/.evener/launch.toml",
+          hash: "reviewed",
+          trust: trusted ? "trusted" : "untrusted",
+          preview: "max_rounds = 7",
+        },
+      };
+    return result;
+  };
+  await f.model.refresh();
+  expect(await f.model.trustRepository("obsolete")).toBe(false);
+  expect(
+    f.calls.filter((c) => c.method === "evener/launch/trustRepo"),
+  ).toHaveLength(0);
+  f.model.edit("maxRounds", 8);
+  expect(await f.model.trustRepository("reviewed")).toBe(false);
+  await f.model.refresh(true);
+  expect(await f.model.trustRepository("reviewed")).toBe(true);
+  expect(f.calls.filter((c) => c.method === "evener/launch/trustRepo")).toEqual(
+    [
+      {
+        method: "evener/launch/trustRepo",
+        params: { cwd: "/repo", hash: "reviewed" },
+      },
+    ],
+  );
+  expect(f.model.getSnapshot().resolved?.repo?.trust).toBe("trusted");
+  expect(f.calls.at(-1)?.method).toBe("evener/launch/resolve");
+});
+
+it("does not infer trust from a successful reply if the current file differs", async () => {
+  const f = fixture("project", "/repo");
+  const request = f.io.request;
+  let hash = "reviewed";
+  f.io.request = async (method, params) => {
+    if (method === "evener/launch/trustRepo") {
+      hash = "changed";
+      return {};
+    }
+    const result = await request(method, params);
+    if (method === "evener/launch/resolve")
+      return {
+        ...(result as LaunchConfigResolved),
+        repo: {
+          path: "/repo/.evener/launch.toml",
+          hash,
+          trust: "changed",
+          preview: "max_rounds = 9",
+        },
+      };
+    return result;
+  };
+  await f.model.refresh();
+  expect(await f.model.trustRepository("reviewed")).toBe(false);
+  expect(f.model.getSnapshot().resolved?.repo?.hash).toBe("changed");
+  expect(f.model.getSnapshot().error).toBeTruthy();
+});

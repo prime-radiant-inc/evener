@@ -253,3 +253,16 @@ package has not been published to a registry.
 The project-layer recipe also ran successfully from the independently installed
 tarball against the isolated hub on 6 September 2026. Project write, notification,
 readback, resolution, restoration and unchanged global settings were verified.
+
+
+### Repository trust confirmation
+
+A client should retain the preview and hash together while the user reviews the
+file. Send that hash to `evener/launch/trustRepo`; do not substitute a newer hash
+from a background refresh. After the request (including an uncertain reply),
+resolve again. Confirm only if the current repository hash matches the reviewed
+hash and its trust state is `trusted`. If it changed, show the current status and
+require a new review. Do not automatically approve that new hash. Trust metadata
+remembers previously approved hashes; deleting the file does not revoke that
+history. The native flow has isolated-hub evidence for this sequence; a packaged
+repository-trust cookbook recipe remains to be added.
