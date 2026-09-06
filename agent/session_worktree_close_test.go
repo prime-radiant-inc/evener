@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -946,6 +947,71 @@ func TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone(t *test
 
 // --- unlockOwnManagedWorktreeAtClose: gaps left by TestClose_UnlocksOwnManagedWorktree ---
 
+// TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker: a managed lane
+// still carrying this session's own marker while the session occupies a
+// different lane is released at close alongside the occupied one. That residue
+// is what a crash inside a lane, or a resume whose re-entry was refused, leaves
+// behind: the marker names a session id that is dead the moment this close
+// finishes, and nothing else would ever release it.
+func TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "stranded"})
+	if err != nil {
+		t.Fatalf("create stranded lane: %v", err)
+	}
+	strandedPath := first["path"].(string)
+	second, err := r.create(t, map[string]any{"name": "current"})
+	if err != nil {
+		t.Fatalf("create current lane: %v", err)
+	}
+	currentPath := second["path"].(string)
+
+	// create-away already released the first lane, so re-lock it with this
+	// session's marker to stand in for the residue a dead incarnation left.
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", worktree.FormatSessionMarker(r.s.id), strandedPath)
+	if _, locked, _ := r.laneLocked(t, strandedPath); !locked {
+		t.Fatal("stranded lane not locked by the test setup")
+	}
+
+	r.s.unlockOwnManagedWorktreeAtClose()
+
+	if _, locked, reason := r.laneLocked(t, strandedPath); locked {
+		t.Errorf("stranded own marker survived close: locked with %q", reason)
+	}
+	if _, locked, reason := r.laneLocked(t, currentPath); locked {
+		t.Errorf("occupied own lane still locked after close-unlock: %q", reason)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker: another session's
+// marker on a managed lane is not this session's to release, so close leaves it
+// exactly as it found it (spec §5 EvLeave, foreign column).
+func TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "theirs"})
+	if err != nil {
+		t.Fatalf("create foreign lane: %v", err)
+	}
+	foreignPath := first["path"].(string)
+	if _, err := r.create(t, map[string]any{"name": "ours"}); err != nil {
+		t.Fatalf("create own lane: %v", err)
+	}
+	foreignMarker := worktree.FormatSessionMarker(r.s.id + "-other")
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignMarker, foreignPath)
+
+	r.s.unlockOwnManagedWorktreeAtClose()
+
+	_, locked, reason := r.laneLocked(t, foreignPath)
+	if !locked {
+		t.Fatal("another session's lane was unlocked at close")
+	}
+	if reason != foreignMarker {
+		t.Errorf("foreign lock reason = %q, want %q", reason, foreignMarker)
+	}
+}
+
 // TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp: close-unlock is a
 // local-execution-environment-only feature; a non-local env leaves the
 // worktree exactly as it was (still locked).
@@ -992,10 +1058,11 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 	}
 }
 
-// TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns: leaveCurrentWorktree's
-// own git call fails (git unavailable) — the worktree stays locked and a
-// warning names the failure, rather than the failure being swallowed.
-func TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns(t *testing.T) {
+// TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns: the registry read the
+// sweep needs fails (git unavailable) — every lane stays locked and a warning
+// names the lane directory it could not sweep, rather than the failure being
+// swallowed.
+func TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -1009,7 +1076,39 @@ func TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns(t *testing.T) {
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
-		t.Error("own worktree wrongly unlocked when the unlock attempt failed")
+		t.Error("own worktree wrongly unlocked when the registry read failed")
+	}
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, filepath.Dir(path), "unlocking own worktree", "failed") {
+		t.Errorf("no warning about the failed close-unlock: %v", msgs)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns: the sweep reads the
+// registry but the release of one lane's own marker fails — that lane stays
+// locked and a warning names it, rather than the failure being swallowed.
+func TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		run := gitRunner(runCtx, env)
+		return func(args ...string) (string, error) {
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "unlock" {
+				return "", errors.New("unlock refused")
+			}
+			return run(args...)
+		}
+	}
+
+	r.s.unlockOwnManagedWorktreeAtClose()
+
+	if _, locked, _ := r.laneLocked(t, path); !locked {
+		t.Error("own worktree reported unlocked despite a failed unlock")
 	}
 	msgs := warningMessages(r.s)
 	if !anyContainsAll(msgs, path, "unlocking own worktree", "failed") {
