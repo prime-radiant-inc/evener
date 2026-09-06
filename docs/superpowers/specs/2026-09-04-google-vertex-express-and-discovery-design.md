@@ -282,9 +282,14 @@ and `refresh_token` — must be present and non-empty; Google's parser does not
 check them and would fail only at the first request. Round 11: a
 service-account `private_key` must parse offline as Google's signer will
 parse it (PEM or PKCS#8/PKCS#1, RSA). Round 15: a `token_uri`, when present,
-must be Google's own token endpoint, `https://oauth2.googleapis.com/token`,
-because the library sends the refresh token or the signed assertion to
-whatever endpoint the file names.)*
+must be one of Google's own token endpoints
+(`https://oauth2.googleapis.com/token`, or the legacy
+`https://accounts.google.com/o/oauth2/token`), because the library sends the
+refresh token or the signed assertion to whatever endpoint the file names; a
+top-level `installed`/`web` block is refused because the library then returns
+an OAuth client configuration with no token source; and these fields are
+read through tagged decoding, case-insensitively, exactly as the library
+reads them.)*
 
 ### 4.1 Storage
 

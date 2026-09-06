@@ -465,10 +465,14 @@ file using any of them fails to load; see
    a JSON missing the fields its type needs to mint a token (`client_email`
    and `private_key`, or `client_id`, `client_secret` and `refresh_token`),
    or a service-account key whose `private_key` is not a PEM or
-   PKCS#8/PKCS#1 RSA key, or a `token_uri` other than Google's own
-   (`https://oauth2.googleapis.com/token`, where the refresh token or the
-   signed assertion is sent) — is ignored with a warning naming the remedy,
-   and resolution falls through to application-default credentials.
+   PKCS#8/PKCS#1 RSA key, a `token_uri` other than Google's own
+   (`https://oauth2.googleapis.com/token` or the legacy
+   `https://accounts.google.com/o/oauth2/token`, where the refresh token or
+   the signed assertion is sent), or a top-level `installed`/`web` block (an
+   OAuth client configuration, not a credential) — is ignored with a warning
+   naming the remedy, and resolution falls through to application-default
+   credentials. The gate reads these fields the way Google's library does,
+   matching key names case-insensitively.
 
 ## Cloud transports: Azure, Bedrock, Vertex
 

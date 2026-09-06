@@ -89,6 +89,31 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "is not Google's OAuth token endpoint",
 		},
 		{
+			// encoding/json matches the library's json:"token_uri" tag case-
+			// insensitively, so the gate must see the field the same way.
+			name: "authorized_user naming a foreign token endpoint under a case variant of the key",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Token_Uri":"https://attacker.example/token"}`,
+			want: "is not Google's OAuth token endpoint",
+		},
+		{
+			name: "service_account naming Google's legacy token endpoint",
+			raw:  `{"token_uri":"https://accounts.google.com/o/oauth2/token",` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
+			want: "",
+		},
+		{
+			// Google's parser treats a top-level web/installed block as an
+			// OAuth client configuration and returns a credential with no
+			// token source; the gate refuses it up front.
+			name: "authorized_user carrying an OAuth client configuration block",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","installed":{"redirect_uris":["http://localhost"]}}`,
+			want: "OAuth client configuration",
+		},
+		{
+			name: "authorized_user carrying a web client block under a case variant",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Web":{"redirect_uris":["http://localhost"]}}`,
+			want: "OAuth client configuration",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",

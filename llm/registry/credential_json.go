@@ -17,9 +17,13 @@ import (
 // credential sources and are refused.
 var AllowedCredentialJSONTypes = map[string]bool{"service_account": true, "authorized_user": true}
 
-// googleTokenEndpoint is the only token_uri a credential JSON may name: the
-// endpoint Google's library uses by default for both credential types.
-const googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+// googleTokenEndpoints are the only token_uri values a credential JSON may
+// name: the endpoint Google's library uses by default for both credential
+// types, and the legacy one older key files carry.
+var googleTokenEndpoints = map[string]bool{
+	"https://oauth2.googleapis.com/token":        true,
+	"https://accounts.google.com/o/oauth2/token": true,
+}
 
 // requiredCredentialJSONFields lists, per accepted type, the fields a token
 // source needs to mint a token. Google's parser accepts their absence and
@@ -82,13 +86,28 @@ func CheckCredentialJSON(raw []byte) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
 	}
-	// token_uri is where Google's library sends the refresh token or the
-	// signed assertion, so only Google's own endpoint is accepted; absent is
-	// fine, the library defaults to the same one.
-	if tokenURI, present := fields["token_uri"]; present {
+	// Decoded through tagged fields, the way Google's library reads them, so
+	// a case variant of a key is seen here exactly as the library will see
+	// it. A top-level installed or web block makes the library return an
+	// OAuth client configuration with no token source instead of a
+	// credential; token_uri is where it sends the refresh token or the
+	// signed assertion, so only Google's own endpoints are accepted (absent
+	// or null is fine, the library defaults to the first).
+	var tagged struct {
+		TokenURI  json.RawMessage `json:"token_uri"`
+		Installed json.RawMessage `json:"installed"`
+		Web       json.RawMessage `json:"web"`
+	}
+	if err := json.Unmarshal(raw, &tagged); err != nil {
+		return fmt.Errorf("credential JSON: %w", err)
+	}
+	if isJSONValue(tagged.Installed) || isJSONValue(tagged.Web) {
+		return errors.New("credential JSON carries an OAuth client configuration (installed/web), not a credential")
+	}
+	if isJSONValue(tagged.TokenURI) {
 		var s string
-		if json.Unmarshal(tokenURI, &s) != nil || s != googleTokenEndpoint {
-			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(tokenURI))
+		if json.Unmarshal(tagged.TokenURI, &s) != nil || !googleTokenEndpoints[s] {
+			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(tagged.TokenURI))
 		}
 	}
 	if t == "service_account" {
@@ -97,6 +116,12 @@ func CheckCredentialJSON(raw []byte) error {
 		}
 	}
 	return nil
+}
+
+// isJSONValue reports whether a raw field was present with a value other
+// than null, which is what the library's own decoding treats as set.
+func isJSONValue(m json.RawMessage) bool {
+	return len(m) > 0 && string(m) != "null"
 }
 
 // checkServiceAccountKey parses private_key the way Google's signer will

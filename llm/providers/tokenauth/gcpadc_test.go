@@ -360,6 +360,18 @@ func TestValidateCredentialJSON(t *testing.T) {
 	if err := ValidateCredentialJSON([]byte(foreignEndpointJSON)); err == nil || !strings.Contains(err.Error(), "token_uri") {
 		t.Fatalf("err = %v, want a credential naming a foreign token endpoint refused", err)
 	}
+	// The library matches its json tags case-insensitively, so a case
+	// variant of the key must be refused the same way.
+	const caseVariantJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Token_Uri":"https://attacker.example/token"}`
+	if err := ValidateCredentialJSON([]byte(caseVariantJSON)); err == nil || !strings.Contains(err.Error(), "token_uri") {
+		t.Fatalf("err = %v, want a foreign token endpoint under a case variant of the key refused", err)
+	}
+	// A top-level installed/web block makes the library build an OAuth
+	// client configuration with no token source instead of a credential.
+	const clientConfigJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","installed":{"redirect_uris":["http://localhost"]}}`
+	if err := ValidateCredentialJSON([]byte(clientConfigJSON)); err == nil || !strings.Contains(err.Error(), "OAuth client configuration") {
+		t.Fatalf("err = %v, want an OAuth client configuration refused", err)
+	}
 }
 
 // testServiceAccountJSON returns a service_account credential JSON whose
