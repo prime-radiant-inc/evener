@@ -7,7 +7,7 @@ and control of other sessions is outside v1.
 
 ## Current evidence and remaining workflows
 
-Reconciled against source at `fabdb86db` on 5 September 2026. The current
+Initial inventory at `fabdb86db`, updated through the queue and session-control increments on 5 September 2026. The current
 [design roadmap](../../design/mobile/README.md) and
 [workflow studies](../../design/mobile/workflow-studies.md) govern visual work.
 No workflow below is certified release-complete.
@@ -22,9 +22,9 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect; one active foreground connection | Edit profiles, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
 | Browse conversations | First 50 distinct sessions, refresh, native navigation | Pagination, search, archived sessions, project organization, favorites and pin sections |
 | Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice; native Markdown/code installed with initial copy and dark-mode evidence | Complete rich-text interaction/accessibility validation, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
-| Compose | Text send/steer/queue/stop gated by capabilities; durable per-hub/session drafts and uncertain-send recovery | Attachments, command selection, queue inspection/cancel/promotion/drain; complete both-platform running-turn E2E |
+| Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; real-daemon delivery evidence | Attachments, command selection, queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
-| Manage session | Not exposed | Rename, fork, resume, clear, compact, shutdown; honor capabilities and identity |
+| Manage session | Native rename, context compaction and confirmed runtime stop; both-platform isolated real-daemon checks | Fork, clear, explicit lifecycle controls, disconnected/uncertain action acceptance, accessibility and physical-device verification |
 | Model and launch settings | Model/reasoning selection during creation only | Model, vision model, reasoning, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
 | Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
@@ -99,3 +99,8 @@ The native composer queue count opens a platform modal with full queued text (or
 ### Real queue delivery and idle resume
 
 The isolated real daemon accepted Android cancellation/promotion and iOS bulk steering. The next scripted provider request contained the promoted and drained markers, and excluded the cancelled marker. Idle resume is now exposed and manually exercised on iOS (selected steering) and Android (all combined); UI copy explains that resuming releases remaining queued work. Shared 2,234/native54 tests and both Release builds pass. See the real-daemon section of `docs/design/mobile/queue-evidence.md`; queue-specific uncertain/reconnect/native-conflict acceptance is still open.
+
+
+### Native session controls
+
+The Session sheet adds rename, compaction and confirmed runtime stop. Native 59 tests and TypeScript pass; both Release builds passed and were installed. Both simulators exercised real isolated-daemon rename/stop, with persisted names and process-exit evidence; compaction persisted CHECKPOINT/SUMMARY records. Binding identity prevents stale confirmation dispatch after reconnect, and compaction refreshes cold-runtime projections. See `docs/design/mobile/session-controls-evidence.md` for exact coverage and remaining acceptance.
