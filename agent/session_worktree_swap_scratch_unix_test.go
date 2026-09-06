@@ -449,6 +449,127 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 	}
 }
 
+// armMidMoveMint has env run one command inside the interval of the next
+// scratch move that empties it — what a child sharing the object does when it
+// finds no scratch there — and returns where to read the scratch that command
+// minted. Empty after the move means the interval was never entered.
+func armMidMoveMint(t *testing.T, env *execenv.LocalExecutionEnvironment) *string {
+	t.Helper()
+	minted := new(string)
+	env.ObserveScratchMoveWindowForTesting(func() {
+		if *minted != "" {
+			return
+		}
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Errorf("child command on the source environment mid-move: %v", err)
+		}
+		*minted = env.SessionScratchDir()
+	})
+	t.Cleanup(func() { env.ObserveScratchMoveWindowForTesting(nil) })
+	return minted
+}
+
+// assertMidMoveOutcome checks the three things that have to hold once a child
+// sharing the source object minted a scratch inside a move's interval: the
+// environment the session landed on carries the session's own scratch across
+// (the move took it before any mint could reach it), the source keeps exactly
+// what the interval minted, and the session's close releases both leases while
+// keeping both directories for the handoff.
+func assertMidMoveOutcome(t *testing.T, s *Session, source *execenv.LocalExecutionEnvironment, carried, midMove string) {
+	t.Helper()
+	if midMove == "" {
+		t.Fatal("the enter moved no scratch off the source environment, so no interval was observed")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(midMove) })
+	if midMove == carried {
+		t.Fatalf("the mid-move command got the session's own scratch %q, so the source had not been emptied yet", carried)
+	}
+	if got := currentLocalEnv(t, s).SessionScratchDir(); got != carried {
+		t.Errorf("entered environment scratch = %q, want the %q the session carried across", got, carried)
+	}
+	if got := source.SessionScratchDir(); got != midMove {
+		t.Errorf("source environment scratch = %q, want the %q minted mid-move", got, midMove)
+	}
+
+	s.Close()
+
+	for name, dir := range map[string]string{"session": carried, "mid-move": midMove} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("close removed the %s scratch %s, want it retained for the handoff: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("the %s scratch %s lease is still held after the close", name, dir)
+		}
+	}
+}
+
+// The scratch move is two locked steps — take the source's fields, then
+// install them on the target — and the two locks are never held together, so
+// swaps in opposite directions cannot deadlock. That leaves an interval in
+// which the source owns nothing, and a child sharing the source object can
+// spawn there: its command finds no scratch and mints one the move never sees.
+//
+// The session accounts for that scratch anyway, because it accounts for the
+// ENVIRONMENT: whichever of the two records the swap makes for the source — the
+// enter's park or the abandoned set a later enter adds it to — is made under
+// the install's own lock hold, and close is fenced against the swap that makes
+// it (envWorkWG), so a close can never observe an installed target without the
+// source recorded. Both records are exercised here; both end in a released
+// lease and a kept directory.
+func TestWorktreeSwap_ScratchMintedOnTheSourceMidMoveStaysAccountedFor(t *testing.T) {
+	t.Run("source the enter parks", func(t *testing.T) {
+		sr := newScriptedLaneRepo(t)
+		r := sr.wt()
+		launch := currentLocalEnv(t, r.s)
+		if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("root command on the launch environment: %v", err)
+		}
+		carried := launch.SessionScratchDir()
+		if carried == "" {
+			t.Fatal("the root's command minted no session scratch")
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(carried) })
+		midMove := armMidMoveMint(t, launch)
+
+		if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+
+		assertMidMoveOutcome(t, r.s, launch, carried, *midMove)
+	})
+
+	// A second enter parks nothing — worktreeRestoreEnv already holds the launch
+	// environment — so the lane the session came from is reachable from nothing
+	// it holds, and only the abandoned set keeps it within the close's reach.
+	t.Run("source a second enter abandons", func(t *testing.T) {
+		sr := newScriptedLaneRepo(t)
+		r := sr.wt()
+		launch := currentLocalEnv(t, r.s)
+		if _, err := launch.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("root command on the launch environment: %v", err)
+		}
+		carried := launch.SessionScratchDir()
+		if carried == "" {
+			t.Fatal("the root's command minted no session scratch")
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(carried) })
+		if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+			t.Fatalf("create a: %v", err)
+		}
+		laneA := currentLocalEnv(t, r.s)
+		if laneA == launch {
+			t.Fatal("the first enter did not swap the session onto a lane clone")
+		}
+		midMove := armMidMoveMint(t, laneA)
+
+		if _, err := r.create(t, map[string]any{"name": "b"}); err != nil {
+			t.Fatalf("create b: %v", err)
+		}
+
+		assertMidMoveOutcome(t, r.s, laneA, carried, *midMove)
+	})
+}
+
 // heldScratchDirsIn lists the session scratch dirs under base whose lease is
 // still held by a live owner.
 func heldScratchDirsIn(t *testing.T, base string) []string {
