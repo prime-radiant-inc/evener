@@ -70,6 +70,10 @@ export const SETTLE_QUIESCENT_FRAMES = 20;
  * How far the transcript must overflow its port to count as rendered. The
  * scripted thread overflows ~16x (measured 11487px of content in a 725px
  * port), so this is a floor no healthy fixture approaches, not a threshold.
+ *
+ * scripts/transcriptscrollguard/run.mjs re-asserts the same overflow on the
+ * measurement it is handed, and reads the floor from that measurement's
+ * `overflowRequired` rather than keeping a second copy of this factor.
  */
 export const SETTLE_OVERFLOW_FACTOR = 4;
 

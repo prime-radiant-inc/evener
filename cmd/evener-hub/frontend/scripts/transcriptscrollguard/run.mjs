@@ -109,9 +109,10 @@ async function main() {
       if (initial.errors.length > 0) failures.push(`page errors: ${initial.errors.join("; ")}`);
       if (initial.clientHeight <= 0) {
         failures.push(`scroll container has no height (clientHeight ${initial.clientHeight}) - the harness did not render`);
-      } else if (initial.scrollHeight <= initial.clientHeight * 4) {
+      } else if (initial.scrollHeight <= initial.overflowRequired) {
         failures.push(
-          `transcript did not overflow several times over (scrollHeight ${initial.scrollHeight}, clientHeight ${initial.clientHeight})`,
+          `transcript did not overflow several times over (scrollHeight ${initial.scrollHeight}, ` +
+            `clientHeight ${initial.clientHeight}, needs more than ${initial.overflowRequired})`,
         );
       }
       if (initial.turns !== 42) failures.push(`expected 42 scripted turns in the model, found ${initial.turns}`);

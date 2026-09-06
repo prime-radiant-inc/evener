@@ -34,6 +34,7 @@ import { Toast } from "../widgets";
 import {
   createTranscriptSettleTracker,
   describeTranscriptSettleBlocker,
+  SETTLE_OVERFLOW_FACTOR,
   type TranscriptGeometry,
 } from "./transcriptSettle";
 import "../styles/tokens.css";
@@ -237,6 +238,12 @@ function pillElement(): HTMLElement | null {
 interface TranscriptScrollMetrics extends TranscriptGeometry {
   /** Bottom gap: scrollHeight - clientHeight - scrollTop. 0 at the true bottom. */
   bottomGap: number;
+  /**
+   * The scrollHeight this transcript has to beat to count as rendered. Carried
+   * on the measurement so the runner can re-assert the overflow on what it was
+   * handed without keeping its own copy of SETTLE_OVERFLOW_FACTOR.
+   */
+  overflowRequired: number;
   pill: boolean;
   pillText: string | null;
   turns: number;
@@ -250,6 +257,7 @@ function metrics(): TranscriptScrollMetrics {
   return {
     ...geometry,
     bottomGap: geometry.scrollHeight - geometry.clientHeight - geometry.scrollTop,
+    overflowRequired: geometry.clientHeight * SETTLE_OVERFLOW_FACTOR,
     pill: pill !== null,
     pillText: pill?.textContent ?? null,
     turns: modelTurnCount,
@@ -262,11 +270,20 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-// SETTLE_TRIPWIRE_MS bounds the readiness spin below. TRIPWIRE: it is a hang
-// guard, never the synchronisation mechanism - transcriptSettle.ts's own
-// conditions are, and the blocker they report is what the message names. It
-// sits far above the work it covers, which is SETTLE_QUIESCENT_FRAMES + 1
-// animation frames and nothing else: measured on one host at 350ms
+// SETTLE_TRIPWIRE_MS bounds the readiness spin below. TRIPWIRE: it is never
+// the synchronisation mechanism - transcriptSettle.ts's conditions are, and
+// the blocker they report is what the message names. What it bounds is a
+// settle that keeps PRODUCING frames and never becomes ready. A frame loop
+// that stalls is not covered here at all: the deadline is only re-read after
+// `await nextFrame()`, so if requestAnimationFrame stops firing this spin
+// never reaches the check, the enclosing CDP call times out first, and the
+// blocker is lost with it (issue #919).
+//
+// It sits far above the work it covers, which is whatever of the mount, the
+// INITIAL_TURN_COUNT-turn hydration and the virtualizer's reconcile loop is
+// still outstanding when the spin starts, plus the quiescence run itself.
+// Measured on one host: the mount reached stable end-anchored geometry within
+// ~1.1s of navigation, and the quiescence run then cost 21 frames - 350ms
 // unthrottled, 432ms under 10x and 730ms under 20x Chrome CPU throttling.
 //
 // It is also bounded ABOVE, by the runner's own Runtime.evaluate ceiling
