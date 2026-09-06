@@ -40,8 +40,9 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // what next adopted (lease released, directory kept, the handoff a close makes)
 // and returns errSwapWhileClosing for the op to surface. A swap exempt from the
 // move rolls back nothing: there is no adopted lease to release, and the
-// environment it would have released is the live parent's own. Both `closing` and the
-// install are written under s.mu, so one of the two always sees the other.
+// environment it would have released is the live parent's own. Both `closing`
+// and the install are written under s.mu, so one of the two always sees the
+// other.
 //
 // A swap that passes that first check is ADMITTED: it registers on envWorkWG
 // under the same s.mu hold that read `closing` (the beginDispose idiom), so the
@@ -77,12 +78,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// live parent's scratch out from under it or leave the parent holding a
 	// lease that belongs to a session already gone.
 	//
-	// Inside a kernel box the exemption costs the clone nothing: ReRoot carries
-	// the wrapper's session tmp onto the clone (sandbox.Wrapper.ReRoot), so the
-	// child goes on working in the box's tmp — the only directory that box
-	// grants — while the lease stays with the environment the live parent
-	// closes. Moving it would hand a lease on the parent's one writable
-	// directory to a session whose teardown then releases it under it.
+	// Inside a kernel box the exemption costs the clone nothing: the box's
+	// session tmp is the scratch the wrapper carries across a re-root
+	// (sandbox.Wrapper.ReRoot), so the clone reports and works in the same one
+	// with no move at all, and its lease belongs to the parent's environment —
+	// the one the live parent closes. Moving it would hand that lease to a
+	// session whose teardown then releases it under a parent still working in
+	// the directory.
 	s.mu.Lock()
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
@@ -96,7 +98,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return errSwapWhileClosing
 	}
 	defer s.endEnvWork(admission)
-	moved := current != nil && shared != current && shared != next
+	moved := current != nil && !sameEnvironment(shared, current) && !sameEnvironment(shared, next)
 	if moved {
 		next.AdoptSessionScratch(current)
 	}
@@ -144,12 +146,24 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		// Roll back exactly what step 0 moved. A swap that moved nothing has
-		// nothing to release, and next may be the live parent's own environment
-		// (the target of a shared child's exit), whose scratch the parent is
-		// still working in.
-		if moved {
+		// Roll back exactly what step 0 moved: the session's own scratch, whose
+		// directory is kept for the handoff its close would have made.
+		//
+		// A swap exempt from the move has no adopted lease to release, and what
+		// it must do instead depends on what next is. On a shared child's exit
+		// next is the live parent's own environment, whose scratch the parent is
+		// still working in: hands off entirely. On that child's enter next is a
+		// clone this session built and is now abandoning, and step 1's git
+		// snapshot mints a scratch on an environment that owns none — so the
+		// clone leaves with a directory and a lease nothing else will ever
+		// reference. It goes with the clone, the same decision every other
+		// discarded clone's takes (the re-entry probes, the worktree control
+		// env, a spawn that failed before adoption).
+		switch {
+		case moved:
 			next.RetainSessionScratch()
+		case shared != nil && !sameEnvironment(shared, next):
+			next.DisposeUnadoptedScratch()
 		}
 		return errSwapWhileClosing
 	}
