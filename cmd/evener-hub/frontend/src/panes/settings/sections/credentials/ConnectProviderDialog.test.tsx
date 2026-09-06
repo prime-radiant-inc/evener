@@ -647,4 +647,85 @@ describe("ConnectProviderDialog", () => {
     expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
   });
+
+  test("saving a credential JSON still requires an explicit successful credential test", async () => {
+    const vertex = instance({
+      name: "vertex",
+      providerId: "google-vertex",
+      auth: "gcp-adc",
+      authModes: ["adc", "credentialJson"],
+    });
+    const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
+    let saved = false;
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [saved ? { ...vertex, activeSource: "store", hasStoredFile: true } : vertex],
+      availableProviders: [],
+    }));
+    connectionStore.getState().connect(fake);
+    fake.on("evener/auth/credentialJson/set", (params) => {
+      expect(params).toEqual({ provider: "vertex", value: json });
+      saved = true;
+      return {
+        provider: "vertex",
+        supported: true,
+        signedIn: true,
+        activeSource: "store",
+        authModes: ["adc", "credentialJson"],
+        hasStoredOAuth: false,
+        hasStoredFile: true,
+      };
+    });
+    fake.on("evener/auth/test", (params) => {
+      expect(params).toEqual({ provider: "vertex" });
+      return { provider: "vertex", status: "success", message: "untrusted provider message" };
+    });
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
+    const user = userEvent.setup();
+
+    expect(within(chooser).queryByRole("button", { name: "Set API key" })).toBeNull();
+    await user.click(within(chooser).getByRole("button", { name: "Set credential JSON" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
+
+    await user.click(screen.getByLabelText("Credential JSON for vertex"));
+    await user.paste(json);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const returnedChooser = await screen.findByRole("dialog", { name: "Connect provider" });
+    expect(within(returnedChooser).getByText("Configured via stored credential JSON")).toBeTruthy();
+    expect(within(returnedChooser).getByRole("button", { name: "Replace credential JSON" })).toBeTruthy();
+    expect(onConnected).not.toHaveBeenCalled();
+
+    await user.click(within(returnedChooser).getByRole("button", { name: "Test connection" }));
+    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+  });
+
+  test("a credential-JSON editor closes if its instance stops offering the mode", async () => {
+    const vertex = instance({
+      name: "vertex",
+      providerId: "google-vertex",
+      auth: "gcp-adc",
+      authModes: ["adc", "credentialJson"],
+    });
+    let listCalls = 0;
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => {
+      listCalls += 1;
+      return { instances: [listCalls === 1 ? vertex : { ...vertex, authModes: ["adc"] }], availableProviders: [] };
+    });
+    connectionStore.getState().connect(fake);
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Set credential JSON" }));
+    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
+
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+
+    expect(screen.queryByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set credential JSON" })).toBeNull();
+  });
 });
