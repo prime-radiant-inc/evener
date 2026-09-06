@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
 
@@ -749,4 +750,73 @@ func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
 		t.Errorf("the entered clone's scratch %s lease is still held after the child's teardown", cloneScratch)
 	}
 	assertParentScratchUntouched(t, "the shared child's teardown", parentScratch)
+}
+
+// A shared child spawned inside its parent's kernel box (a bwrap-backed
+// sandbox) enters a second worktree the same way any shared child does — no
+// working dir of its own, so it starts on its parent's very environment
+// object, and manage_worktree's own re-root swaps it onto a clone. The
+// parent's wrapper carries the box's session tmp, and WithWorkingDirectory
+// re-roots the wrapper while carrying that same tmp forward (see
+// agent/sandbox/reroot.go's Wrapper.ReRoot), so the entered clone works in the
+// box's tmp without any scratch move — and the LEASE stays the parent's the
+// whole time: the clone never records itself as owning it, so the child's
+// teardown settles nothing on the box.
+func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T) {
+	_, laneA, laneB, home := sbxMainAndLanes(t)
+	facts := sbxBwrapFacts(home)
+	parent := sbxWorktreeSession(t)
+	boxed := execenv.NewLocalExecutionEnvironment(laneA)
+	if err := boxed.EnableSandbox(sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	parent.mu.Lock()
+	parent.env = boxed
+	parent.mu.Unlock()
+	boxTmp := boxed.SessionScratchDir()
+	if boxTmp == "" {
+		t.Fatal("EnableSandbox minted no session scratch for the box")
+	}
+	if !scratchLeaseHeld(t, boxTmp) {
+		t.Fatal("the box's scratch lease is not held")
+	}
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	child := prepared.sub.sess
+	if child.currentEnv() != parent.currentEnv() {
+		t.Fatal("the spawned child did not land on the parent's boxed environment; this test would prove nothing")
+	}
+	if child.ownsEnv {
+		t.Fatal("the spawned child recorded that it owns the parent's boxed environment; this test would prove nothing")
+	}
+
+	// Enter with the env-swap primitive, not the manage_worktree tool: a
+	// wrappered env would try to spawn /usr/bin/bwrap for the tool's own git
+	// commands, and there is no real bwrap on this host. The tool surface for a
+	// shared child entering a worktree is covered by the unsandboxed tests
+	// above in this file.
+	if err := child.enterWorktree(laneB, true); err != nil {
+		t.Fatalf("enterWorktree: %v", err)
+	}
+	clone := currentLocalEnv(t, child)
+	if clone == boxed {
+		t.Fatal("the enter left the child on the parent's own environment object; this test would prove nothing")
+	}
+	if got := clone.SessionScratchDir(); got != boxTmp {
+		t.Errorf("entered clone scratch = %q, want the box's own %q carried by the re-rooted wrapper", got, boxTmp)
+	}
+
+	teardownChildSession(context.Background(), child, retainChildScratch)
+
+	if _, err := os.Stat(boxTmp); err != nil {
+		t.Errorf("the child's teardown removed the box's scratch %s, want it retained for the live parent: %v", boxTmp, err)
+	}
+	if !scratchLeaseHeld(t, boxTmp) {
+		t.Errorf("the child's teardown released the box's scratch %s lease while the parent is still working in it", boxTmp)
+	}
 }

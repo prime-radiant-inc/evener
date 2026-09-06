@@ -38,7 +38,9 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // to start once the session is closing, and re-checks under s.mu before
 // installing; a close that began meanwhile rolls the move back by retaining
 // what next adopted (lease released, directory kept, the handoff a close makes)
-// and returns errSwapWhileClosing for the op to surface. Both `closing` and the
+// and returns errSwapWhileClosing for the op to surface. A swap exempt from the
+// move rolls back nothing: there is no adopted lease to release, and the
+// environment it would have released is the live parent's own. Both `closing` and the
 // install are written under s.mu, so one of the two always sees the other.
 //
 // A swap that passes that first check is ADMITTED: it registers on envWorkWG
@@ -74,6 +76,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// own teardown is what settles it — moving it here would either steal the
 	// live parent's scratch out from under it or leave the parent holding a
 	// lease that belongs to a session already gone.
+	//
+	// Inside a kernel box the exemption costs the clone nothing: ReRoot carries
+	// the wrapper's session tmp onto the clone (sandbox.Wrapper.ReRoot), so the
+	// child goes on working in the box's tmp — the only directory that box
+	// grants — while the lease stays with the environment the live parent
+	// closes. Moving it would hand a lease on the parent's one writable
+	// directory to a session whose teardown then releases it under it.
 	s.mu.Lock()
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
@@ -87,7 +96,8 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return errSwapWhileClosing
 	}
 	defer s.endEnvWork(admission)
-	if current != nil && shared != current && shared != next {
+	moved := current != nil && shared != current && shared != next
+	if moved {
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks
@@ -134,7 +144,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		next.RetainSessionScratch()
+		// Roll back exactly what step 0 moved. A swap that moved nothing has
+		// nothing to release, and next may be the live parent's own environment
+		// (the target of a shared child's exit), whose scratch the parent is
+		// still working in.
+		if moved {
+			next.RetainSessionScratch()
+		}
 		return errSwapWhileClosing
 	}
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
