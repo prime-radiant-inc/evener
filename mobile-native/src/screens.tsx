@@ -86,6 +86,7 @@ export type Routes = {
   Providers: { hubId: string };
   Plugins: { hubId: string };
   HubSettings: { hubId: string };
+  LaunchSettings: { hubId: string };
   Project: { hubId: string; projectKey: string; title: string };
   Hubs: undefined;
   Sessions: undefined;
