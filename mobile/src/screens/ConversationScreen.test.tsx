@@ -101,6 +101,7 @@ function makeConversation(
     queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
+    pendingApprovals: [],
     ...over,
   };
 }

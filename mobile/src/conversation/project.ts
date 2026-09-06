@@ -1,3 +1,5 @@
+import type { SandboxEscalationRequested } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type { MobileApproval } from "./model";
 // Pure AppWire-to-mobile thread projection. projectThread folds a wire
 // Thread (protocol/types.gen.ts) into a MobileConversation view model that
 // React components consume. No DOM, no network, no clock — given the same
@@ -486,6 +488,21 @@ function clusterActivities(
 
 // --- top-level projection ----------------------------------------------------
 
+export function projectApproval(
+  value: SandboxEscalationRequested,
+): MobileApproval {
+  return {
+    id: value.escalationId,
+    tool: value.tool,
+    kind: value.kind,
+    mode: value.mode,
+    path: value.deniedPath,
+    command: value.command,
+    output: value.outputSoFar,
+    partiallyRan: value.partiallyRan === true,
+  };
+}
+
 export function projectThread(thread: Thread): MobileConversation {
   const turns = thread.turns ?? [];
   const pendingAsks = pendingAskUserIds(turns);
@@ -578,6 +595,12 @@ export function projectThread(thread: Thread): MobileConversation {
     reasoningEffortLevels: thread.evener.reasoningEffortLevels,
     supportsReasoning: thread.evener.supportsReasoning,
     askPending: pendingAsks.size > 0,
+    pendingApprovals: (thread.evener.pendingEscalations ?? [])
+      .filter(
+        (value) =>
+          value.threadId === thread.id && value.ref === thread.evener.ref,
+      )
+      .map(projectApproval),
   };
 }
 
