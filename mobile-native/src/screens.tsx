@@ -873,6 +873,17 @@ export function ConversationScreen({
             isCurrent: currentBinding,
             reasoning: () => store.getState().conversation,
             turn: () => store.getState().conversation,
+            cleared: (response) => {
+              const replacement = service.adoptClear(response);
+              void store
+                .getState()
+                .openProjected(
+                  service,
+                  activitySink,
+                  route.params.ref,
+                  replacement,
+                );
+            },
             openAside: (ref, title) => {
               Keyboard.dismiss();
               navigation.push("Conversation", {

@@ -137,3 +137,13 @@ Native row actions now expose project pin/favorite and project/session archive/u
 ### Current-web parity corrections
 
 The old mobile UI is not a product reference. The source-linked audit in `docs/design/mobile/web-parity-audit.md` records corrected question controls/formatting, batch ownership, draft preservation, active-question position and composer reasoning behavior, along with remaining limitations. Native110 tests and TypeScript pass. Current-web tests/lint/typecheck and all five browser guards pass for the shared reasoning helper. Both platforms have actual harness question delivery/resumption evidence; iOS also manually exercised high-to-default reasoning. The tested builds differ as recorded in the audit, and multi-question/race/fault acceptance remains open.
+
+
+### Session clear continuation
+
+Native `/clear` now adopts the acknowledged replacement instance at the same
+hub/ref, retires old reads, and preserves newer drafts. Both simulators cleared
+owned sessions, sent follow-ups visible through live updates, and stopped the
+new turns. This uncovered and fixed a hub relay subscription-key mismatch for
+stable refs after clear. Evidence and remaining concurrency/acceptance limits:
+`docs/design/mobile/command-completion.md` (Clear and live continuation).

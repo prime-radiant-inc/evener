@@ -2,6 +2,7 @@ import {
   findBuiltinArgument,
   matchBuiltinInvocation,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/builtinInvocation";
+import type { ThreadClearResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   effortLabel,
   effortOptionLevels,
@@ -9,6 +10,7 @@ import {
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
+  ConversationClearActions,
   ConversationForkActions,
   ConversationGoalActions,
   ConversationModelCatalog,
@@ -38,6 +40,7 @@ const commands = [
   { id: "queue", args: true, capability: "queue", label: "Queue" },
   { id: "drain-as-steer", capability: "steer", label: "Drain queue" },
   { id: "aside", capability: "forkFromTurn", label: "Aside" },
+  { id: "clear", capability: "clear", label: "Clear" },
 ] as const;
 
 export class CommandArgumentError extends Error {}
@@ -46,6 +49,7 @@ interface CommandContext {
   isCurrent(): boolean;
   local(command: LocalComposerCommand): Promise<void>;
   openAside(ref: string, title: string): void;
+  cleared(response: ThreadClearResponse): void;
   turn(): { activeTurnId?: string; queue: { revision: number } } | null;
   reasoning(): Pick<
     MobileConversation,
@@ -72,6 +76,7 @@ export async function submitComposerCommand(
   > &
     ConversationGoalActions &
     ConversationForkActions &
+    ConversationClearActions &
     ConversationModelCatalog,
   context: CommandContext,
 ): Promise<(typeof commands)[number]["id"] | null> {
@@ -100,7 +105,12 @@ export async function submitComposerCommand(
         ? `/${id}: unknown value "${match.argsText.trim()}"`
         : `/${id} needs a value`,
     );
-  if (id === "aside") {
+  if (id === "clear") {
+    operation = async () => {
+      const response = await service.clear();
+      afterSubmit = () => context.cleared(response);
+    };
+  } else if (id === "aside") {
     operation = async () => {
       const { thread } = await service.forkAside();
       afterSubmit = () =>

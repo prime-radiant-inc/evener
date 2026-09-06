@@ -25,6 +25,7 @@ import type {
   MutationReceipt,
   Thread,
   ThreadCapabilities,
+  ThreadClearResponse,
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
@@ -122,6 +123,11 @@ export interface ConversationForkActions {
   forkAside(): Promise<ThreadForkResponse>;
 }
 
+export interface ConversationClearActions {
+  clear(): Promise<ThreadClearResponse>;
+  adoptClear(response: ThreadClearResponse): ConversationReadProjection;
+}
+
 export interface QueueConversationService extends LiveConversationService {
   promoteQueuedAsSteer(
     index: number,
@@ -201,7 +207,13 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
   return caps;
 }
 
-type MutationKind = "send" | "steer" | "drain" | "queue" | "interrupt";
+type MutationKind =
+  | "send"
+  | "steer"
+  | "drain"
+  | "queue"
+  | "interrupt"
+  | "clear";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
 export type CanonicalMutationDisposition =
   (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
@@ -214,6 +226,7 @@ const CANONICAL_MUTATION_PROJECTION: Readonly<
   drain: "pending",
   queue: "pending",
   interrupt: "reflected",
+  clear: "reflected",
 };
 
 function exactObject(
@@ -249,7 +262,12 @@ function decodeMutationResult(
   clientMutationId: string,
   expectedInstanceId: string,
 ): MutationReceipt {
-  const resultKeys = kind === "send" ? ["receipt", "turn"] : ["receipt"];
+  const resultKeys =
+    kind === "clear"
+      ? ["receipt", "thread", "ref"]
+      : kind === "send"
+        ? ["receipt", "turn"]
+        : ["receipt"];
   const result = exactObject(raw, resultKeys, `${kind} result`);
   if (kind === "send") {
     const turn = result.turn;
@@ -352,7 +370,8 @@ export function createConversationService(
 ): QueueConversationService &
   ConversationModelCatalog &
   ConversationGoalActions &
-  ConversationForkActions {
+  ConversationForkActions &
+  ConversationClearActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -733,6 +752,64 @@ export function createConversationService(
       await withCapabilityRefresh("compact", () =>
         client.request("thread/compact/start", { ref: threadRef }),
       );
+    },
+
+    async clear() {
+      requireCap("clear", "clear");
+      const targetRef = requireRef();
+      const expectedInstanceId = nonemptyString(
+        instanceId,
+        "thread instance id",
+      );
+      const clientMutationId = idFactory();
+      const response = await client.request("thread/clear", {
+        ref: targetRef,
+        expectedInstanceId,
+        clientMutationId,
+      });
+      const replacementInstance = nonemptyString(
+        response.thread?.evener?.instanceId,
+        "replacement instance id",
+      );
+      const receipt = decodeMutationResult(
+        "clear",
+        response,
+        clientMutationId,
+        replacementInstance,
+      );
+      if (
+        response.ref !== targetRef ||
+        response.thread.evener.ref !== targetRef ||
+        receipt.threadId !== response.thread.id ||
+        receipt.instanceId !== replacementInstance
+      )
+        throw new Error(
+          "The clear response does not match the replacement session.",
+        );
+      return response;
+    },
+
+    adoptClear(response) {
+      if ((ref ?? opening?.ref) !== response.ref)
+        throw new Error(
+          "The conversation changed before the clear could be displayed.",
+        );
+      const thread = response.thread;
+      beginOpen(response.ref);
+      const conversation = projectThread(thread);
+      const activity = activityService.projectActivity(thread);
+      const caps = extractCapabilities(thread.evener.capabilities);
+      const replacementInstance = nonemptyString(
+        thread.evener.instanceId,
+        "replacement instance id",
+      );
+      modelScope = { harness: thread.source, cwd: thread.cwd };
+      instanceId = replacementInstance;
+      threadId = thread.id;
+      ref = response.ref;
+      capabilities = caps;
+      opening = null;
+      return { conversation, activity, olderCursor: null };
     },
 
     async forkAside() {
