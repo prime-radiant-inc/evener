@@ -1440,10 +1440,12 @@ templates that may contain `{model}` and `{VAR}`; empty means the protocol
 default (§6.1), `-` means unsupported. Variables resolve in this order: the
 user layer's `Vars` (instance config), then the environment through
 `VarsEnv` (a user-layer `vars_env` merges key-wise like `vars`; the
-provider's mapping is consulted first, then the resolved row's own — a
-models.dev per-model `api` template maps its placeholders on the row alone,
-which is where `google-vertex`'s OpenAI-compatible rows carry
-`GOOGLE_VERTEX_ENDPOINT`), then `Vars`
+provider's mapping is consulted, or the resolved row's own when the
+provider has none for the name — a models.dev per-model `api` template maps
+its placeholders on the row alone, which is where `google-vertex`'s
+OpenAI-compatible rows carry `GOOGLE_VERTEX_ENDPOINT`; a provider mapping
+whose variable is unset does not fall back to the row's, since the user
+redirected that name on purpose), then `Vars`
 from the curated and upstream layers (defaults), then the variable is left
 unresolved with a warning and the error naming the variable and the
 instance fires at the first request (§4.2). That order is what makes

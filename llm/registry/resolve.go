@@ -457,7 +457,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	}
 	warnings = append(warnings, rec.notes...)
 	if transport.HostRule == HostRuleVertexLocation {
-		if loc, ok := r.varLookup(rec, transport)("GOOGLE_VERTEX_LOCATION"); ok && loc != "global" && loc != "us" && loc != "eu" {
+		if loc, ok := r.varLookup(rec, rec.head.Transport)("GOOGLE_VERTEX_LOCATION"); ok && loc != "global" && loc != "us" && loc != "eu" {
 			for _, p := range vertexGlobalOnly {
 				if strings.Contains(hit.wireID, p) {
 					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q supports Claude Sonnet 4.6 and earlier; use global, us, or eu for %s", loc, hit.wireID))

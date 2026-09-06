@@ -838,8 +838,8 @@ func TestTemplateVarsEnvTopLevelGlob(t *testing.T) {
 	if got := r.TemplateVarsEnv("google-vertex")["GLOB_REGION"]; got != "EXAMPLE_GLOB_REGION" {
 		t.Fatalf("google-vertex (has llama-3.3-70b rows) TemplateVarsEnv = %v, want GLOB_REGION mapped", r.TemplateVarsEnv("google-vertex"))
 	}
-	if got := r.TemplateVarsEnv("openai"); got["GLOB_REGION"] != "" {
-		t.Fatalf("openai (no matching row) TemplateVarsEnv = %v, want no GLOB_REGION", got)
+	if got, want := r.TemplateVarsEnv("openai"), map[string]string{"BASE_URL": "OPENAI_BASE_URL"}; !maps.Equal(got, want) {
+		t.Fatalf("openai (no matching row) TemplateVarsEnv = %v, want %v", got, want)
 	}
 }
 

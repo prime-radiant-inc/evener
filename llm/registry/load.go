@@ -906,15 +906,19 @@ func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []s
 
 // varLookupWith is the spec §9.1 variable order with a warnings sink: the
 // user layer's vars, then the environment through vars_env, then the curated
-// and upstream defaults. The vars_env mappings and the defaults are the
-// provider's own first and then those of t, the transport being resolved:
-// a row's own mapping, merged in by transportShape, is where models.dev
-// keeps a per-model api template's placeholders (GOOGLE_VERTEX_ENDPOINT on
-// google-vertex's OpenAI-compatible rows), and a caller resolving the
-// provider's own transport passes it as t, which adds nothing. A user
-// `vars` entry whose $ENV reference is unset warns and resolves to nothing
-// instead of falling through to vars_env or the curated default, so the URL
-// never silently uses the value the user meant to replace (spec §10).
+// and upstream defaults. A vars_env mapping or a default is the provider's
+// own, or, for a name the provider does not map at all, that of t, the
+// transport shape being resolved: a row's own mapping, merged in by
+// transportShape, is where models.dev keeps a per-model api template's
+// placeholders (GOOGLE_VERTEX_ENDPOINT on google-vertex's OpenAI-compatible
+// rows), and a caller resolving the provider's own transport passes it as t,
+// which adds nothing. A provider mapping whose variable is unset does not
+// fall back to the row's: a user who redirected the name (a user-layer
+// vars_env merges into the provider's) meant to replace that value, so the
+// URL stays unresolved and warned rather than silently reading the stock
+// variable — the same rule spec §10 states for a user `vars` entry whose
+// $ENV reference is unset, which warns and resolves to nothing instead of
+// falling through to vars_env or the curated default.
 func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if v, ok := rec.userVars[name]; ok {
@@ -929,17 +933,21 @@ func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) fu
 				return expanded, true
 			}
 		}
-		for _, varsEnv := range []map[string]string{rec.head.Transport.VarsEnv, t.VarsEnv} {
-			if envName, ok := varsEnv[name]; ok {
-				if v, ok := r.env(envName); ok && v != "" {
-					return v, true
-				}
-			}
+		envName, mapped := rec.head.Transport.VarsEnv[name]
+		if !mapped {
+			envName, mapped = t.VarsEnv[name]
 		}
-		for _, vars := range []map[string]string{rec.head.Transport.Vars, t.Vars} {
-			if v, ok := vars[name]; ok && v != "" {
+		if mapped {
+			if v, ok := r.env(envName); ok && v != "" {
 				return v, true
 			}
+		}
+		def, has := rec.head.Transport.Vars[name]
+		if !has {
+			def, has = t.Vars[name]
+		}
+		if has && def != "" {
+			return def, true
 		}
 		return "", false
 	}
