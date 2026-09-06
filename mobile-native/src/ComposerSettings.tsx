@@ -41,7 +41,8 @@ export function ComposerSettings({
       style={{
         flexDirection: "row",
         alignItems: "center",
-        flex: 1,
+        flex: fontScale > 1.4 ? 0 : 1,
+        flexShrink: 1,
         minWidth: fontScale > 1.4 ? "100%" : 120,
         gap: 8,
       }}
