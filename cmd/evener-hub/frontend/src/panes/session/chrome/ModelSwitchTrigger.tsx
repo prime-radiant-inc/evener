@@ -20,7 +20,7 @@
 // Chrome, not a pane: the "panes never ask am I mobile?" rule doesn't reach
 // this component (SessionChrome's own openDetails already branches the same
 // way).
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage, sessionActionHeadline } from "../../../protocol/errors";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
@@ -86,22 +86,24 @@ export function ModelSwitchTrigger({
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // Generation guard for the catalog load below: open/close/reopen (or a
-  // loader-identity change from a cwd/harness/credential scope change) starts
-  // a new load, and a SUPERSEDED response must never overwrite the open
-  // picker - a dead request landing after the fresh one would swap the
-  // visible list out from under the user.
+  // Generation guard for the catalog load below: every open - and every
+  // loader-identity change under an OPEN picker (Spawn recreates loadCatalog
+  // on cwd/harness/credential change) - starts a new load, and a SUPERSEDED
+  // response must never overwrite the open picker: a dead request landing
+  // after the fresh one would swap the visible list out from under the user.
   const loadGenerationRef = useRef(0);
+  // The loader that started the current generation. A new identity while the
+  // picker is open means a new scope: the effect below restarts the load
+  // against it rather than letting the old scope's in-flight request win.
+  const loadedLoaderRef = useRef(loadCatalog);
 
-  async function openPicker(): Promise<void> {
-    if (disabled) return;
-    const generation = loadGenerationRef.current + 1;
-    loadGenerationRef.current = generation;
-    setOpen(true);
+  // Stable across renders (refs + setState only), so the scope-change
+  // effect below can honestly depend on it without re-running every render.
+  const startLoad = useCallback(async (generation: number, loader: () => Promise<ModelCatalog>): Promise<void> => {
     setError(null);
     setLoading(true);
     try {
-      const loaded = await loadCatalog();
+      const loaded = await loader();
       if (loadGenerationRef.current !== generation) return;
       setCatalog(loaded);
     } catch (err) {
@@ -122,13 +124,32 @@ export function ModelSwitchTrigger({
       // the loading state while the panel still has nothing to show.
       if (loadGenerationRef.current === generation) setLoading(false);
     }
-  }
+  }, []);
 
   // The Popover path's FocusScope is opted out of focus management
   // (autoFocus={false}) so the panel's input can own focus and its selection -
   // which makes restoring focus to the trigger on close this component's job.
   // The Sheet path's FocusScope keeps its default focus management (first
   // tabbable option in, restore on close), so only the Popover path needs this.
+  function openPicker(): void {
+    if (disabled) return;
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
+    loadedLoaderRef.current = loadCatalog;
+    setOpen(true);
+    void startLoad(generation, loadCatalog);
+  }
+
+  // A new loader identity under an OPEN picker is a scope change (Spawn's
+  // cwd/harness/credential switch): restart the load against it so the old
+  // scope's in-flight request can neither populate the panel nor clobber
+  // the fresh catalog. Closed, the bump alone invalidates the dead request.
+  useEffect(() => {
+    if (loadCatalog === loadedLoaderRef.current) return;
+    loadedLoaderRef.current = loadCatalog;
+    loadGenerationRef.current += 1;
+    if (open) void startLoad(loadGenerationRef.current, loadCatalog);
+  }, [loadCatalog, open, startLoad]);
   function closePicker(): void {
     setOpen(false);
     if (!isMobile) triggerRef.current?.focus();
