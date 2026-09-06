@@ -19,3 +19,16 @@ Switching both running apps to dark appearance exposed the renderer default quot
 ## Remaining acceptance work
 
 This slice is not fully accepted yet. Verify whole-response copy, link actions, read-only task checkboxes, horizontal code/table scrolling, incomplete Markdown, streaming updates, large text, images/math and physical-device behavior. iOS snapshots expose code and table rows but omit ordinary prose despite it being visibly rendered; actual VoiceOver navigation must establish whether this is a snapshot limitation or an accessibility defect. Do not infer screen-reader support or measured fluency from the library API.
+
+## Reading interaction and font-size follow-up
+
+On the installed `2d73a9000` builds:
+
+- Android horizontal dragging inside the table moved from the Situation column to What you see / What remains saved. Native bounds and visible cell content changed while the outer conversation remained at the same vertical position.
+- Tapping the iOS host-file link opened the native destination dialog. Copy destination placed `/Users/jesse/git/prime-radiant/evener/mobile-native/src/draftDocument.ts:1` on the simulator clipboard exactly.
+- The Simulator app accessibility tree exposed the prose, heading roles, links, quote and all table rows. The XcodeBuildMCP snapshot omission is not evidence that those elements are absent. Actual VoiceOver traversal is still required. Task-list elements were exposed as bullet points without checked-state values, which needs accessibility investigation.
+- Android at font scale 1.5 reflowed the reading content and kept visible composer controls legible after reopening the conversation. Changing the system font scale recreated the activity and returned to Hubs. The generated MainActivity configuration-change list omits `fontScale`; native navigation restoration is not implemented. Preserve the selected hub/session through recreation before accepting lifecycle continuity.
+- iOS at `accessibility-large` scaled Markdown and composer text. A live change clipped Latest/Send labels within their previous bounds; reopening the conversation recomputed correct button sizes. The Action component uses a minimum height, not a fixed height. This requires layout invalidation investigation rather than merely increasing a hardcoded button size or treating reopening as a fix.
+- iOS table horizontal scrolling did not move under the attempted Simulator drag/scroll automation. This is not yet classified as a product defect: the native table uses an enabled horizontal RCTUIScrollView, but actual gesture delivery and offset changes need stronger runtime observation.
+
+Evidence screenshots: [iOS live font-change defect](assets/markdown/ios-live-font-change-clipping.png), [iOS after reopening at large text](assets/markdown/ios-large-reopened.png), [Android reading at 1.5 font scale](assets/markdown/android-large.png). These capture the defects and limits, not release acceptance.

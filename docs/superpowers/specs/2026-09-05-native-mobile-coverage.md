@@ -56,7 +56,7 @@ behavioral verification, including errors, authorization, and hub isolation.
   historical observations, not freshly repeated final-head manual results.
 - Current source anchors: `mobile-native/src/screens.tsx` (four-route shell,
   first-page roster, composer), `ConnectionProvider.tsx` (one foreground client),
-  `newSession.ts` (creation state), and `TimelineItem.tsx` (plain text rendering).
+  `newSession.ts` (creation state), and `TimelineItem.tsx` / `MarkdownResponse.tsx` (native rich-text rendering).
   The shared `mobile/src/services/attachments.ts` explicitly remains a pure
   validator with no native file picker. Its existence is not attachment support.
 - Production session listing can take about 28 seconds and sometimes exceed the
@@ -78,3 +78,7 @@ workflow complete merely because an RPC wrapper or generic settings form exists.
 ## Draft continuity update — 5 September 2026
 
 Source `b4d7060cf` adds SQLite drafts keyed by hub and session, checkpointed uncertain submissions, explicit recovery, save/load errors and hub-removal cleanup. Native 44 tests, TypeScript, targeted Biome and both release builds pass. [Runtime evidence](../../design/mobile/draft-persistence-evidence.md) covers cold restart on both platforms, Android hub isolation, acknowledgement withholding with zero automatic replay, and recovery that preserves newer text. This does not complete composition: attachments, commands, queue management and representative-device performance remain outstanding.
+
+## Reading validation update — 5 September 2026
+
+Source `2d73a9000` has both-platform release Markdown builds and 48 passing native tests. [Reading evidence](../../design/mobile/markdown-evidence.md) records exact code and source-link copying, Android table overflow navigation, dark appearance and large-text observations. Acceptance remains open: live iOS font changes clip action labels until remount, Android font changes recreate the activity without route restoration, and complete native accessibility/streaming checks remain outstanding. These lifecycle defects take precedence over declaring the reading surface polished.
