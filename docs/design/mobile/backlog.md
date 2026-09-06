@@ -175,7 +175,14 @@ invalid key, clear/remove and reconnect flows on an isolated hub. Auth updates
 refresh the correct hub; switching hubs during a request cannot apply its result
 to the other hub. Follow [the contract inventory](hub-administration-inventory.md).
 
-### MOB-013 · P1 · Provider browser and device sign-in · Open
+### MOB-013 · P1 · Provider browser and device sign-in · In progress
+
+The hub/provider-bound sign-in controller now has eight deterministic tests for
+poll timing, authorization, expiry, browser fallback/completion, background
+pause/resume, explicit poll retry and late-response disposal. Server states were
+checked against `app_auth.go` (`pending`, `expired`, `authorized`). Native editor,
+AppState wiring, URL opening/copy, fixture integration and both-platform manual
+sign-in acceptance remain to be implemented and verified.
 
 Child of MOB-006; builds on MOB-012. Device start/poll and browser fallback must
 use server-returned URLs, flow IDs and polling intervals. Provide code copy,
