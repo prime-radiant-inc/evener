@@ -19,6 +19,7 @@ import type {
 import type { DraftDocument } from "./draftDocument";
 
 const localCommands = [
+  { id: "project", capability: null, label: "Show in project" },
   { id: "tasks", capability: null, label: "Tasks" },
   { id: "status", capability: null, label: "Status" },
   { id: "copy-id", capability: null, label: "Copy ID" },

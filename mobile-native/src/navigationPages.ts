@@ -68,6 +68,12 @@ export class NavigationPages<T> {
     this.notificationEpoch += 1;
     const targets = payload.targets.filter(
       (target) =>
+        (this.params.resource === "section" &&
+          target.kind === "section" &&
+          target.section === this.params.section) ||
+        (this.params.resource === "pin_section" &&
+          target.kind === "pin_section" &&
+          target.sectionId === this.params.sectionId) ||
         (this.params.resource === "catalog" &&
           target.kind === "catalog" &&
           target.catalog === this.params.catalog) ||
@@ -164,6 +170,12 @@ export class NavigationPages<T> {
       if (receipt) {
         const targets = receipt.targets.filter(
           (target) =>
+            (this.params.resource === "section" &&
+              target.kind === "section" &&
+              target.section === this.params.section) ||
+            (this.params.resource === "pin_section" &&
+              target.kind === "pin_section" &&
+              target.sectionId === this.params.sectionId) ||
             (this.params.resource === "catalog" &&
               target.kind === "catalog" &&
               target.catalog === this.params.catalog) ||
