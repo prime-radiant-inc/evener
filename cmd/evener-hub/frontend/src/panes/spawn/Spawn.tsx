@@ -263,7 +263,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
   // so the scoped cache below is keyed on this generation: evener/auth/updated
-  // advances it, the loader identities change, and every consumer reloads.
+  // advances it, the loader identities change, and the catalog effect and the
+  // pickers reload (the mount-only stale-model sweep does not re-run).
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
   useEffect(
     () =>
