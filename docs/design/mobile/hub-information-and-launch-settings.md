@@ -269,6 +269,20 @@ text. The system scale was restored to 1.0 and the local draft canceled; no hub
 setting was saved. This does not explain the earlier transient connection failure
 or the separate Android ANR.
 
+The follow-up native probe confirmed the activity and application configurations
+both reported scale2.0, React Native's font-layout flag was enabled, and its
+16sp conversion changed from42px to73.5px. Mounted editor text remained unchanged.
+Forcing a window size change also failed to update it. This narrows the failure
+to propagation/invalidation of mounted text after native metrics update; it does
+not yet prove which renderer cache or node is responsible. Upstream has an
+[Android 15 runtime font-size report](https://github.com/react/react-native/issues/49459),
+but that older-version report is not proof of the same cause here.
+
+The manifest candidate and temporary native logging were removed. Keep the
+baseline recreation problem open rather than shipping a partial accessibility
+fix. The next investigation needs a minimal mounted Text/TextInput reproduction
+and a fix that preserves editing state, focus and native nonlinear font scaling.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,
