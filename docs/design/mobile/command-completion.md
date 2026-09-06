@@ -49,10 +49,9 @@ hints. The list scrolls within a bounded height.
 ## Remaining command work
 
 This picker currently offers catalog commands and skills. Built-in session
-actions must be routed explicitly before advertising them here. Only the
-existing `/goal` interception is implemented. Current-web built-ins still
-needing native slash routing include compact, interrupt, clear, aside,
-shutdown, model, reasoning-effort, steer, queue, drain-as-steer, copy-id,
+actions must be routed explicitly before advertising them here. `/goal`, `/compact`, and `/shutdown` are implemented. Current-web built-ins
+still needing native slash routing include interrupt, clear, aside,
+model, reasoning-effort, steer, queue, drain-as-steer, copy-id,
 tasks, status, and project. Some already have other native controls, which
 does not establish slash-command parity. Unknown/argument-bearing command
 fallthrough, attachment semantics and unavailable-command errors must match
@@ -62,3 +61,24 @@ Still required: native middle-of-draft/caret and IME tests, large catalogs and
 large text, screen-reader interaction, plugin install/remove while open,
 catalog fault/reconnect and hub-switch acceptance, real command execution,
 and final-release regression. The full app goal remains incomplete.
+
+## Lifecycle command submission, 6 September 2026
+
+Native and web share the pure built-in invocation matcher. Bare `/compact`
+and `/shutdown` invoke the existing capability-guarded service operations,
+using the durable draft checkpoint. Successful acknowledgement clears the
+checkpoint; lost acknowledgement retains uncertainty and any newer draft.
+A pending uncertain delivery is not replayed. Attached messages and argless
+commands with additional arguments retain the web's ordinary-message routing.
+The composer identifies the operation before submission; Compact keeps a
+short visible label and the full accessibility label. Shutdown returns to
+the roster after acknowledgement without rehydrating the stopped runtime.
+
+Verification: 175 native tests and TypeScript pass; 17 focused web command
+tests, the full web gate, and all five browser guards pass. Both native
+Release builds succeeded. On the owned isolated hub, both platforms submitted
+compact and shutdown; compaction cleared its checkpoint and shutdown returned
+to the roster, where both sessions reported notLoaded. No production session
+was changed. Native acknowledgement-loss and stale-binding fault injection
+for these commands remain manual acceptance work; SQLite/transport tests
+cover acknowledgement loss, newer drafts and blocked replay.

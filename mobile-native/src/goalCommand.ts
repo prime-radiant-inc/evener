@@ -1,11 +1,11 @@
 import type { ConversationGoalActions } from "../../mobile/src/services/conversation";
+import { composerCommand } from "./composerCommand";
 import type { DraftDocument } from "./draftDocument";
 
 /** The web composer treats attached messages as messages, never commands. */
 export function goalObjective(text: string, imageCount = 0): string | null {
-  if (imageCount) return null;
-  const match = /^\/goal(?:[ \t]+([\s\S]*))?$/.exec(text);
-  return match ? (match[1] ?? "").trim() : null;
+  const match = composerCommand(text, imageCount);
+  return match?.command.id === "goal" ? match.argsText.trim() : null;
 }
 
 export async function submitGoalCommand(
