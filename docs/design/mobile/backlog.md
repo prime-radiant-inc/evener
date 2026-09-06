@@ -151,7 +151,13 @@ implementation issues before coding. Use purposeful native forms and lists,
 not a generic RPC console. Include auth/device flows, live invalidation,
 errors and consequential-action handling for each workflow.
 
-### MOB-012 · P1 · Provider instances and API keys · Open
+### MOB-012 · P1 · Provider instances and API keys · In progress
+
+The hub-bound provider controller now has automated coverage for retained data,
+late responses after disposal, auth invalidation during reads, configuration write
+refusal, overlapping writes, uncertain-write reconciliation without replay, and
+pre-mutation read races. Native screens, credential testing, real-hub integration
+and both-platform manual acceptance remain unimplemented/unverified.
 
 Child of MOB-006. Implement the server-derived provider list, instance detail,
 create/edit/remove/default, credential test, set/clear stored key and logout.
