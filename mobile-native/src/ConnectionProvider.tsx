@@ -20,6 +20,7 @@ import {
 	type HubInput,
 	type HubProfile,
 	HubProfiles,
+	type HubUpdate,
 } from "./connection";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
@@ -37,6 +38,7 @@ interface Connection {
 	error: string | null;
 	loading: boolean;
 	saveHub(input: HubInput): Promise<void>;
+	updateHub(id: string, input: HubUpdate): Promise<void>;
 	selectHub(id: string): void;
 	removeHub(id: string): Promise<void>;
 	disconnect(): void;
@@ -64,6 +66,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	);
 	const activeProfile =
 		profiles.find((profile) => profile.id === selected) ?? null;
+	const activeId = activeProfile?.id;
+	const activeOrigin = activeProfile?.origin;
 	const client =
 		foreground && session?.profileId === selected
 			? (session?.client ?? null)
@@ -114,32 +118,28 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		setSession(null);
 		setState("idle");
 		setError(null);
-		if (!activeProfile || !foreground) return;
+		if (!activeId || !activeOrigin || !foreground) return;
 		setState("connecting");
 		void repository
-			.token(activeProfile.id)
+			.token(activeId)
 			.then((token) => {
 				if (cancelled) return;
-				connection = createHubClient(
-					activeProfile.origin,
-					token,
-					(url, options) => {
-						// React Native adds native upgrade headers to the standard socket API.
-						const NativeWebSocket = WebSocket as unknown as new (
-							url: string,
-							protocols: string[] | null,
-							options: { headers: Record<string, string> },
-						) => WebSocketLike;
-						return new NativeWebSocket(url, null, options);
-					},
-				);
+				connection = createHubClient(activeOrigin, token, (url, options) => {
+					// React Native adds native upgrade headers to the standard socket API.
+					const NativeWebSocket = WebSocket as unknown as new (
+						url: string,
+						protocols: string[] | null,
+						options: { headers: Record<string, string> },
+					) => WebSocketLike;
+					return new NativeWebSocket(url, null, options);
+				});
 				unsubscribe = connection.onStateChange((next) => {
 					if (!cancelled) {
 						setState(next);
 						if (next === "ready") setError(null);
 					}
 				});
-				setSession({ profileId: activeProfile.id, client: connection });
+				setSession({ profileId: activeId, client: connection });
 				return connection.connect();
 			})
 			.catch(() => {
@@ -156,7 +156,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			unsubscribe?.();
 			connection?.close();
 		};
-	}, [activeProfile, foreground, attempt]);
+	}, [activeId, activeOrigin, foreground, attempt]);
 	const selectHub = useCallback((id: string) => {
 		setSelected(id);
 		setAttempt((value) => value + 1);
@@ -173,6 +173,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		setProfiles(await repository.list());
 		setSelected(profile.id);
 	}, []);
+	const updateHub = useCallback(
+		async (id: string, input: HubUpdate) => {
+			const profile = await repository.update(id, input);
+			setProfiles((current) =>
+				current.map((item) => (item.id === id ? profile : item)),
+			);
+			if (input.token !== undefined && selected === id)
+				setAttempt((value) => value + 1);
+		},
+		[selected],
+	);
 	const removeHub = useCallback(async (id: string) => {
 		const result = await removeSavedHub(repository, drafts, id);
 		setProfiles(
@@ -197,6 +208,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			error,
 			loading,
 			saveHub,
+			updateHub,
 			selectHub,
 			removeHub,
 			disconnect,
@@ -212,6 +224,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			error,
 			loading,
 			saveHub,
+			updateHub,
 			selectHub,
 			removeHub,
 			disconnect,

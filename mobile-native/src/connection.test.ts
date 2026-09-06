@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { connectionTarget, HubProfiles, createHubClient } from "./connection";
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
+import { connectionTarget, createHubClient, HubProfiles } from "./connection";
 
 describe("hub connections", () => {
 	it("normalizes origins and rejects credentials and URL tokens", () => {
@@ -136,4 +136,43 @@ describe("hub connections", () => {
 		}
 		expect(client.state).toBe("closed");
 	});
+});
+
+it("edits a saved hub without changing its identity or implicitly replacing credentials", async () => {
+	const data = new Map<string, string>();
+	const profiles = new HubProfiles({
+		getItemAsync: async (k) => data.get(k) ?? null,
+		setItemAsync: async (k, value) => {
+			data.set(k, value);
+		},
+		deleteItemAsync: async (k) => {
+			data.delete(k);
+		},
+	});
+	await profiles.save({
+		id: "a",
+		name: "Before",
+		origin: "https://a.test",
+		token: "first",
+	});
+	await profiles.save({
+		id: "b",
+		name: "Other",
+		origin: "https://b.test",
+		token: "second",
+	});
+	expect(await profiles.update("a", { name: " After " })).toEqual({
+		id: "a",
+		name: "After",
+		origin: "https://a.test",
+	});
+	expect(await profiles.token("a")).toBe("first");
+	await profiles.update("a", { name: "After", token: "replacement" });
+	expect(await profiles.token("a")).toBe("replacement");
+	await profiles.update("a", { name: "After", token: "" });
+	expect(await profiles.token("a")).toBe("");
+	expect(await profiles.token("b")).toBe("second");
+	await profiles.remove("a");
+	await expect(profiles.update("a", { name: "Gone" })).rejects.toThrow();
+	expect((await profiles.list()).map((p) => p.id)).toEqual(["b"]);
 });
