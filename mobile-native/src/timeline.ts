@@ -1,6 +1,14 @@
 import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
+
+export function isInterruptedNotice(item: Notice): boolean {
+  return (
+    item.origin === "steering" &&
+    item.steeringKind === "interrupted" &&
+    item.tone !== "warning"
+  );
+}
 export type TimelineRow =
   | MobileTimelineItem
   | {
