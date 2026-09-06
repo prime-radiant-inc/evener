@@ -10352,6 +10352,14 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
+	observer := dialHubRPC(t, hub)
+	defer observer.Close()
+	if _, err := observer.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observer.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -10364,13 +10372,15 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 		Delta:    "live update",
 	})
 
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("method=%q", got.Method)
+	for _, viewer := range []*appwire.Client{client, observer} {
+		select {
+		case got := <-viewer.Notifications():
+			if got.Method != appwire.NotifyAgentMessageDelta {
+				t.Fatalf("method=%q", got.Method)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for resumed turn notification")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for resumed turn notification")
 	}
 }
 

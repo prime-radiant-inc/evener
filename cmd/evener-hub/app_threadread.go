@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appitempaging"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -72,6 +73,9 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
+		if err == nil && params.Subscribe && response.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
+			return subscribedPastThreadReadResponse(ctx, cfg, sources, params)
+		}
 		return response, ok, err
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -95,6 +99,53 @@ func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, s
 		}
 	}
 	return appwire.ThreadReadResponse{}, false, nil
+}
+
+// subscribedPastThreadReadResponse keeps a stopped-session observer attached to
+// the stable publication key used when another client resumes that session.
+// The lifecycle lock excludes hub resumes while the saved snapshot and buffered
+// subscription are captured. If a resume won the lock, require a live handoff
+// instead of mixing a saved snapshot with an already-running event stream.
+func subscribedPastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	if !params.Subscribe {
+		return pastThreadReadResponse(ctx, cfg, params)
+	}
+	sessionID, local := localPastThreadID(params)
+	if !local {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	type result struct {
+		response appwire.ThreadReadResponse
+		found    bool
+	}
+	saved, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, sessionID, "", func() (result, error) {
+		if source, sourceErr := sourceForThread(sources, params.Ref, sessionID); sourceErr == nil {
+			if localSource, ok := source.(*appsource.LocalDaemonSource); ok {
+				if _, resolveErr := localSource.ResolveRelaySession(params); resolveErr == nil {
+					return result{}, nil
+				} else if !isDeadSessionError(resolveErr) {
+					return result{}, resolveErr
+				}
+			}
+		}
+		var saved result
+		var readErr error
+		captured := appserver.CaptureSubscriptionWithHandoff(ctx, params.ReplaceSubscription,
+			func() string { return localAppRef(sessionID) },
+			func() uint64 { return 0 },
+			func() bool {
+				saved.response, saved.found, readErr = pastThreadReadResponse(ctx, cfg, params)
+				return saved.found && readErr == nil
+			}, appserver.CaptureSubscriptionHandoff{})
+		if readErr != nil {
+			return result{}, readErr
+		}
+		if saved.found && !captured {
+			return result{}, appwire.SessionUnavailable("thread subscription is unavailable")
+		}
+		return saved, nil
+	})
+	return saved.response, saved.found, err
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
