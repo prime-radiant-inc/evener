@@ -209,6 +209,57 @@ func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing
 	}
 }
 
+// storeTree is every path under root, relative and sorted: what a read-only
+// verb has to hand back untouched.
+func storeTree(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// The store lock is a file the writers create, so waiting on it the way they
+// take it would leave one behind in a store that has never had a writer —
+// a mutation from the one verb that promises to make none. Such a store also
+// has nobody to wait for, so the walk still answers.
+func TestDoctor_OrphanCacheDir_LeavesAStoreWithNoLockFileAlone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	orphan := m.pluginCacheDir("acme", "widget", "deadbeef")
+	writePlugin(t, orphan, "widget", nil)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	before := storeTree(t, m.Root)
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
+		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	}
+	if _, statErr := os.Stat(m.lockPath()); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("Doctor created the store lock %s (stat err = %v)", m.lockPath(), statErr)
+	}
+	if after := storeTree(t, m.Root); !slices.Equal(before, after) {
+		t.Errorf("Doctor changed the store\nbefore = %v\nafter  = %v", before, after)
+	}
+}
+
 func TestDoctor_VersionMismatchWarns(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")

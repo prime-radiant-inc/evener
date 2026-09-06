@@ -23,7 +23,7 @@ var (
 	doctorCreateTemp   = func(dir, pattern string) (doctorTempFile, error) { return os.CreateTemp(dir, pattern) }
 	doctorRemove       = os.Remove
 	doctorGitAvailable = gitAvailable
-	doctorAcquireLock  = acquireLock
+	doctorAcquireLock  = acquireExistingLock
 )
 
 // Doctor finding levels.
@@ -218,10 +218,8 @@ func sourceCannotUpgrade(src Source) bool {
 // rather than merely momentary. The registry Doctor's other checks read is the
 // one from before the lock, so this reads its own.
 func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
-	// A store with no cache directory has no orphans and no writer to wait
-	// for, and it is asked before the lock because taking the lock creates the
-	// lock file: on a store that does not exist yet, Doctor would be creating
-	// the very thing it is only reporting on.
+	// A store with no cache directory has no orphans to report and no writer
+	// to wait for, so it is answered without going near the lock at all.
 	if _, err := doctorStat(m.cacheDir()); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

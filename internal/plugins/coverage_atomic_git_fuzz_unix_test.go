@@ -198,6 +198,19 @@ func coverageLocks(t *testing.T) {
 	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {
 		t.Fatal("want open error")
 	}
+	// acquireExistingLock differs only in its open: a lock file that is not
+	// there is not an error, it is a store no writer has ever locked.
+	lockOpenFile = func(string, int, os.FileMode) (lockFile, error) { return nil, os.ErrNotExist }
+	missingRelease, mErr := acquireExistingLock(context.Background(), "x/lock", 0)
+	if mErr != nil {
+		t.Fatalf("absent lock file: %v", mErr)
+	}
+	missingRelease()
+	lockOpenFile = func(string, int, os.FileMode) (lockFile, error) { return nil, boom }
+	if _, err := acquireExistingLock(context.Background(), "x/lock", 0); err == nil {
+		t.Fatal("want existing-lock open error")
+	}
+
 	lockOpenFile = func(string, int, os.FileMode) (lockFile, error) { return &coverageLockFile{}, nil }
 	lockFlock = func(int, int) error { return boom }
 	if _, err := acquireLock(context.Background(), "x/lock", 0); err == nil {

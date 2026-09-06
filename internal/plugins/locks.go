@@ -2,7 +2,9 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,6 +77,36 @@ func acquireLock(ctx context.Context, lockPath string, timeout time.Duration) (f
 	if err != nil {
 		return nil, fmt.Errorf("opening lock %s: %w", lockPath, err)
 	}
+	return flockUntil(ctx, f, lockPath, timeout)
+}
+
+// acquireExistingLock is acquireLock without the O_CREATE: it waits on a lock
+// file that is already there and, when there is none, hands back a release
+// that does nothing.
+//
+// Doctor's orphaned-cache walk reads under the lock rather than writing, and
+// creating the lock file is a write — the one mutation a read-only verb would
+// leave behind in a store that already exists. It can walk unlocked when there
+// is no lock file, because the writers create theirs before they touch
+// anything else: no lock file means no writer has ever locked this store, so
+// nothing can be materializing or collecting under the walk. (In a real store
+// the case cannot arise at all: the cache directory the walk is there to read
+// was created by a writer, which created the lock file first.)
+func acquireExistingLock(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
+	f, err := lockOpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return func() {}, nil
+		}
+		return nil, fmt.Errorf("opening lock %s: %w", lockPath, err)
+	}
+	return flockUntil(ctx, f, lockPath, timeout)
+}
+
+// flockUntil is the wait both acquires share: retry the exclusive flock on an
+// already-open lock file until it is granted, ctx is canceled, or timeout
+// elapses.
+func flockUntil(ctx context.Context, f lockFile, lockPath string, timeout time.Duration) (func(), error) {
 	deadline := lockNow().Add(timeout)
 	backoff := 10 * time.Millisecond
 	for {
