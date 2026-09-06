@@ -32,6 +32,7 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { useConnection } from "./ConnectionProvider";
 import { HubDirectoryField } from "./HubDirectoryField";
 import { LaunchEnvironmentEditor } from "./LaunchEnvironmentEditor";
+import { LaunchFallbackEditor } from "./LaunchFallbackEditor";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import {
   assertLaunchFieldCurrent,
@@ -62,6 +63,7 @@ function scalarValue(config: LaunchConfigLayer | null, field: string): string {
   const value = (config as Record<string, unknown> | null)?.[field];
   if (value && typeof value === "object" && !Array.isArray(value))
     return Object.keys(value).join(", ");
+  if (Array.isArray(value)) return value.length ? value.join(" → ") : "None";
   return value === undefined ? "" : String(value);
 }
 function LaunchDefaults({
@@ -110,7 +112,9 @@ function LaunchDefaults({
   const options = (state.options ?? []).filter(
     (option) =>
       option.defaultableLayers?.includes("global") &&
-      (scalarKinds.has(option.kind) || option.kind === "envMap") &&
+      (scalarKinds.has(option.kind) ||
+        option.kind === "envMap" ||
+        option.kind === "modelList") &&
       !inactivePromptDependent(option.wireField, state.draft ?? {}) &&
       `${option.label} ${option.group} ${option.description ?? ""}`
         .toLowerCase()
@@ -232,7 +236,21 @@ function LaunchDefaults({
           </View>
         ))}
       </ScrollView>
-      {selected?.kind === "envMap" ? (
+      {selected?.kind === "modelList" ? (
+        <LaunchFallbackEditor
+          key={selected.wireField}
+          option={selected}
+          value={state.draft?.modelFallbacks}
+          effective={state.resolved?.effective.modelFallbacks}
+          client={client}
+          close={() => setSelected(null)}
+          apply={(value) => {
+            model.edit(selected.wireField as keyof LaunchConfigLayer, value);
+            setNotice(null);
+            setSelected(null);
+          }}
+        />
+      ) : selected?.kind === "envMap" ? (
         <LaunchEnvironmentEditor
           key={selected.wireField}
           option={selected}
