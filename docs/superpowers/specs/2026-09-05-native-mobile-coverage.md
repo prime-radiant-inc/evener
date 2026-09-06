@@ -156,3 +156,13 @@ iOS paged/archived targets and Android nested targets have manual Release-build
 evidence in `docs/design/mobile/command-completion.md`. Full built-in completion,
 omitted-branch recovery, pinned-section management and broader accessibility
 and navigation acceptance remain open.
+
+### Independent hubs and cold observer gap
+
+Both native platforms switched between two independent isolated hubs sharing
+an identical session ref, retained separate drafts, and cold-restored hub B's
+route/draft. Direct hub reads verified sent markers remained isolated. Manual
+cross-device testing failed when Android observed a stopped B session resumed
+by iOS: the cold thread/read fallback does not register Subscribe. The failing
+hub regression and acceptance limits are documented in
+`docs/design/mobile/multiple-hubs.md`. This is not multi-hub release acceptance.
