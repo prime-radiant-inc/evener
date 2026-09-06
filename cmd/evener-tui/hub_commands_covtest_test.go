@@ -400,7 +400,7 @@ func TestCovFetchHubStatus(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readCalls++
-			if params.Ref != "local:01TEST" || !params.IncludeTurns || params.ItemsView != "full" {
+			if params.Ref != "local:01TEST" || params.IncludeTurns || params.ItemsView != "" || params.ItemLimit != 0 {
 				t.Errorf("thread/read params = %#v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
