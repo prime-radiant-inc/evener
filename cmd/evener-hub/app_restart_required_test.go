@@ -85,6 +85,21 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 			t.Fatalf("rejection=%+v", wire)
 		}
 	})
+	t.Run("shutdown does not pretend incompatible daemon exited", func(t *testing.T) {
+		err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: ref})
+		if !isDaemonRestartRequiredError(err) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("shutdown accepts a completed explicit stop", func(t *testing.T) {
+		if err := rendezvous.Remove(runDir, 1001); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 }
 
 func protocolMismatchPeer(t *testing.T) string {

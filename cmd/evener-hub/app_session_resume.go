@@ -63,6 +63,12 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return struct{}{}, source.ShutdownThread(ctx, params)
 	})
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
+		if cfg.Roster != nil {
+			hubRosterRefresh(cfg.Roster)
+		}
+		if restartErr := daemonRestartRequiredError(cfg, params.Ref, "", ""); restartErr != nil {
+			return restartErr
+		}
 		return nil
 	}
 	return err
