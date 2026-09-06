@@ -191,10 +191,10 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 // laneCloseReleaseBudget bounds one session's close-time lock-release pass. It
 // reserves half of LaneClosePassBudget, the same split closeStopJoinContext
 // makes and for the same reason: child sessions close serially inside the
-// parent's close, and every child that finds the cascade budget already spent
-// mints a fresh one of its own. Halving caps that amplification — a wedged git
-// costs the cascade budget plus (K children + 1) x LaneClosePassBudget/2 rather
-// than (K + 1) x the full budget.
+// parent's close, and every one of them runs this pass on a budget of its own.
+// Halving caps that amplification — a wedged git costs the cascade budget plus
+// (K children + 1) x LaneClosePassBudget/2 rather than (K + 1) x the full
+// budget.
 func laneCloseReleaseBudget() time.Duration { return LaneClosePassBudget / 2 }
 
 // closeStopJoinContext reserves half of the shared close budget for the
@@ -452,23 +452,21 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 // worktree-isolated child and for a zero delegation allowance), so it does take
 // an evener:<child-sid> marker of its own on a lane it creates or switches into.
 //
-// The pass shares the close cascade's deadline so a wedged git cannot hold
-// shutdown for the per-command timeout on every lane. A cascade budget that is
-// already spent is replaced with a fresh one rather than short-circuiting the
-// pass: releasing our own locks is tail work of the same kind as the P0 pass's
-// budget-exempt touch+unlock tail (which runs its unlocks unbounded), and
-// skipping it would strand exactly the markers this pass exists to clear. The
-// fresh budget is capped at laneCloseReleaseBudget so that fallback cannot
-// amplify across a subtree — see its doc comment for the bound.
-func (s *Session) unlockOwnManagedWorktreeAtClose(ctx context.Context) {
+// The pass runs on a release budget of its own, never on the close cascade's
+// context. Releasing our own locks is tail work of the same kind as the P0
+// pass's budget-exempt touch+unlock tail (which runs its unlocks unbounded),
+// just capped: inheriting the cascade deadline would make the guarantee depend
+// on how much of that budget the steps before it consumed, and a cascade
+// expiring during the registry listing or between two unlocks would leave the
+// markers held that this pass exists to clear. laneCloseReleaseBudget keeps the
+// independent budget from amplifying across a subtree — see its doc comment for
+// the bound.
+func (s *Session) unlockOwnManagedWorktreeAtClose() {
 	st := s.worktreeStateSnapshot()
 	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return
 	}
-	if ctx == nil || ctx.Err() != nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, laneCloseReleaseBudget())
+	ctx, cancel := context.WithTimeout(context.Background(), laneCloseReleaseBudget())
 	defer cancel()
 	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
