@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import {
   type ConversationClientLike,
   createNewSessionService,
@@ -167,4 +168,20 @@ it("retains model failure across metadata success until model recovery", async (
   calls[3]?.response.resolve({ data: [model] });
   await retry;
   expect(store.getState().modelError).toBeNull();
+});
+
+it("shows the hub rejection while retaining the draft without replay", async () => {
+  const { store, calls } = setup();
+  void store.getState().setCwd("/project");
+  store.getState().setPrompt("keep me");
+  const pending = store.getState().submit();
+  calls[1]?.response.reject(new WireError("model is required", -32602));
+  expect(await pending).toEqual({ status: "failed" });
+  expect(store.getState().error).toContain("model is required");
+  expect(store.getState()).toMatchObject({
+    cwd: "/project",
+    prompt: "keep me",
+    submitting: false,
+  });
+  expect(calls.filter((c) => c.method === "thread/start")).toHaveLength(1);
 });

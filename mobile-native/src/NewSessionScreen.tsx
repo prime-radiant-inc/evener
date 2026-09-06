@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
+import { HubPathField } from "./HubPathField";
 import { createNewSessionStore } from "./newSession";
 import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -99,22 +100,38 @@ export function NewSessionScreen({
           ) : null}
           <ErrorMessage message={form.error} />
           <Copy>Project directory</Copy>
-          <TextInput
-            accessibilityLabel="Project directory"
-            value={form.cwd}
-            editable={!form.submitting}
-            onChangeText={(value) => {
-              void form.setCwd(value, false);
-            }}
-            onBlur={() => {
-              void form.loadModels();
-            }}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="/path/on/hub"
-            placeholderTextColor={colors.secondary}
-            style={inputStyle}
-          />
+          {ready && client ? (
+            <HubPathField
+              client={client}
+              kind="dir"
+              label="Project directory"
+              value={form.cwd}
+              disabled={form.submitting}
+              onChange={(value, selected) => {
+                void form.setCwd(value, selected === true);
+              }}
+              onBlur={() => {
+                void form.loadModels();
+              }}
+            />
+          ) : (
+            <TextInput
+              accessibilityLabel="Project directory"
+              value={form.cwd}
+              editable={!form.submitting}
+              onChangeText={(value) => {
+                void form.setCwd(value, false);
+              }}
+              onBlur={() => {
+                void form.loadModels();
+              }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="/path/on/hub"
+              placeholderTextColor={colors.secondary}
+              style={inputStyle}
+            />
+          )}
           {form.projects.length ? (
             <ScrollView horizontal keyboardShouldPersistTaps="handled">
               {form.projects.map((project) => (

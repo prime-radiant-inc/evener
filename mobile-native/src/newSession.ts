@@ -1,4 +1,5 @@
 import { createStore } from "zustand/vanilla";
+import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   HarnessDescriptor,
   ModelDescriptor,
@@ -189,10 +190,11 @@ export function createNewSessionStore(hubId: string) {
         });
         if (generation !== connection) return { status: "obsolete" };
         return { status: "created", hubId, thread: result.thread };
-      } catch {
+      } catch (error) {
         if (generation !== connection) return { status: "obsolete" };
         set({
           error:
+            (error instanceof WireError ? `${error.message}\n\n` : "") +
             "Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist.",
         });
         return { status: "failed" };
