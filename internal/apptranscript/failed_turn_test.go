@@ -125,10 +125,10 @@ func failureProjector(turn schema.Turn, turnID string, entryIndex int) []appwire
 // The reloaded turn wrapping a persisted failure reports the same
 // status/error the live NotifyTurnCompleted did, instead of the blanket
 // "completed" every reloaded turn used to claim.
-func TestTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
-	turns, err := TurnsFromFile(writeFailureTranscript(t), 1<<20, failureProjector)
+func TestItemTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
+	turns, err := ItemTurnsFromFile(writeFailureTranscript(t), 1<<20, failureProjector)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	// By value with a found flag, not a pointer: staticcheck cannot see that
 	// t.Fatalf terminates, so a nil-check-then-dereference here reads to it as
@@ -165,7 +165,7 @@ func TestTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
 // so it must agree with the whole-file read.
 func TestIndexedReadStampsFailedTurnStatus(t *testing.T) {
 	path := writeFailureTranscript(t)
-	page, err := NewTurnCache().PageFromFile(path, 1<<20, "", 50, func(turn schema.Turn, turnID string, entryIndex int, _ map[string]string) []appwire.ThreadItem {
+	page, err := pageFromFileForTest(NewTurnCache(), path, 1<<20, "", 50, func(turn schema.Turn, turnID string, entryIndex int, _ map[string]string) []appwire.ThreadItem {
 		return failureProjector(turn, turnID, entryIndex)
 	})
 	if err != nil {

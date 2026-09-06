@@ -12,6 +12,7 @@ Transcript `thread/read` and `thread/turns/list` have one paging unit: items. Re
 
 Transcript reads with `IncludeTurns` return bounded item fragments. Metadata-only reads remain valid. Preserve existing method names and item response-validator function names to avoid unrelated API renaming. Item positions, transcript keys, fragment metadata, and response-byte limits remain mandatory. Logical turns remain containers; their existence does not imply a second paging mode. Empty successful responses remain valid under the single contract.
 
+Keep grouped projection/index machinery, logical ordinals including empty groups, `NextEntry`, stable IDs, accounting, deletion fences, enrichment, and lifecycle behavior. Agent/doctor transcript semantics and the separate per-turn item API are outside this paging removal. Their similarly named limits are not obsolete transcript paging fields.
 ## Clients and documentation
 
 

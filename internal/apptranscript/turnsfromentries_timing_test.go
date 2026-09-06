@@ -13,13 +13,13 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestTurnsFromEntriesLargeFixtureTiming times the file read against the
+// TestItemTurnsFromEntriesLargeFixtureTiming times the file read against the
 // in-memory entries projection over a large synthetic transcript and gates
 // on a generous ratio floor: the file form (scan + decode + project) must be
 // at least 3x slower than the entries form (project only). The floor is
 // deliberately loose so machine load cannot flake it — a regression that
 // erases the entries form's win has to cost more than 3x before this fails.
-func TestTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
+func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing measurement, not a correctness gate")
 	}
@@ -57,9 +57,9 @@ func TestTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 
 	// File form.
 	fileStart := time.Now()
-	fileTurns, err := TurnsFromFile(path, 1<<30, project)
+	fileTurns, err := ItemTurnsFromFile(path, 1<<30, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	fileElapsed := time.Since(fileStart)
 
@@ -70,9 +70,9 @@ func TestTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	}
 	_ = rw.Close() //nolint:errcheck // measurement fixture
 	entriesStart := time.Now()
-	entryTurns, err := TurnsFromEntries(rw.Header(), entries, project)
+	entryTurns, err := ItemTurnsFromEntries(rw.Header(), entries, project)
 	if err != nil {
-		t.Fatalf("TurnsFromEntries: %v", err)
+		t.Fatalf("ItemTurnsFromEntries: %v", err)
 	}
 	entriesElapsed := time.Since(entriesStart)
 
