@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import type { Thread } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type {
+  ModelListResponse,
+  Thread,
+} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   type ConversationClientLike,
   createConversationService,
@@ -11,6 +14,8 @@ import { submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { type DraftDatabase, DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
+
+const commandContext = { isCurrent: () => true, reasoning: () => null };
 
 function boundary() {
   const thread: Thread = {
@@ -48,6 +53,15 @@ function boundary() {
   };
   const objectives: string[] = [];
   const io = {
+    models: async (): Promise<ModelListResponse> => ({
+      data: [
+        {
+          provider: "scripted",
+          model: "alternate",
+          displayName: "Alternate Model",
+        },
+      ],
+    }),
     lifecycle: async (_method: string, _params: unknown) => ({}),
     read: async () => ({ thread: structuredClone(thread) }),
     set: async (objective: string) => {
@@ -58,6 +72,12 @@ function boundary() {
   const service = createConversationService({
     request: async (method, params) => {
       if (method === "thread/read") return io.read();
+      if (method === "model/list") return io.models();
+      if (
+        method === "thread/model/set" ||
+        method === "thread/reasoning-effort/set"
+      )
+        return io.lifecycle(method, params);
       if (method === "goal/set")
         return io.set((params as { objective: string }).objective);
       if (method === "thread/compact/start" || method === "thread/shutdown")
@@ -108,9 +128,9 @@ it.each([
         return {};
       };
       document.edit(command);
-      expect(await submitComposerCommand(document, service)).toBe(
-        command.slice(1),
-      );
+      expect(
+        await submitComposerCommand(document, service, commandContext),
+      ).toBe(command.slice(1));
       expect(received).toBe(1);
       expect(repository.read(destination)).toMatchObject({
         draft: "",
@@ -121,13 +141,17 @@ it.each([
         document.edit("newer draft");
         throw new Error("Lost acknowledgement");
       };
-      await expect(submitComposerCommand(document, service)).rejects.toThrow();
+      await expect(
+        submitComposerCommand(document, service, commandContext),
+      ).rejects.toThrow();
       expect(repository.read(destination)).toMatchObject({
         draft: "newer draft",
         unconfirmed: command,
       });
       document.edit(command);
-      expect(await submitComposerCommand(document, service)).toBeNull();
+      expect(
+        await submitComposerCommand(document, service, commandContext),
+      ).toBeNull();
       expect(repository.read(destination).unconfirmed).toBe(command);
     } finally {
       service.close();
@@ -248,3 +272,141 @@ it("checkpoints goal changes, retains uncertain delivery, and clears without con
     db.close();
   }
 });
+
+function commandDraft() {
+  const db = new DatabaseSync(":memory:");
+  const repository = new DraftRepository({
+    execSync: (sql) => db.exec(sql),
+    runSync: (sql, ...params) => db.prepare(sql).run(...params),
+    getFirstSync: <T>(sql: string, ...params: string[]) =>
+      (db.prepare(sql).get(...params) as T | undefined) ?? null,
+  });
+  const destination = { hubId: "hub", sessionRef: "local:test" };
+  return { db, document: new DraftDocument(() => repository, destination) };
+}
+
+it.each([
+  [
+    "/model SCRIPTED/ALTERNATE",
+    "thread/model/set",
+    { modelProvider: "scripted", model: "alternate" },
+  ],
+  [
+    "/model alternate model",
+    "thread/model/set",
+    { modelProvider: "scripted", model: "alternate" },
+  ],
+  [
+    "/reasoning-effort HIGH",
+    "thread/reasoning-effort/set",
+    { reasoningEffort: "high" },
+  ],
+  [
+    "/reasoning-effort (default)",
+    "thread/reasoning-effort/set",
+    { reasoningEffort: "" },
+  ],
+  ["/reasoning-effort", "thread/reasoning-effort/set", { reasoningEffort: "" }],
+  [
+    "/reasoning-effort none (off)",
+    "thread/reasoning-effort/set",
+    { reasoningEffort: "none" },
+  ],
+])(
+  "resolves the web enum argument for %s before checkpointing",
+  async (text, method, expected) => {
+    const { db, document } = commandDraft();
+    const { io, service } = boundary();
+    let received = 0;
+    try {
+      await service.open("local:test");
+      document.edit(text);
+      io.lifecycle = async (actual, params) => {
+        received++;
+        expect(actual).toBe(method);
+        expect(params).toEqual({ ref: "local:test", ...expected });
+        expect(document.getSnapshot().record.unconfirmed).toBe(text);
+        return {};
+      };
+      await submitComposerCommand(document, service, {
+        ...commandContext,
+        reasoning: () => ({
+          supportsReasoning: true,
+          reasoningEffortLevels: ["none", "high"],
+        }),
+      });
+      expect(received).toBe(1);
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: "",
+        unconfirmed: null,
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);
+
+it.each([
+  "/model missing",
+  "/model",
+  "/reasoning-effort high",
+  "/reasoning-effort",
+])("keeps invalid enum input editable: %s", async (text) => {
+  const { db, document } = commandDraft();
+  const { service } = boundary();
+  try {
+    await service.open("local:test");
+    document.edit(text);
+    await expect(
+      submitComposerCommand(document, service, {
+        ...commandContext,
+        reasoning: () => ({
+          supportsReasoning: true,
+          reasoningEffortLevels: [],
+        }),
+      }),
+    ).rejects.toThrow();
+    expect(document.getSnapshot().record).toMatchObject({
+      draft: text,
+      unconfirmed: null,
+    });
+  } finally {
+    service.close();
+    db.close();
+  }
+});
+
+it.each(["draft", "binding"])(
+  "discards a model lookup when its %s changes",
+  async (change) => {
+    const { db, document } = commandDraft();
+    const { io, service } = boundary();
+    let current = true;
+    try {
+      await service.open("local:test");
+      document.edit("/model scripted/alternate");
+      io.models = async () => {
+        if (change === "draft") document.edit("newer draft");
+        else current = false;
+        return { data: [{ provider: "scripted", model: "alternate" }] };
+      };
+      io.lifecycle = async () => {
+        throw new Error("Stale mutation reached transport");
+      };
+      expect(
+        await submitComposerCommand(document, service, {
+          ...commandContext,
+          isCurrent: () => current,
+        }),
+      ).toBeNull();
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: change === "draft" ? "newer draft" : "/model scripted/alternate",
+        unconfirmed: null,
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);

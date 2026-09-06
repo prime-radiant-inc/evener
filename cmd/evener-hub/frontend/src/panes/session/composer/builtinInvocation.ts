@@ -3,6 +3,14 @@ export interface BuiltinMatch<T> {
   argsText: string;
 }
 
+export function findBuiltinArgument<T extends { id: string; label: string }>(
+  items: readonly T[],
+  text: string,
+): T | undefined {
+  const needle = text.trim().toLowerCase();
+  return items.find((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
+}
+
 // A leading "/<token>" optionally followed by whitespace and the rest of the
 // message - `<token>` may not itself contain whitespace (a command name
 // never does; slashCommandInvocation only ever produces "name" or
