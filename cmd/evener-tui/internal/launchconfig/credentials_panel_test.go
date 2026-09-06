@@ -71,7 +71,10 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	}
 }
 
-func TestCredentialsPanel_EnterOnACredentialJsonInstanceExplainsWhereToPaste(t *testing.T) {
+// TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson:
+// a gcp-adc instance takes a pasted credential JSON here, the same store the
+// web hub's Providers & credentials writes; it no longer points at the hub.
+func TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
@@ -80,27 +83,25 @@ func TestCredentialsPanel_EnterOnACredentialJsonInstanceExplainsWhereToPaste(t *
 	// The list opens on anthropic; Down lands on google-vertex.
 	onVertex, _ := updated.Update(tea.KeyMsg{Type: tea.KeyDown})
 	next, cmd := onVertex.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatalf("Enter emitted %+v; the TUI has no credential-JSON action to run", cmd())
+	if cmd == nil {
+		t.Fatal("Enter on a credential-JSON instance should produce a cmd")
 	}
-	const label = "Providers & credentials" // the web hub's settings row (sections.ts)
-	view := next.View()
-	if !strings.Contains(view, "credential JSON") || !strings.Contains(view, "web hub") || !strings.Contains(view, label) {
-		t.Fatalf("view after Enter = %q, want a notice naming the credential JSON, the web hub, and %q", view, label)
+	got, ok := cmd().(CredentialsActionMsg)
+	if !ok {
+		t.Fatalf("cmd msg = %T, want CredentialsActionMsg", cmd())
 	}
-	moved, _ := next.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if strings.Contains(moved.View(), label) {
-		t.Fatal("the notice must clear when the cursor moves to another instance")
+	if got.Action != "setCredentialJson" || got.Instance != "google-vertex" {
+		t.Fatalf("msg = %+v, want the credential-JSON action for google-vertex", got)
 	}
-	back, _ := moved.Update(tea.KeyMsg{Type: tea.KeyDown})
-	again, _ := back.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !strings.Contains(again.View(), label) {
-		t.Fatal("Enter on the instance again must show the notice again")
+	if view := next.View(); strings.Contains(view, "web hub") {
+		t.Fatalf("the panel must no longer send the user to the web hub: %q", view)
 	}
-	formOpen, _ := again.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	formClosed, _ := formOpen.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if strings.Contains(formClosed.View(), label) {
-		t.Fatal("the notice must not survive opening and closing the form")
+	// An adc-only instance has nothing to set here and stays silent.
+	adcOnly, _ := NewCredentialsPanel().Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "vertex-adc", ProviderID: "google-vertex", ActiveSource: "adc", CredentialRequired: true, AuthModes: []string{"adc"}},
+	}}})
+	if _, cmd := adcOnly.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("an adc-only instance has no credential to set; got %+v", cmd())
 	}
 }
 

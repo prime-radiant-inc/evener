@@ -23,7 +23,10 @@ the credential source-layers (reusing today's oauth>file>env shadowing), and act
 A per-type `[+ add instance]` opens an inline form: name, apiStyle (openai only),
 base_url, credential (later / API key / OAuth). **TUI** (`credentials_panel.go`): the
 same data as a grouped key-driven list — `↑↓` move, `enter` set key, `o` oauth, `c`
-clear, `n` new, `e` edit, `x` remove, `*` default, `esc` close.
+clear, `n` new, `e` edit, `x` remove, `*` default, `esc` close. (Amended
+2026-09-06: Enter sets whichever credential the instance's auth modes offer —
+an API key, or a pasted Google credential JSON for a `gcp-adc` instance — so
+its hint reads "set credential".)
 
 ## 3. Data contract (`internal/appwire/types.go`)
 
