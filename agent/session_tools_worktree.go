@@ -1469,16 +1469,28 @@ func (s *Session) leaveCurrentWorktreeFromPorcelain(run worktree.GitRunner, porc
 }
 
 func (s *Session) leaveWorktreeWithLockState(run worktree.GitRunner, oldPath string, locked bool, reason string) error {
+	if err := s.releaseOwnWorktreeLock(run, oldPath, locked, reason); err != nil {
+		return fmt.Errorf("manage_worktree: unlocking the current worktree: %w", err)
+	}
+	return nil
+}
+
+// releaseOwnWorktreeLock applies the EvLeave lock rule to path's observed lock
+// state: it releases the lock when the marker is this session's own, and is a
+// no-op for an unlocked, foreign, or delegate-marked tree. The error is the raw
+// unlock failure, so each caller can name the tree in its own terms — leaving
+// the occupied worktree calls it "the current worktree", while the close-time
+// sweep names the individual lane it could not release.
+func (s *Session) releaseOwnWorktreeLock(run worktree.GitRunner, path string, locked bool, reason string) error {
 	st := worktree.Unlocked
 	if locked {
 		st = worktree.ClassifyReason(reason, s.id, "")
 	}
-	if worktree.Decide(worktree.EvLeave, st) == worktree.ActUnlock {
-		if _, err := run("worktree", "unlock", oldPath); err != nil {
-			return fmt.Errorf("manage_worktree: unlocking the current worktree: %w", err)
-		}
+	if worktree.Decide(worktree.EvLeave, st) != worktree.ActUnlock {
+		return nil
 	}
-	return nil
+	_, err := run("worktree", "unlock", path)
+	return err
 }
 
 // lockStateOf reports whether the worktree at path is locked and, if so, its

@@ -688,7 +688,7 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 		t.Fatal("own worktree not locked after create")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); locked {
 		t.Error("own managed worktree still locked after close-unlock")
@@ -974,13 +974,153 @@ func TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker(t *testing.T) {
 		t.Fatal("stranded lane not locked by the test setup")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, reason := r.laneLocked(t, strandedPath); locked {
 		t.Errorf("stranded own marker survived close: locked with %q", reason)
 	}
 	if _, locked, reason := r.laneLocked(t, currentPath); locked {
 		t.Errorf("occupied own lane still locked after close-unlock: %q", reason)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker: a
+// delegating child keeps the full manage_worktree tool (session_init strips it
+// only for worktree-isolated children and for a zero delegation allowance), so
+// it does take an evener:<child-sid> marker of its own on a lane it creates or
+// switches into. Its teardown must release that marker, and must leave its
+// parent's marker on another lane alone.
+func TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "parentlane"})
+	if err != nil {
+		t.Fatalf("create parent lane: %v", err)
+	}
+	parentLane := first["path"].(string)
+	second, err := r.create(t, map[string]any{"name": "childlane"})
+	if err != nil {
+		t.Fatalf("create child lane: %v", err)
+	}
+	childLane := second["path"].(string)
+
+	// create-away released the first lane; give it the parent's marker and make
+	// this session that parent's child, so the second lane is the child's own.
+	parentID := r.s.id + "-parent"
+	parentMarker := worktree.FormatSessionMarker(parentID)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", parentMarker, parentLane)
+	r.s.cfg.spawn.parentSessionID = parentID
+	if !r.s.isSubagentSession() {
+		t.Fatal("session did not become a child session")
+	}
+
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+
+	if _, locked, reason := r.laneLocked(t, childLane); locked {
+		t.Errorf("child's own marker survived its teardown: locked with %q", reason)
+	}
+	_, locked, reason := r.laneLocked(t, parentLane)
+	if !locked {
+		t.Fatal("child released its parent's lock")
+	}
+	if reason != parentMarker {
+		t.Errorf("parent lock reason = %q, want %q", reason, parentMarker)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget: the pass runs on the
+// close cascade's deadline rather than an unbounded context, so a wedged git
+// cannot hold shutdown for the per-command timeout on every lane. With git
+// wedged, the pass returns once the deadline it was handed expires, the lane is
+// left locked, and the warning names it.
+func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	// TRIPWIRE: this deadline stands in for an effectively-unlimited cascade
+	// budget; the wedged runner below calls cancel() explicitly on the unlock, so
+	// this hour-long value is never awaited and only bounds the test if that
+	// manual cancellation itself regresses and never fires.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	// Wedge the unlock: it spends the cascade budget and then returns only once
+	// the context the pass is bound to is done, so a pass that ignored the
+	// cascade deadline would never return from here.
+	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		run := gitRunner(runCtx, env)
+		return func(args ...string) (string, error) {
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "unlock" {
+				cancel()
+				<-runCtx.Done()
+				return "", runCtx.Err()
+			}
+			return run(args...)
+		}
+	}
+
+	r.s.unlockOwnManagedWorktreeAtClose(ctx)
+
+	if _, locked, _ := r.laneLocked(t, path); !locked {
+		t.Error("lane reported unlocked despite a wedged unlock")
+	}
+	msgs := warningMessages(r.s)
+	if !anyContainsAll(msgs, path, "unlocking own worktree", "failed") {
+		t.Errorf("no warning naming the lane the pass could not release: %v", msgs)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases: a close cascade
+// whose shared budget is already exhausted must still release this session's own
+// locks. Releasing them is tail work, like the P0 pass's budget-exempt
+// touch+unlock tail: leaving them held would strand exactly the markers this
+// pass exists to clear.
+func TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	res, err := r.create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	spent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r.s.unlockOwnManagedWorktreeAtClose(spent)
+
+	if _, locked, reason := r.laneLocked(t, path); locked {
+		t.Errorf("own marker held after a close with a spent budget: %q", reason)
+	}
+}
+
+// TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker: an evener:dlg: lane
+// belongs to the parent's §9 disposal lifecycle, not to this pass, so a delegate
+// marker naming this very session as the lane's owner still survives the close.
+func TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	first, err := r.create(t, map[string]any{"name": "dlglane"})
+	if err != nil {
+		t.Fatalf("create delegate-marked lane: %v", err)
+	}
+	dlgLane := first["path"].(string)
+	if _, err := r.create(t, map[string]any{"name": "ours"}); err != nil {
+		t.Fatalf("create own lane: %v", err)
+	}
+	dlgMarker := worktree.FormatDelegateMarker("dlg_close894", r.s.id)
+	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", dlgMarker, dlgLane)
+
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+
+	_, locked, reason := r.laneLocked(t, dlgLane)
+	if !locked {
+		t.Fatal("close released a delegate lane's lock")
+	}
+	if reason != dlgMarker {
+		t.Errorf("delegate lock reason = %q, want %q", reason, dlgMarker)
 	}
 }
 
@@ -1001,7 +1141,7 @@ func TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker(t *testing.T) {
 	foreignMarker := worktree.FormatSessionMarker(r.s.id + "-other")
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignMarker, foreignPath)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	_, locked, reason := r.laneLocked(t, foreignPath)
 	if !locked {
@@ -1026,7 +1166,7 @@ func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: path}
 	r.s.mu.Unlock()
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree wrongly unlocked through a non-local env")
@@ -1050,7 +1190,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 	}
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1072,7 +1212,7 @@ func TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns(t *testing.T) {
 	path := res["path"].(string)
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1105,7 +1245,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns(t *testing.T) {
 		}
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose()
+	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree reported unlocked despite a failed unlock")
