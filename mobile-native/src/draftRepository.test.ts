@@ -228,3 +228,31 @@ test("adding questions and writing a sibling batch preserves unfinished answers"
 		),
 	).toEqual(b);
 });
+
+test("active question survives reopen and stays within its destination and pending set", () => {
+	repository.writeQuestionPosition(destination, "second:0");
+	database.close();
+	openRepository();
+	expect(
+		repository.readQuestionPosition(destination, ["first:0", "second:0"]),
+	).toBe("second:0");
+	expect(repository.readQuestionPosition(destination, ["replacement:0"])).toBe(
+		"replacement:0",
+	);
+	expect(
+		repository.readQuestionPosition({ ...destination, hubId: "other" }, [
+			"first:0",
+			"second:0",
+		]),
+	).toBe("first:0");
+	expect(
+		repository.readQuestionPosition({ ...destination, sessionRef: "other" }, [
+			"first:0",
+			"second:0",
+		]),
+	).toBe("first:0");
+	repository.removeHub(destination.hubId);
+	expect(
+		repository.readQuestionPosition(destination, ["first:0", "second:0"]),
+	).toBe("first:0");
+});

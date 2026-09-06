@@ -46,16 +46,25 @@ export function QuestionSheet({
   const signature = JSON.stringify(questions);
   function loadSelections() {
     try {
+      const activeKey = nativeDrafts().readQuestionPosition(
+        destination,
+        questions.map((item) => item.key),
+      );
       return {
         selections: seedQuestionAnswers(
           questions,
           nativeDrafts().readQuestions(destination, signature),
+        ),
+        activeIndex: Math.max(
+          0,
+          questions.findIndex((question) => question.key === activeKey),
         ),
         loaded: true,
         error: null as string | null,
       };
     } catch {
       return {
+        activeIndex: 0,
         selections: {} as QuestionSelections,
         loaded: false,
         error: "Saved answers could not be loaded. Retry before editing.",
@@ -64,7 +73,21 @@ export function QuestionSheet({
   }
   const [saved, setSaved] = useState(loadSelections);
   const selections = saved.selections;
-  const [activeIndex, setActiveIndex] = useState(0);
+  const activeIndex = saved.activeIndex;
+  const [positionError, setPositionError] = useState<string | null>(null);
+  function setActiveIndex(index: number) {
+    const question = questions[index];
+    if (!question || !saved.loaded) return;
+    setSaved((values) => ({ ...values, activeIndex: index }));
+    try {
+      nativeDrafts().writeQuestionPosition(destination, question.key);
+      setPositionError(null);
+    } catch {
+      setPositionError(
+        "Your place could not be saved. Your answers are kept separately.",
+      );
+    }
+  }
   const input = useRef<TextInput>(null);
   function setSelections(
     update: (values: QuestionSelections) => QuestionSelections,
@@ -73,9 +96,15 @@ export function QuestionSheet({
     const selections = update(saved.selections);
     try {
       nativeDrafts().writeQuestions(destination, signature, selections);
-      setSaved({ selections, loaded: true, error: null });
+      setSaved((values) => ({
+        ...values,
+        selections,
+        loaded: true,
+        error: null,
+      }));
     } catch {
       setSaved({
+        activeIndex,
         selections,
         loaded: true,
         error:
@@ -142,6 +171,14 @@ export function QuestionSheet({
             contentContainerStyle={{ padding: 20, gap: 24 }}
           >
             {error ? <ErrorMessage message={error} /> : null}
+            {positionError ? (
+              <View>
+                <ErrorMessage message={positionError} />
+                <Action onPress={() => setActiveIndex(activeIndex)}>
+                  Retry saving your place
+                </Action>
+              </View>
+            ) : null}
             {saved.error ? (
               <View>
                 <ErrorMessage message={saved.error} />
