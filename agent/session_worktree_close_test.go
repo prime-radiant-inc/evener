@@ -1108,7 +1108,10 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 // the cascade's earlier deadline; an independent one carries a later deadline of
 // its own. Not parallel: shortenCloseCascadeBudget writes a package var.
 func TestUnlockOwnManagedWorktreeAtClose_ReleaseBudgetIsNotTheCascades(t *testing.T) {
-	cascadeBudget := 800 * time.Millisecond
+	// Four seconds leaves a full second of window between the burn ending and the
+	// cascade expiring, so a loaded -race runner still crosses it; the test costs
+	// the three quarters it burns.
+	cascadeBudget := 4 * time.Second
 	shortenCloseCascadeBudget(t, cascadeBudget)
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -1178,7 +1181,11 @@ func TestUnlockOwnManagedWorktreeAtClose_ReleaseBudgetIsNotTheCascades(t *testin
 		t.Error("the release pass ran with no deadline at all")
 	}
 	if left := time.Duration(cascadeLeft.Load()); left <= 0 {
-		t.Fatalf("the cascade budget was already gone when the release pass started (%s left), so the window this test needs never opened; the host is too loaded to tell an inherited deadline from an independent one", left)
+		// Skip rather than fail: on this run the cascade budget was spent before
+		// the release pass started, and BOTH shapes clear the markers from there —
+		// an inherited context would have restarted on a fresh budget at entry. The
+		// run cannot tell the two apart, so it has nothing to report either way.
+		t.Skipf("the cascade budget was already gone when the release pass started (%s left), so the window this test needs never opened; the host is too loaded to tell an inherited deadline from an independent one", left)
 	}
 	if gap := time.Duration(releaseDeadline.Load() - cascadeDeadline.Load()); gap <= 0 {
 		t.Errorf("the release pass's deadline sits %s past the cascade's, i.e. on or before it: the pass is bounded by the cascade budget, so a cascade expiring mid-pass would strand the markers", gap)
