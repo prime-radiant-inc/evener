@@ -747,6 +747,10 @@ export function ConversationScreen({
         <QuestionSheet
           key={questionSignature}
           visible={questionsOpen}
+          destination={{
+            hubId: route.params.hubId,
+            sessionRef: route.params.ref,
+          }}
           questions={questions}
           hubName={activeProfile?.name ?? "Hub"}
           ready={

@@ -1,3 +1,7 @@
+import {
+	decodeQuestionSelections,
+	type QuestionSelections,
+} from "./questionAnswers";
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
@@ -23,8 +27,39 @@ export class DraftRepository {
       unconfirmed TEXT,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS question_drafts (
+          hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, signature TEXT NOT NULL,
+          selections TEXT NOT NULL, PRIMARY KEY (hub_id, session_ref)
+        )`);
 	}
 
+	readQuestions(
+		destination: DraftDestination,
+		signature: string,
+	): QuestionSelections {
+		const row = this.db.getFirstSync<{ selections: string }>(
+			"SELECT selections FROM question_drafts WHERE hub_id = ? AND session_ref = ? AND signature = ?",
+			destination.hubId,
+			destination.sessionRef,
+			signature,
+		);
+		return row ? decodeQuestionSelections(row.selections) : {};
+	}
+	writeQuestions(
+		destination: DraftDestination,
+		signature: string,
+		selections: QuestionSelections,
+	): void {
+		this.db.runSync(
+			`INSERT INTO question_drafts (hub_id, session_ref, signature, selections)
+          VALUES (?, ?, ?, ?) ON CONFLICT (hub_id, session_ref) DO UPDATE SET
+          signature = excluded.signature, selections = excluded.selections`,
+			destination.hubId,
+			destination.sessionRef,
+			signature,
+			JSON.stringify(selections),
+		);
+	}
 	read(destination: DraftDestination): DraftRecord {
 		return (
 			this.db.getFirstSync<DraftRecord>(
@@ -58,5 +93,6 @@ export class DraftRepository {
 
 	removeHub(hubId: string): void {
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
+		this.db.runSync("DELETE FROM question_drafts WHERE hub_id = ?", hubId);
 	}
 }

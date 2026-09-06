@@ -11,6 +11,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskResolution } from "../../mobile/src/components/composer/composeAskAnswers";
 import type { MobileAskQuestion } from "../../mobile/src/conversation/model";
+import type { DraftDestination } from "./draftRepository";
+import { nativeDrafts } from "./nativeDrafts";
 import {
   composeQuestionAnswers,
   type QuestionSelections,
@@ -18,6 +20,7 @@ import {
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 export function QuestionSheet({
   visible,
+  destination,
   questions,
   hubName,
   ready,
@@ -27,6 +30,7 @@ export function QuestionSheet({
   send,
 }: {
   visible: boolean;
+  destination: DraftDestination;
   questions: MobileAskQuestion[];
   hubName: string;
   ready: boolean;
@@ -36,7 +40,43 @@ export function QuestionSheet({
   send: (selections: QuestionSelections) => Promise<void>;
 }) {
   const colors = useColors();
-  const [selections, setSelections] = useState<QuestionSelections>({});
+  const signature = JSON.stringify(questions);
+  function loadSelections() {
+    try {
+      return {
+        selections: nativeDrafts().readQuestions(destination, signature),
+        loaded: true,
+        error: null as string | null,
+      };
+    } catch {
+      return {
+        selections: {} as QuestionSelections,
+        loaded: false,
+        error: "Saved answers could not be loaded. Retry before editing.",
+      };
+    }
+  }
+  const [saved, setSaved] = useState(loadSelections);
+  const selections = saved.selections;
+  function setSelections(
+    update: (values: QuestionSelections) => QuestionSelections,
+  ) {
+    if (!saved.loaded) return;
+    const selections = update(saved.selections);
+    try {
+      nativeDrafts().writeQuestions(destination, signature, selections);
+      setSaved({ selections, loaded: true, error: null });
+    } catch {
+      setSaved({
+        selections,
+        loaded: true,
+        error:
+          "These answers could not be saved. Keep this sheet open and retry saving.",
+      });
+    }
+  }
+  const editable = ready && saved.loaded && !pending;
+
   function select(key: string, resolution: AskResolution) {
     setSelections((values) => ({
       ...values,
@@ -80,6 +120,19 @@ export function QuestionSheet({
             contentContainerStyle={{ padding: 20, gap: 24 }}
           >
             {error ? <ErrorMessage message={error} /> : null}
+            {saved.error ? (
+              <View>
+                <ErrorMessage message={saved.error} />
+                <Action
+                  onPress={() => {
+                    if (saved.loaded) setSelections((values) => values);
+                    else setSaved(loadSelections());
+                  }}
+                >
+                  {`Retry ${saved.loaded ? "saving answers" : "loading answers"}`}
+                </Action>
+              </View>
+            ) : null}
             {questions.map((question) => {
               const answer = selections[question.key];
               return (
@@ -102,9 +155,9 @@ export function QuestionSheet({
                         }
                         accessibilityState={{
                           checked,
-                          disabled: !ready || pending,
+                          disabled: !editable,
                         }}
-                        disabled={!ready || pending}
+                        disabled={!editable}
                         onPress={() => {
                           const labels =
                             question.multiSelect &&
@@ -143,7 +196,7 @@ export function QuestionSheet({
                     placeholder="Or write your answer"
                     placeholderTextColor={colors.secondary}
                     multiline
-                    editable={ready && !pending}
+                    editable={editable}
                     value={
                       answer?.resolution?.kind === "free"
                         ? answer.resolution.text
@@ -169,7 +222,7 @@ export function QuestionSheet({
                     ).map((resolution) => (
                       <Action
                         key={resolution.kind}
-                        disabled={!ready || pending}
+                        disabled={!editable}
                         onPress={() => select(question.key, resolution)}
                       >{`${answer?.resolution?.kind === resolution.kind ? "✓ " : ""}${resolution.kind === "decide" ? "You decide" : resolution.kind === "skip" ? "Skip" : "Use fallback"}`}</Action>
                     ))}
@@ -179,7 +232,7 @@ export function QuestionSheet({
                       accessibilityLabel={`Leaning for ${question.header}`}
                       placeholder="Optional leaning"
                       placeholderTextColor={colors.secondary}
-                      editable={ready && !pending}
+                      editable={editable}
                       value={answer.resolution.leaning}
                       onChangeText={(leaning) =>
                         select(question.key, { kind: "decide", leaning })
@@ -198,7 +251,7 @@ export function QuestionSheet({
                     placeholder="Optional note"
                     placeholderTextColor={colors.secondary}
                     multiline
-                    editable={ready && !pending}
+                    editable={editable}
                     value={answer?.note ?? ""}
                     onChangeText={(note) =>
                       setSelections((values) => ({
@@ -222,7 +275,7 @@ export function QuestionSheet({
             </Copy>
             <Action
               tone="primary"
-              disabled={!ready || pending || text === null}
+              disabled={!editable || !!saved.error || text === null}
               onPress={() => {
                 void send(selections);
               }}
