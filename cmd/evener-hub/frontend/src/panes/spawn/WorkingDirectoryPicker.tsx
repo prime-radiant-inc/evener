@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { friendlyErrorMessage } from "../../protocol/errors";
 import { Button, type PathFieldPanelProps } from "../../widgets";
@@ -127,7 +127,9 @@ export function WorkingDirectoryPicker({
     };
   }, []);
 
-  useEffect(() => {
+  // Keep focus inside the dialog in the same commit that removes the form,
+  // before a paint or keyboard event can observe focus on the document body.
+  useLayoutEffect(() => {
     if (creating) {
       wasCreating.current = true;
       nameInput.current?.focus();

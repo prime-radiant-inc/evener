@@ -63,6 +63,29 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
   return (await screen.findByRole("combobox", { name: "Model" })) as HTMLInputElement;
 }
 
+test("a synchronously throwing catalog loader shows an inline error", async () => {
+  renderPicker({
+    loadCatalog: () => {
+      throw new Error("no client");
+    },
+  });
+  await userEvent.setup().click(openTrigger());
+  expect(await screen.findByText(/Couldn't load models/)).toBeTruthy();
+});
+
+test("an open picker refreshes selectable models when provider configuration changes", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const { rerender } = render(
+    <ModelCatalog value="" onChange={onChange} loadCatalog={async () => ({ models: [SONNET], recent: [] })} />,
+  );
+  await openPicker(user);
+  await screen.findByRole("option", { name: /Claude Sonnet/ });
+  rerender(<ModelCatalog value="" onChange={onChange} loadCatalog={async () => ({ models: [GPT5], recent: [] })} />);
+  await screen.findByRole("option", { name: /GPT-5/ });
+  expect(screen.queryByRole("option", { name: /Claude Sonnet/ })).toBeNull();
+});
+
 // --- closed state (unchanged: the chip IS the trigger) ---------------------
 
 test("shows the (default) marker when no model is chosen", () => {
@@ -568,7 +591,7 @@ test("picking from the sheet variant reports the entry to the caller", async () 
   const onPick = vi.fn();
   renderSheetPanel({ onPick });
 
-  await user.click(screen.getByRole("option", { name: /gpt-5/i }));
+  await user.click(screen.getByRole("option", { name: /GPT-5/i }));
 
   expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5" }));
 });

@@ -17,6 +17,7 @@ import type {
   ThreadStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
+import { credentialsStore } from "../stores/credentials";
 import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
@@ -1391,6 +1392,31 @@ test("reselecting the same session through a second route notification preserves
   expect(workspaceStore.getState().panes.find((pane) => pane.id === secondaryId)?.slot).toBe("secondary");
 });
 
+test("Welcome at / preserves existing session panes when no provider is configured", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
+  render(<AppShell client={client} />);
+  await screen.findByText(/loading transcript/i);
+  const mainId = workspaceStore.getState().mainPane()?.id;
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("session", { ref: "local:session-b" }, { slot: "secondary" });
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await screen.findByText("No session open");
+  await act(async () => credentialsStore.getState().fetch());
+  expect(window.location.pathname).toBe("/");
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "session")
+      .map((pane) => pane.id),
+  ).toEqual([mainId, secondaryId]);
+});
+
 test("navigating from Settings to /new replaces Settings and clears secondary panes", async () => {
   workspaceStore.getState().openPane("settings", { section: "general" });
   workspaceStore.getState().openPane("doc", {
@@ -2259,7 +2285,9 @@ test("desktop boot uses the typed AppWire navigation read seam", async () => {
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
-  expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
+  expect(
+    client.calls.every(({ method }) => method === "evener/navigation/read" || method === "evener/instance/list"),
+  ).toBe(true);
   expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
 });
 

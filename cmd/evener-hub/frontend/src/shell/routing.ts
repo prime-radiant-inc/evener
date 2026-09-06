@@ -119,13 +119,14 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
   }
 }
 
-// navigate pushes a new pathname onto browser history and notifies same-tab
+// navigate pushes or replaces a pathname in browser history and notifies same-tab
 // listeners without a full reload. pushState alone does not fire popstate
 // (only real back/forward navigation does), so this dispatches one itself -
 // the single event AppShell listens for to cover both programmatic
 // navigation (this function) and the browser's own back/forward buttons.
-export function navigate(pathname: string): void {
+export function navigate(pathname: string, options: { replace?: boolean } = {}): void {
   if (window.location.pathname === pathname) return;
-  window.history.pushState({}, "", pathname);
+  if (options.replace) window.history.replaceState({}, "", pathname);
+  else window.history.pushState({}, "", pathname);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
