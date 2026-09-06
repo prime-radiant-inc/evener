@@ -1,5 +1,7 @@
 # Native structured questions
 
+> Historical implementation evidence, not current-web parity evidence. This UI followed the obsolete mobile UI and contains product drift. See the [parity audit](web-parity-audit.md) for corrections and outstanding defects.
+
 Verified 5 September 2026. Pending questions open from a compact composer entry into an iOS page sheet or Android full-screen modal. Each question supports advertised single or multiple selections, a written alternative, notes, You decide with optional leaning, explicit Skip and the advertised fallback. Recommendations are labels, never preselected answers. Every question requires an explicit valid resolution before Send answers enables. Dismissal preserves choices while the same question sheet remains mounted; updated question definitions reset them.
 
 The native UI reuses shared composeAskAnswers and turn/start. Dispatch checks the current question definitions, session generation/instance, focus, readiness and send capability. Structured replies use the durable draft delivery checkpoint without consuming the ordinary message draft. Confirmed acceptance clears uncertainty before the subsequent refresh. An accepted batch cannot be sent again while its old projection remains visible.
@@ -31,3 +33,7 @@ Native TypeScript, Biome and 101 tests pass. Three storage tests use actual SQLi
 ![iOS restored unfinished answer](assets/question-draft-ios.png)
 
 ![Android restored selected option](assets/question-draft-android.png)
+
+## Real harness follow-up
+
+The [real harness acceptance record](real-question-harness-evidence.md) verifies iOS ask_user execution, answer delivery and clean resumed completion without injected AppWire questions. Android real-harness completion remains open because its emulator transport stalled.
