@@ -162,7 +162,10 @@ and navigation acceptance remain open.
 Both native platforms switched between two independent isolated hubs sharing
 an identical session ref, retained separate drafts, and cold-restored hub B's
 route/draft. Direct hub reads verified sent markers remained isolated. Manual
-cross-device testing failed when Android observed a stopped B session resumed
-by iOS: the cold thread/read fallback does not register Subscribe. The failing
-hub regression and acceptance limits are documented in
-`docs/design/mobile/multiple-hubs.md`. This is not multi-hub release acceptance.
+cross-device testing exposed a missing cold subscription in the hub. Fix
+`01d49719f` passes the network regression and native retesting in both directions:
+Android observes iOS resume, and iOS observes Android resume, without refresh.
+Either observer can stop the resumed turn. Markers remain confined to B.
+Deterministic snapshot/resume overlap coverage is still pending. Evidence and
+acceptance limits are in `docs/design/mobile/multiple-hubs.md`. This is not
+multi-hub release acceptance.
