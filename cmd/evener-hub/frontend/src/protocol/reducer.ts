@@ -335,6 +335,24 @@ function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[
 // live in-flight chunks accumulated via item/reasoning/summaryTextDelta are
 // preserved separately by the item/completed and turn/completed handlers
 // (mergeReasoning), since they are more complete than this seed.
+const ITEM_TEXT_PRESENCE = Symbol("itemTextPresence");
+type ItemTextPresence = "omitted" | "provided";
+type InternalItemModel = ItemModel & { [ITEM_TEXT_PRESENCE]?: ItemTextPresence };
+
+function setItemTextPresence(item: ItemModel, presence: ItemTextPresence): ItemModel {
+  Object.defineProperty(item, ITEM_TEXT_PRESENCE, { value: presence, enumerable: false, configurable: true });
+  return item;
+}
+
+function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
+  const presence = (source as InternalItemModel)[ITEM_TEXT_PRESENCE];
+  return presence === undefined ? target : setItemTextPresence(target, presence);
+}
+
+function itemTextPresence(item: ItemModel): ItemTextPresence {
+  return (item as InternalItemModel)[ITEM_TEXT_PRESENCE] ?? "provided";
+}
+
 function wireItemToModel(item: ThreadItem): ItemModel {
   const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,
@@ -359,6 +377,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
+  setItemTextPresence(model, item.text === undefined ? "omitted" : "provided");
   if (item.transcriptKey !== undefined) model.transcriptKey = item.transcriptKey;
   if (item.position !== undefined) model.position = { ...item.position };
   // Set only when the wire carried one (like clientMutationId below, and
@@ -379,7 +398,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
 // seeded from the settled wire item's own (usually empty) text.
 function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (existing?.reasoningSummaries) {
-    return { ...settled, reasoningSummaries: existing.reasoningSummaries };
+    return copyItemTextPresence(settled, { ...settled, reasoningSummaries: existing.reasoningSummaries });
   }
   return settled;
 }
@@ -394,11 +413,11 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
 // only ever from the now argument, never a clock read).
 function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined, now: number): ItemModel {
   if (existing?.observedStartedAt === undefined) return settled;
-  return {
+  return copyItemTextPresence(settled, {
     ...settled,
     observedStartedAt: existing.observedStartedAt,
     observedCompletedAt: existing.observedCompletedAt ?? epochMsToISO(now),
-  };
+  });
 }
 
 // The live tool-settle site drops ArgumentsJSON: EventToolCallEnd
@@ -414,7 +433,7 @@ function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined
 function mergeArguments(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (settled.argumentsJSON !== undefined) return settled;
   if (existing?.argumentsJSON === undefined) return settled;
-  return { ...settled, argumentsJSON: existing.argumentsJSON };
+  return copyItemTextPresence(settled, { ...settled, argumentsJSON: existing.argumentsJSON });
 }
 
 // Folds a PRESERVED item (one carried over from before settlement, not
@@ -438,13 +457,14 @@ function settleItem(item: ItemModel, now: number): ItemModel {
   const stale = item.status === "inProgress";
   const needsObservedCompletion = item.observedStartedAt !== undefined && item.observedCompletedAt === undefined;
   if (pending === undefined && !stale && !needsObservedCompletion) return item;
-  return {
+  const settled = copyItemTextPresence(item, {
     ...item,
     text: pending === undefined ? item.text : item.text + pendingTextJoined(pending),
     pendingText: undefined,
     status: stale ? "completed" : item.status,
     observedCompletedAt: needsObservedCompletion ? epochMsToISO(now) : item.observedCompletedAt,
-  };
+  });
+  return pending === undefined ? settled : setItemTextPresence(settled, "provided");
 }
 
 // The turn-level (non-items) fields wireToTurnModel maps — split out so the
@@ -504,17 +524,19 @@ function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
       if (item.callId && isToolCallId(item.id)) {
         const result = resultByCallId.get(item.callId);
         if (result) {
-          items.push({
-            ...item,
-            output: result.output,
-            error: result.error,
-            prevalOnly: result.prevalOnly,
-            exitCode: result.exitCode,
-            completedAt: result.completedAt,
-            status: result.status,
-            outputImages: result.outputImages ?? item.outputImages,
-            raw: result.raw ?? item.raw,
-          });
+          items.push(
+            copyItemTextPresence(item, {
+              ...item,
+              output: result.output,
+              error: result.error,
+              prevalOnly: result.prevalOnly,
+              exitCode: result.exitCode,
+              completedAt: result.completedAt,
+              status: result.status,
+              outputImages: result.outputImages ?? item.outputImages,
+              raw: result.raw ?? item.raw,
+            }),
+          );
           continue;
         }
       }
@@ -532,34 +554,38 @@ const statusRank: Record<string, number> = {
 };
 
 function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
-  return mergeItemIdentityMetadata(older, {
-    ...older,
-    ...newer,
-    text: newer.text ?? older.text,
-    toolName: newer.toolName ?? older.toolName,
-    callId: newer.callId ?? older.callId,
-    argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
-    description: newer.description ?? older.description,
-    eventKind: newer.eventKind ?? older.eventKind,
-    steeringKind: newer.steeringKind ?? older.steeringKind,
-    raw: newer.raw ?? older.raw,
-    output: newer.output ?? older.output,
-    error: newer.error ?? older.error,
-    prevalOnly: newer.prevalOnly ?? older.prevalOnly,
-    exitCode: newer.exitCode ?? older.exitCode,
-    images: newer.images ?? older.images,
-    outputImages: newer.outputImages ?? older.outputImages,
-    source: newer.source ?? older.source,
-    reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
-    startedAt: newer.startedAt ?? older.startedAt,
-    completedAt: newer.completedAt ?? older.completedAt,
-    observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
-    observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
-    status:
-      newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
-        ? older.status
-        : newer.status,
-  });
+  const textSource = itemTextPresence(newer) === "omitted" && itemTextPresence(older) === "provided" ? older : newer;
+  return copyItemTextPresence(
+    textSource,
+    mergeItemIdentityMetadata(older, {
+      ...older,
+      ...newer,
+      text: textSource.text,
+      toolName: newer.toolName ?? older.toolName,
+      callId: newer.callId ?? older.callId,
+      argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
+      description: newer.description ?? older.description,
+      eventKind: newer.eventKind ?? older.eventKind,
+      steeringKind: newer.steeringKind ?? older.steeringKind,
+      raw: newer.raw ?? older.raw,
+      output: newer.output ?? older.output,
+      error: newer.error ?? older.error,
+      prevalOnly: newer.prevalOnly ?? older.prevalOnly,
+      exitCode: newer.exitCode ?? older.exitCode,
+      images: newer.images ?? older.images,
+      outputImages: newer.outputImages ?? older.outputImages,
+      source: newer.source ?? older.source,
+      reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
+      startedAt: newer.startedAt ?? older.startedAt,
+      completedAt: newer.completedAt ?? older.completedAt,
+      observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
+      observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
+      status:
+        newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
+          ? older.status
+          : newer.status,
+    }),
+  );
 }
 
 function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): ItemModel {
@@ -947,7 +973,11 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
   summaries[summaryIndex] = appendChunk(chunks, delta);
-  return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
+  return copyItemTextPresence(item, {
+    ...item,
+    reasoningSummaries: summaries,
+    observedStartedAt: item.observedStartedAt ?? epochMsToISO(now),
+  });
 }
 
 // Appends `incoming` to pendingEscalations, or — if an entry with the same
@@ -1144,11 +1174,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({
-            ...item,
-            // O(1) — see appendChunk's doc comment.
-            pendingText: appendChunk(item.pendingText, params.delta),
-          })),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            copyItemTextPresence(item, {
+              ...item,
+              // O(1) — see appendChunk's doc comment.
+              pendingText: appendChunk(item.pendingText, params.delta),
+            }),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -1195,10 +1227,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({
-            ...item,
-            output: (item.output ?? "") + params.delta,
-          })),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            copyItemTextPresence(item, {
+              ...item,
+              output: (item.output ?? "") + params.delta,
+            }),
+          ),
         })),
         lastFrameAt: now,
       };
