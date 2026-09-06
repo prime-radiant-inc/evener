@@ -78,3 +78,39 @@ restarting the app or hub.
 
 ![iOS native catalog](assets/plugins/ios-browse.jpg)
 ![Android native catalog](assets/plugins/android-browse.png)
+
+
+## Android add-form keyboard recovery and cross-client removal
+
+On 6 September 2026, the Android Release from c540157be reproduced a
+keyboard obstruction: Hub directory → invalid path → Add marketplace retained
+the entered source/name and showed the rejection, but Add was below the software
+keyboard and swiping could not reveal it. The modal's ScrollView only adjusted
+keyboard insets on iOS; Android had no keyboard avoidance. The form now uses
+an Android-only KeyboardAvoidingView with height behavior, matching existing
+native forms. iOS keeps its automatic scroll insets.
+
+The updated Android Release built successfully. Repeated the invalid-directory
+case with name native-form-fixture, reopened the software keyboard, then scrolled:
+Add was fully visible above the keyboard with the retained inputs and error.
+Replaced the path with the owned directory fixture and tapped Add while the
+keyboard remained open. The form closed and native-form-fixture appeared.
+iOS received the added marketplace through its live list. Both catalogs offered
+Install for the alias, despite native-tools being installed from
+native-mobile-fixture; marketplace identity was preserved.
+
+Tapped Refresh source on Android; this directory fixture does not prove a Git
+fetch. Removed native-form-fixture on iOS through the native confirmation naming
+marketplace and hub. Both clients returned to lists without the alias; Android's
+open catalog closed on the external removal. Independent plugin/list still
+reported native-tools@native-mobile-fixture enabled, version 1.0.0, automatic
+upgrades off. No production hub or seeded marketplace was modified.
+
+All 264 native tests, TypeScript and touched-file Biome passed. The keyboard
+regression was verified manually on the Android emulator, not through a mocked
+layout test. The iOS app used the preceding Release for notification/removal
+checks; the changed wrapper has not yet had an iOS rebuild/regression pass.
+iOS add-form submission, reverse-direction source CRUD, Git sources, path
+completion, screen readers and visual acceptance remain open.
+
+![Android rejected source with reachable submission above keyboard](assets/plugins/android-add-keyboard.png)
