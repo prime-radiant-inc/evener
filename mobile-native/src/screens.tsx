@@ -715,7 +715,9 @@ export function ConversationScreen({
       !service ||
       !ready ||
       controls?.getSnapshot().pending != null ||
-      (kind !== "interrupt" && unconfirmedSend !== null) ||
+      (kind !== "interrupt" &&
+        (unconfirmedSend !== null ||
+          pendingQuestions(store.getState().conversation).length > 0)) ||
       store.getState().pendingMutation?.status === "pending"
     )
       return;
@@ -959,27 +961,29 @@ export function ConversationScreen({
               {`${conversation.queue.depth} queued`}
             </Action>
           ) : null}
-          <TextInput
-            accessibilityLabel="Message"
-            multiline
-            value={draft.record.draft}
-            onChangeText={(text) => document.edit(text)}
-            editable={draft.loaded}
-            placeholder="Message"
-            placeholderTextColor={colors.secondary}
-            style={[
-              styles.input,
-              {
-                color: colors.text,
-                backgroundColor: colors.surface,
-                borderWidth: 0,
-                padding: 2,
-                minHeight: Platform.OS === "android" ? 48 : 44,
-                maxHeight: fontScale > 1.6 ? 96 : 160,
-                textAlignVertical: "top",
-              },
-            ]}
-          />
+          {questions.length === 0 ? (
+            <TextInput
+              accessibilityLabel="Message"
+              multiline
+              value={draft.record.draft}
+              onChangeText={(text) => document.edit(text)}
+              editable={draft.loaded}
+              placeholder="Message"
+              placeholderTextColor={colors.secondary}
+              style={[
+                styles.input,
+                {
+                  color: colors.text,
+                  backgroundColor: colors.surface,
+                  borderWidth: 0,
+                  padding: 2,
+                  minHeight: Platform.OS === "android" ? 48 : 44,
+                  maxHeight: fontScale > 1.6 ? 96 : 160,
+                  textAlignVertical: "top",
+                },
+              ]}
+            />
+          ) : null}
           <View
             style={[
               styles.row,
@@ -1061,7 +1065,7 @@ export function ConversationScreen({
               </Action>
             ) : null}
             {(["send", "steer", "queue"] as const).map((kind) =>
-              conversation?.capabilities[kind] ? (
+              questions.length === 0 && conversation?.capabilities[kind] ? (
                 <Action
                   key={kind}
                   tone={

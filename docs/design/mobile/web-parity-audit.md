@@ -13,7 +13,7 @@ Reference: cmd/evener-hub/frontend/src/panes/session/composer/askDock/.
 - AskDock presents one question at a time, maintains the active question, and advances through questions. Corrected in native: a question tab strip and one visible question, with forward/wrap progression and single-choice auto-advance. Active-tab restoration across a full remount remains open.
 - Web permits sending an untouched single question; a multi-question batch requires answers. Corrected in native: permit an untouched single question and require non-null resolutions in multi-question batches, including the web empty free-answer behavior.
 - reconcileBatches freezes sending batches and reconciles newly arriving questions into an open batch. Native currently uses one flattened definition signature; late arrivals and answered-elsewhere changes need equivalent ownership semantics.
-- Web suppresses the ordinary composer while an ask is pending. Native still allows ordinary composition.
+- Web suppresses the ordinary composer while an ask is pending. Corrected: native hides ordinary input and send/steer/queue actions while questions are pending, and rechecks the live pending set at dispatch. The ordinary draft is retained.
 - Corrected: native answer serialization imports the current web askCompose.ts directly. The previous mobile formatter did not encode headers containing closing brackets or newlines, allowing answer framing to break.
 
 ## Sandbox approvals
@@ -22,7 +22,7 @@ Reference: cmd/evener-hub/frontend/src/panes/session/transcript/tools/sandboxEsc
 
 - Allow/Deny is an existing one-action sandbox escalation operation.
 - Corrected: native warning says a command may have run before the sandbox blocked it. The server boolean indicates uncertainty, not proof that execution occurred.
-- Native should carry the web's explicit attribution that Evener requested the approval, not the agent.
+- Corrected: native explicitly attributes the approval request to Evener, not the agent.
 - Native displays command and output fields supplied by the server. These are additional presentation details, not additional operations.
 
 ## Remaining audit
@@ -36,3 +36,11 @@ Native TypeScript check passed. All 102 native tests across 18 files passed. The
 ## Question interaction correction verification
 
 The three new behavioral tests failed before implementation. Native TypeScript and all 105 tests pass; targeted Biome passes. An iOS Metro production export succeeds, including the direct current-web formatter import. This proves bundling, not a native build or manual interaction. Manual iOS/Android verification of the corrected controls is still required. Batch reconciliation, active-tab restoration across remount, and ordinary composer suppression are still open.
+
+## iOS native manual correction check
+
+Built and installed a Release app containing the revised question controls and ordinary composer suppression. Created a fresh session from the native UI against the isolated scripted provider with marker NATIVE-ASK-HARNESS current web parity controls. The actual harness emitted ask_user (call_fakellm_3). Verified ordinary Message/Send absent while pending, Focused recommended option checked, Something else changing the same field from note to answer, and a written answer submitted once. The provider log recorded that exact free answer; the sheet closed and ordinary Message returned after the pending question resolved. This was an actual harness question, not injected AppWire question data.
+
+The check found stale transcript guidance saying reply below. That copy is corrected in source after the tested build; the copy-only correction has not been rebuilt. Multi-question navigation, race/batch semantics, and Android validation remain outstanding.
+
+![iOS real harness answer and restored composer](assets/parity-question-ios-answer.png)
