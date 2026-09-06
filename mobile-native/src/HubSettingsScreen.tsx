@@ -43,6 +43,9 @@ export function HubSettingsScreen({ route, navigation }: Props) {
       openProviders={() =>
         navigation.navigate("Providers", { hubId: activeProfile.id })
       }
+      openLaunchSettings={() =>
+        navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
+      }
       openPlugins={() =>
         navigation.navigate("Plugins", { hubId: activeProfile.id })
       }
@@ -83,11 +86,13 @@ function HubSettings({
   hubName,
   openProviders,
   openPlugins,
+  openLaunchSettings,
 }: {
   client: ConversationClientLike;
   hubName: string;
   openProviders(): void;
   openPlugins(): void;
+  openLaunchSettings(): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => new HubOverview(client), [client]);
@@ -121,6 +126,7 @@ function HubSettings({
           <Action onPress={openProviders}>Providers</Action>
           <Action onPress={openPlugins}>Plugins</Action>
         </View>
+        <Action onPress={openLaunchSettings}>Launch defaults</Action>
         {state.loading && !data && (
           <ActivityIndicator accessibilityLabel="Loading hub information" />
         )}

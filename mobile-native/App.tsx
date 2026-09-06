@@ -11,6 +11,7 @@ import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
+import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack } from "./src/location";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
@@ -98,6 +99,11 @@ function Navigation() {
           />
           <Stack.Screen name="Sessions" component={SessionsScreen} />
           <Stack.Screen name="Projects" component={ProjectsScreen} />
+          <Stack.Screen
+            name="LaunchSettings"
+            component={LaunchSettingsScreen}
+            options={{ title: "Launch defaults" }}
+          />
           <Stack.Screen name="Providers" component={ProvidersScreen} />
           <Stack.Screen name="Plugins" component={PluginsScreen} />
           <Stack.Screen
