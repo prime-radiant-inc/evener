@@ -337,7 +337,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 			if sub == nil || !restored {
 				t.Fatalf("compatible restored role policy = sub:%v restored:%t", sub, restored)
 			}
-			defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
+			defer sub.sess.discardRestoredCandidate()
 			assertReadOnlyDelegateBackend(t, sub.sess, tc.wantMode, tc.wantWriteBlocked)
 		})
 	}

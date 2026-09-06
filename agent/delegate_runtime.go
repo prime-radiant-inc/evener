@@ -498,12 +498,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		candidate := sub
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			finishRestore(nil, trackErr)
 			return nil, trackErr
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			sub = tracked
 			restored = false
 		}
@@ -669,7 +669,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 		return false, errors.New("owed candidate conflicts with controller runtime state")
 	}
 	start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
-	start.sub.sess.discardRestoredCandidate(start.sub.ownsEnv)
+	start.sub.sess.discardRestoredCandidate()
 	return false, persistErr
 }
 
@@ -847,13 +847,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		})
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
 				finishRestore(nil, trackErr)
 			})
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			sub = tracked
 			restored = false
 		}
@@ -1676,14 +1676,15 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if err != nil {
 		return nil, false, err
 	}
+	child.ownsEnv = ownsFresh
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
-		child.discardRestoredCandidate(ownsFresh)
+		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
-			child.discardRestoredCandidate(ownsFresh)
+			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
@@ -1700,7 +1701,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
-			child.discardRestoredCandidate(ownsFresh)
+			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 	}
@@ -1717,7 +1718,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		startedAt:        now,
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
-		ownsEnv:          ownsFresh,
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
@@ -2272,7 +2272,5 @@ func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.closeRuntimeTree(ctx, func(child *Session, _ bool) {
-		child.close(ctx, false)
-	})
+	return s.delegateController.closeRuntimeTree(ctx)
 }

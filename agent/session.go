@@ -91,9 +91,17 @@ type Session struct {
 	// response through an injected transport without touching the network.
 	httpClient httpDoer
 	env        execenv.ExecutionEnvironment
-	clock      clock.Clock
-	stateDir   string
-	installID  string
+	// ownsEnv is true when this session is a child whose execution environment was
+	// built FOR it (a working-dir re-root and/or a per-delegate sandbox) rather
+	// than shared with its parent. Such an environment owns scratch dirs and
+	// file-tool fds no parent cleanup reaches, so the child's teardown settles
+	// them; a shared one belongs to the live parent and is left alone. The child
+	// records it because a teardown can reach a child no parent bookkeeping names
+	// — a runtime the stable controller holds for its own close.
+	ownsEnv   bool
+	clock     clock.Clock
+	stateDir  string
+	installID string
 	// origin marks how the session was launched: "test" for agentic-testing
 	// runs (set from EVENER_SESSION_ORIGIN on fresh create), empty for normal
 	// sessions. Preserved across resume from the persisted SessionMeta.Origin.
