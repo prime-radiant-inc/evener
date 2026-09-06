@@ -20,12 +20,20 @@ export function SessionSheet({
   controls,
   ready,
   close,
+  editGoal,
+  clearGoal,
+  goalDisabled,
+  goalError,
 }: {
   conversation: MobileConversation;
   hubName: string;
   controls: SessionControls;
   ready: boolean;
   close: () => void;
+  editGoal: () => void;
+  clearGoal: () => void;
+  goalDisabled: boolean;
+  goalError: string | null;
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
@@ -116,6 +124,40 @@ export function SessionSheet({
               </Copy>
             </View>
             <ErrorMessage message={modelAction ? null : state.error} />
+            {conversation.goal || conversation.capabilities.goal ? (
+              <View style={{ gap: 8 }}>
+                <Copy>Goal</Copy>
+                <ErrorMessage message={goalError} />
+                {conversation.goal ? (
+                  <>
+                    <Copy>{conversation.goal.objective}</Copy>
+                    <Copy
+                      muted
+                    >{`${conversation.goal.status} · ${conversation.goal.iterations} ${conversation.goal.iterations === 1 ? "iteration" : "iterations"}`}</Copy>
+                  </>
+                ) : (
+                  <Copy muted>
+                    Give the agent an objective to pursue until done.
+                  </Copy>
+                )}
+                <Action
+                  disabled={goalDisabled || !conversation.capabilities.goal}
+                  onPress={editGoal}
+                >
+                  {conversation.goal
+                    ? "Edit goal in composer"
+                    : "Set goal in composer"}
+                </Action>
+                {conversation.goal ? (
+                  <Action
+                    disabled={goalDisabled || !conversation.capabilities.goal}
+                    onPress={clearGoal}
+                  >
+                    Clear goal
+                  </Action>
+                ) : null}
+              </View>
+            ) : null}
             {state.notice && !modelAction ? <Copy>{state.notice}</Copy> : null}
             {state.pending ? (
               <ActivityIndicator
