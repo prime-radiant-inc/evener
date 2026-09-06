@@ -244,7 +244,8 @@ Hub-directory selection now uses the web path-completion contract, with
 keyboard-open lookup/selection and child listing verified on both platforms;
 Android parent navigation is also verified. Four controller tests bring the native
 suite to 268. See [directory evidence](plugins-evidence.md#hub-directory-selection).
-Picker-to-marketplace submission, large directory lists, realistic catalog density,
+Picker-to-marketplace submission and source-type reselection now have both-platform
+native evidence at 666423050. Large directory lists, realistic catalog density,
 visual hierarchy, large text, screen readers and full failure acceptance remain.
 
 Presentation direction: compact Installed and Browse views, one tap target per

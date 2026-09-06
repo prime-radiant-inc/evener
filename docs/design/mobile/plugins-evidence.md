@@ -187,3 +187,25 @@ selection has not yet been repeated end-to-end.
 
 ![iOS hub directory suggestions above keyboard](assets/plugins/ios-directories.jpg)
 ![Android hub directory suggestions above keyboard](assets/plugins/android-directories.png)
+
+
+## Picker-to-marketplace submission
+
+On 6 September 2026, rebuilt both Release apps at 666423050. On each platform
+entered the owned fixture prefix, reselected Hub directory and verified the
+prefix remained. Used Find directories, selected the real returned directory,
+and named the marketplace native-picker-ios / native-picker-android respectively.
+Screenshots confirmed Add above each software keyboard. Submitted on each
+platform; both lists then contained both aliases with the full selected source
+and trailing slash. This establishes that picker output reaches the real add
+contract on both platforms, including live cross-device addition.
+
+The two aliases are left registered on the isolated SecondHub as acceptance
+fixtures; no plugin was installed from them. The original fixture remains.
+Both builds passed. No application changes in this pass; the 268-test baseline
+from directory implementation remains applicable. The reselect guard now has
+native verification on both platforms. Large-list, failure, screen-reader and
+visual acceptance gaps remain as described above.
+
+![iOS picker selection ready for submission](assets/plugins/ios-picker-submit.jpg)
+![Android picker selection ready for submission](assets/plugins/android-picker-submit.png)
