@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Thread } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type {
+  ModelListResponse,
+  Thread,
+} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   type ConversationClientLike,
   createConversationService,
@@ -11,6 +14,8 @@ async function boundary(actions: {
   compact?: () => Promise<void>;
   shutdown?: () => Promise<void>;
   reasoning?: (effort: string) => Promise<void>;
+  models?: () => Promise<ModelListResponse>;
+  model?: (provider: string, model: string) => Promise<void>;
 }) {
   const thread: Thread = {
     id: "thread",
@@ -37,7 +42,7 @@ async function boundary(actions: {
         clear: false,
         forkFromTurn: false,
         shutdown: true,
-        changeModel: false,
+        changeModel: true,
         changeVisionModel: false,
         queue: false,
         goal: false,
@@ -48,6 +53,15 @@ async function boundary(actions: {
   const wire: ConversationClientLike = {
     request: async (method, params) => {
       if (method === "thread/read") return { thread };
+      if (method === "model/list") return actions.models?.() ?? { data: [] };
+      if (method === "thread/model/set") {
+        const { modelProvider, model } = params as {
+          modelProvider: string;
+          model: string;
+        };
+        await actions.model?.(modelProvider, model);
+        return {};
+      }
       if (method === "evener/thread/name/set")
         await actions.rename?.((params as { name: string }).name);
       else if (method === "thread/compact/start") await actions.compact?.();
@@ -88,6 +102,7 @@ describe("conversation-owned session controls", () => {
       () => {},
       () => true,
       () => null,
+      () => true,
     );
     const first = controls.rename("  Mobile session  ");
     expect(controls.getSnapshot().pending).toBe("rename");
@@ -121,6 +136,7 @@ describe("conversation-owned session controls", () => {
       },
       () => true,
       () => null,
+      () => true,
     );
     await controls.compact();
     expect(attempts).toBe(1);
@@ -152,6 +168,7 @@ describe("conversation-owned session controls", () => {
       },
       () => true,
       () => null,
+      () => true,
     );
     const request = controls.compact();
     controls.dispose();
@@ -175,6 +192,7 @@ describe("conversation-owned session controls", () => {
       () => {},
       () => generation === 1,
       () => null,
+      () => true,
     );
     service.close();
     generation = 2;
@@ -192,6 +210,7 @@ describe("conversation-owned session controls", () => {
       () => {},
       () => true,
       () => null,
+      () => true,
     );
     await controls.compact();
     expect(refreshed).toBe(1);
@@ -219,6 +238,7 @@ describe("conversation-owned session controls", () => {
       () => {},
       () => true,
       () => settings,
+      () => true,
     );
     const request = controls.setReasoningEffort("high");
     await controls.setReasoningEffort("low");
@@ -246,6 +266,7 @@ describe("conversation-owned session controls", () => {
       () => {},
       () => true,
       () => settings,
+      () => true,
     );
     await controls.setReasoningEffort("low");
     await controls.setReasoningEffort("invented");
@@ -258,5 +279,114 @@ describe("conversation-owned session controls", () => {
     controls.dispose();
     await controls.setReasoningEffort("high");
     expect(requests).toEqual([]);
+  });
+  it("only applies catalog provider/model pairs and serializes model changes", async () => {
+    const applied: string[][] = [];
+    let resolve!: () => void;
+    let reads = 0;
+    const controls = new SessionControls(
+      await boundary({
+        models: async () => ({
+          data: [
+            { provider: "one", model: "shared" },
+            { provider: "two", model: "other" },
+          ],
+        }),
+        model: async (provider, model) => {
+          applied.push([provider, model]);
+          await new Promise<void>((done) => {
+            resolve = done;
+          });
+        },
+      }),
+      async () => {
+        reads++;
+      },
+      () => {},
+      () => true,
+      () => null,
+      () => true,
+    );
+    expect(await controls.changeModel("one", "shared")).toBe(false);
+    await controls.loadModels();
+    expect(await controls.changeModel("two", "shared")).toBe(false);
+    const request = controls.changeModel("one", "shared");
+    expect(await controls.changeModel("two", "other")).toBe(false);
+    expect(applied).toEqual([["one", "shared"]]);
+    resolve();
+    expect(await request).toBe(true);
+    expect(reads).toBe(1);
+  });
+  it("ignores a catalog that resolves after the controller is disposed", async () => {
+    let resolve!: (value: ModelListResponse) => void;
+    const controls = new SessionControls(
+      await boundary({
+        models: () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      }),
+      async () => {},
+      () => {},
+      () => true,
+      () => null,
+      () => true,
+    );
+    const request = controls.loadModels();
+    controls.dispose();
+    resolve({ data: [{ provider: "old", model: "model" }] });
+    await request;
+    expect(controls.getSnapshot().catalog).toBeNull();
+  });
+  it("clears old choices on catalog failure and permits an explicit retry", async () => {
+    let unavailable = false;
+    let attempts = 0;
+    const controls = new SessionControls(
+      await boundary({
+        models: async () => {
+          attempts++;
+          if (unavailable) throw new Error("Offline");
+          return { data: [{ provider: "one", model: "model" }] };
+        },
+      }),
+      async () => {},
+      () => {},
+      () => true,
+      () => null,
+      () => true,
+    );
+    await controls.loadModels();
+    unavailable = true;
+    await controls.loadModels();
+    expect(controls.getSnapshot().catalog).toBeNull();
+    expect(controls.getSnapshot().modelError).not.toBeNull();
+    expect(attempts).toBe(2);
+    unavailable = false;
+    await controls.loadModels();
+    expect(controls.getSnapshot().catalog?.data).toHaveLength(1);
+    expect(controls.getSnapshot().modelError).toBeNull();
+  });
+  it("does not mutate model settings while a composer submission owns the session", async () => {
+    let composing = true;
+    const applied: string[] = [];
+    const controls = new SessionControls(
+      await boundary({
+        models: async () => ({ data: [{ provider: "one", model: "model" }] }),
+        model: async (_, model) => {
+          applied.push(model);
+        },
+      }),
+      async () => {},
+      () => {},
+      () => true,
+      () => null,
+      () => !composing,
+    );
+    await controls.loadModels();
+    expect(await controls.changeModel("one", "model")).toBe(false);
+    expect(applied).toEqual([]);
+    composing = false;
+    expect(await controls.changeModel("one", "model")).toBe(true);
+    expect(applied).toEqual(["model"]);
   });
 });

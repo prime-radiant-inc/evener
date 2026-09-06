@@ -108,4 +108,8 @@ The Session sheet adds rename, compaction and confirmed runtime stop. Native 59 
 
 ### Existing-session reasoning
 
-The Session sheet exposes server-advertised effort levels, with current-binding validation, serialized actions and authoritative refresh. Native61 tests/TypeScript and both Release builds pass; both simulators changed effort through the real isolated daemon. A reproduced iOS live Dynamic Type clipping issue in radio rows was corrected and visually rechecked. See `docs/design/mobile/reasoning-controls-evidence.md` for evidence and remaining scope.
+The initial Session sheet exposed server-advertised effort levels, with current-binding validation, serialized actions and authoritative refresh. That placement is superseded by composer controls below. Native61 tests/TypeScript and both Release builds passed; both simulators changed effort through the real isolated daemon. See `docs/design/mobile/reasoning-controls-evidence.md` for historical evidence.
+
+### Composer model and reasoning
+
+Model and reasoning now live directly inside the composer. Model selection uses a scoped searchable catalog and explicit application; reasoning uses a short choice sheet. Both preserve drafts and prevent overlap with compose submission. Native65/shared2,237 tests, TypeScript, targeted Biome and both Release builds pass. Both simulators switched models and effort against the isolated real daemon; Android keyboard overlap and iOS live large-text wrapping were corrected and visually verified. See `docs/design/mobile/composer-settings-evidence.md` for exact evidence and remaining acceptance.

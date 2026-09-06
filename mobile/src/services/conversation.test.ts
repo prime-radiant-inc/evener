@@ -2818,3 +2818,53 @@ describe("observed queue guards", () => {
     ]);
   });
 });
+
+describe("bound conversation model catalog", () => {
+  it.each(["open", "readProjection"] as const)(
+    "scopes %s catalog reads to the bound harness and cwd",
+    async (openMethod) => {
+      const client = new FakeAppwireClient();
+      client.on("thread/read", () =>
+        makeReadResponse(
+          makeThread({ source: "codex-local", cwd: "/projects/a b" }),
+        ),
+      );
+      client.on("model/list", (params) => {
+        expect(params).toEqual({
+          harness: "codex-local",
+          cwd: "/projects/a b",
+        });
+        return { data: [{ provider: "codex-local", model: "test-model" }] };
+      });
+      const service = createConversationService(client);
+      await service[openMethod]("codex-local:session");
+      expect((await service.models()).data[0]?.model).toBe("test-model");
+    },
+  );
+  it("rejects a catalog from a previous binding and blocks reads after close", async () => {
+    const client = new FakeAppwireClient();
+    client.on("thread/read", () => makeReadResponse(makeThread()));
+    let finish!: (value: { data: [] }) => void;
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    client.on("model/list", () => {
+      started();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const service = createConversationService(client);
+    await service.open("local:a");
+    const oldCatalog = service.models();
+    await requestStarted;
+    await service.open("local:b");
+    finish({ data: [] });
+    await expect(oldCatalog).rejects.toThrow();
+    service.close();
+    const calls = client.calls.length;
+    await expect(service.models()).rejects.toThrow();
+    expect(client.calls).toHaveLength(calls);
+  });
+});
