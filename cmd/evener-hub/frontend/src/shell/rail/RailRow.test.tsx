@@ -2081,3 +2081,10 @@ test.each([
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   expect(screen.getByTestId("rail-row-activity").textContent).toContain(gloss);
 });
+
+test("restart-required navigation disables daemon actions in the sidebar menu", async () => {
+  renderRow({ state: "restartRequired", rename: false, live: true });
+  await openMenu(/actions for/i);
+  expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+});

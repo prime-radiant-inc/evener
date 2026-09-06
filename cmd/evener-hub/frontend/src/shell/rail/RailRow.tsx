@@ -492,7 +492,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       title={session.title}
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
-      canShutdown={session.live}
+      canShutdown={session.live && session.state !== "restartRequired"}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{

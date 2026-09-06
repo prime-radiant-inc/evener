@@ -197,7 +197,6 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		if entry.SessionID != "" {
 			for _, alias := range favoriteSessionAliases(entry.SessionID) {
 				liveBySession[alias] = true
-				renameable[alias] = isLocalRouteID(alias)
 			}
 		}
 	}
@@ -228,6 +227,15 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		for _, tier := range []string{"current", "recent", "archived"} {
 			rows, _ := project.TierRows(tier)
 			indexRenameable(rows)
+		}
+	}
+	// Live daemon constraints override every persisted navigation copy.
+	for _, entry := range live {
+		if entry.SessionID == "" {
+			continue
+		}
+		for _, alias := range favoriteSessionAliases(entry.SessionID) {
+			renameable[alias] = isLocalRouteID(alias) && entry.Status != appwire.ThreadStatusRestartRequired
 		}
 	}
 	return navigationBuildInputs{

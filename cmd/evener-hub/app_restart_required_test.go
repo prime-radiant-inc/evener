@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -270,5 +271,17 @@ func TestRestartRequiredRecoveryPreservesDecodedWireData(t *testing.T) {
 	data, ok := wire.Data.(map[string]any)
 	if !ok || data["cause"] != "daemonRestartRequired" || data["evenerErrorInfo"] != "conflict" || data["detail"] != "preserved" || data["clientMutationId"] != "retry-id" || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
 		t.Fatalf("data=%+v", wire.Data)
+	}
+}
+
+func TestNavigationDisablesRenameForRestartRequiredDaemon(t *testing.T) {
+	tree := hubcore.Tree{Live: []hubcore.TreeNode{{ID: "02wMz5Txv1C3Hut0M8GCeB"}, {ID: "local:02wMz5Txv1C3Hut0M8GCeB"}, {ID: "02wMz5Txv1C3Hut0M8GCeC"}}}
+	live := []hubcore.LiveEntry{{SessionID: "02wMz5Txv1C3Hut0M8GCeB", Status: appwire.ThreadStatusRestartRequired}, {SessionID: "02wMz5Txv1C3Hut0M8GCeC", Status: appwire.ThreadStatusIdle}}
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, nil, hubapi.AttentionSummary{}, live, nil, nil, nil, nil)
+	if inputs.Renameable["02wMz5Txv1C3Hut0M8GCeB"] || inputs.Renameable["local:02wMz5Txv1C3Hut0M8GCeB"] {
+		t.Fatal("navigation advertises rename for incompatible owner")
+	}
+	if !inputs.Renameable["02wMz5Txv1C3Hut0M8GCeC"] {
+		t.Fatal("compatible session lost rename")
 	}
 }

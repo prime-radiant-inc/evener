@@ -2374,7 +2374,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     removeWatchedThreadModel(ref);
   },
 
-  async refreshThread(ref) {
+  async refreshThread(ref): Promise<void> {
     await requireReadyClient();
     const client = requireClient();
     if (client.state !== "ready") return threadsStore.getState().refreshThread(ref);
