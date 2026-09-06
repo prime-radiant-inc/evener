@@ -31,6 +31,8 @@ import {
 } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
+import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { drafts } from "./nativeDrafts";
 import { QueueSheet } from "./QueueSheet";
@@ -41,6 +43,8 @@ import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
+const noControls = () => null;
+const noControlSubscription = () => () => {};
 
 export type Routes = {
   Hubs: undefined;
@@ -408,11 +412,14 @@ export function ConversationScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [composerSetting, setComposerSetting] =
+    useState<ComposerSetting | null>(null);
   useFocusEffect(
     useCallback(
       () => () => {
         setQueueOpen(false);
         setSessionOpen(false);
+        setComposerSetting(null);
       },
       [],
     ),
@@ -485,6 +492,9 @@ export function ConversationScreen({
               );
             },
             () => store.getState().conversation,
+            () =>
+              !document.getSnapshot().submitting &&
+              store.getState().pendingMutation?.status !== "pending",
           )
         : null,
     [
@@ -496,6 +506,7 @@ export function ConversationScreen({
       focused,
       bindingGeneration,
       bindingInstance,
+      document,
     ],
   );
   useEffect(() => () => controls?.dispose(), [controls]);
@@ -525,13 +536,23 @@ export function ConversationScreen({
     () => groupTimeline(conversation?.items ?? []),
     [conversation?.items],
   );
+  const controlsState = useSyncExternalStore(
+    controls?.subscribe ?? noControlSubscription,
+    controls?.getSnapshot ?? noControls,
+  );
+  const settingsPending = controlsState?.pending != null;
   const pending = snapshot.pendingMutation?.status === "pending";
   const ready =
-    connected && snapshot.status === "open" && !refreshing && !pending;
+    connected &&
+    snapshot.status === "open" &&
+    !refreshing &&
+    !pending &&
+    !settingsPending;
   async function mutate(kind: "send" | "steer" | "queue" | "interrupt") {
     if (
       !service ||
       !ready ||
+      controls?.getSnapshot().pending != null ||
       (kind !== "interrupt" && unconfirmedSend !== null) ||
       store.getState().pendingMutation?.status === "pending"
     )
@@ -560,6 +581,20 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {composerSetting && conversation && controls ? (
+        <ComposerSettingsSheet
+          setting={composerSetting}
+          conversation={conversation}
+          controls={controls}
+          hubName={
+            activeProfile?.id === route.params.hubId
+              ? activeProfile.name
+              : "Disconnected hub"
+          }
+          ready={ready}
+          close={() => setComposerSetting(null)}
+        />
+      ) : null}
       {sessionOpen && conversation && controls ? (
         <SessionSheet
           conversation={conversation}
@@ -728,6 +763,34 @@ export function ConversationScreen({
               { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
             ]}
           >
+            {conversation ? (
+              <ComposerSettings
+                conversation={conversation}
+                disabled={!ready || !controls || draft.submitting}
+                pending={settingsPending}
+                open={(setting) => {
+                  Keyboard.dismiss();
+                  setComposerSetting(setting);
+                }}
+              />
+            ) : null}
+            {controlsState?.error &&
+            (controlsState.lastAction === "changeModel" ||
+              controlsState.lastAction === "setReasoningEffort") ? (
+              <Action
+                tone="quiet"
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setComposerSetting(
+                    controlsState.lastAction === "changeModel"
+                      ? "model"
+                      : "reasoning",
+                  );
+                }}
+              >
+                Review settings error
+              </Action>
+            ) : null}
             {draft.error ? (
               <Action tone="accent" onPress={document.retry}>
                 {draft.loaded ? "Retry saving" : "Retry loading draft"}

@@ -20,6 +20,8 @@ import type {
   InputItem,
   MethodName,
   MethodTypes,
+  ModelListParams,
+  ModelListResponse,
   MutationReceipt,
   Thread,
   ThreadCapabilities,
@@ -102,6 +104,10 @@ export interface ConversationService {
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
   refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
+}
+
+export interface ConversationModelCatalog {
+  models(): Promise<ModelListResponse>;
 }
 
 export interface QueueConversationService extends LiveConversationService {
@@ -314,7 +320,7 @@ function decodeMutationResult(
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
-): QueueConversationService {
+): QueueConversationService & ConversationModelCatalog {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -329,6 +335,7 @@ export function createConversationService(
   // null, so requireRef-only operations (setReasoningEffort, cancelQueued,
   // loadOlder) also fail before any wire call.
   let ref: string | null = null;
+  let modelScope: ModelListParams | null = null;
   // Retain the instance shown by the full read; a capability-only refresh
   // must not redirect a draft to a replacement session.
   let instanceId: string | null = null;
@@ -379,6 +386,7 @@ export function createConversationService(
     openEpoch += 1;
     const epoch = openEpoch;
     ref = null;
+    modelScope = null;
     instanceId = null;
     threadId = null;
     capabilities = null;
@@ -481,7 +489,9 @@ export function createConversationService(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
+        modelScope = readModelScope;
         instanceId = readInstanceId;
         threadId = response.thread.id;
         ref = threadRef;
@@ -514,7 +524,9 @@ export function createConversationService(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
+        modelScope = readModelScope;
         instanceId = readInstanceId;
         threadId = response.thread.id;
         ref = threadRef;
@@ -691,6 +703,16 @@ export function createConversationService(
       );
     },
 
+    async models() {
+      requireRef();
+      if (!modelScope) throw new Error("No model catalog scope is available.");
+      const epoch = openEpoch;
+      const catalog = await client.request("model/list", { ...modelScope });
+      if (epoch !== openEpoch)
+        throw new Error("The conversation changed while loading models.");
+      return catalog;
+    },
+
     async changeModel(modelProvider, model) {
       requireCap("changeModel", "changeModel");
       const threadRef = requireRef();
@@ -772,6 +794,7 @@ export function createConversationService(
       openEpoch += 1;
       opening = null;
       ref = null;
+      modelScope = null;
       instanceId = null;
       threadId = null;
       capabilities = null;

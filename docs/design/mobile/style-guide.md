@@ -48,6 +48,10 @@ Group routine activity with a concise, understandable summary and an accessible 
 
 Keep the input and its main action visually unified. Respect safe areas and the actual keyboard transition. Use native text editing, selection and dictation affordances. Attachment controls and secondary actions must not overpower the text. While work is running, distinguish steer, queue and stop through clear action placement and labels; do not imply a send succeeded before confirmation.
 
+Model and reasoning are composer controls, not session-management settings. Show the current session choices in the input footer beside the primary action, using compact labels with full accessible names and native-size touch regions. Keep model and reasoning separately tappable: model opens a searchable catalog, reasoning opens a short choice sheet. Their visible presence must not add a permanent extra toolbar row at ordinary text sizes. Let the footer wrap at accessibility sizes instead of hiding the controls or shrinking touch targets.
+
+These choices persist for subsequent session work; they are not per-message overrides. Preserve the draft when opening and dismissing either picker. Block sending during a settings mutation, show its pending state in the composer if its sheet is dismissed, and retain a visible route to any failure. Treat the server projection as authoritative, including capability and reasoning-ladder changes. Session management contains name, context and runtime controls.
+
 Scope drafts to hub and session. Preserve them through settings visits, backgrounding and relaunch; keep an uncertain submission distinct from a newer draft. With long dictation, pasted logs or large text, bound the input's growth and retain a reachable submit action above the keyboard. Ordinary OS dictation does not require the deferred interactive voice feature.
 
 ### Decisions and failures
