@@ -14,6 +14,7 @@ import { useStore } from "zustand";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
 import { HubPathField } from "./HubPathField";
+import { LaunchOverrides } from "./LaunchOverrides";
 import { createNewSessionStore } from "./newSession";
 import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -255,6 +256,14 @@ export function NewSessionScreen({
               Retry options
             </Action>
           ) : null}
+          <LaunchOverrides
+            key={JSON.stringify([hubId, form.cwd.trim()])}
+            client={ready ? client : null}
+            cwd={form.cwd.trim()}
+            value={form.launchOverrides}
+            onChange={form.setLaunchOverrides}
+            disabled={disabled || !form.cwd.trim()}
+          />
           <Copy>Opening prompt (optional)</Copy>
           <TextInput
             accessibilityLabel="Opening prompt"

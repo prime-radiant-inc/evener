@@ -1,7 +1,9 @@
 import { createStore } from "zustand/vanilla";
+import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   HarnessDescriptor,
+  LaunchConfigLayer,
   ModelDescriptor,
   Thread,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -16,6 +18,8 @@ interface Form {
   harness: string;
   model: ModelDescriptor | null;
   reasoning: string;
+  launchOverrides: LaunchConfigLayer;
+  setLaunchOverrides(value: LaunchConfigLayer): void;
   projects: string[];
   harnesses: HarnessDescriptor[];
   models: ModelDescriptor[];
@@ -46,6 +50,11 @@ export function createNewSessionStore(hubId: string) {
     harness: "",
     model: null,
     reasoning: "",
+    launchOverrides: {},
+    setLaunchOverrides(value) {
+      if (!get().submitting)
+        set({ launchOverrides: JSON.parse(JSON.stringify(value)) });
+    },
     projects: [],
     harnesses: [],
     models: [],
@@ -198,18 +207,31 @@ export function createNewSessionStore(hubId: string) {
       const { cwd, prompt, harness, model, reasoning, submitting } = get();
       if (!current || submitting || refreshingModels || !cwd.trim())
         return { status: "blocked" };
+      const launchOverrides = get().launchOverrides;
+      const scalars = resolveScalars(
+        {
+          model: model?.model,
+          modelProvider: model?.provider,
+          reasoningEffort: model?.reasoningEffortLevels?.includes(reasoning)
+            ? reasoning
+            : undefined,
+        },
+        launchOverrides,
+      );
       set({ submitting: true, error: null });
       try {
         const result = await current.start({
           cwd: cwd.trim(),
           ...(prompt.trim() ? { input: [{ type: "text", text: prompt }] } : {}),
           ...(harness ? { harness } : {}),
-          ...(model
-            ? { model: model.model, modelProvider: model.provider }
+          ...(scalars.model ? { model: scalars.model } : {}),
+          ...(scalars.modelProvider
+            ? { modelProvider: scalars.modelProvider }
             : {}),
-          ...(model?.reasoningEffortLevels?.includes(reasoning)
-            ? { reasoningEffort: reasoning }
+          ...(scalars.reasoningEffort
+            ? { reasoningEffort: scalars.reasoningEffort }
             : {}),
+          ...(Object.keys(launchOverrides).length ? { launchOverrides } : {}),
         });
         if (generation !== connection) return { status: "obsolete" };
         return { status: "created", hubId, thread: result.thread };
