@@ -17,6 +17,10 @@ import (
 // credential sources and are refused.
 var AllowedCredentialJSONTypes = map[string]bool{"service_account": true, "authorized_user": true}
 
+// googleTokenEndpoint is the only token_uri a credential JSON may name: the
+// endpoint Google's library uses by default for both credential types.
+const googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+
 // requiredCredentialJSONFields lists, per accepted type, the fields a token
 // source needs to mint a token. Google's parser accepts their absence and
 // fails only at the first request, so the gate checks them here. Presence is
@@ -77,6 +81,15 @@ func CheckCredentialJSON(raw []byte) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
+	}
+	// token_uri is where Google's library sends the refresh token or the
+	// signed assertion, so only Google's own endpoint is accepted; absent is
+	// fine, the library defaults to the same one.
+	if tokenURI, present := fields["token_uri"]; present {
+		var s string
+		if json.Unmarshal(tokenURI, &s) != nil || s != googleTokenEndpoint {
+			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(tokenURI))
+		}
 	}
 	if t == "service_account" {
 		if err := checkServiceAccountKey(values["private_key"]); err != nil {

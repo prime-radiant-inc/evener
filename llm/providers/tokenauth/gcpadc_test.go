@@ -354,6 +354,12 @@ func TestValidateCredentialJSON(t *testing.T) {
 	if err := ValidateCredentialJSON([]byte(unusableKeyJSON)); err == nil || !strings.Contains(err.Error(), "unusable private_key") {
 		t.Fatalf("err = %v, want a service_account whose key will not parse refused", err)
 	}
+	// The token endpoint is where the refresh token or the signed assertion
+	// goes; a credential naming any other must be refused.
+	const foreignEndpointJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/token"}`
+	if err := ValidateCredentialJSON([]byte(foreignEndpointJSON)); err == nil || !strings.Contains(err.Error(), "token_uri") {
+		t.Fatalf("err = %v, want a credential naming a foreign token endpoint refused", err)
+	}
 }
 
 // testServiceAccountJSON returns a service_account credential JSON whose

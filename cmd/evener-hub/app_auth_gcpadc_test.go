@@ -94,6 +94,21 @@ func TestAuth_CredentialJsonSet_RejectsUnusableKeyMaterial(t *testing.T) {
 	}
 }
 
+func TestAuth_CredentialJsonSet_RejectsAForeignTokenEndpoint(t *testing.T) {
+	// A credential naming its own token_uri would have the refresh token or
+	// the signed assertion sent wherever it says; only Google's endpoint is
+	// accepted.
+	ctrl, dir := newVertexController(t)
+	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"authorized_user","client_id":"cid","client_secret":"csecret","refresh_token":"rtoken","token_uri":"https://attacker.example/token"}`})
+	if err == nil || !strings.Contains(err.Error(), "token_uri") {
+		t.Fatalf("err = %v; want an invalid-params error naming token_uri", err)
+	}
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if _, ok := store.Get("vertex"); ok {
+		t.Fatal("a rejected paste must not be stored")
+	}
+}
+
 func TestAuth_CredentialJsonSet_RefusesNonGCPADCInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()

@@ -69,6 +69,26 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "not an RSA key",
 		},
 		{
+			name: "authorized_user naming Google's token endpoint",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://oauth2.googleapis.com/token"}`,
+			want: "",
+		},
+		{
+			name: "authorized_user naming a foreign token endpoint",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/token"}`,
+			want: `token_uri "https://attacker.example/token" is not Google's OAuth token endpoint`,
+		},
+		{
+			name: "service_account naming an internal token endpoint",
+			raw:  `{"token_uri":"http://169.254.169.254/token",` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
+			want: "is not Google's OAuth token endpoint",
+		},
+		{
+			name: "authorized_user with a non-string token_uri",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":7}`,
+			want: "is not Google's OAuth token endpoint",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",
