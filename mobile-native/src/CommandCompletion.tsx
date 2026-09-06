@@ -54,19 +54,26 @@ export function CommandCompletion({
         </View>
         <Action onPress={close}>Dismiss</Action>
       </View>
-      {state.loading ? (
-        <ActivityIndicator accessibilityLabel="Loading commands and skills" />
-      ) : null}
-      <ErrorMessage message={state.error} />
-      {state.error ? (
-        <Action disabled={state.loading} onPress={() => void catalog.refresh()}>
-          Retry commands
-        </Action>
-      ) : null}
       <FlatList
         data={items}
         style={{ maxHeight: 160 }}
         keyboardShouldPersistTaps="always"
+        ListHeaderComponent={
+          <>
+            {state.loading ? (
+              <ActivityIndicator accessibilityLabel="Loading commands and skills" />
+            ) : null}
+            <ErrorMessage message={state.error} />
+            {state.error ? (
+              <Action
+                disabled={state.loading}
+                onPress={() => void catalog.refresh()}
+              >
+                Retry commands
+              </Action>
+            ) : null}
+          </>
+        }
         keyExtractor={(item) => item.key}
         renderItem={({ item }) => (
           <Pressable
