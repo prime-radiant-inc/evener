@@ -439,6 +439,10 @@ func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
 func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
+	// Virtual time never advances, so closeRuntimeState's grace timer never
+	// expires on its own: close waits on the released start's real
+	// completion instead of racing a wall-clock window.
+	jm.clock = agenttest.NewFakeClock()
 	se := newBlockingStartStreamingExecutor()
 
 	resultCh := make(chan shellResult, 1)
