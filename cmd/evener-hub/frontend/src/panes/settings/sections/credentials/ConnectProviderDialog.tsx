@@ -8,7 +8,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./ConnectProviderDialog.module.css";
 import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
-import { AddInstanceDialog, ApiKeyDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 
@@ -27,7 +27,11 @@ const CLASS = {
   diagnostics: requireClass(styles.diagnostics, "ConnectProviderDialog.module.css", "diagnostics"),
 };
 
-type OpenEditor = { kind: "add" } | { kind: "apiKey"; name: string } | OAuthEditor | null;
+// A stored-value editor's kind doubles as the auth mode that offers it, so
+// the same lookup finds the instance a "Set API key" or "Set credential
+// JSON" editor is open for and closes the editor once that mode is gone.
+type StoredValueEditor = { kind: "apiKey" | "credentialJson"; name: string };
+type OpenEditor = { kind: "add" } | StoredValueEditor | OAuthEditor | null;
 
 const TEST_INTERRUPTED_MESSAGE = "Provider configuration refreshed while testing. Test the connection again.";
 
@@ -106,14 +110,21 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     );
   }, [instances]);
 
+  const storedValueEditorInstance = useCallback(
+    (editor: StoredValueEditor) =>
+      instances.find(
+        (candidate) => candidate.name === editor.name && (candidate.authModes ?? []).includes(editor.kind),
+      ),
+    [instances],
+  );
+
   useEffect(() => {
     setOpenEditor((editor) =>
-      editor?.kind === "apiKey" &&
-      !instances.some((instance) => instance.name === editor.name && (instance.authModes ?? []).includes("apiKey"))
+      (editor?.kind === "apiKey" || editor?.kind === "credentialJson") && !storedValueEditorInstance(editor)
         ? null
         : editor,
     );
-  }, [instances]);
+  }, [storedValueEditorInstance]);
 
   const closeEditor = useCallback(() => {
     operationVersion.current += 1;
@@ -173,11 +184,12 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     }
   }
 
-  if (openEditor?.kind === "apiKey") {
-    const instance = instances.find(
-      (candidate) => candidate.name === openEditor.name && (candidate.authModes ?? []).includes("apiKey"),
-    );
-    if (instance) return <ApiKeyDialog instance={instance} onCancel={closeEditor} onSuccess={closeEditor} />;
+  if (openEditor?.kind === "apiKey" || openEditor?.kind === "credentialJson") {
+    const instance = storedValueEditorInstance(openEditor);
+    if (instance) {
+      const Editor = openEditor.kind === "apiKey" ? ApiKeyDialog : CredentialJsonDialog;
+      return <Editor instance={instance} onCancel={closeEditor} onSuccess={closeEditor} />;
+    }
   }
   if (openEditor?.kind === "add") {
     return <AddInstanceDialog availableProviders={availableProviders} onCancel={closeEditor} onSuccess={closeEditor} />;
@@ -244,6 +256,7 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
               const providerName =
                 availableProviders.find((provider) => provider.id === instance.providerId)?.name ?? instance.providerId;
               const supportsApiKey = (instance.authModes ?? []).includes("apiKey");
+              const supportsCredentialJson = (instance.authModes ?? []).includes("credentialJson");
               const supportsOAuth = (instance.authModes ?? []).includes("oauth");
               const pending =
                 testState?.name === instance.name && testState.version === instanceVersion.current && testState.pending;
@@ -271,6 +284,14 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
                     {supportsApiKey && (
                       <Button variant="secondary" onClick={() => chooseEditor({ kind: "apiKey", name: instance.name })}>
                         {instance.hasStoredFile ? "Replace API key" : "Set API key"}
+                      </Button>
+                    )}
+                    {supportsCredentialJson && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => chooseEditor({ kind: "credentialJson", name: instance.name })}
+                      >
+                        {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                       </Button>
                     )}
                     {supportsOAuth && (
