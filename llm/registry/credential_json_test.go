@@ -114,6 +114,18 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "OAuth client configuration",
 		},
 		{
+			// The library's decode is case-insensitive and last-wins, so the
+			// key it will actually sign with is the later Private_Key.
+			name: "service_account whose later case-variant private_key overrides a good one",
+			raw:  strings.TrimSuffix(testServiceAccountJSON(t), "}") + `,"Private_Key":"not-a-real-key"}`,
+			want: "unusable private_key",
+		},
+		{
+			name: "authorized_user whose fields are all case variants",
+			raw:  `{"type":"authorized_user","Client_Id":"a","CLIENT_SECRET":"b","Refresh_Token":"c"}`,
+			want: "",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",

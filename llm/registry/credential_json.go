@@ -67,11 +67,27 @@ func CheckCredentialJSON(raw []byte) error {
 	if !AllowedCredentialJSONTypes[t] {
 		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", t)
 	}
-	// Raw messages, so an unrelated field Go cannot represent (a number past
-	// float64) does not decide the verdict; only the required fields are read.
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	// Every field the gate reads is decoded through a tagged field, the way
+	// Google's library reads it: key names match case-insensitively and the
+	// last occurrence wins, so the value checked here is the value the
+	// library will use. Raw messages, so an unrelated field Go cannot
+	// represent (a number past float64) does not decide the verdict.
+	var cred struct {
+		ClientEmail  json.RawMessage `json:"client_email"`
+		PrivateKey   json.RawMessage `json:"private_key"`
+		ClientID     json.RawMessage `json:"client_id"`
+		ClientSecret json.RawMessage `json:"client_secret"`
+		RefreshToken json.RawMessage `json:"refresh_token"`
+		TokenURI     json.RawMessage `json:"token_uri"`
+		Installed    json.RawMessage `json:"installed"`
+		Web          json.RawMessage `json:"web"`
+	}
+	if err := json.Unmarshal(raw, &cred); err != nil {
 		return fmt.Errorf("credential JSON: %w", err)
+	}
+	fields := map[string]json.RawMessage{
+		"client_email": cred.ClientEmail, "private_key": cred.PrivateKey,
+		"client_id": cred.ClientID, "client_secret": cred.ClientSecret, "refresh_token": cred.RefreshToken,
 	}
 	var missing []string
 	values := map[string]string{}
@@ -86,28 +102,18 @@ func CheckCredentialJSON(raw []byte) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
 	}
-	// Decoded through tagged fields, the way Google's library reads them, so
-	// a case variant of a key is seen here exactly as the library will see
-	// it. A top-level installed or web block makes the library return an
-	// OAuth client configuration with no token source instead of a
-	// credential; token_uri is where it sends the refresh token or the
-	// signed assertion, so only Google's own endpoints are accepted (absent
-	// or null is fine, the library defaults to the first).
-	var tagged struct {
-		TokenURI  json.RawMessage `json:"token_uri"`
-		Installed json.RawMessage `json:"installed"`
-		Web       json.RawMessage `json:"web"`
-	}
-	if err := json.Unmarshal(raw, &tagged); err != nil {
-		return fmt.Errorf("credential JSON: %w", err)
-	}
-	if isJSONValue(tagged.Installed) || isJSONValue(tagged.Web) {
+	// A top-level installed or web block makes the library return an OAuth
+	// client configuration with no token source instead of a credential;
+	// token_uri is where it sends the refresh token or the signed assertion,
+	// so only Google's own endpoints are accepted (absent or null is fine,
+	// the library defaults to the first).
+	if isJSONValue(cred.Installed) || isJSONValue(cred.Web) {
 		return errors.New("credential JSON carries an OAuth client configuration (installed/web), not a credential")
 	}
-	if isJSONValue(tagged.TokenURI) {
+	if isJSONValue(cred.TokenURI) {
 		var s string
-		if json.Unmarshal(tagged.TokenURI, &s) != nil || !googleTokenEndpoints[s] {
-			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(tagged.TokenURI))
+		if json.Unmarshal(cred.TokenURI, &s) != nil || !googleTokenEndpoints[s] {
+			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(cred.TokenURI))
 		}
 	}
 	if t == "service_account" {
