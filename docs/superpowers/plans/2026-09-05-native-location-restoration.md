@@ -4,7 +4,9 @@ Jesse delegated routine decisions and approved iterative native development. Per
 
 Use the existing conversation open/reconnect path so restoration fetches current server state and never sends or replays input. Keep SQLite draft recovery independent. Malformed/obsolete bookmarks fall back to Hubs. Storage failures show a concise local-restoration notice without blocking ordinary navigation. Persist after navigation and selected-profile state agree.
 
-- [ ] Behavioral tests for restoring valid locations, removed hubs, malformed state, safe stack construction and storage round trips.
-- [ ] Integrate startup profile selection and navigation persistence.
+- [x] Behavioral tests for restoring valid locations, removed hubs, malformed state, safe stack construction and storage round trips.
+- [x] Integrate startup profile selection and navigation persistence.
 - [ ] Rebuild both platforms, exercise Android font-change recreation and both-platform cold starts, verify back navigation and hub isolation.
 - [ ] Independent review, exact evidence and remaining limitations.
+
+[Runtime evidence](../../design/mobile/location-restoration-evidence.md) records successful cold starts, Android recreation and cross-hub identity. Final acceptance remains open for the Android system Back defect and broader lifecycle checks.
