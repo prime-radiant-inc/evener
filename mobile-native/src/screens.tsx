@@ -24,6 +24,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import type { AskBatch } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -41,6 +42,7 @@ import {
   pendingQuestions,
   type QuestionSelections,
 } from "./questionAnswers";
+import { QuestionBatches } from "./questionBatches";
 import { RosterSearch } from "./rosterSearch";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
@@ -485,9 +487,20 @@ export function ConversationScreen({
   const [sessionOpen, setSessionOpen] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [questionsOpen, setQuestionsOpen] = useState(false);
-  const [answeredQuestions, setAnsweredQuestions] = useState<string | null>(
-    null,
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
+  const questionBatches = useMemo(() => new QuestionBatches(), [store]);
+  const batches = useSyncExternalStore(
+    questionBatches.subscribe,
+    questionBatches.getSnapshot,
   );
+  useEffect(() => {
+    const reconcile = () =>
+      questionBatches.reconcile(
+        pendingQuestions(store.getState().conversation),
+      );
+    reconcile();
+    return store.subscribe(reconcile);
+  }, [store, questionBatches]);
   const [composerSetting, setComposerSetting] =
     useState<ComposerSetting | null>(null);
   useFocusEffect(
@@ -660,11 +673,11 @@ export function ConversationScreen({
     !refreshing &&
     !pending &&
     !settingsPending;
-  const questions = pendingQuestions(conversation);
-  const questionSignature = JSON.stringify(questions);
-  async function sendAnswers(selections: QuestionSelections) {
+  const questions = batches.flatMap((batch) => batch.questions);
+  async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
     const current = store.getState();
-    const text = composeQuestionAnswers(questions, selections);
+    questionBatches.reconcile(pendingQuestions(current.conversation));
+    const text = composeQuestionAnswers(batch.questions, selections);
     if (
       !service ||
       !ready ||
@@ -677,21 +690,20 @@ export function ConversationScreen({
       current.pendingMutation?.status === "pending" ||
       !current.conversation?.capabilities.send ||
       text === null ||
-      answeredQuestions === questionSignature ||
-      JSON.stringify(pendingQuestions(current.conversation)) !==
-        questionSignature
+      !questionBatches.getSnapshot().includes(batch)
     )
       return;
     setActionError(null);
     let acceptedAnswers = false;
     try {
       await document.submitText(text, async (input) => {
+        if (!questionBatches.begin(batch)) return false;
         const previous = store.getState().lastAcceptedMutation;
         await store.getState().send(service, [{ type: "text", text: input }]);
         const accepted = store.getState().lastAcceptedMutation;
         if (!accepted || accepted === previous || accepted.kind !== "send")
           return false;
-        setAnsweredQuestions(questionSignature);
+        questionBatches.finish(batch.id, true);
         setQuestionsOpen(false);
         acceptedAnswers = true;
         return true;
@@ -708,6 +720,8 @@ export function ConversationScreen({
       setActionError(
         "Could not confirm delivery. Your answers are retained; check delivery before trying again.",
       );
+    } finally {
+      questionBatches.finish(batch.id, false);
     }
   }
   async function mutate(kind: "send" | "steer" | "queue" | "interrupt") {
@@ -745,15 +759,15 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
-      {questions.length ? (
+      {batches.map((batch, index) => (
         <QuestionSheet
-          key={questionSignature}
-          visible={questionsOpen}
+          key={batch.id + JSON.stringify(batch.questions)}
+          visible={questionsOpen && index === 0}
           destination={{
             hubId: route.params.hubId,
             sessionRef: route.params.ref,
           }}
-          questions={questions}
+          questions={batch.questions}
           hubName={activeProfile?.name ?? "Hub"}
           ready={
             ready &&
@@ -761,7 +775,7 @@ export function ConversationScreen({
             draft.loaded &&
             !draft.error &&
             unconfirmedSend === null &&
-            answeredQuestions !== questionSignature
+            !batch.sending
           }
           pending={draft.submitting}
           error={
@@ -770,9 +784,9 @@ export function ConversationScreen({
               : actionError
           }
           close={() => setQuestionsOpen(false)}
-          send={sendAnswers}
+          send={(selections) => sendAnswers(batch, selections)}
         />
-      ) : null}
+      ))}
       {approvalsOpen && conversation && approvalControls ? (
         <ApprovalSheet
           approvals={conversation.pendingApprovals}
@@ -934,9 +948,7 @@ export function ConversationScreen({
                 setQuestionsOpen(true);
               }}
             >
-              {answeredQuestions === questionSignature
-                ? "Answers sent · refresh to update"
-                : `${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
+              {`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
             </Action>
           ) : null}
           {conversation?.pendingApprovals.length ? (
