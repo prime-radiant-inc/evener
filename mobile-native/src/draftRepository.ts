@@ -1,3 +1,9 @@
+import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import {
+	type DraftImage,
+	type DraftImageData,
+	imageInput,
+} from "./draftImages";
 import {
 	decodeQuestionSelections,
 	type QuestionSelections,
@@ -5,6 +11,8 @@ import {
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
+	images?: DraftImage[];
+	unconfirmedImages?: DraftImage[];
 }
 
 export interface DraftDestination {
@@ -20,6 +28,15 @@ export interface DraftDatabase {
 
 export class DraftRepository {
 	constructor(private readonly db: DraftDatabase) {
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
+      hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
+      media_type TEXT NOT NULL, data TEXT NOT NULL,
+      PRIMARY KEY (hub_id, session_ref, id)
+    )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS draft_image_sets (
+      hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, images TEXT NOT NULL,
+      unconfirmed_images TEXT NOT NULL, PRIMARY KEY (hub_id, session_ref)
+    )`);
 		db.execSync(`CREATE TABLE IF NOT EXISTS drafts (
       hub_id TEXT NOT NULL,
       session_ref TEXT NOT NULL,
@@ -105,16 +122,135 @@ export class DraftRepository {
 		);
 	}
 	read(destination: DraftDestination): DraftRecord {
-		return (
-			this.db.getFirstSync<DraftRecord>(
-				"SELECT draft, unconfirmed FROM drafts WHERE hub_id = ? AND session_ref = ?",
-				destination.hubId,
-				destination.sessionRef,
-			) ?? { draft: "", unconfirmed: null }
+		const record = this.db.getFirstSync<DraftRecord>(
+			"SELECT draft, unconfirmed FROM drafts WHERE hub_id = ? AND session_ref = ?",
+			destination.hubId,
+			destination.sessionRef,
+		) ?? { draft: "", unconfirmed: null };
+		const row = this.db.getFirstSync<{
+			images: string;
+			unconfirmed_images: string;
+		}>(
+			"SELECT images, unconfirmed_images FROM draft_image_sets WHERE hub_id = ? AND session_ref = ?",
+			destination.hubId,
+			destination.sessionRef,
 		);
+		if (row) {
+			const images = parseImages(row.images);
+			const unconfirmedImages = parseImages(row.unconfirmed_images);
+			for (const image of [...images, ...unconfirmedImages])
+				this.requireImage(destination, image);
+			if (images.length) record.images = images;
+			if (unconfirmedImages.length)
+				record.unconfirmedImages = unconfirmedImages;
+		}
+		return record;
 	}
 
-	write(destination: DraftDestination, record: DraftRecord): void {
+	private requireImage(destination: DraftDestination, image: DraftImage) {
+		const row = this.db.getFirstSync<{ media_type: string }>(
+			"SELECT media_type FROM draft_images WHERE hub_id = ? AND session_ref = ? AND id = ?",
+			destination.hubId,
+			destination.sessionRef,
+			image.id,
+		);
+		if (!row || row.media_type !== image.mediaType)
+			throw new Error("Saved image is unavailable.");
+		return row;
+	}
+
+	imageInputs(destination: DraftDestination, images: DraftImage[]) {
+		return images.map((image) => {
+			this.requireImage(destination, image);
+			const row = this.db.getFirstSync<{ data: string }>(
+				"SELECT data FROM draft_images WHERE hub_id = ? AND session_ref = ? AND id = ?",
+				destination.hubId,
+				destination.sessionRef,
+				image.id,
+			);
+			if (!row) throw new Error("Saved image is unavailable.");
+			return imageInput(image, row.data);
+		});
+	}
+
+	write(
+		destination: DraftDestination,
+		record: DraftRecord,
+		additions: DraftImageData[] = [],
+	): void {
+		const images = parseImages(JSON.stringify(record.images ?? []));
+		const unconfirmedImages = parseImages(
+			JSON.stringify(record.unconfirmedImages ?? []),
+		);
+		const referenced = [...images, ...unconfirmedImages];
+		this.db.execSync("SAVEPOINT draft_write");
+		try {
+			for (const image of additions) {
+				if (
+					!referenced.some(
+						(item) =>
+							item.id === image.id && item.mediaType === image.mediaType,
+					) ||
+					!image.data
+				)
+					throw new Error("Image must belong to this draft.");
+				const existing = this.db.getFirstSync<{
+					data: string;
+					media_type: string;
+				}>(
+					"SELECT data, media_type FROM draft_images WHERE hub_id = ? AND session_ref = ? AND id = ?",
+					destination.hubId,
+					destination.sessionRef,
+					image.id,
+				);
+				if (
+					existing &&
+					(existing.data !== image.data ||
+						existing.media_type !== image.mediaType)
+				)
+					throw new Error("Saved image identity cannot be replaced.");
+				if (!existing)
+					this.db.runSync(
+						"INSERT INTO draft_images (hub_id, session_ref, id, media_type, data) VALUES (?, ?, ?, ?, ?)",
+						destination.hubId,
+						destination.sessionRef,
+						image.id,
+						image.mediaType,
+						image.data,
+					);
+			}
+			for (const image of referenced) this.requireImage(destination, image);
+			if (referenced.length)
+				this.db.runSync(
+					`INSERT INTO draft_image_sets (hub_id, session_ref, images, unconfirmed_images) VALUES (?, ?, ?, ?)
+        ON CONFLICT (hub_id, session_ref) DO UPDATE SET images = excluded.images, unconfirmed_images = excluded.unconfirmed_images`,
+					destination.hubId,
+					destination.sessionRef,
+					JSON.stringify(images),
+					JSON.stringify(unconfirmedImages),
+				);
+			else
+				this.db.runSync(
+					"DELETE FROM draft_image_sets WHERE hub_id = ? AND session_ref = ?",
+					destination.hubId,
+					destination.sessionRef,
+				);
+			this.writeText(destination, record);
+			const ids = [...new Set(referenced.map((image) => image.id))];
+			this.db.runSync(
+				`DELETE FROM draft_images WHERE hub_id = ? AND session_ref = ?${ids.length ? ` AND id NOT IN (${ids.map(() => "?").join(",")})` : ""}`,
+				destination.hubId,
+				destination.sessionRef,
+				...ids,
+			);
+			this.db.execSync("RELEASE draft_write");
+		} catch (error) {
+			this.db.execSync("ROLLBACK TO draft_write; RELEASE draft_write");
+			throw error;
+		}
+	}
+
+	private writeText(destination: DraftDestination, record: DraftRecord): void {
 		if (record.draft === "" && record.unconfirmed === null) {
 			this.db.runSync(
 				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
@@ -136,10 +272,43 @@ export class DraftRepository {
 	}
 
 	removeHub(hubId: string): void {
+		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
+		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_positions WHERE hub_id = ?", hubId);
 	}
+}
+
+function parseImages(raw: string): DraftImage[] {
+	const images: unknown = JSON.parse(raw);
+	if (!Array.isArray(images) || images.length > MAX_ATTACHMENTS)
+		throw new Error("Invalid saved images.");
+	const ids = new Set<string>();
+	const markers = new Set<number>();
+	for (const image of images) {
+		if (
+			!image ||
+			typeof image.id !== "string" ||
+			!image.id ||
+			ids.has(image.id) ||
+			!Number.isSafeInteger(image.marker) ||
+			image.marker < 1 ||
+			markers.has(image.marker) ||
+			typeof image.mediaType !== "string" ||
+			!image.mediaType.startsWith("image/") ||
+			(image.name !== undefined && typeof image.name !== "string")
+		)
+			throw new Error("Invalid saved image.");
+		ids.add(image.id);
+		markers.add(image.marker);
+	}
+	return images.map((image) => ({
+		id: image.id,
+		marker: image.marker,
+		mediaType: image.mediaType,
+		...(image.name === undefined ? {} : { name: image.name }),
+	}));
 }
 
 /** Definitions are compared per question so another batch cannot erase edits. */

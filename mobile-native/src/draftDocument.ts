@@ -1,3 +1,11 @@
+import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import {
+	insertMarker,
+	markerText,
+	stripMarker,
+} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
+import type { InputAttachment } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
+import type { DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type {
 	DraftDestination,
@@ -22,9 +30,13 @@ export class DraftDocument {
 	};
 	private listeners = new Set<() => void>();
 	private forgotten = false;
+	private unsavedImages = new Map<string, DraftImageData>();
 
 	constructor(
-		private repository: () => Pick<DraftRepository, "read" | "write">,
+		private repository: () => Pick<
+			DraftRepository,
+			"read" | "write" | "imageInputs"
+		>,
 		private destination: DraftDestination,
 	) {
 		this.retry();
@@ -44,7 +56,19 @@ export class DraftDocument {
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten) return;
 		try {
-			this.repository().write(this.destination, record);
+			const referenced = new Set(
+				[...(record.images ?? []), ...(record.unconfirmedImages ?? [])].map(
+					(image) => image.id,
+				),
+			);
+			this.repository().write(
+				this.destination,
+				record,
+				[...this.unsavedImages.values()].filter((image) =>
+					referenced.has(image.id),
+				),
+			);
+			this.unsavedImages.clear();
 			this.update({ record, error: null });
 		} catch (error) {
 			this.update({
@@ -75,6 +99,7 @@ export class DraftDocument {
 	};
 	forget() {
 		this.forgotten = true;
+		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
 			loaded: false,
@@ -89,39 +114,115 @@ export class DraftDocument {
 			/* The snapshot retains unsaved input and its error. */
 		}
 	}
-	async submit(operation: (text: string) => Promise<boolean>) {
+
+	addImage(image: DraftImageData, cursor?: number) {
+		if (!this.snapshot.loaded) return;
+		const { data: _data, ...reference } = image;
+		const record = this.snapshot.record;
+		const images = record.images ?? [];
+		if (
+			images.length >= MAX_ATTACHMENTS ||
+			images.some((item) => item.marker === image.marker) ||
+			[...images, ...(record.unconfirmedImages ?? [])].some(
+				(item) => item.id === image.id,
+			)
+		)
+			throw new Error("This image cannot be added to the draft.");
+		const position = Math.max(
+			0,
+			Math.min(cursor ?? record.draft.length, record.draft.length),
+		);
+		const text = insertMarker(
+			record.draft,
+			position,
+			position,
+			markerText(image.marker),
+		).value;
+		this.unsavedImages.set(image.id, image);
+		try {
+			this.persist(
+				{
+					...record,
+					draft: text,
+					images: [...(record.images ?? []), reference],
+				},
+				true,
+			);
+		} catch {
+			/* Retain the image bytes and reference for explicit save retry. */
+		}
+	}
+
+	removeImage(id: string) {
+		if (!this.snapshot.loaded) return;
+		const record = this.snapshot.record;
+		const image = record.images?.find((item) => item.id === id);
+		if (!image) return;
+		const images = record.images?.filter((item) => item.id !== id);
+		try {
+			this.persist(
+				{
+					...record,
+					draft: stripMarker(record.draft, undefined, image.marker).value,
+					images: images?.length ? images : undefined,
+				},
+				true,
+			);
+		} catch {
+			/* The visible removal can be retried without deleting other images. */
+		}
+	}
+	async submit(
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+	) {
 		return this.submitContent(this.snapshot.record.draft, false, operation);
 	}
 	async submitText(
 		text: string,
-		operation: (text: string) => Promise<boolean>,
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
 	) {
 		return this.submitContent(text, true, operation);
 	}
 	private async submitContent(
 		text: string,
 		preserveDraft: boolean,
-		operation: (text: string) => Promise<boolean>,
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
+		const images = preserveDraft ? [] : (record.images ?? []);
 		if (
 			!loaded ||
 			submitting ||
 			error ||
 			record.unconfirmed !== null ||
-			!text.trim()
+			(!text.trim() && images.length === 0)
 		)
 			return;
 		// Persist before invoking any transport operation. A crash after this point
 		// can only establish uncertainty, never that it is safe to replay the input.
+		const inputImages = this.repository().imageInputs(this.destination, images);
 		this.persist(
-			{ draft: preserveDraft ? record.draft : "", unconfirmed: text },
+			{
+				draft: preserveDraft ? record.draft : "",
+				unconfirmed: text,
+				...(preserveDraft && record.images?.length
+					? { images: record.images }
+					: {}),
+				...(images.length ? { unconfirmedImages: images } : {}),
+			},
 			false,
 		);
 		this.update({ submitting: true });
 		try {
-			if (await operation(text))
-				this.persist({ ...this.snapshot.record, unconfirmed: null }, true);
+			if (await operation(text, inputImages))
+				this.persist(
+					{
+						...this.snapshot.record,
+						unconfirmed: null,
+						unconfirmedImages: undefined,
+					},
+					true,
+				);
 		} finally {
 			this.update({ submitting: false });
 		}
@@ -129,18 +230,40 @@ export class DraftDocument {
 	dismiss() {
 		if (!this.snapshot.loaded || this.snapshot.submitting) return;
 		try {
-			this.persist({ ...this.snapshot.record, unconfirmed: null }, true);
+			this.persist(
+				{
+					...this.snapshot.record,
+					unconfirmed: null,
+					unconfirmedImages: undefined,
+				},
+				true,
+			);
 		} catch {
 			/* Retry retains the requested recovery state. */
 		}
 	}
 	restore() {
 		const { record, loaded, submitting } = this.snapshot;
-		if (!loaded || submitting || record.unconfirmed === null) return;
+		if (
+			!loaded ||
+			submitting ||
+			record.unconfirmed === null ||
+			record.images?.length
+		)
+			return;
 		const text = restoreUnconfirmedDraft(record.draft, record.unconfirmed);
 		if (text === null) return;
 		try {
-			this.persist({ draft: text, unconfirmed: null }, true);
+			this.persist(
+				{
+					draft: text,
+					unconfirmed: null,
+					...(record.unconfirmedImages?.length
+						? { images: record.unconfirmedImages }
+						: {}),
+				},
+				true,
+			);
 		} catch {
 			/* Unsaved recovered text stays visible. */
 		}

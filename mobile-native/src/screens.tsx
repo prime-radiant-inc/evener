@@ -769,10 +769,12 @@ export function ConversationScreen({
     setActionError(null);
     try {
       if (kind !== "interrupt")
-        await document.submit(async (text) => {
+        await document.submit(async (text, images) => {
           store.getState().setDraft(text);
           const previous = store.getState().lastAcceptedMutation;
-          await store.getState()[kind](service, buildComposerInput(text));
+          await store
+            .getState()
+            [kind](service, buildComposerInput(text, images));
           const accepted = store.getState().lastAcceptedMutation;
           return (
             accepted != null && accepted !== previous && accepted.kind === kind

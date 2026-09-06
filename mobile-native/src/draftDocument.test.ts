@@ -27,6 +27,132 @@ afterEach(() => {
 });
 
 describe("durable draft lifecycle", () => {
+	it("rejects a duplicate image identity without changing the existing draft", () => {
+		const { document } = setup();
+		const image = {
+			id: "photo",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		};
+		document.addImage(image);
+		const before = document.getSnapshot().record;
+		expect(() => document.addImage({ ...image, data: "different" })).toThrow();
+		expect(document.getSnapshot().record).toEqual(before);
+		expect(document.getSnapshot().error).toBeNull();
+	});
+
+	it("keeps images added while a submission is in flight and removes only their own markers", async () => {
+		const { document, repository, destination } = setup();
+		const first = {
+			id: "first",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		};
+		const second = {
+			id: "second",
+			marker: 2,
+			mediaType: "image/png",
+			data: "BAUG",
+		};
+		document.addImage(first);
+		await document.submit(async (_text, images) => {
+			expect(images).toHaveLength(1);
+			document.edit("newer ");
+			document.addImage(second);
+			return true;
+		});
+		expect(
+			repository.read(destination).images?.map((image) => image.id),
+		).toEqual(["second"]);
+		expect(() => repository.imageInputs(destination, [first])).toThrow();
+		document.removeImage("second");
+		expect(repository.read(destination)).toEqual({
+			draft: "newer ",
+			unconfirmed: null,
+		});
+		expect(() => repository.imageInputs(destination, [second])).toThrow();
+	});
+
+	it("retains a failed image save for explicit retry without dispatching incomplete bytes", async () => {
+		const { db, document, repository, destination } = setup();
+		db.exec("PRAGMA query_only = ON");
+		document.addImage({
+			id: "photo",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		});
+		expect(document.getSnapshot().record.images?.[0]?.id).toBe("photo");
+		expect(document.getSnapshot().error).not.toBeNull();
+		let sent = false;
+		await document.submit(async () => {
+			sent = true;
+			return true;
+		});
+		expect(sent).toBe(false);
+		db.exec("PRAGMA query_only = OFF");
+		document.retry();
+		expect(document.getSnapshot().error).toBeNull();
+		expect(
+			repository.imageInputs(
+				destination,
+				repository.read(destination).images ?? [],
+			)[0]?.data,
+		).toBe("AQID");
+	});
+
+	it("checkpoints image-only input before dispatch and retains it through uncertain recovery", async () => {
+		const { repository, destination } = setup();
+		const image = { id: "photo", marker: 1, mediaType: "image/png" };
+		repository.write(
+			destination,
+			{ draft: "", unconfirmed: null, images: [image] },
+			[{ ...image, data: "AQID" }],
+		);
+		const document = new DraftDocument(() => repository, destination);
+		let sent = false;
+		await document.submit(async (text, images) => {
+			sent = true;
+			expect(text).toBe("");
+			expect(images).toEqual([
+				{ marker: 1, mediaType: "image/png", data: "AQID" },
+			]);
+			expect(repository.read(destination).unconfirmedImages).toEqual([image]);
+			return false;
+		});
+		expect(sent).toBe(true);
+		const reopened = new DraftDocument(() => repository, destination);
+		expect(reopened.getSnapshot().record.unconfirmed).toBe("");
+		reopened.restore();
+		expect(repository.read(destination)).toEqual({
+			draft: "",
+			unconfirmed: null,
+			images: [image],
+		});
+		await reopened.submit(async () => true);
+		expect(() => repository.imageInputs(destination, [image])).toThrow();
+	});
+
+	it("a structured answer preserves ordinary images and manual restore does not replace newer images", async () => {
+		const { repository, destination } = setup();
+		const image = { id: "photo", marker: 1, mediaType: "image/png" };
+		repository.write(
+			destination,
+			{ draft: "", unconfirmed: null, images: [image] },
+			[{ ...image, data: "AQID" }],
+		);
+		const document = new DraftDocument(() => repository, destination);
+		await document.submitText("answer", async () => false);
+		expect(repository.read(destination).images).toEqual([image]);
+		expect(repository.read(destination).unconfirmedImages).toBeUndefined();
+		document.restore();
+		expect(repository.read(destination).unconfirmed).toBe("answer");
+		document.dismiss();
+		expect(repository.imageInputs(destination, [image])).toHaveLength(1);
+	});
+
 	it("keeps exact text after a document is recreated", () => {
 		const { document, repository, destination } = setup();
 		const input = "  draft\nwith unicode 🦋  ";
