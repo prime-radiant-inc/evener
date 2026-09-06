@@ -92,7 +92,7 @@ func newEndedRenameFixture(t *testing.T, projectDir string) endedRenameFixture {
 	source.inputs.Tree.Projects[0].Name = projectKey
 	source.inputs.Tree.Projects[0].Current[0].Project = projectKey
 	navigation := newTestNavigationService(t, source)
-	if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	oldSave := saveSessionMetaForRename
@@ -126,7 +126,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		registry := appsource.NewRegistry()
 		registry.Add(live)
 		navigation := newTestNavigationService(t, source)
-		if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, registry, navigation, nil)

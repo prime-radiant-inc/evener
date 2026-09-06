@@ -62,7 +62,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		source.inputs.Tree.Projects[0].Key = project.ID
 		source.mu.Unlock()
 		web.navigation = newTestNavigationService(t, source)
-		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		source.changeTitle("project-full")
@@ -110,7 +110,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		source.inputs.Tree.Projects[0].Key = project.ID
 		source.mu.Unlock()
 		web.navigation = newTestNavigationService(t, source)
-		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		noop, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
@@ -161,7 +161,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		source.inputs.Tree.Projects[0].Key = project.ID
 		source.mu.Unlock()
 		web.navigation = newTestNavigationService(t, source)
-		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		source.changeTitle("partial")
@@ -203,7 +203,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		source.inputs.Tree.Projects[0].Key = project.ID
 		source.mu.Unlock()
 		web.navigation = newTestNavigationService(t, source)
-		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		params := appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath}
@@ -259,7 +259,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		source.inputs.Tree.Projects[0].Key = filepath.Base(stateDir)
 		source.mu.Unlock()
 		web.navigation = newTestNavigationService(t, source)
-		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 			t.Fatal(err)
 		}
 		source.changeTitle("session-changed")

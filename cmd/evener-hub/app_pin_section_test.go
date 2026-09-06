@@ -25,7 +25,7 @@ func newPinNavigationAppWireWeb(t *testing.T, withSection bool) (*WebServer, *hu
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
-	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !withSection {
@@ -107,7 +107,7 @@ func TestHubSessionPinAssignAndUnpinPreserveCanonicalIdempotentReceipts(t *testi
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store, PokeAttention: func() { attentionCalls++ }})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
-	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,24 +209,33 @@ func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
 
-	representation, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourcePinCatalog})
+	result, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourcePinCatalog}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog, ok := representation.Object.(hubapi.NavigationPinSectionCatalog)
-	if !ok {
-		t.Fatalf("catalog type=%T", representation.Object)
+	var catalogSnapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &catalogSnapshot); err != nil {
+		t.Fatalf("decode pin catalog snapshot: %v", err)
 	}
-	if len(catalog.PinSections) != 2 || catalog.PinSections[0].ID != dormant.ID || catalog.PinSections[0].Count != 1 || catalog.PinSections[1].ID != empty.ID || catalog.PinSections[1].Count != 0 {
-		t.Fatalf("catalog=%+v, want durable dormant and empty sections", catalog.PinSections)
+	pinSections := 0
+	for _, entity := range catalogSnapshot.Entities {
+		if entity.Kind == "pin_section" {
+			pinSections++
+		}
 	}
-	emptyRepresentation, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: empty.ID})
+	if pinSections != 2 {
+		t.Fatalf("pin section entities = %d, want 2 (%s and %s)", pinSections, dormant.ID, empty.ID)
+	}
+	emptyResult, err := web.navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourcePinSection, SectionID: empty.ID}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	emptyResource, ok := emptyRepresentation.Object.(hubapi.NavigationSectionResource)
-	if !ok || len(emptyResource.Sessions) != 0 {
-		t.Fatalf("empty resource=%T %+v", emptyRepresentation.Object, emptyRepresentation.Object)
+	var emptySnapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(emptyResult.Response.Data, &emptySnapshot); err != nil {
+		t.Fatalf("decode empty pin section snapshot: %v", err)
+	}
+	if len(emptySnapshot.Entities) != 0 {
+		t.Fatalf("empty section entities = %+v, want none", emptySnapshot.Entities)
 	}
 }
 

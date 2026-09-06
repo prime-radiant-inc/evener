@@ -6,8 +6,17 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
+import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
+import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
+import {
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  type ResourceKey,
+  type ResourceState,
+} from "../../stores/navigation/types";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -24,6 +33,7 @@ import type {
   RailSession,
   SessionRailNode,
 } from "./railNodes";
+import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
@@ -53,7 +63,7 @@ function seedPinCatalogForPicker(): void {
     error: null,
     generationID: generation,
   };
-  navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
+  navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
 }
 
@@ -203,6 +213,75 @@ async function openMenu(name: RegExp | string) {
   await user.click(screen.getByRole("button", { name }));
   return user;
 }
+
+function normalizedRailResource(
+  key: Extract<ResourceKey, { kind: "project_page" | "pin_section" }>,
+): NormalizedResource {
+  const parentKey = `${navigationViewScope(key)}/entity/${"1".repeat(64)}`;
+  const childKey = `${navigationViewScope(key)}/entity/${"2".repeat(64)}`;
+  return {
+    key,
+    graph: normalizedGraphFromSnapshot({
+      metadata: {},
+      entities: [
+        { key: parentKey, kind: "session", value: apiNode({ ref: "parent", title: "Parent", children: [] }) },
+        { key: childKey, kind: "session", value: apiNode({ ref: "child", title: "Child", children: [] }) },
+      ],
+      containers: [
+        {
+          key: navigationRootContainerKey(key, "sessions"),
+          owner: { kind: "resource_root", slot: "sessions" },
+          children: [parentKey],
+        },
+        {
+          key: navigationOwnedContainerKey(parentKey, "children"),
+          owner: { kind: "entity", entityKey: parentKey, slot: "children" },
+          children: [childKey],
+        },
+        {
+          key: navigationOwnedContainerKey(childKey, "children"),
+          owner: { kind: "entity", entityKey: childKey, slot: "children" },
+          children: [],
+        },
+      ],
+    }),
+    version: { generationId: generation, revision: 1, etag: "v2" },
+    presence: "present",
+  };
+}
+
+test.each([
+  [
+    "archived project page",
+    { kind: "project_page", projectKey: "project", tier: "archived", offset: 0, limit: 50 },
+    { tier: "archived", project_key: "project" },
+    "Unarchive",
+  ],
+  [
+    "pinned section",
+    { kind: "pin_section", sectionId: "research", offset: 0, limit: 50 },
+    { pin_section_id: "research" },
+    "Unpin",
+  ],
+] as const)(
+  "normalized V2 %s preserves context through recursive rail projection and actions",
+  async (_name, key, context, action) => {
+    const resource = normalizedRailResource(key);
+    const model = selectRailModel(resource);
+    const parent = [...model.sessions.values()].find((session) => session.ref === "parent");
+    const child = [...model.sessions.values()].find((session) => session.ref === "child");
+    expect(parent).toMatchObject(context);
+    expect(child).toMatchObject(context);
+    if (!parent) throw new Error("expected projected parent session");
+
+    const acts = actions();
+    render(<RailRow node={sessionRailNode(parent)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: action }));
+    if (action === "Unarchive") expect(acts.onToggleArchiveSession).toHaveBeenCalledWith(parent);
+    else expect(acts.onUnpinRequest).toHaveBeenCalledWith(parent);
+  },
+);
 
 describe("cadenceStateFor", () => {
   test.each([
@@ -1364,6 +1443,192 @@ describe("session row", () => {
 });
 
 describe("project row", () => {
+  test("descendant-only project changes do not invoke the project RailRow again", () => {
+    // This fails until RailRow's memo boundary compares project rows by the
+    // fields ProjectRow renders/captures instead of by ancestor node identity.
+    const observer = vi.fn();
+    const rowInfo = info({ hasChildren: true });
+    const rowActions = actions();
+    const firstSession = apiNode({ row_id: "project:p1:local:first", ref: "local:first", session_id: "first" });
+    const secondSession = apiNode({ row_id: "project:p1:local:second", ref: "local:second", session_id: "second" });
+    const firstProject = apiProject({ sessions: [firstSession] });
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode(firstProject, [sessionRailNode(firstSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={projectRailNode({ ...firstProject, sessions: [secondSession] }, [sessionRailNode(secondSession)])}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(0);
+  });
+
+  test.each([
+    ["node id", (node: ProjectRailNode) => ({ ...node, id: "projectnode:p1-replaced" })],
+    ["display name", (node: ProjectRailNode) => ({ ...node, displayName: "Decorated project" })],
+    ["resource error", (node: ProjectRailNode) => ({ ...node, resourceError: "load failed" })],
+    ["retry callback", (node: ProjectRailNode) => ({ ...node, retry: vi.fn() })],
+    ["project key", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, key: "p2" } })],
+    ["project name", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, name: "Renamed" } })],
+    [
+      "project working directory",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, working_dir: "/repo/next" } }),
+    ],
+    [
+      "project rollup state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_state: "active" } }),
+    ],
+    ["project attention count", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, rollup_attn: 2 } })],
+    ["project favorite", (node: ProjectRailNode) => ({ ...node, project: { ...node.project, favorite: true } })],
+    [
+      "project archive state",
+      (node: ProjectRailNode) => ({ ...node, project: { ...node.project, is_archived: true } }),
+    ],
+  ] as const)("%s changes still invoke the project RailRow", (_name, change) => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const firstNode = { ...projectRailNode(apiProject()), retry: vi.fn() };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={change(firstNode)} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
+  test("changed retry, spawn directory, and project action input replace captured project-row behavior", async () => {
+    window.history.replaceState({}, "", "/");
+    const observer = vi.fn();
+    const rowInfo = info();
+    const firstRetry = vi.fn();
+    const secondRetry = vi.fn();
+    const rowActions = actions();
+    const firstProject = apiProject({ working_dir: "/repo/first" });
+    const secondProject = { ...firstProject, key: "p2", working_dir: "/repo/next" };
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...projectRailNode(firstProject), resourceError: "load failed", retry: firstRetry }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{
+            ...projectRailNode(secondProject),
+            id: "projectnode:p1",
+            resourceError: "load failed",
+            retry: secondRetry,
+          }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(firstRetry).not.toHaveBeenCalled();
+    expect(secondRetry).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext");
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(rowActions.onToggleFavoriteProject).toHaveBeenCalledWith(secondProject);
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
+    const observer = vi.fn();
+    const firstInfo = info({ hasChildren: true });
+    const secondInfo = info({ hasChildren: true });
+    const firstActions = actions();
+    const secondActions = actions();
+    const node = projectRailNode(apiProject(), [sessionRailNode(apiNode())]);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={firstInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={firstActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    await userEvent.setup().click(screen.getByText("Proj"));
+    expect(firstInfo.activate).not.toHaveBeenCalled();
+    expect(secondInfo.activate).toHaveBeenCalledTimes(1);
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow node={node} info={secondInfo} actions={secondActions} />
+      </RailRenderObserver>,
+    );
+    expect(observer).toHaveBeenCalledTimes(1);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(firstActions.onToggleFavoriteProject).not.toHaveBeenCalled();
+    expect(secondActions.onToggleFavoriteProject).toHaveBeenCalledWith(node.project);
+  });
+
+  test("non-project rows retain default memo behavior for descendant-only node replacement", () => {
+    const observer = vi.fn();
+    const rowInfo = info();
+    const rowActions = actions();
+    const session = apiNode();
+    const firstNode = sessionRailNode(session);
+    const { rerender } = render(
+      <RailRenderObserver value={observer}>
+        <RailRow node={firstNode} info={rowInfo} actions={rowActions} />
+      </RailRenderObserver>,
+    );
+    observer.mockClear();
+
+    rerender(
+      <RailRenderObserver value={observer}>
+        <RailRow
+          node={{ ...firstNode, children: [sessionRailNode(apiNode({ row_id: "child", ref: "child" }))] }}
+          info={rowInfo}
+          actions={rowActions}
+        />
+      </RailRenderObserver>,
+    );
+
+    expect(observer).toHaveBeenCalledTimes(1);
+  });
+
   test("renders the project's name and a Cadence reflecting its rollup state", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);

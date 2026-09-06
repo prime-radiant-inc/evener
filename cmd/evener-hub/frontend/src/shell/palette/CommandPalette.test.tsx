@@ -180,7 +180,7 @@ function needsYouRows(): NavigationSessionSummary[] {
 function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources:
       rows === null

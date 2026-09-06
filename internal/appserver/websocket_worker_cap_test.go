@@ -293,6 +293,38 @@ func TestServeWebSocketSlowReadCapStallAdvisoryNamesWedgedLane(t *testing.T) {
 // answering only once the queue is full, the keepalive gate defers transport
 // pings for exactly that window, the queue-saturation advisory fired — and
 // releasing one parked read drains the whole composition.
+// TestServeWebSocketSlowReadCapStallAdvisoryIsRateLimited pins the
+// analysis of a roborev report against acquireSlowReadSlot: the stall
+// advisory uses time.NewTimer, which fires exactly once, so after the
+// first log the select blocks on slot-acquire/ctx-Done only — there is no
+// ready-channel spin and no log spam. This test holds a wedge open for
+// several threshold intervals and bounds the advisory count, guarding
+// against a future change (e.g. swapping in a Ticker) reintroducing
+// unbounded logging here.
+func TestServeWebSocketSlowReadCapStallAdvisoryIsRateLimited(t *testing.T) {
+	server, logged, started, _ := parkedSlowReadServer(t)
+	server.slowReadStallThreshold = 100 * time.Millisecond
+	transport, _ := rawParkedCapConnection(t, server, started)
+
+	waitUntil(t, "the first stall advisory to reach Logf", func() bool {
+		return strings.Contains(logged(), "parked")
+	})
+	// Hold the wedge ~3.5 more advisory intervals, then count. A ready
+	// timer channel spins the loop thousands of times in that window; a
+	// re-armed timer logs about once per interval.
+	time.Sleep(350 * time.Millisecond)
+	parked := 0
+	for line := range strings.SplitSeq(logged(), "\n") {
+		if strings.Contains(line, "parked") {
+			parked++
+		}
+	}
+	transport.Close() //nolint:errcheck // test cleanup releases the wedge
+	if parked > 6 {
+		t.Fatalf("stall advisories = %d in ~450ms at 100ms intervals, want at most ~6 (timer not re-armed)", parked)
+	}
+}
+
 func TestServeWebSocketSlowReadCapComposedSaturationRecoversOnRelease(t *testing.T) {
 	server, logged, started, releases := parkedSlowReadServer(t)
 	server.requestQueueCapacity = 2

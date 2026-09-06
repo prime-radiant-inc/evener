@@ -119,12 +119,6 @@ type subagent struct {
 	// or resume that raced ahead wins and the gate is refused. Reversed on every
 	// pre-eviction dispose refusal/failure exit.
 	disposeGated bool
-	// ownsEnv is true when prepareSubagentRun built the child a FRESH execution env
-	// (a working-dir re-root and/or a per-delegate sandbox) rather than sharing the
-	// parent's. Such an env may own a sandbox scratch dir + file-tool fds that the
-	// parent's env cleanup does not reach. Unadopted setup failures dispose it;
-	// normal teardown retains its scratch until the explicit disposal operation.
-	ownsEnv bool
 }
 
 type preparedSubagentRun struct {
@@ -209,13 +203,15 @@ const (
 // the one an unsandboxed clone minted on its first command — and that is
 // released here, both kinds together, per scratch: retained on a handoff,
 // disposed when the child is dropped. A shared environment is left untouched
-// in every respect: the parent is still working in it.
-func teardownChildSession(ctx context.Context, sess *Session, ownsEnv bool, scratch childScratchDisposition) {
+// in every respect: the parent is still working in it. Which of the two the
+// child runs on is the child's own record (Session.ownsEnv), so a teardown
+// reaching a child no parent bookkeeping names still settles it correctly.
+func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
 	if sess == nil {
 		return
 	}
 	sess.close(ctx, false)
-	releaseOwnedChildEnvironment(sess.currentEnv(), ownsEnv, scratch)
+	releaseOwnedChildEnvironment(sess.currentEnv(), sess.ownsEnv, scratch)
 }
 
 // releaseOwnedChildEnvironment is teardownChildSession's environment step on
@@ -235,31 +231,18 @@ func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool
 	}
 }
 
-// ownsChildEnvironment reports whether child, a session this one tracks, runs
-// on an environment built for it (subagent.ownsEnv) rather than on this
-// session's own. A child this session does not track answers false: the safe
-// answer, since a teardown then touches nothing beyond the child's own
-// resources.
-func (s *Session) ownsChildEnvironment(child *Session) bool {
-	if s == nil || s.subagents == nil || child == nil {
-		return false
-	}
-	sub := s.subagents.get(child.id)
-	return sub != nil && sub.sess == child && sub.ownsEnv
-}
-
 // disposeUnadoptedSubagentSession tears down a child that never became a
 // tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
 // No owner is left to hand anything to, so its owned scratch goes with it.
-func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
-	teardownChildSession(context.Background(), sess, ownsEnv, disposeChildScratch)
+func disposeUnadoptedSubagentSession(sess *Session) {
+	teardownChildSession(context.Background(), sess, disposeChildScratch)
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
 	if p == nil || p.sub == nil {
 		return
 	}
-	disposeUnadoptedSubagentSession(p.sub.sess, p.sub.ownsEnv)
+	disposeUnadoptedSubagentSession(p.sub.sess)
 }
 
 func hasString(items []string, want string) bool {
@@ -1023,8 +1006,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 		}
 		return nil, err
 	}
+	// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
+	// per-delegate sandbox; otherwise subEnv is the shared parent env.
+	subSess.ownsEnv = ownsFreshEnv
 	disposeUnadopted := func() {
-		disposeUnadoptedSubagentSession(subSess, ownsFreshEnv)
+		disposeUnadoptedSubagentSession(subSess)
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -1087,7 +1073,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		for _, ev := range evicted {
-			teardownChildSession(context.Background(), ev.sess, ev.ownsEnv, retainChildScratch)
+			teardownChildSession(context.Background(), ev.sess, retainChildScratch)
 		}
 	}
 
@@ -1127,9 +1113,6 @@ func (s *Session) prepareSubagentRunFromSelection(
 		agentType:    agentType,
 		createdAt:    now,
 		startedAt:    now,
-		// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
-		// per-delegate sandbox; otherwise subEnv is the shared parent env.
-		ownsEnv: ownsFreshEnv,
 	}
 	if frozen != nil {
 		descriptor := cloneDelegateStartDescriptor(*frozen)

@@ -1,4 +1,4 @@
-//go:build evenerfuzz
+//go:build evenerfuzz && (linux || darwin)
 
 package plugins
 

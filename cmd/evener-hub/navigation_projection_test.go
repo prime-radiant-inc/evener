@@ -393,6 +393,119 @@ func TestNavigationProjectionEnforcesExactEncodedCeilings(t *testing.T) {
 	}
 }
 
+func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
+	projects := make([]hubcore.TreeProject, 100)
+	for index := range projects {
+		projects[index] = hubcore.TreeProject{
+			Key:        fmt.Sprintf("project-%03d-%s", index, strings.Repeat("k", maxNavigationIdentityBytes-16)),
+			Name:       strings.Repeat("n", maxNavigationLabelRunes),
+			WorkingDir: strings.Repeat("/", maxNavigationWorkingDirBytes),
+		}
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Tree:         hubcore.Tree{Projects: projects},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const offset, limit = uint32(0), uint32(100)
+	first, err := projection.CatalogPage(navigationResourceProjects, offset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRows := first.Projects
+	if got := len(firstRows); got == 0 || got >= int(limit) {
+		t.Fatalf("fixture did not force byte truncation: got %d of %d", got, limit)
+	}
+	nextOffset := offset + uint32(len(firstRows))
+	second, err := projection.CatalogPage(navigationResourceProjects, nextOffset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Projects) == 0 {
+		t.Fatal("second byte-truncated catalog page did not advance")
+	}
+
+	// The authoritative project order is the independent unbounded reference.
+	// Its same-length prefix must match page 1 + page 2 with no duplicate or gap.
+	got := append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), firstRows...), second.Projects...)
+	for index, row := range got {
+		want := projects[int(offset)+index].Key
+		if row.Key != want {
+			t.Fatalf("row %d key=%q, want contiguous reference key %q", index, row.Key, want)
+		}
+	}
+}
+
+func TestNavigationByteTruncatedProjectPageContinuationIsContiguous(t *testing.T) {
+	rows := make([]hubcore.TreeNode, 50)
+	for root := range rows {
+		// Forty roots of fifty total nodes exactly reach the node ceiling, so
+		// any missing top-level root below is caused by the byte envelope.
+		children := make([]hubcore.TreeNode, 49)
+		for child := range children {
+			children[child] = hubcore.TreeNode{
+				ID:      fmt.Sprintf("session-%03d-%03d", root, child),
+				Title:   strings.Repeat("t", maxNavigationTitleRunes),
+				Project: strings.Repeat("p", maxNavigationLabelRunes),
+				Branch:  strings.Repeat("b", maxNavigationLabelRunes),
+				Kind:    "subagent",
+				State:   "idle",
+			}
+		}
+		rows[root] = hubcore.TreeNode{
+			ID:       fmt.Sprintf("session-root-%03d", root),
+			Title:    strings.Repeat("t", maxNavigationTitleRunes),
+			Project:  strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:   strings.Repeat("b", maxNavigationLabelRunes),
+			Kind:     "session",
+			State:    "idle",
+			Children: children,
+		}
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
+			Key:     "project",
+			Name:    "project",
+			Current: rows,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const offset, limit = uint32(0), uint32(40)
+	first, err := projection.ProjectPage("project", "current", offset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRows := first.Sessions
+	if got := len(firstRows); got == 0 || got >= int(limit) {
+		t.Fatalf("fixture did not force byte truncation: got %d of %d", got, limit)
+	}
+	nextOffset := offset + uint32(len(firstRows))
+	second, err := projection.ProjectPage("project", "current", nextOffset, int(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Sessions) == 0 {
+		t.Fatal("second byte-truncated project page did not advance")
+	}
+
+	// The authoritative tier order is the independent unbounded reference. Its
+	// same-length prefix must match page 1 + page 2 with no duplicate or gap.
+	got := append(append(hubapi.NavigationArray[hubapi.NavigationSessionSummary](nil), firstRows...), second.Sessions...)
+	for index, row := range got {
+		want := "local:" + rows[int(offset)+index].ID
+		if row.Ref != want {
+			t.Fatalf("row %d ref=%q, want contiguous reference ref %q", index, row.Ref, want)
+		}
+	}
+}
+
 func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testing.T) {
 	badUTF8 := string([]byte{0xff})
 	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: badUTF8}); err == nil {

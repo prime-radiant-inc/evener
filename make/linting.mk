@@ -28,19 +28,25 @@ lint-naming:
 
 ## The compile floor for the //go:build evenerfuzz sources: host go vet and a
 ## host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on
-## non-Linux hosts. See "Why two tagged lint passes exist" in
-## docs/developing-evener/linting.md for the full rationale.
+## non-Linux hosts and a GOOS=windows go vet that holds the build-tag
+## discipline the untagged sources get from static-build's cross-vet. See "Why
+## two tagged lint passes exist" in docs/developing-evener/linting.md for the
+## full rationale.
 ## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
-##   compiles for the host and Linux and passes its struct-tag casing floor,
-##   catching a production signature change that strands a tagged call site.
+##   compiles for the host, Linux, and Windows and passes its struct-tag
+##   casing floor, catching a production signature change that strands a
+##   tagged call site, and a Unix-only tagged source that never declared its
+##   constraint.
 ## trigger: Required CI (via make lint); local pre-merge. ~4s warm across the
-##   workspace on Linux; the extra cross-GOOS pass runs only off Linux.
+##   workspace on Linux; the GOOS=linux pass runs only off Linux, the
+##   GOOS=windows vet everywhere.
 ## requires: golangci-lint. Reads .golangci.yml's casing rules, carve-outs,
 ##   and exclusions via --enable-only tagliatelle.
-## fails-when: host or GOOS=linux go vet -tags evenerfuzz fails for any module,
-##   or either host or GOOS=linux tagliatelle reports a casing violation.
+## fails-when: host, GOOS=linux, or GOOS=windows go vet -tags evenerfuzz fails
+##   for any module, or either host or GOOS=linux tagliatelle reports a casing
+##   violation.
 lint-evenerfuzz:
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; fi)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...); done; fi; if [ "$$host_goos" != windows ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=windows go vet -tags evenerfuzz ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; fi)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag

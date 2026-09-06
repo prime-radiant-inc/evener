@@ -321,11 +321,12 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	_ = s.reg.Register(t)
 }
 
-// errWorktreeOpWhileClosing is what the manage_worktree dispatch returns when
-// the session began closing before the call could be admitted on the close
-// fence. It is the operation-level sibling of errSwapWhileClosing: an
-// unadmitted operation cannot be waited for, and the close may already be past
-// its join, so the only safe answer is to run nothing at all.
+// errWorktreeOpWhileClosing is what the manage_worktree dispatch, and the
+// isolation step of a delegate spawned with isolation:"worktree", return when
+// the session began closing before the work could be admitted on the close
+// fence. It is the operation-level sibling of errSwapWhileClosing: unadmitted
+// work cannot be waited for, and the close may already be past its join, so the
+// only safe answer is to run nothing at all.
 var errWorktreeOpWhileClosing = errors.New("the session is closing; operation refused")
 
 // worktreeOpLabel names a manage_worktree call for a close-fence warning: the

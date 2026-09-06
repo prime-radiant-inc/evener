@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   AttentionChanged,
+  InitializeResponse,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionSummary,
@@ -10,24 +11,57 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { capability, manifest } from "../stores/navigation/testing";
+import { navigationRootContainerKey, type ResourceKey } from "../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
 
 const navigationCapability = capability;
 const navigationManifest = (generationId = "generation_test") => manifest({ generation_id: generationId });
+const navigationInitialize = (generationId = "generation_test"): InitializeResponse => ({
+  serverInfo: { name: "fake", version: "1" },
+  protocolVersion: "evener-appwire-v3",
+  sourceId: "fake",
+  features: {
+    threadList: false,
+    threadTurnsList: false,
+    turnStart: false,
+    turnSteer: false,
+    threadClear: false,
+    threadShutdown: false,
+    forkFromTurn: false,
+    tasks: false,
+    transcriptList: false,
+    modelList: false,
+    directoryComplete: false,
+    auth: false,
+  },
+  navigation: navigationCapability(generationId),
+});
 
+const manifestKey: ResourceKey = { kind: "manifest" };
 const navigationReadResponse = (generationId = "generation_test"): NavigationReadResponse => ({
   status: "ok",
+  representation: "snapshot",
   generationId,
   revision: 1,
   etag: '"manifest"',
-  data: navigationManifest(generationId),
+  data: {
+    metadata: navigationManifest(generationId),
+    entities: [],
+    containers: [
+      {
+        key: navigationRootContainerKey(manifestKey, "manifest"),
+        owner: { kind: "resource_root", slot: "manifest" },
+        children: [],
+      },
+    ],
+  },
 });
 
 function scriptNavigationManifest(client: FakeClient, generationId: string | (() => string) = "generation_test"): void {
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
-    expect(params).toEqual({ resource: "manifest" });
+    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
     return navigationReadResponse(typeof generationId === "function" ? generationId() : generationId);
   });
 }
@@ -171,10 +205,10 @@ function armPrefs(loudScope: "asks" | "all" = "all"): void {
 
 // Boot the engine with `baseline` as its first attention snapshot, then settle
 // so that snapshot is the established baseline (electLeader ⇒ leader = true).
-// The navigation store must reach mode "v1" (a capability-advertising client +
-// a valid manifest fetch) before the baseline is delivered, because
-// onNavigationAttention returns early while mode !== "v1" — so the baseline
-// is delivered through the client's attention notification after the manifest
+// The navigation store must reach a supported mode (a capability-advertising
+// client + a valid manifest fetch) before the baseline is delivered, because
+// onNavigationAttention returns early outside v2 — so the baseline is
+// delivered through the client's attention notification after the manifest
 // settles, establishing prevNavigationAttention for later transition detection.
 //
 // onNavigationAttention skips a first snapshot whose changed list is empty
@@ -218,7 +252,7 @@ async function boot(baseline: {
 }
 
 describe("initNotifications lifecycle", () => {
-  test("supported v1 boots navigation through the typed AppWire read", async () => {
+  test("supported v2 boots navigation through the typed AppWire read", async () => {
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
     client.scriptConnect(() => ({
@@ -232,8 +266,10 @@ describe("initNotifications lifecycle", () => {
     initNotifications();
     await flushMicrotasks();
 
-    expect(navigationStore.getState().mode).toBe("v1");
-    expect(client.calls).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
+    expect(navigationStore.getState().mode).toBe("v2");
+    expect(client.calls).toEqual([
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+    ]);
   });
 
   test("absent capability is an error state, never fetches navigation", async () => {
@@ -279,10 +315,13 @@ describe("initNotifications lifecycle", () => {
   // makes the manifest arrive on every host. Kata bbsv mis-read its absence as
   // the cause of mobile deep links being discarded; it is present, and the
   // shell relies on it.
-  test("reads the manifest after the handshake selects v1 mode", async () => {
+  test("reads the manifest after the handshake selects v2 mode", async () => {
     const client = await boot(attentionFromNodes([]));
 
-    expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
+    expect(client.calls).toContainEqual({
+      method: "evener/navigation/read",
+      params: { resource: "manifest", representationVersion: 2 },
+    });
     expect(navigationStore.getState().manifest?.data).not.toBeNull();
   });
 
@@ -302,7 +341,7 @@ describe("initNotifications lifecycle", () => {
 });
 
 describe("counts apply unconditionally", () => {
-  test("v1 attention owns counts and edge fires without tree or extra navigation reads", async () => {
+  test("v2 attention owns counts and edge fires without tree or extra navigation reads", async () => {
     armPrefs("all");
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -330,12 +369,12 @@ describe("counts apply unconditionally", () => {
 
     expect(document.title).toBe("(2) evener hub");
     expect(fires()).toEqual({ os: 1, sound: 1 });
-    navigationStore.setState({ attention: attentionFromNodes([node("v1-extra", "errored")]) });
+    navigationStore.setState({ attention: attentionFromNodes([node("v2-extra", "errored")]) });
     expect(document.title).toBe("(1) evener hub");
     expect(client.calls).toEqual([]);
   });
 
-  test("losing the capability clears v1 attention and enters error mode", async () => {
+  test("losing the capability clears v2 attention and enters error mode", async () => {
     prefsStore.getState().setNotification("title", true);
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -362,7 +401,7 @@ describe("counts apply unconditionally", () => {
     expect(document.title).toBe("evener hub");
   });
 
-  test("v1 attention removes downgraded entries so a later escalation is a new edge", async () => {
+  test("v2 attention removes downgraded entries so a later escalation is a new edge", async () => {
     armPrefs("all");
     const client = new FakeClient("ready");
     scriptNavigationManifest(client);
@@ -412,6 +451,25 @@ describe("edge-fire", () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
     navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting")]) });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  test("v2 fires OS and sound once for a newly attention-needed session", () => {
+    armPrefs("all");
+    initNotifications();
+    setFocused(false);
+    setLeaderForTests(true);
+    navigationStore.setState({
+      mode: "v2",
+      attention: attentionFromNodes([node("local:baseline", "awaiting")]),
+    });
+    expect(fires()).toEqual({ os: 0, sound: 0 });
+
+    const next = attentionFromNodes([node("local:baseline", "awaiting"), node("local:new", "awaiting")]);
+    navigationStore.setState({ attention: next });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+
+    navigationStore.setState({ attention: next });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 
@@ -484,16 +542,10 @@ describe("shipped defaults (title ON, favicon/os/sound OFF)", () => {
 });
 
 describe("reconnect re-baselines silently", () => {
-  test("v1 reconnect forces one navigation handshake for same or new generation", async () => {
+  test("equal-sequence reconnect skips navigation read and a new generation reloads exactly once", async () => {
     const client = new FakeClient("ready");
     let generation = "generation_test";
-    client.scriptConnect(() => ({
-      serverInfo: { name: "fake", version: "1" },
-      protocolVersion: "evener-appwire-v3",
-      sourceId: "fake",
-      features: {} as never,
-      navigation: navigationCapability(generation),
-    }));
+    client.scriptConnect(() => navigationInitialize(generation));
     scriptNavigationManifest(client, () => generation);
     initNavigation(client);
     await flushMicrotasks();
@@ -502,13 +554,16 @@ describe("reconnect re-baselines silently", () => {
     client.emitStateChange("reconnecting");
     client.emitReady();
     await flushMicrotasks();
-    expect(client.calls).toHaveLength(2); // one forced manifest reload
+    expect(client.calls).toHaveLength(1); // equal sequence does not reload
 
     generation = "generation_next";
     client.emitStateChange("reconnecting");
-    client.emitReady();
+    client.emitReady(navigationInitialize(generation));
     await flushMicrotasks();
-    expect(client.calls).toHaveLength(3); // one reset reload, not reset plus another read
+    expect(client.calls).toHaveLength(2); // one reset reload, not reset plus another read
+    expect(client.calls.slice(1)).toEqual([
+      { method: "evener/navigation/read", params: { resource: "manifest", representationVersion: 2 } },
+    ]);
     expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
     expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
   });
@@ -560,10 +615,10 @@ describe("reconnect re-baselines silently", () => {
     await boot(attentionFromNodes([node("local:a", "awaiting")]));
     expect(fires()).toEqual({ os: 0, sound: 0 }); // baseline
 
-    // The reconnect's own refresh returns a manifest; the server also delivers
-    // an attention snapshot that GAINED local:b in the gap.
+    // The equal-sequence reconnect does not refresh navigation. The server
+    // delivers an attention snapshot that GAINED local:b in the gap.
     fake.emitStateChange("reconnecting");
-    fake.emitReady();
+    fake.emitReady(navigationInitialize());
     await tick();
     fake.emitNotification({
       method: "evener/attention/changed",
@@ -585,6 +640,85 @@ describe("reconnect re-baselines silently", () => {
         node("local:b", "awaiting"),
         node("local:c", "awaiting"),
       ]),
+    });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  test("rebaseline converges to settled section rows for transitions missed in the gap", async () => {
+    armPrefs("all");
+    const fake = new FakeClient("ready");
+    fake.scriptConnect(() => ({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: navigationCapability(),
+    }));
+    connectionStore.getState().connect(fake);
+    await boot(attentionFromNodes([node("local:a", "awaiting")]));
+    expect(fires()).toEqual({ os: 0, sound: 0 }); // baseline {a}
+
+    // During the disconnect, local:a goes idle and local:b becomes awaiting.
+    // The hub's transition-only watcher emits to nobody, so the client learns
+    // the post-gap truth from its reloaded section rows, not from a delta.
+    const sectionKey = (section: "live" | "needs_you") => ({ kind: "section", section, offset: 0, limit: 50 }) as const;
+    const { keyID } = await import("../stores/navigation/types");
+    navigationStore.setState({
+      resources: new Map([
+        [
+          keyID(sectionKey("live")),
+          {
+            key: sectionKey("live"),
+            data: { sessions: [node("local:a", "idle")], remaining: 0 },
+            loadedRevision: 2,
+            targetRevision: 2,
+            forceToken: 0,
+            etag: '"live"',
+            loading: false,
+            stale: false,
+            error: null,
+            generationID: "generation_test",
+          },
+        ],
+        [
+          keyID(sectionKey("needs_you")),
+          {
+            key: sectionKey("needs_you"),
+            data: { sessions: [node("local:b", "awaiting")], remaining: 0 },
+            loadedRevision: 2,
+            targetRevision: 2,
+            forceToken: 0,
+            etag: '"needs"',
+            loading: false,
+            stale: false,
+            error: null,
+            generationID: "generation_test",
+          },
+        ],
+      ]),
+    });
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(navigationInitialize());
+    await tick();
+    // The next delta mentions only an unrelated session; the gap transitions
+    // for a and b are absent from both the old map and this payload.
+    fake.emitNotification({
+      method: "evener/attention/changed",
+      params: {
+        changed: [
+          { threadId: "local:c", title: "local:c", project: "", level: "needs_you", askPending: false, prevLevel: "" },
+        ],
+        summary: { needsYou: 2, error: 0, working: 0 },
+      },
+    });
+    await tick();
+    expect(fires()).toEqual({ os: 0, sound: 0 }); // silent re-baseline
+
+    // The map converged to rows truth: a new transition for the previously
+    // omitted b is NOT new (already baselined), while a genuinely new d fires.
+    navigationStore.setState({
+      attention: attentionFromNodes([node("local:b", "awaiting"), node("local:d", "awaiting")]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
@@ -617,5 +751,56 @@ describe("reconnect re-baselines silently", () => {
     await tick();
 
     expect(client.calls.length).toBe(callsAfterConnect);
+  });
+
+  test("a reconnect before the first baseline does not swallow the next real transition", async () => {
+    armPrefs("all");
+    const fake = new FakeClient("ready");
+    fake.scriptConnect(() => ({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: navigationCapability(),
+    }));
+    connectionStore.getState().connect(fake);
+    scriptNavigationManifest(fake);
+    initNavigation(fake, navigationCapability());
+    initNotifications();
+    await flushMicrotasks();
+    // No attention payload has arrived: no baseline exists yet.
+
+    // The connection drops and returns before any baseline. The reconnect
+    // arms the rebaseline flag with nothing established.
+    fake.emitStateChange("reconnecting");
+    fake.emitReady(navigationInitialize());
+    await tick();
+
+    // The first post-reconnect payload establishes the baseline silently...
+    fake.emitNotification({
+      method: "evener/attention/changed",
+      params: {
+        changed: [
+          { threadId: "local:a", title: "local:a", project: "", level: "needs_you", askPending: false, prevLevel: "" },
+        ],
+        summary: { needsYou: 1, error: 0, working: 0 },
+      },
+    });
+    await tick();
+    expect(fires()).toEqual({ os: 0, sound: 0 });
+
+    // ...but the flag must have been consumed establishing it: the next
+    // genuine transition fires instead of being swallowed as a rebaseline.
+    fake.emitNotification({
+      method: "evener/attention/changed",
+      params: {
+        changed: [
+          { threadId: "local:b", title: "local:b", project: "", level: "needs_you", askPending: false, prevLevel: "" },
+        ],
+        summary: { needsYou: 2, error: 0, working: 0 },
+      },
+    });
+    await tick();
+    expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 });

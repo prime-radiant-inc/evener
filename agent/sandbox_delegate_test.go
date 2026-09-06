@@ -132,7 +132,8 @@ func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
 	tmp := local.Wrapper.SessionTmp()
-	child.discardRestoredCandidate(true)
+	child.ownsEnv = true
+	child.discardRestoredCandidate()
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Errorf("discarded restore candidate retained sandbox scratch: %v", err)
 	}
@@ -161,7 +162,8 @@ func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
 		t.Fatal("an unsandboxed env minted no session scratch, so there is nothing to dispose")
 	}
 
-	candidate.discardRestoredCandidate(true)
+	candidate.ownsEnv = true
+	candidate.discardRestoredCandidate()
 
 	// The lease file lives inside the scratch dir, so the directory's removal is
 	// the lease's removal too.
@@ -173,7 +175,7 @@ func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
 // A candidate does not always OWN what it holds: prepareSubagentEnvironment
 // hands back the parent's environment untouched when the delegate needs neither
 // a working-dir re-root nor a box of its own. close() already guards its scratch
-// handoff on the subagent's ownsEnv for exactly that reason, and the discard path
+// handoff on the child's ownsEnv for exactly that reason, and the discard path
 // has to make the same distinction — otherwise aborting one candidate deletes the
 // scratch dir out from under the live parent still working in it.
 func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
@@ -202,7 +204,7 @@ func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
 		t.Fatalf("NewSession on the parent's environment: %v", err)
 	}
 
-	candidate.discardRestoredCandidate(false)
+	candidate.discardRestoredCandidate()
 
 	if _, err := os.Stat(sharedScratch); err != nil {
 		t.Errorf("discarding a candidate on the parent's shared environment removed its scratch %s: %v", sharedScratch, err)
@@ -409,7 +411,8 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 		t.Fatal("the child env minted no session scratch, so there is nothing to dispose")
 	}
 
-	disposeUnadoptedSubagentSession(owned, true)
+	owned.ownsEnv = true
+	disposeUnadoptedSubagentSession(owned)
 
 	if got := owned.State(); got != SessionClosed {
 		t.Errorf("unadopted child state = %q, want %q", got, SessionClosed)
@@ -439,7 +442,7 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 		t.Fatalf("NewSession on the parent's environment: %v", err)
 	}
 
-	disposeUnadoptedSubagentSession(sharing, false)
+	disposeUnadoptedSubagentSession(sharing)
 
 	if got := sharing.State(); got != SessionClosed {
 		t.Errorf("child sharing the parent's environment was left %q, want %q", got, SessionClosed)
@@ -550,7 +553,8 @@ func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testin
 		t.Fatalf("NewSession on a fresh clone: %v", err)
 	}
 
-	disposeUnadoptedSubagentSession(child, true)
+	child.ownsEnv = true
+	disposeUnadoptedSubagentSession(child)
 
 	// No bound needed: a Cleanup that reached this process would have signalled
 	// it, waited out the termination grace and killed it, all before the dispose

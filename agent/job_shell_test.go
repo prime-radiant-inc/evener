@@ -49,10 +49,16 @@ func shellDoneChannel(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	return run.done, true
 }
 
+// waitForShellDone blocks until jobID has finished. Finalization removes the
+// job from jm.running before it resolves the stable-delegate receipt, enqueues
+// the owner notification and closes done, so absence from the running map is
+// not a finish signal: a job that has already left it settles on its shell
+// receipt instead.
 func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 	t.Helper()
 	done, live := shellDoneChannel(jm, jobID)
 	if !live {
+		waitForShellReceiptResolved(t, jm, jobID)
 		return
 	}
 
@@ -64,6 +70,70 @@ func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("job %s did not finish", jobID)
 	}
+}
+
+// waitForShellReceiptResolved blocks until the stable-delegate controller holds
+// no shell receipt for jobID. The receipt is the one piece of a finishing
+// shell's state that outlives its running-map entry: finalization drops it
+// after the removal and before it closes done.
+func waitForShellReceiptResolved(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	// TRIPWIRE: the receipt is dropped a few store appends past the removal, so
+	// this only bounds a genuine finalization hang.
+	deadline := time.Now().Add(30 * time.Second)
+	for shellReceiptHeld(jm, jobID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s still holds its delegate shell receipt", jobID)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// shellReceiptPollHook observes a receipt wait's look at a job, so a test can
+// stage the finish that wait is watching for on the wait itself rather than on
+// a timing window. Reads and writes are guarded because parallel tests wait on
+// shells while it is installed.
+var shellReceiptPollHook struct {
+	mu   sync.Mutex
+	fire func(jobID string)
+}
+
+func setShellReceiptPollHook(t *testing.T, fire func(jobID string)) {
+	t.Helper()
+	shellReceiptPollHook.mu.Lock()
+	shellReceiptPollHook.fire = fire
+	shellReceiptPollHook.mu.Unlock()
+	t.Cleanup(func() {
+		shellReceiptPollHook.mu.Lock()
+		shellReceiptPollHook.fire = nil
+		shellReceiptPollHook.mu.Unlock()
+	})
+}
+
+// shellReceiptHeld reports whether the stable-delegate controller still holds a
+// committed process receipt for jobID. Root-owned shells never take one, so it
+// is always false for a job manager with no controller.
+func shellReceiptHeld(jm *jobManager, jobID string) bool {
+	shellReceiptPollHook.mu.Lock()
+	fire := shellReceiptPollHook.fire
+	shellReceiptPollHook.mu.Unlock()
+	if fire != nil {
+		fire(jobID)
+	}
+	jm.mu.Lock()
+	controller := jm.delegateController
+	jm.mu.Unlock()
+	if controller == nil {
+		return false
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	for _, work := range controller.work {
+		if work.jobID == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func loadShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore.JobRecord {

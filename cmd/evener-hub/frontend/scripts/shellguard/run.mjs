@@ -137,6 +137,23 @@ function assertResult(result) {
   return failures;
 }
 
+function assertDeltaRenders(result) {
+  const failures = [];
+  const changed = result.changedRowID;
+  const visibleRowIDs = result.visibleRowIDs ?? [];
+  if (typeof changed !== "string" || changed.length === 0) failures.push("changed observer row ID was not retained");
+  if (visibleRowIDs.length === 0) failures.push("visible observer row IDs were not retained before the delta");
+  if (typeof changed === "string" && !visibleRowIDs.includes(changed)) {
+    failures.push(`changed observer row ${changed} was not visible before the delta`);
+  }
+  if ((result.counts?.[changed] ?? 0) < 1) failures.push("changed navigation row did not render");
+  for (const [id, count] of Object.entries(result.counts ?? {})) {
+    if (id !== changed && count !== 0) failures.push(`unchanged row ${id} rendered ${count} time(s)`);
+  }
+  if (result.document.scrollHeight > result.viewport.height + 1) failures.push("delta caused document overflow");
+  return failures;
+}
+
 function assertTapTargets(result) {
   const failures = [];
   // Harness sanity: the full tree really rendered before "no offenders" means
@@ -246,7 +263,12 @@ async function main() {
     } finally {
       startupDeadline.clear();
     }
-    const result = await measureOnPage(cdpEndpoint, vitePort, VIEWPORT, "JSON.stringify(window.measureShell())");
+    const result = await measureOnPage(
+      cdpEndpoint,
+      vitePort,
+      VIEWPORT,
+      "(async () => { await window.applyShellNavigationDelta(); const renders = window.measureRailRenderCounts(); return JSON.stringify({ ...window.measureShell(), counts: renders.counts, changedRowID: renders.changedRowID, visibleRowIDs: renders.visibleRowIDs }); })()",
+    );
     // Both mobile measurements come from ONE page load of the emulated phone:
     // the sidebar geometry and the tap-floor audit need the same context.
     const mobile = await measureOnPage(
@@ -255,13 +277,23 @@ async function main() {
       MOBILE_VIEWPORT,
       "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
     );
-    const failures = [...assertResult(result), ...assertMobileResult(mobile.sidebar), ...assertTapTargets(mobile.tap)];
+    const failures = [
+      ...assertResult(result),
+      ...assertDeltaRenders(result),
+      ...assertMobileResult(mobile.sidebar),
+      ...assertTapTargets(mobile.tap),
+    ];
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
           `rail body scrolls (${result.railBody.scrollHeight}px in ${result.railBody.clientHeight}px), ` +
           `${result.treeRows} tree rows; mobile Sheet body scrolls (${mobile.sidebar.panelBody.scrollHeight}px in ${mobile.sidebar.panelBody.clientHeight}px); ` +
           `${mobile.tap.measured} mobile tap targets all >= ${mobile.tap.min}px`,
+      );
+      console.log(
+        `shellguard render isolation: changed=${result.changedRowID} count=${result.counts[result.changedRowID] ?? 0}; ` +
+          `visible=${result.visibleRowIDs.length}; counts=${JSON.stringify(result.counts)}; ` +
+          `visibleRowIDs=${JSON.stringify(result.visibleRowIDs)}`,
       );
     } else {
       for (const failure of failures) console.error(`shellguard FAIL: ${failure}`);
