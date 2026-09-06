@@ -33,12 +33,12 @@ type GCPADC struct {
 	sources map[string]cachedSource
 }
 
-// cachedSource is one instance's token source plus the digest of the
-// stored credential it was built from ("" for application-default
-// credentials), so a replaced credential is noticed on the next request
-// and the old source dropped instead of kept alongside the new one.
+// cachedSource is one instance's token source plus the identity of the
+// credential it was built from (credentialIdentity), so a replaced or
+// removed credential is noticed on the next request and the old source
+// dropped instead of kept alongside the new one.
 type cachedSource struct {
-	digest string
+	identity string
 	tokenSource
 }
 
@@ -98,21 +98,24 @@ func ValidateCredentialJSON(data []byte) error {
 	return err
 }
 
-// credentialDigest identifies the stored credential a source was built
-// from; ADC has no stored value and digests to "".
-func credentialDigest(res registry.Resolved) string {
+// credentialIdentity names the credential a source was built from: the
+// resolution's source alone for application-default credentials or none
+// (so a source that changes — an ADC file removed and the instance
+// re-resolved without a credential — rebuilds rather than reuses), and the
+// source plus a digest of the stored JSON for a stored credential.
+func credentialIdentity(res registry.Resolved) string {
 	if res.Credential.Source != "store" {
-		return ""
+		return res.Credential.Source
 	}
 	sum := sha256.Sum256([]byte(res.Credential.Value))
-	return hex.EncodeToString(sum[:])
+	return res.Credential.Source + "\x00" + hex.EncodeToString(sum[:])
 }
 
 func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenSource, error) {
-	digest := credentialDigest(res)
+	identity := credentialIdentity(res)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if c, ok := a.sources[res.Instance]; ok && c.digest == digest {
+	if c, ok := a.sources[res.Instance]; ok && c.identity == identity {
 		return c.tokenSource, nil
 	}
 	// The source outlives the request that created it, so it must not
@@ -149,6 +152,6 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenS
 	if a.sources == nil {
 		a.sources = map[string]cachedSource{}
 	}
-	a.sources[res.Instance] = cachedSource{digest: digest, tokenSource: src}
+	a.sources[res.Instance] = cachedSource{identity: identity, tokenSource: src}
 	return src, nil
 }

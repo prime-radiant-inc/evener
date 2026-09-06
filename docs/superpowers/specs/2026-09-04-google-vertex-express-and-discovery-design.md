@@ -308,7 +308,8 @@ already exists in the hub's `credentialLabels.ts`.
 ### 4.3 Authenticator
 
 `tokenauth.GCPADC.tokenSource` caches one token source per instance, rebuilt
-when the stored credential's digest changes; when `res.Credential.Source ==
+when the credential's identity changes — its source (`adc`, `none`, `store`),
+or the stored JSON's digest; when `res.Credential.Source ==
 "store"` it builds the token source with `google.CredentialsFromJSON(ctx,
 []byte(value), cloudPlatformScope)` instead of `FindDefaultCredentials`.
 Everything else (`ReuseTokenSource`, the bearer header, §2.2's quota

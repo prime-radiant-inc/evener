@@ -183,6 +183,36 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 	}
 }
 
+func TestGCPADCRebuildsWhenTheCredentialSourceChanges(t *testing.T) {
+	// The registry re-resolves an instance with no credential once its ADC
+	// file is gone; the cached ADC source must not keep answering for it.
+	adcGone := false
+	a := &GCPADC{
+		FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+			if adcGone {
+				return nil, errors.New("could not find default credentials")
+			}
+			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
+		},
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer adc-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	adcGone = true
+	req2, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req2, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "none"}})
+	if err == nil {
+		t.Fatalf("Apply reused the cached ADC source for a resolution with no credential; Authorization = %q", req2.Header.Get("Authorization"))
+	}
+	if got := req2.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want none once the credential is gone", got)
+	}
+}
+
 func TestGCPADCClassifiesAStoredCredentialFromTheStoredJSON(t *testing.T) {
 	// The parser seam returns no JSON echo; the stored value itself must
 	// decide that this is a user credential and so needs the quota header.
@@ -219,8 +249,8 @@ func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
 		if len(a.sources) != 1 {
 			t.Fatalf("len(a.sources) = %d, want 1", len(a.sources))
 		}
-		if got, want := a.sources["vertex"].digest, credentialDigest(storedRes("vertex", value)); got != want {
-			t.Fatalf("digest = %q, want %q", got, want)
+		if got, want := a.sources["vertex"].identity, credentialIdentity(storedRes("vertex", value)); got != want {
+			t.Fatalf("identity = %q, want %q", got, want)
 		}
 	}
 	for _, value := range []string{storedUserJSON, valueB, storedUserJSON} {
@@ -272,8 +302,8 @@ func TestGCPADCReplacesADCSourceWhenAStoredCredentialArrives(t *testing.T) {
 	if len(a.sources) != 1 {
 		t.Fatalf("len(a.sources) = %d, want 1", len(a.sources))
 	}
-	if a.sources["vertex"].digest == "" {
-		t.Fatal("digest empty after a stored credential replaced the ADC source")
+	if !strings.HasPrefix(a.sources["vertex"].identity, "store") {
+		t.Fatalf("identity = %q after a stored credential replaced the ADC source, want the store's", a.sources["vertex"].identity)
 	}
 }
 
