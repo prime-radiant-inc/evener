@@ -97,3 +97,27 @@ writer changed the project layer. AppWire has no atomic compare-and-set for this
 operation: run this example without concurrent writers. An interrupted process
 cannot restore settings; inspect the isolated project's layer before reusing it.
 Operation and restoration failures are both reported.
+
+
+### Repository trust with a disposable file
+
+`repository-trust.mjs` requires a test hub on the **same filesystem** as the
+example process. `EVENER_CWD` names an existing parent directory visible at the
+same absolute path to both. The example creates its own temporary child project,
+changes its file after review, verifies stale-hash rejection (`-32009`), reviews
+the new revision, trusts it and verifies effective configuration independently.
+
+```sh
+EVENER_EXAMPLE_WRITE_REPO=1 \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/fixture/parent \
+node node_modules/@evener/appwire-client/examples/repository-trust.mjs
+```
+
+The owned directory is removed on success or failure. Trust history remains in
+the test hub's state; discard that isolated state when finished. A killed process
+may leave its temporary child directory behind. This local fixture setup is not
+an AppWire remote-file operation. Real clients must show the preview and obtain a
+user's trust decision for the exact reviewed hash; they must never automatically
+trust a newer revision because the earlier request was rejected.

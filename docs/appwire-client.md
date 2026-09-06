@@ -213,7 +213,8 @@ and launch/resolve. The opt-in `project-layer.mjs` recipe adds getLayer, setLaye
 and the launch/updated notification. It writes a project override, checks the
 layer and effective configuration, restores the original layer and checks that
 the global layer stayed unchanged. See the package README for invocation and
-concurrent-writer limitations. These recipes cover seven catalog methods and one
+concurrent-writer limitations. The repository-trust recipe adds trustRepo, stale-hash rejection and fresh
+revision confirmation. These recipes cover eight catalog methods and one
 notification; they do not establish whole-protocol or failure-path coverage.
 
 The target is a fixture-backed cookbook covering every supported catalog method
@@ -264,5 +265,12 @@ resolve again. Confirm only if the current repository hash matches the reviewed
 hash and its trust state is `trusted`. If it changed, show the current status and
 require a new review. Do not automatically approve that new hash. Trust metadata
 remembers previously approved hashes; deleting the file does not revoke that
-history. The native flow has isolated-hub evidence for this sequence; a packaged
-repository-trust cookbook recipe remains to be added.
+history. The native flow has isolated-hub evidence for this sequence; the packaged
+`repository-trust.mjs` recipe reproduces stale-hash rejection and fresh review
+against an isolated hub sharing the fixture filesystem. See the package README
+for prerequisites and cleanup limitations.
+
+On 6 September 2026, the repository-trust recipe ran from the independently
+installed tarball against the authenticated isolated hub. It verified rejection
+of the stale hash, approval of the new revision and effective maxRounds=12, then
+removed its owned temporary directory. Trust metadata remains in isolated state.
