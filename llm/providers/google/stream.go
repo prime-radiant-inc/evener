@@ -51,7 +51,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 		FinalEvent: func() *llm.StreamEvent {
 			return finalEvent
 		},
-		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
 		Finished:      &finished,
 		IncompleteMsg: provider + " stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent) error {

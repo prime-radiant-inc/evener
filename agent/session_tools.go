@@ -275,11 +275,6 @@ const (
 	// shaped work, where inheriting a top-tier effort adds latency without
 	// improving the description contract.
 	visionReasoningEffort = "low"
-	// visionSideChannelTimeout is an explicit caller-owned ceiling. The adapter
-	// timeout remains a defense in depth for provider transports, while this
-	// context also cancels deterministic/non-HTTP adapters and all cleanup
-	// attached to the side-channel call.
-	visionSideChannelTimeout = 2 * time.Minute
 )
 
 var errVisionSideChannelTimeout = errors.New("vision side-channel deadline")
@@ -288,7 +283,7 @@ func (s *Session) visionSideChannelDuration() time.Duration {
 	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
 		return timeout
 	}
-	return visionSideChannelTimeout
+	return 0
 }
 
 type visionSideChannelOutcome uint8
@@ -479,7 +474,14 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 
 	visionTimeout := s.visionSideChannelDuration()
-	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
+	var visionCtx context.Context
+	var cancel context.CancelFunc
+	if visionTimeout > 0 {
+		visionCtx, cancel = context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
+	} else {
+		visionCtx, cancel = context.WithCancel(ctx)
+	}
+	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout)
 	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
@@ -497,7 +499,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			Request:    visionTimeout,
-			StreamRead: 30 * time.Second,
+			StreamRead: idleTimeout,
 		},
 	}
 	// This request is built manually (not via buildModelRequest), so clamp the

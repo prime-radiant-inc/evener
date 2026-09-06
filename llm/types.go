@@ -522,16 +522,16 @@ type RateLimitInfo struct {
 // AdapterTimeout defines granular timeout configuration for adapter-level HTTP operations.
 type AdapterTimeout struct {
 	Connect    time.Duration `json:"connect"`     // time to establish the network connection (default: 10s)
-	Request    time.Duration `json:"request"`     // whole non-stream call or streaming HTTP attempt, including body lifetime (default: 120s)
-	StreamRead time.Duration `json:"stream_read"` // max time between consecutive stream events (default: 30s)
+	Request    time.Duration `json:"request"`     // optional whole-attempt deadline, including body lifetime (default: disabled)
+	StreamRead time.Duration `json:"stream_read"` // max idle time between incoming response bytes, streaming or not (default: 10m)
 }
 
-// DefaultAdapterTimeout returns the spec-recommended defaults.
+// DefaultAdapterTimeout returns bounded connection and response-idle defaults, without a total deadline.
 func DefaultAdapterTimeout() AdapterTimeout {
 	return AdapterTimeout{
 		Connect:    10 * time.Second,
-		Request:    120 * time.Second,
-		StreamRead: 30 * time.Second,
+		Request:    0,
+		StreamRead: 10 * time.Minute,
 	}
 }
 

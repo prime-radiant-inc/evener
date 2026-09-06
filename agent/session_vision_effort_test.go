@@ -108,8 +108,8 @@ func TestDescribeImage_UsesLowEffortIndependentOfSession(t *testing.T) {
 	if len(requests[0].Tools) != 0 {
 		t.Fatalf("vision request tools = %d, want 0", len(requests[0].Tools))
 	}
-	if requests[0].AdapterTimeout == nil || requests[0].AdapterTimeout.Request != visionSideChannelTimeout {
-		t.Fatalf("vision request timeout = %#v, want request=%s", requests[0].AdapterTimeout, visionSideChannelTimeout)
+	if requests[0].AdapterTimeout == nil || requests[0].AdapterTimeout.Request != 0 {
+		t.Fatalf("vision request timeout = %#v, want no default total deadline", requests[0].AdapterTimeout)
 	}
 }
 

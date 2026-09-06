@@ -277,6 +277,7 @@ func layerRows(l, effective appwire.LaunchConfigLayer) []layerRow {
 		{"agent", "agent", l.Agent, l.Agent, false},
 		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort, false},
 		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy, false},
+		{"provider_idle_timeout", "provider_idle_timeout", l.ProviderIdleTimeout, l.ProviderIdleTimeout, false},
 		{"openai_responses_continuation", "openai_responses_continuation", l.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, false},
 		{"max_rounds", "max_rounds", resolvedPtrIntStr(l.MaxRounds, effective.MaxRounds), ptrIntStr(l.MaxRounds), false},
 		{"max_subagent_depth", "max_subagent_depth", resolvedPtrIntStr(l.MaxSubagentDepth, effective.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
@@ -396,6 +397,8 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		layer.ReasoningEffort = strings.TrimSpace(value)
 	case "context_strategy":
 		layer.ContextStrategy = strings.TrimSpace(value)
+	case "provider_idle_timeout":
+		layer.ProviderIdleTimeout = strings.TrimSpace(value)
 	case "openai_responses_continuation":
 		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
 	case "sandbox":

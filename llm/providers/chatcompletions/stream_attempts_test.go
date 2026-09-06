@@ -2,10 +2,12 @@ package chatcompletions
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -42,25 +44,6 @@ func (s *captureSink) records() []apilog.APIAttemptRecord {
 // deltas, with neither a finish_reason chunk nor the [DONE] that ends it.
 const twoChatChunks = "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"}}]}\n\n" +
 	"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\n"
-
-// stallingSSEServer streams prefix, flushes it, and then holds the response
-// open until the test ends: the only way out of such a stream is the
-// StreamRead idle timeout.
-func stallingSSEServer(t *testing.T, prefix string) *httptest.Server {
-	t.Helper()
-	stall := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(prefix))
-		w.(http.Flusher).Flush()
-		<-stall
-	}))
-	// Cleanups run last-registered-first: release the handler before Close
-	// waits for it.
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(stall) })
-	return srv
-}
 
 // TestStreamAppendsTheAttemptBeforeTheTerminalEvent pins the ordering the
 // adapter's wire captures pinned before the protocols replaced them: the
@@ -103,26 +86,44 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 // reached the provider and the response headers arrived, so neither a
 // connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
-	srv := stallingSSEServer(t, twoChatChunks)
-	sink := &captureSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_chat_sse_timeout")),
-		sink,
-	)
-	req := userReq("hi")
-	req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
-	s, err := (&Protocol{Client: srv.Client()}).Stream(ctx, req, liveRes(srv, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
-	}
-	llm.WaitForPriorAPIAttempts(ctx)
-	attempts := sink.records()
-	if len(attempts) != 1 {
-		t.Fatalf("attempts = %d, want 1", len(attempts))
-	}
-	if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
-		t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r, w := io.Pipe()
+		stall := make(chan struct{})
+		defer close(stall)
+		defer r.Close()
+		client := &http.Client{Transport: idleAttemptRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.Body != nil {
+				io.Copy(io.Discard, req.Body)
+				req.Body.Close()
+			}
+			go func() { defer w.Close(); io.WriteString(w, twoChatChunks); <-stall }()
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: r, Request: req}, nil
+		})}
+		srv := &httptest.Server{URL: "https://example.invalid"}
+		sink := &captureSink{}
+		ctx := llm.WithAPIAttemptSink(
+			llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_chat_sse_timeout")),
+			sink,
+		)
+		req := userReq("hi")
+		req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
+		s, err := (&Protocol{Client: client}).Stream(ctx, req, liveRes(srv, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
+		}
+		llm.WaitForPriorAPIAttempts(ctx)
+		attempts := sink.records()
+		if len(attempts) != 1 {
+			t.Fatalf("attempts = %d, want 1", len(attempts))
+		}
+		if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
+			t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
+		}
+	})
 }
+
+type idleAttemptRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

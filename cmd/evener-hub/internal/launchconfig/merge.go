@@ -98,6 +98,11 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["context_strategy"] = name
 			nonEmpty = true
 		}
+		if l.ProviderIdleTimeout != "" {
+			eff.ProviderIdleTimeout = l.ProviderIdleTimeout
+			prov["provider_idle_timeout"] = name
+			nonEmpty = true
+		}
 		if l.OpenAIResponsesContinuation != "" {
 			eff.OpenAIResponsesContinuation = l.OpenAIResponsesContinuation
 			prov["openai_responses_continuation"] = name

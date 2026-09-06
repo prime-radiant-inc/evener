@@ -264,8 +264,8 @@ func TestAdapterTransport_ConfiguresDefaultTransport(t *testing.T) {
 	if transport.DialContext == nil {
 		t.Fatal("DialContext is nil; connect timeout would not be enforced")
 	}
-	if transport.TLSHandshakeTimeout != defaultTransport.TLSHandshakeTimeout {
-		t.Fatalf("TLSHandshakeTimeout = %v, want %v", transport.TLSHandshakeTimeout, defaultTransport.TLSHandshakeTimeout)
+	if transport.TLSHandshakeTimeout != at.Connect {
+		t.Fatalf("TLSHandshakeTimeout = %v, want Connect=%v", transport.TLSHandshakeTimeout, at.Connect)
 	}
 	if transport.ForceAttemptHTTP2 != defaultTransport.ForceAttemptHTTP2 {
 		t.Fatalf("ForceAttemptHTTP2 = %v, want %v", transport.ForceAttemptHTTP2, defaultTransport.ForceAttemptHTTP2)
@@ -305,7 +305,12 @@ func TestAdapterTransport_NoTransportTimeoutReturnsNil(t *testing.T) {
 		{name: "stream read only", at: &AdapterTimeout{StreamRead: time.Second}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if transport := AdapterTransport(tc.at); transport != nil {
+			transport := AdapterTransport(tc.at)
+			if tc.at != nil && tc.at.StreamRead > 0 {
+				if transport == nil || transport.ResponseHeaderTimeout != tc.at.StreamRead {
+					t.Fatal("idle-only policy must bound response headers")
+				}
+			} else if transport != nil {
 				t.Fatalf("AdapterTransport() = %T, want nil", transport)
 			}
 		})
@@ -636,8 +641,13 @@ func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T
 		{name: "stream read only", at: &AdapterTimeout{StreamRead: time.Second}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if client := ClientWithAdapterTimeout(original, tc.at); client != original {
-				t.Fatal("client copied without a connect or request timeout")
+			client := ClientWithAdapterTimeout(original, tc.at)
+			if tc.at != nil && tc.at.StreamRead > 0 {
+				if client == original || client.Timeout != original.Timeout {
+					t.Fatal("idle-only policy must wrap transport and preserve explicit caller timeout")
+				}
+			} else if client != original {
+				t.Fatal("client copied without timeout policy")
 			}
 		})
 	}

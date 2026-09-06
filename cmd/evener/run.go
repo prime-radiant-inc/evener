@@ -49,13 +49,14 @@ type runConfig struct {
 	stdout                    io.Writer
 	stderr                    io.Writer
 
-	skillsDirs                  []string      // extra skill directories
-	mcpServers                  []string      // --mcp inline specs
-	mcpConfigs                  []string      // --mcp-config file paths
-	pluginDirs                  []string      // --plugin-dir directories
-	enabledPlugins              *[]string     // --enabled-plugins selection; nil means omitted
-	noDefaultMarketplaces       bool          // --no-default-marketplaces
-	systemPromptAsUser          bool          // --system-prompt-as-user
+	skillsDirs                  []string  // extra skill directories
+	mcpServers                  []string  // --mcp inline specs
+	mcpConfigs                  []string  // --mcp-config file paths
+	pluginDirs                  []string  // --plugin-dir directories
+	enabledPlugins              *[]string // --enabled-plugins selection; nil means omitted
+	noDefaultMarketplaces       bool      // --no-default-marketplaces
+	systemPromptAsUser          bool      // --system-prompt-as-user
+	providerIdleTimeout         string
 	openAIResponsesContinuation string        // --openai-responses-continuation
 	runTimeout                  time.Duration // --timeout; zero disables
 	sandboxMode                 string        // --sandbox mode name (default "off")
@@ -150,6 +151,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	// caller that has left. Everything after this builds a client and a
 	// session, so the interrupt is read here rather than carried into them.
 	if err := startupInterrupted(ctx, "seeding default marketplaces"); err != nil {
+		return err
+	}
+	if _, err := agent.ParseProviderIdleTimeout(cfg.providerIdleTimeout); err != nil {
 		return err
 	}
 	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
@@ -318,6 +322,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
+		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if cfg.maxSubagentDepth >= 0 {
@@ -359,6 +364,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
+			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {

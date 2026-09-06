@@ -53,12 +53,16 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 		if attemptErr == nil {
 			attemptErr = decodeErr
 		}
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
+		if source := llm.APITimeoutSourceForSSE(decodeErr); source != llm.APITimeoutNone {
+			timeoutSource = source
+		}
 		attempt.Complete(llm.APIAttemptResult{
 			StatusCode:   statusCode,
 			ResponseBody: responseBody,
 			Response:     response,
 			Err:          attemptErr,
-		}, llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr), decodeErr, transportErr)
+		}, timeoutSource, decodeErr, transportErr)
 	}()
 	client := llm.ClientWithAdapterTimeout(c.httpClient(), c.Req.AdapterTimeout)
 	resp, att, doErr := transport.DoWithAPIAttempts(parentCtx, client, p.Request, c.metaBuilder(p))
@@ -77,6 +81,9 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 		decodeErr = readErr
 	} else {
 		decodeErr = jsonErr
+	}
+	if readErr != nil && (ctx.Err() != nil || errors.Is(readErr, llm.ErrResponseIdleTimeout)) {
+		return llm.WrapContextError(c.Res.Instance, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.classify(resp.StatusCode, resp.Header, rawBytes)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -50,7 +51,11 @@ func isUnsupportedEndpoint(err error) bool {
 // streamTerminalError drains a stream and returns its terminal error event.
 func streamTerminalError(t *testing.T, srv *httptest.Server, req llm.Request) error {
 	t.Helper()
-	s, err := (&Protocol{Client: srv.Client()}).Stream(t.Context(), req, liveRes(srv, openaiCaps))
+	return streamTerminalErrorWithClient(t, srv.Client(), srv, req)
+}
+func streamTerminalErrorWithClient(t *testing.T, client *http.Client, srv *httptest.Server, req llm.Request) error {
+	t.Helper()
+	s, err := (&Protocol{Client: client}).Stream(t.Context(), req, liveRes(srv, openaiCaps))
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -72,18 +77,21 @@ func streamTerminalError(t *testing.T, srv *httptest.Server, req llm.Request) er
 // sends the request to an endpoint that cannot serve it (#484).
 func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 	t.Run("stall", func(t *testing.T) {
-		req := userReq("hi")
-		req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
-		err := streamTerminalError(t, stallingSSEServer(t, twoResponsesEvents), req)
-		if err == nil || !strings.Contains(err.Error(), "responses stream stalled without completion") {
-			t.Fatalf("stalled stream error = %v", err)
-		}
-		if !errors.Is(err, llm.ErrSSEReadTimeout) {
-			t.Fatalf("a stall must carry the SSE read timeout as its cause: %v", err)
-		}
-		if isUnsupportedEndpoint(err) {
-			t.Fatalf("silence is not evidence about endpoint support: %v", err)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			req := userReq("hi")
+			req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
+			client, srv := stallingSSEClient(t, twoResponsesEvents)
+			err := streamTerminalErrorWithClient(t, client, srv, req)
+			if err == nil || !strings.Contains(err.Error(), "responses stream stalled without completion") {
+				t.Fatalf("stalled stream error = %v", err)
+			}
+			if !errors.Is(err, llm.ErrResponseIdleTimeout) {
+				t.Fatalf("a stall must carry the response-byte idle timeout as its cause: %v", err)
+			}
+			if isUnsupportedEndpoint(err) {
+				t.Fatalf("silence is not evidence about endpoint support: %v", err)
+			}
+		})
 	})
 
 	t.Run("read failure", func(t *testing.T) {

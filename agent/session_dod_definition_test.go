@@ -3790,7 +3790,7 @@ func TestSession_TurnLimit_ReturnsTypedError(t *testing.T) {
 	_, err = sess.ProcessInput(ctx, "second", nil)
 	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 }
-func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
+func TestSession_SetsIdleTimeoutWithoutTotalDeadline(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3821,8 +3821,11 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 	if req.AdapterTimeout == nil {
 		t.Fatal("Session should set AdapterTimeout on the LLM request")
 	}
-	if req.AdapterTimeout.Request < 5*time.Minute {
-		t.Errorf("Request timeout should be >= 5 minutes for agentic workloads, got %v", req.AdapterTimeout.Request)
+	if req.AdapterTimeout.Request != 0 {
+		t.Errorf("Request timeout should be disabled, got %v", req.AdapterTimeout.Request)
+	}
+	if req.AdapterTimeout.StreamRead != 10*time.Minute {
+		t.Errorf("Response idle timeout should be 10 minutes, got %v", req.AdapterTimeout.StreamRead)
 	}
 }
 

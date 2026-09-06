@@ -735,6 +735,7 @@ export interface LaunchConfigLayer {
   reasoningEffort?: string;
   contextStrategy?: string;
   openAIResponsesContinuation?: string;
+  providerIdleTimeout?: string;
   sandbox?: string;
   sandboxNet?: boolean;
   maxRounds?: number;

@@ -30,6 +30,9 @@ func ToArgs(r Resolved) []string {
 	if e.ContextStrategy != "" {
 		add("--context-strategy", e.ContextStrategy)
 	}
+	if e.ProviderIdleTimeout != "" {
+		add("--provider-idle-timeout", e.ProviderIdleTimeout)
+	}
 	if e.OpenAIResponsesContinuation != "" {
 		add("--openai-responses-continuation", e.OpenAIResponsesContinuation)
 	}

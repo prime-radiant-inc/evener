@@ -912,6 +912,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		messages = append([]llm.Message{llm.System(sys)}, history...)
 	}
 
+	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout) // validated at session construction/restore
 	req := llm.Request{
 		Model:    profile.Model(),
 		Provider: profile.ID(),
@@ -927,8 +928,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		WebSearch:  s.providerWebSearchEnabled(profile),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
-			Request:    10 * time.Minute,
-			StreamRead: 30 * time.Second,
+			StreamRead: idleTimeout,
 		},
 	}
 	if opts := profile.ProviderOptions(); opts != nil {
