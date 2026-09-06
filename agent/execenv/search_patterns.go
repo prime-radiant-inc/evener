@@ -53,8 +53,8 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 	return fs.Stat(c.fsys, name)
 }
 
-// maxGlobDirListings bounds how many directory listings one glob call may
-// make, across ignore discovery and every brace-expanded pattern in it. It
+// maxGlobDirListings bounds how many directory listings one glob or grep call
+// may make, across ignore discovery and every brace-expanded pattern in it. It
 // counts directories listed rather than capping depth because a symlink cycle
 // costs unbounded *work*, not merely unbounded depth: one /proc/<pid>/root hop
 // re-enters the entire tree, so a shallow depth cap would still admit a
@@ -66,23 +66,34 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 // The value itself is a WORK bound, not a memory bound — the match cap and the
 // O(depth) ancestor chain already hold memory to a small constant, so this
 // only has to be large enough that a legitimate call doesn't pay for it. One
-// call can spend this budget several times over: once on ignore discovery,
-// then again on each brace-expanded pattern (up to
-// globpattern.MaxExpansions). A 60,000-directory monorepo globbed with a
-// 5-way brace expansion costs on the order of 360,000 listings and must not
-// error; `/` on a developer's machine is 500,000 to several million
-// directories and must. 1,000,000 sits between the two.
+// call's listings are the sum of ignore discovery's walk plus every
+// brace-expanded pattern's walk (up to globpattern.MaxExpansions), so this one
+// number has to be large enough to cover all of them together. A
+// 60,000-directory monorepo globbed with a 5-way brace expansion costs on the
+// order of 360,000 listings and must not error; `/` on a developer's machine
+// is 500,000 to several million directories and must. 1,000,000 sits between
+// the two.
 var maxGlobDirListings = 1_000_000
 
 // maxGlobMatches bounds how many matches one glob call may accumulate.
 var maxGlobMatches = 10_000
 
-// globBudget bounds the total work and memory one glob call may spend, shared
-// by every brace-expanded pattern the call walks.
+// globBudget bounds the total work and memory one glob or grep call may
+// spend, shared by every brace-expanded pattern the call walks. op names the
+// operation the budget was created for, "glob" or "grep": loadIgnoreSet is
+// shared by both tools, so a refusal from it has to name whichever the caller
+// actually invoked instead of always saying "glob".
 type globBudget struct {
 	listings  int
 	matches   int
 	truncated bool
+	op        string
+}
+
+// newGlobBudget constructs a globBudget for op, so every call site names the
+// operation its budget belongs to rather than leaving the field unset.
+func newGlobBudget(op string) *globBudget {
+	return &globBudget{op: op}
 }
 
 // listing charges one more directory listing to the budget regardless of
@@ -99,27 +110,28 @@ func (b *globBudget) listing(cycleSafe bool) error {
 	if b.listings <= maxGlobDirListings {
 		return nil
 	}
-	return &globBudgetError{listings: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe}
+	return &globBudgetError{listings: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op}
 }
 
-// globBudgetError reports that one glob call ran past its directory-listing
-// budget. cycleSafe records whether the walk that gave up could have detected
-// a symlink cycle on its own — the pattern walk can tell only where the
-// filesystem reports file identity, while ignore discovery never follows
-// symlinks and so always can — which picks which of Error's two explanations
-// applies; listings and budget are the values a caller can act on without
-// parsing either sentence.
+// globBudgetError reports that one glob or grep call ran past its
+// directory-listing budget. cycleSafe records whether the walk that gave up
+// could have detected a symlink cycle on its own — the pattern walk can tell
+// only where the filesystem reports file identity, while ignore discovery
+// never follows symlinks and so always can — which picks which of Error's two
+// explanations applies; listings and budget are the values a caller can act
+// on without parsing either sentence.
 type globBudgetError struct {
 	listings  int
 	budget    int
 	cycleSafe bool
+	op        string
 }
 
 func (e *globBudgetError) Error() string {
 	if !e.cycleSafe {
-		return fmt.Sprintf("glob walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; narrow the pattern or its base directory", e.listings, e.budget)
+		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; narrow the pattern or its base directory", e.op, e.listings, e.budget)
 	}
-	return fmt.Sprintf("glob walk made %d directory listings, past the budget of %d for one glob call: narrow the pattern or its base directory", e.listings, e.budget)
+	return fmt.Sprintf("%s walk made %d directory listings, past the budget of %d for one call: narrow the pattern or its base directory", e.op, e.listings, e.budget)
 }
 
 // match reports whether the walk may keep the next match, so the caller can

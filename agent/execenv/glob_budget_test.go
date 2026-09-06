@@ -17,8 +17,7 @@ import (
 
 // stubMaxGlobDirListings lowers the directory-listing budget for a test and
 // restores it when the test ends, so a budget test can use a tree small
-// enough for t.TempDir() rather than one large enough to trip the real
-// (100,000) bound.
+// enough for t.TempDir() rather than one large enough to trip the real bound.
 func stubMaxGlobDirListings(t *testing.T, n int) {
 	t.Helper()
 	orig := maxGlobDirListings
@@ -193,7 +192,7 @@ func TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked(t *testing.T) {
 	const siblingCount = 30
 	root := globBudgetFixture(t, siblingCount)
 
-	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: newGlobBudget("glob")}
 	if _, err := w.ReadDir("."); err != nil {
 		t.Fatalf("listing the root: %v", err)
 	}
@@ -233,21 +232,80 @@ func TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked(t *testing.T) {
 // pattern walk. include_ignored skips ignore discovery entirely, so the
 // identical call must not trip the same budget: that is the control that
 // proves the failure is ignore discovery's, not some other unbounded walk.
+// The error must name "glob" as the operation that spent the budget — the
+// counterpart grep test proves the same budget names "grep" instead, which is
+// how a caller told the two apart at all — and the countingFS proves the walk
+// actually stopped at the budget rather than finishing and reporting a
+// failure afterward.
 func TestGlobIgnoreDiscoveryIsChargedToTheBudget(t *testing.T) {
 	const dirCount = 40
+	const budget = 8
 	root := globBudgetFixture(t, dirCount)
-	stubMaxGlobDirListings(t, 8)
+	stubMaxGlobDirListings(t, budget)
+
+	var counter *countingFS
+	stubGlobBaseFS(t, func(dir string) fs.FS {
+		counter = &countingFS{FS: os.DirFS(dir)}
+		return counter
+	})
 
 	matches, _, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "does-not-exist.txt", root, false)
 	if err == nil {
-		t.Fatalf("GlobWithExclusions(include_ignored=false) over a %d-directory tree with a listing budget of 8 returned no error and %d matches; ignore discovery is not charged to the budget", dirCount, len(matches))
+		t.Fatalf("GlobWithExclusions(include_ignored=false) over a %d-directory tree with a listing budget of %d returned no error and %d matches; ignore discovery is not charged to the budget", dirCount, budget, len(matches))
 	}
 	if errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("budget refusal reported %v, which the walk skips silently; it must fail the glob visibly instead", err)
 	}
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("GlobWithExclusions(include_ignored=false) error = %v (%T), want a *globBudgetError", err, err)
+	}
+	if budgetErr.op != "glob" {
+		t.Fatalf("globBudgetError.op = %q, want %q (this is glob's own call, not grep's)", budgetErr.op, "glob")
+	}
+	if counter.calls > budget+1 {
+		t.Fatalf("ignore discovery made %d directory listings against a budget of %d, want at most %d", counter.calls, budget, budget+1)
+	}
+	if counter.calls >= dirCount+1 {
+		t.Fatalf("ignore discovery listed all %d directories instead of stopping early (%d listings made)", dirCount+1, counter.calls)
+	}
 
 	if _, _, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "does-not-exist.txt", root, true); err != nil {
 		t.Fatalf("GlobWithExclusions(include_ignored=true) = %v, want nil (ignore discovery is skipped entirely, so it cannot trip the budget)", err)
+	}
+}
+
+// TestGrepIgnoreDiscoveryIsChargedToTheBudget proves the same ignore-discovery
+// budget applies on grep's native fallback, not only glob's: grepNative loads
+// its own ignore set with a fresh budget before it ever walks the tree it
+// greps, so an over-budget tree must fail the grep call, not silently glob
+// past its bound. grepNative is called directly, rather than through a tool
+// dispatch, because that is the "return \"\", err" path a native grep takes
+// when loadIgnoreSet refuses — existing tests such as
+// TestGrep_FallbackWithoutRipgrep reach the same native arm the same way,
+// without needing to defeat ripgrep detection. The error must name "grep" as
+// the operation that spent the budget: the budget is shared code with glob's,
+// so nothing about the failure itself distinguishes the two callers unless
+// the operation name does.
+func TestGrepIgnoreDiscoveryIsChargedToTheBudget(t *testing.T) {
+	const dirCount = 40
+	const budget = 8
+	root := globBudgetFixture(t, dirCount)
+	stubMaxGlobDirListings(t, budget)
+
+	_, err := NewLocalExecutionEnvironment(root).grepNative(t.Context(), "needle", root, "", false, 100, "")
+	if err == nil {
+		t.Fatalf("grepNative over a %d-directory tree with a listing budget of %d returned no error; ignore discovery is not charged to the budget", dirCount, budget)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("budget refusal reported %v, which the walk skips silently; it must fail the grep visibly instead", err)
+	}
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("grepNative error = %v (%T), want a *globBudgetError", err, err)
+	}
+	if budgetErr.op != "grep" {
+		t.Fatalf("globBudgetError.op = %q, want %q (grepNative's ignore discovery, not glob's)", budgetErr.op, "grep")
 	}
 }
 
@@ -272,7 +330,7 @@ func TestGlobWalkRefusesACycleThroughAnUnlistedAncestor(t *testing.T) {
 		t.Skipf("directory symlinks unavailable on this platform: %v", err)
 	}
 
-	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: newGlobBudget("glob")}
 	_, err := w.ReadDir("a/loop")
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("ReadDir(a/loop) as the walk's first-ever listing = %v, want an fs.ErrNotExist PathError (the ancestor cycle back to root, caught via a fresh stat rather than the chain)", err)
@@ -293,7 +351,7 @@ func TestGlobBudgetErrorRecordsWhetherTheWalkCouldDetectCycles(t *testing.T) {
 	stubMaxGlobDirListings(t, 1)
 
 	mapTree := fstest.MapFS{"dir00/leaf.txt": &fstest.MapFile{Data: []byte("x")}}
-	mw := &globWalkFS{FS: mapTree, ctx: t.Context(), budget: &globBudget{}}
+	mw := &globWalkFS{FS: mapTree, ctx: t.Context(), budget: newGlobBudget("glob")}
 	if _, err := mw.ReadDir("."); err != nil {
 		t.Fatalf("listing the MapFS root: %v", err)
 	}
@@ -310,7 +368,7 @@ func TestGlobBudgetErrorRecordsWhetherTheWalkCouldDetectCycles(t *testing.T) {
 	}
 
 	root := globBudgetFixture(t, 1)
-	ow := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	ow := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: newGlobBudget("glob")}
 	if _, err := ow.ReadDir("."); err != nil {
 		t.Fatalf("listing the os.DirFS root: %v", err)
 	}
@@ -387,7 +445,8 @@ func TestSandboxedGlobTruncatesToAStablePrefix(t *testing.T) {
 // call cancelled right after the cap tripped comes back reporting truncated
 // success instead of the cancellation the caller actually asked for.
 func TestGlobMatchesReportsCancellationAfterTheCapTripped(t *testing.T) {
-	budget := &globBudget{truncated: true}
+	budget := newGlobBudget("glob")
+	budget.truncated = true
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

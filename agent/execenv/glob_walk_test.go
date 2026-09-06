@@ -161,7 +161,7 @@ func TestGlobWalkFSBoundsAFilesystemWithoutFileIdentity(t *testing.T) {
 		t.Fatalf("fstest.MapFS should carry no file identity: (%v, %v)", info, err)
 	}
 
-	w := &globWalkFS{FS: tree, ctx: t.Context(), budget: &globBudget{}}
+	w := &globWalkFS{FS: tree, ctx: t.Context(), budget: newGlobBudget("glob")}
 	if _, err := w.ReadDir("dir"); err != nil {
 		t.Fatalf("first listing: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestGlobWalkFSKnowsWhenIdentityIsAvailable(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: newGlobBudget("glob")}
 	if _, err := w.ReadDir("sub"); err != nil {
 		t.Fatalf("listing an os-backed directory: %v", err)
 	}

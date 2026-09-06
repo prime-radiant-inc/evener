@@ -112,7 +112,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
-	budget := &globBudget{}
+	budget := newGlobBudget("glob")
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting
@@ -190,7 +190,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return s.underMasked(filepath.Join(canonical, relPath))
-	}, &globBudget{})
+	}, newGlobBudget("grep"))
 	if err != nil {
 		return "", err
 	}

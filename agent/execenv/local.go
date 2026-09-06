@@ -1738,7 +1738,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
 	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
-	budget := &globBudget{}
+	budget := newGlobBudget("glob")
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
@@ -1946,7 +1946,7 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 		// file argument, which cannot contain a .gitignore tree of its own.
 		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
 	}
-	ignores, err := loadIgnoreSet(ignoreFS, nil, &globBudget{})
+	ignores, err := loadIgnoreSet(ignoreFS, nil, newGlobBudget("grep"))
 	if err != nil {
 		return "", err
 	}
