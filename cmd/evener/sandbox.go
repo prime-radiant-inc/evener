@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -11,6 +12,17 @@ import (
 
 var probeSandboxHost = func() sandbox.HostFacts {
 	return sandbox.RealProber{}.Probe()
+}
+
+// reclaimCrashedSessionScratch removes the session scratch directories that
+// sessions retained (lease released, directory kept) and never came back for.
+// It reads the whole scratch base and probes a lease per candidate, so startup
+// runs it on its own goroutine and never waits on it; that outliving goroutine
+// is why the callers hand it os.Stderr rather than a writer the caller owns.
+func reclaimCrashedSessionScratch(warnings io.Writer) {
+	if err := sandbox.SweepCrashedSessionScratch(); err != nil {
+		fmt.Fprintf(warnings, "warning: reclaiming crashed session scratch: %v\n", err) //nolint:errcheck
+	}
 }
 
 // configureSandbox parses the --sandbox / --sandbox-net flag values into the
