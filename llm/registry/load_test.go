@@ -447,6 +447,31 @@ inherit_models_matching = ["alpha-*"]
 	}
 }
 
+// The user layer takes the same key: an instance built on a curated base
+// narrows the rows it inherits and nothing else.
+func TestLoad_InheritModelsMatchingNarrowsAUserInstance(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, `
+[providers.mine]
+base = "openai"
+inherit_models_matching = ["gpt-5*"]
+`)
+	kept, err := r.Resolve("mine/gpt-5-nano")
+	if err != nil || kept.Synthesized {
+		t.Fatalf("mine/gpt-5-nano must resolve as an inherited catalog row: res=%+v err=%v", kept, err)
+	}
+	dropped, err := r.Resolve("mine/gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dropped.Synthesized {
+		t.Fatalf("mine/gpt-4o must not resolve as a catalog row once the glob dropped it: %+v", dropped)
+	}
+	base, err := r.Resolve("openai/gpt-4o")
+	if err != nil || base.Synthesized {
+		t.Fatalf("openai's own gpt-4o must be untouched by the instance's glob: res=%+v err=%v", base, err)
+	}
+}
+
 func TestLoad_InheritModelsMatchingKeepsOnlyMatchingBaseRows(t *testing.T) {
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {

@@ -136,9 +136,11 @@ How the layers combine (all existing behaviour, `llm/registry/load.go`):
   nil`), so `GEMINI_API_KEY` / `GOOGLE_API_KEY` never make this instance
   exist. `vars` / `vars_env` merge key-wise, so `BASE_URL` is overridden and
   no other variable leaks in.
-- `inherit_models_matching` (overlay key, `fold`) drops every inherited row
-  whose id does not match `gemini-*`; rows the provider declares itself are
-  unaffected.
+- `inherit_models_matching` (overlay key, applied by `keepInheritedRows`
+  right after `inherit`, before any of the provider's own layers fold in)
+  drops every inherited row whose id does not match `gemini-*`; rows the
+  provider brings itself — an upstream entry or its own overlay/user rows —
+  are unaffected.
 - `v1` rather than `v1beta1`, to match `google-vertex`'s base URL. Both work
   (verified).
 - `web_search = true` is explicit because the first-party gate
