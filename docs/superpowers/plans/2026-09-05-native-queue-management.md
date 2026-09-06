@@ -12,3 +12,9 @@ Before implementation, inspect the server handler contracts and web implementati
 - [ ] Behavioral tests through real shared state and scripted protocol boundary.
 - [ ] Native queue surface and guarded operations.
 - [ ] Both-platform manual E2E including stale queue, cancellation, steering, reconnect and no replay.
+
+## Shared projection prerequisite
+
+The prior MobileQueue projection dropped revision, entry IDs, client mutation IDs and full texts. It now preserves those fields through initial thread projection and `thread/queueChanged`, cloning arrays so source mutation cannot rewrite published state. Wire revision is required in the view model; fixture queues now declare it. Initial and notification paths use the same projection function.
+
+Behavioral tests first failed on the missing identity/revision fields, then passed with the implementation. Shared mobile Vitest: 2,230 tests across 90 files passed. `mobile` typecheck and Biome gate passed. Native TypeScript and 53 tests passed. This is a data-contract prerequisite, not an implemented queue-management screen or manual native acceptance of queue actions.

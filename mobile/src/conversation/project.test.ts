@@ -913,10 +913,28 @@ describe("projectThread", () => {
   });
 
   describe("queue state", () => {
+    it("retains queue identity, revision and full text independently of previews", () => {
+      const queue: QueueState = {
+        revision: 9,
+        depth: 2,
+        ids: ["entry-a", "entry-b"],
+        texts: ["full first", "full second"],
+        preview: ["first…", "second…"],
+        clientMutationIds: ["send-a", "send-b"],
+      };
+      const projected = projectThread(
+        thread([], { evener: evenerThread({ queue }) }),
+      ).queue;
+      expect(projected).toEqual(queue);
+      queue.ids?.reverse();
+      queue.texts?.push("later");
+      expect(projected.ids).toEqual(["entry-a", "entry-b"]);
+      expect(projected.texts).toEqual(["full first", "full second"]);
+    });
     it("projects an empty queue as depth 0", () => {
       const t = thread([]);
       const c = projectThread(t);
-      expect(c.queue).toEqual({ depth: 0, preview: [] });
+      expect(c.queue).toEqual({ revision: 0, depth: 0, preview: [] });
     });
 
     it("projects queue depth and previews", () => {
@@ -928,7 +946,12 @@ describe("projectThread", () => {
       };
       const t = thread([], { evener: evenerThread({ queue }) });
       const c = projectThread(t);
-      expect(c.queue).toEqual({ depth: 2, preview: ["first queued"] });
+      expect(c.queue).toEqual({
+        revision: 3,
+        depth: 2,
+        preview: ["first queued"],
+        texts: ["first queued", "second queued"],
+      });
     });
 
     it("falls back to texts when preview absent", () => {

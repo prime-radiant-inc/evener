@@ -23,6 +23,7 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
+  QueueState,
   ThreadCapabilities,
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -33,6 +34,7 @@ import type {
   MobileTimelineItem,
   MobileUsage,
 } from "../conversation/model";
+import { projectQueue } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationService,
@@ -2069,15 +2071,12 @@ export function createConversationStore() {
 
           case "thread/queueChanged": {
             const params = n.params as {
-              queue: { depth?: number; preview?: string[]; texts?: string[] };
+              queue: QueueState;
             };
             set({
               conversation: {
                 ...conv,
-                queue: {
-                  depth: params.queue.depth ?? 0,
-                  preview: params.queue.preview ?? params.queue.texts ?? [],
-                },
+                queue: projectQueue(params.queue),
               },
             });
             break;

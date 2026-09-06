@@ -122,7 +122,7 @@ function makeConversation(
     status: "ready",
     items: [],
     capabilities: ALL_TRUE_CAPS,
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
     ...over,
@@ -709,10 +709,30 @@ describe("ConversationStore", () => {
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          queue: { revision: 1, depth: 2, preview: ["first", "second"] },
+          queue: {
+            revision: 7,
+            depth: 2,
+            ids: ["entry-a", "entry-b"],
+            texts: ["full first", "full second"],
+            clientMutationIds: ["send-a", "send-b"],
+            preview: ["first", "second"],
+          },
         },
       } as AnyNotification);
       expect(store.getState().conversation?.queue.depth).toBe(2);
+      expect(store.getState().conversation?.queue.revision).toBe(7);
+      expect(store.getState().conversation?.queue.ids).toEqual([
+        "entry-a",
+        "entry-b",
+      ]);
+      expect(store.getState().conversation?.queue.texts).toEqual([
+        "full first",
+        "full second",
+      ]);
+      expect(store.getState().conversation?.queue.clientMutationIds).toEqual([
+        "send-a",
+        "send-b",
+      ]);
       expect(store.getState().conversation?.queue.preview).toEqual([
         "first",
         "second",

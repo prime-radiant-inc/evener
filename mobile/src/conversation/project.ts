@@ -599,10 +599,19 @@ function projectCapabilities(caps: ThreadCapabilities): MobileCapabilities {
   return { ...caps };
 }
 
-function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
+export function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
   const depth = queue.depth ?? 0;
   const preview = queue.preview ?? queue.texts ?? [];
-  return { depth, preview };
+  return {
+    revision: queue.revision,
+    depth,
+    preview: [...preview],
+    ...(queue.ids ? { ids: [...queue.ids] } : {}),
+    ...(queue.texts ? { texts: [...queue.texts] } : {}),
+    ...(queue.clientMutationIds
+      ? { clientMutationIds: [...queue.clientMutationIds] }
+      : {}),
+  };
 }
 
 function projectUsage(evener: Thread["evener"]): MobileUsage {

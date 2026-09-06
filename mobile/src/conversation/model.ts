@@ -137,9 +137,13 @@ export interface MobileCapabilities {
   rename: boolean;
 }
 
-// Queue chip projection from QueueState. `depth` is the queued turn count;
-// `preview` is the queued text previews (plain text, untrusted).
+// Queue identity and reading content. Entry IDs and revision guard mutations;
+// previews and full texts are untrusted display content, not interchangeable.
 export interface MobileQueue {
+  revision: number;
+  ids?: string[];
+  texts?: string[];
+  clientMutationIds?: string[];
   depth: number;
   preview: string[];
 }
