@@ -387,6 +387,7 @@ function AddMarketplace({
                   selected={kind === value}
                   disabled={busy}
                   onPress={() => {
+                    if (value === kind) return;
                     setKind(value);
                     setSource("");
                   }}
