@@ -869,6 +869,7 @@ export function ConversationScreen({
         : await submitComposerCommand(document, service, {
             isCurrent: currentBinding,
             reasoning: () => store.getState().conversation,
+            turn: () => store.getState().conversation,
           });
       if (!completed || !currentBinding()) return;
       if (completed === "shutdown") {
@@ -1473,17 +1474,11 @@ export function ConversationScreen({
                 }
                 onPress={() => void applyCommand()}
               >
-                {command.command.id === "compact"
-                  ? "Compact"
-                  : command.command.id === "shutdown"
-                    ? "Shut down"
-                    : command.command.id === "model"
-                      ? "Set model"
-                      : command.command.id === "reasoning-effort"
-                        ? "Set effort"
-                        : goalCommand || !conversation?.goal
-                          ? "Set goal"
-                          : "Clear goal"}
+                {command.command.id === "goal"
+                  ? goalCommand || !conversation?.goal
+                    ? "Set goal"
+                    : "Clear goal"
+                  : command.command.label}
               </Action>
             ) : null}
             {command === null &&

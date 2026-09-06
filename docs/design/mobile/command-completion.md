@@ -49,13 +49,12 @@ hints. The list scrolls within a bounded height.
 ## Remaining command work
 
 This picker currently offers catalog commands and skills. Built-in session
-actions must be routed explicitly before advertising them here. `/goal`, `/compact`, `/shutdown`, `/model`, and `/reasoning-effort` are implemented. Current-web built-ins
-still needing native slash routing include interrupt, clear, aside,
-steer, queue, drain-as-steer, copy-id,
-tasks, status, and project. Some already have other native controls, which
-does not establish slash-command parity. Unknown/argument-bearing command
-fallthrough, attachment semantics and unavailable-command errors must match
-the current web at submission.
+actions must be routed explicitly before advertising them here. Submission
+supports goal, compact, shutdown, model, reasoning-effort, interrupt, steer,
+queue, and drain-as-steer. Remaining native slash routes are clear, aside,
+copy-id, tasks, status, and project. Some already have other native controls,
+which does not establish slash-command parity. Unavailable-command feedback
+and full built-in completion integration remain acceptance work.
 
 Still required: native middle-of-draft/caret and IME tests, large catalogs and
 large text, screen-reader interaction, plugin install/remove while open,
@@ -112,3 +111,38 @@ parent session through two independently saved hub profiles. Both platforms
 ended with empty drafts and default reasoning. This is not a concurrent
 multiple-hub acceptance test. Native delayed-catalog, connection-fault and
 screen-reader acceptance remain open despite the automated boundary coverage.
+
+## Turn commands, 6 September 2026
+
+Product sources: current web palette commands, hasActiveTurn, composerMutationIntent,
+and the turn mutation receipt contracts. `/steer` sends only its argument through
+turn/steer, even with waiting messages. `/queue` appends the argument. The
+explicit `/drain-as-steer` sends empty input with the observed queue revision.
+Those three commands require the live active-turn ID; `/interrupt` is scoped
+to the session and deliberately has no active-turn gate. Capability guards
+remain in the native controls and shared service. Receipts are decoded by the
+existing service before the durable command checkpoint can be cleared.
+
+The shared projection retains the server activeTurnId, or the inProgress turn
+from the read as the current web does. Live starts and matching completions
+update the ID; an older completion cannot clear a newer active turn. A newer
+live ID also survives an older in-flight hydration. Tests cover both read
+representations, this race, all four wire routes, queue revision binding and
+pre-dispatch refusal without a turn.
+
+Verification: 197 native tests and TypeScript, plus 432 focused shared
+projection/service/store tests pass. Both Release builds passed and were
+installed. Separate owned sessions on the isolated hub were exercised manually
+on iOS and Android: queue depth became one; explicit steering retained that
+entry and revision; draining emptied the queue and advanced its revision;
+interrupt cleared the draft and both sessions ended idle with no active turn.
+No production hub session was changed. The fixtures are named Native commands
+iOS and Native commands Android. Native stale-queue/connection-fault recovery,
+large-text layout and screen-reader operation remain manual acceptance work.
+
+The full mobile suite also passed 2,241 tests before the final active-turn race
+correction. That correction has an additional regression case: a completion
+received without its start cannot be undone by an in-flight read. The final
+native suite, focused shared suite and both typecheck/lint checks pass. The
+final Release builds include this correction; the four-action manual sequence
+above preceded that final state-only change.

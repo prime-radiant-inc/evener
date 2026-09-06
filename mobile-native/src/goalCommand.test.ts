@@ -15,7 +15,11 @@ import { DraftDocument } from "./draftDocument";
 import { type DraftDatabase, DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 
-const commandContext = { isCurrent: () => true, reasoning: () => null };
+const commandContext = {
+  isCurrent: () => true,
+  reasoning: () => null,
+  turn: () => null,
+};
 
 function boundary() {
   const thread: Thread = {
@@ -72,6 +76,15 @@ function boundary() {
   const service = createConversationService({
     request: async (method, params) => {
       if (method === "thread/read") return io.read();
+      if (
+        [
+          "turn/steer",
+          "turn/queue",
+          "turn/drainAsSteer",
+          "turn/interrupt",
+        ].includes(method)
+      )
+        return io.lifecycle(method, params);
       if (method === "model/list") return io.models();
       if (
         method === "thread/model/set" ||
@@ -410,3 +423,203 @@ it.each(["draft", "binding"])(
     }
   },
 );
+
+it.each(["advertised", "turn"])(
+  "preserves the %s active turn across stale hydration and older completion",
+  async (source) => {
+    const { thread, io, service } = boundary();
+    if (source === "advertised") thread.evener.activeTurnId = "first";
+    else
+      thread.turns = [
+        { id: "first", status: "inProgress", itemsView: "full", items: [] },
+      ];
+    const store = createConversationStore();
+    const activity = createActivityStore().getState();
+    try {
+      await store.getState().openProjected(service, activity, "local:test");
+      expect(store.getState().conversation?.activeTurnId).toBe("first");
+      let finish!: () => void;
+      let entered!: () => void;
+      const reading = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      io.read = () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ thread: structuredClone(thread) });
+          entered();
+        });
+      const refresh = store.getState().rehydrate(service, activity);
+      await reading;
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          ref: "local:test",
+          threadId: "thread",
+          turn: {
+            id: "second",
+            status: "inProgress",
+            itemsView: "full",
+            items: [],
+          },
+        },
+      });
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          ref: "local:test",
+          threadId: "thread",
+          turnId: "first",
+          turn: {
+            id: "first",
+            status: "completed",
+            itemsView: "full",
+            items: [],
+          },
+        },
+      });
+      expect(store.getState().conversation?.activeTurnId).toBe("second");
+      finish();
+      await refresh;
+      expect(store.getState().conversation?.activeTurnId).toBe("second");
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          ref: "local:test",
+          threadId: "thread",
+          turnId: "second",
+          turn: {
+            id: "second",
+            status: "completed",
+            itemsView: "full",
+            items: [],
+          },
+        },
+      });
+      expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+    } finally {
+      store.getState().close();
+      service.close();
+    }
+  },
+);
+
+it.each([
+  ["/steer sentinel", "turn/steer", [{ type: "text", text: "sentinel" }]],
+  ["/queue sentinel", "turn/queue", [{ type: "text", text: "sentinel" }]],
+  ["/drain-as-steer", "turn/drainAsSteer", []],
+  ["/interrupt", "turn/interrupt", undefined],
+])(
+  "routes %s with acknowledged delivery and queue guards",
+  async (text, method, input) => {
+    const { db, document } = commandDraft();
+    const { io, service, thread } = boundary();
+    thread.evener.capabilities.steer = true;
+    thread.evener.capabilities.queue = true;
+    thread.evener.capabilities.interrupt = true;
+    let received = 0;
+    try {
+      await service.open("local:test");
+      io.lifecycle = async (actual, raw) => {
+        const params = raw as { clientMutationId: string };
+        received++;
+        expect(actual).toBe(method);
+        expect(raw).toEqual({
+          ref: "local:test",
+          expectedInstanceId: "instance",
+          clientMutationId: expect.any(String),
+          ...(input ? { input } : {}),
+          ...(method === "turn/drainAsSteer"
+            ? { expectedQueueRevision: 7 }
+            : {}),
+        });
+        expect(document.getSnapshot().record.unconfirmed).toBe(text);
+        return {
+          receipt: {
+            clientMutationId: params.clientMutationId,
+            instanceId: "instance",
+            threadId: "thread",
+            disposition: "applied",
+            projectionState:
+              method === "turn/interrupt" ? "reflected" : "pending",
+            ...(method === "turn/queue"
+              ? { queueEntryIds: ["entry"] }
+              : { turnId: "turn" }),
+          },
+        };
+      };
+      document.edit(text);
+      await submitComposerCommand(document, service, {
+        ...commandContext,
+        turn: () =>
+          method === "turn/interrupt"
+            ? null
+            : { activeTurnId: "turn", queue: { revision: 7 } },
+      });
+      expect(received).toBe(1);
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: "",
+        unconfirmed: null,
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);
+
+it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
+  "retains %s without a live turn instead of sending chat",
+  async (text) => {
+    const { db, document } = commandDraft();
+    const { service, thread } = boundary();
+    thread.evener.capabilities.steer = true;
+    thread.evener.capabilities.queue = true;
+    try {
+      await service.open("local:test");
+      document.edit(text);
+      await expect(
+        submitComposerCommand(document, service, commandContext),
+      ).rejects.toThrow();
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: text,
+        unconfirmed: null,
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);
+
+it("does not resurrect a turn that completes during a read before its start was observed", async () => {
+  const { thread, io, service } = boundary();
+  const store = createConversationStore();
+  const activity = createActivityStore().getState();
+  try {
+    await store.getState().openProjected(service, activity, "local:test");
+    thread.evener.activeTurnId = "missed-start";
+    io.read = async () => {
+      const stale = structuredClone(thread);
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          ref: "local:test",
+          threadId: "thread",
+          turnId: "missed-start",
+          turn: {
+            id: "missed-start",
+            status: "completed",
+            itemsView: "full",
+            items: [],
+          },
+        },
+      });
+      return { thread: stale };
+    };
+    await store.getState().rehydrate(service, activity);
+    expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+  } finally {
+    store.getState().close();
+    service.close();
+  }
+});
